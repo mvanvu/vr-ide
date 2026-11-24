@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+# Title
+u.kkkkk
+
+
+Some *emphasis* and `code`.
+.....u........u.....ussssu
+
+
+- item one
+uu
+- item two
+uu
+
+
+```rust
+uuussss
+fn main() {}
+kk.ffffuu.uu
+```
+uuu
+
+
+> A quote.
+uu

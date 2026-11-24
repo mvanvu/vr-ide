@@ -1,0 +1,38 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+# Greets the user.
+cccccccccccccccccc
+import sys
+kkkkkk
+
+
+
+
+class Greeter:
+kkkkk.ttttttt
+    def __init__(self, name: str) -> None:
+....kkk.ffffffff.............ttt..oo.CCCC
+        self.name = name
+.............pppp.o
+
+
+    def greet(self) -> str:
+....kkk.fffff.......oo.ttt
+        if not self.name:
+........kk.ooo......pppp
+            return "Hello, world"
+............kkkkkk.ssssssssssssss
+        return f"Hello, {self.name}"
+........kkkkkk.sssssssssu.....ppppus
+
+
+
+
+def main() -> int:
+kkk.ffff...oo.ttt
+    print(Greeter(sys.argv[0]).greet())
+....fffff.fffffff.....pppp.n...ppppp
+    return 0
+....kkkkkk.n

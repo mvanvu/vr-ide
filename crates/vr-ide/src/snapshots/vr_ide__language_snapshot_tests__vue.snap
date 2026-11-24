@@ -1,0 +1,30 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+<!-- A counter component. -->
+ccccccccccccccccccccccccccccc
+<template>
+uggggggggu
+  <button class="counter" @click="count++">Count: {{ count }}</button>
+..ugggggg.aaaaaosssssssss.ufffffou.....oouu.......uu.......uuuuggggggu
+</template>
+uuggggggggu
+
+
+<script setup lang="ts">
+ugggggg.aaaaa.aaaaossssu
+import { ref } from "vue";
+kkkkkk.u.....u.kkkk.sssssu
+const count = ref(0);
+kkkkk.......o.fffunuu
+</script>
+uuggggggu
+
+
+<style scoped>
+uggggg.aaaaaau
+.counter { color: red; }
+uppppppp.u.pppppu....u.u
+</style>
+uugggggu

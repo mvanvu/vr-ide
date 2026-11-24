@@ -1,0 +1,33 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+// Package main greets the user.
+cccccccccccccccccccccccccccccccc
+package main
+kkkkkkk
+
+
+import "fmt"
+kkkkkk.sssss
+
+
+func greet(name string) string {
+kkkk.fffff......tttttt..tttttt
+    if name == "" {
+....kk......oo.ss
+        return "Hello, world"
+........kkkkkk.ssssssssssssss
+    }
+
+    return fmt.Sprintf("Hello, %s", name)
+....kkkkkk.....fffffff.sssssssssss
+}
+
+
+
+func main() {
+kkkk.ffff
+    fmt.Println(greet("vr"))
+........fffffff.fffff.ssss
+}

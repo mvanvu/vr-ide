@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+<!DOCTYPE html>
+CCCCCCCCCCCCCCu
+<!-- A small page. -->
+cccccccccccccccccccccc
+<html lang="en">
+ugggg.aaaa..ss.u
+<head>
+uggggu
+  <title>Sample</title>
+..ugggggu......uugggggu
+  <style>body { margin: 0; }</style>
+..ugggggugggg.u.ppppppu.nu.uuugggggu
+</head>
+uuggggu
+<body>
+uggggu
+  <p class="intro">Hello</p>
+..ug.aaaaa..sssss.u.....uugu
+  <script>console.log("hi");</script>
+..ugggggguvvvvvvvufffussssuuuuggggggu
+</body>
+uuggggu
+</html>
+uuggggu

@@ -1,0 +1,32 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+// Adds two numbers.
+cccccccccccccccccccc
+export function add(a, b) {
+kkkkkk.kkkkkkkk.fffu.u..u.u
+  const label = "sum";
+..kkkkk.......o.sssssu
+  return a + b;
+..kkkkkk...o..u
+}
+u
+
+
+class Counter {
+kkkkk.ttttttt.u
+  count = 0;
+..ppppp.o.nu
+  increment() {
+..fffffffffuu.u
+    this.count += 1;
+....vvvvuppppp.oo.nu
+  }
+..u
+}
+u
+
+
+console.log(add(1, 2), new Counter());
+vvvvvvvufffufffunu.nuu.kkk.tttttttuuuu

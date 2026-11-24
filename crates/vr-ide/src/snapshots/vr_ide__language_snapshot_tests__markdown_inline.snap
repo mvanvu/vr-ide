@@ -1,0 +1,6 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+Some *emphasis*, **strong**, `code` and a [link](https://example.com).
+.....u........u..uu......uu..ussssu.......uffffuuCCCCCCCCCCCCCCCCCCCu

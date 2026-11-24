@@ -22,6 +22,8 @@ mod explorer_tests;
 #[cfg(test)]
 mod find_tests;
 #[cfg(test)]
+mod language_snapshot_tests;
+#[cfg(test)]
 mod mode_tests;
 #[cfg(test)]
 mod search_tests;

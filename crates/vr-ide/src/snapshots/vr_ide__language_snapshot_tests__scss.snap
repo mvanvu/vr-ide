@@ -1,0 +1,30 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+// Theme variables.
+ccccccccccccccccccc
+$primary: #ff0080;
+ppppppppu.ussssssu
+
+
+@mixin rounded($radius: 4px) {
+kkkkkk........u.......u.nttu.u
+  border-radius: $radius;
+..pppppppppppppu........u
+}
+u
+
+
+.button {
+upppppp.u
+  @include rounded(8px);
+..kkkkkkkk.fffffffunttuu
+  color: $primary;
+..pppppu.........u
+  font-family: "Inter";
+..pppppppppppu.sssssssu
+  &:hover { color: darken($primary, 10%); }
+..guaaaaa.u.pppppu.ffffffu........u.nntuu.u
+}
+u

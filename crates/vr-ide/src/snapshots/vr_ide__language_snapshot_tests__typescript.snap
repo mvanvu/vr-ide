@@ -1,0 +1,30 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+// A user record.
+ccccccccccccccccc
+interface User {
+kkkkkkkkk.tttt.u
+  name: string;
+..pppp..ttttttu
+  age: number;
+..ppp..ttttttu
+}
+u
+
+
+export function greet(user: User): string {
+kkkkkk.kkkkkkkk.fffffu......ttttu..tttttt.u
+  const prefix = "Hello, ";
+..kkkkk........o.sssssssssu
+  return prefix + user.name;
+..kkkkkk........o.....uppppu
+}
+u
+
+
+type Id = string | number;
+kkkk.tt.o.tttttt.o.ttttttu
+let id: Id = 42;
+kkk.....tt.o.nnu

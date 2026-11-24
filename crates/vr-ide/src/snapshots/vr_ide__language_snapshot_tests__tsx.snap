@@ -1,0 +1,22 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+// A greeting component.
+cccccccccccccccccccccccc
+interface Props {
+kkkkkkkkk.ttttt.u
+  name: string;
+..pppp..ttttttu
+}
+u
+
+
+export function Hello({ name }: Props) {
+kkkkkk.kkkkkkkk.tttttuu......u..tttttu.u
+  const title = "greeting";
+..kkkkk.......o.ssssssssssu
+  return <div className="hello" title={title}>Hello, {name}</div>;
+..kkkkkk.uggg.aaaaaaaaaosssssss.aaaaaou.....uu.......u....uuuggguu
+}
+u

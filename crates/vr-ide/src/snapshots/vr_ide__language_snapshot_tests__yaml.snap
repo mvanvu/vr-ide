@@ -1,0 +1,18 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+# Build configuration.
+cccccccccccccccccccccc
+name: vr-ide
+ppppu.ssssss
+version: 1
+pppppppu.n
+enabled: true
+pppppppu.CCCC
+steps:
+pppppu
+  - run: "cargo test"
+..u.pppu.ssssssssssss
+  - run: cargo build --release
+..u.pppu.sssssssssssssssssssss

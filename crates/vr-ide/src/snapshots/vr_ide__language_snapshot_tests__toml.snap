@@ -1,0 +1,20 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+# Editor settings.
+cccccccccccccccccc
+[editor]
+uttttttu
+tab_width = 4
+tttttttttpopn
+font = "Inter"
+ttttpopsssssss
+wrap = false
+ttttpopCCCCC
+
+
+[[languages]]
+uutttttttttuu
+name = "rust"
+ttttpopssssss

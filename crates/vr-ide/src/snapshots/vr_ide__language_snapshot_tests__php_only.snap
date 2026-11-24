@@ -1,0 +1,22 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+// Greets the visitor.
+cccccccccccccccccccccc
+function greet(string $name): string
+kkkkkkkk.fffff.tttttt.o.......tttttt
+{
+
+    if ($name === '') {
+....kk..o.........ss
+        return "Hello, world";
+........kkkkkk.ssssssssssssss
+    }
+
+    return "Hello, " . $name;
+....kkkkkk.sssssssss...o
+}
+
+echo greet('vr');
+kkkk.fffff.ssss

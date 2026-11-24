@@ -1,0 +1,24 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+{{-- Lists the users. --}}
+cccccccccccccccccccccccccc
+<!-- user list -->
+cccccccccccccccccc
+<ul class="users">
+ugg.aaaaa..sssss.u
+@foreach ($users as $user)
+gggggggg.uo.........o....u
+    <li title="user">{{ $user->name }}</li>
+....ugg.aaaaa..ssss.uuu.o......pppp.uuuuggu
+@endforeach
+ggggggggggg
+</ul>
+uuggu
+@if ($users->isEmpty())
+ggg.uo.......pppppppuuu
+    <p>No users</p>
+....ugu........uugu
+@endif
+gggggg
