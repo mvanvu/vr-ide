@@ -228,19 +228,20 @@ impl Buffer {
 
     fn delete(&mut self, kind: EditKind, span: impl Fn(&Rope, usize) -> (usize, usize)) {
         let all_points = self.selection.ranges().iter().all(Range::is_empty);
-        let changes = self
-            .selection
-            .ranges()
-            .iter()
-            .map(|r| {
-                let (from, to) = if r.is_empty() {
-                    span(&self.text, r.head)
-                } else {
-                    (r.from(), r.to())
-                };
-                Change::new(from, to, "")
-            })
-            .collect();
+        let mut changes: Vec<Change> = Vec::with_capacity(self.selection.len());
+        for r in self.selection.ranges() {
+            let (from, to) = if r.is_empty() {
+                span(&self.text, r.head)
+            } else {
+                (r.from(), r.to())
+            };
+            // A cursor's grapheme span can reach into a neighbouring range; trim it to
+            // what the earlier change has not already deleted.
+            let from = changes.last().map_or(from, |prev| from.max(prev.to));
+            if from < to {
+                changes.push(Change::new(from, to, ""));
+            }
+        }
         let kind = if all_points { kind } else { EditKind::Other };
         self.commit(Transaction::new(changes), kind);
     }
@@ -461,6 +462,26 @@ mod tests {
         assert!(buf.undo());
         assert!(buf.undo());
         assert_eq!(buf.text().to_string(), "ab\ncd");
+    }
+
+    #[test]
+    fn delete_with_cursor_touching_a_selection_does_not_overlap() {
+        // The cursor's backspace span would reach into the selection ending at it.
+        let mut buf = Buffer::from_str("abcdef");
+        buf.set_selection(Selection::new(
+            vec![crate::Range::new(1, 3), crate::Range::point(3)],
+            0,
+        ));
+        buf.delete_backward();
+        assert_eq!(buf.text().to_string(), "adef");
+        // Same for delete forward with a cursor right before a selection.
+        let mut buf = Buffer::from_str("abcdef");
+        buf.set_selection(Selection::new(
+            vec![crate::Range::point(2), crate::Range::new(3, 5)],
+            0,
+        ));
+        buf.delete_forward();
+        assert_eq!(buf.text().to_string(), "abf");
     }
 
     #[test]

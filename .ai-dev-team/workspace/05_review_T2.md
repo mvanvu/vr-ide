@@ -56,3 +56,19 @@ Non-findings, probed and fine:
 | AC-10 (base) | pass | `apply_multi_change_one_undo`: 3 changes = 1 undo, history empty afterwards |
 | Review Focus 1 | pass | `grapheme_motion_*`, `display_col_wide`, `long_line_*` cover combining marks, ZWJ, flags, CJK and tabs |
 | Review Focus 5 (base) | pass | multi-change `Transaction` = one undo |
+
+## Quick pass 1 re-check
+Verdict: APPROVE T2 QP1. `cargo test -p vr-core` = 30 passed.
+
+- Item 1 (sort by `(from, to)`): fixed; `normalize_result_does_not_depend_on_list_order` covers both orders.
+- Item 2 (`debug_assert!` on overlap): fixed; release still drops the overlap. I checked every other op that builds changes (outdent, toggle_comment, duplicate, delete_line, move lines, insert_text) and none can produce overlaps, so the assert will not fire on valid input.
+- Item 3 (indent keeps a column-0 selection start): fixed. Forward, backward and "ends at column 0 of next line" cases are tested. A single cursor still moves with the text. Minor note: `indented.contains` is linear per endpoint, so it is quadratic only for thousands of ranges over very many lines; ignorable.
+- Extra change, `Buffer::delete` clipping: correct. Ranges are sorted and non-overlapping, and each pushed change has `from >= previous.to`, so the list stays sorted and disjoint.
+  - Backspace with a cursor touching the end of a selection: the cursor span is clipped to empty and dropped, so only the selection is deleted ("adef").
+  - Delete forward with a cursor before a selection: both changes are kept ("abf").
+  - A cursor span reaching into a neighbouring range is trimmed to what the earlier change left.
+  - Non-empty selections are never lost: their `from` is only raised past an earlier span.
+  - Dropped zero-length spans (cursor at 0 or at the end) are harmless.
+  - `selection_after` maps through the changes: the cursor collapses to the selection start, and the cursors merge.
+  - A mixed cursor/selection delete is `EditKind::Other`, so it is its own undo group.
+- No new findings. The `unicode_lines` item is decided as D31, handled in T4.

@@ -220,11 +220,14 @@ pub fn move_line_down(buf: &mut Buffer) {
 }
 
 /// Inserts the indent unit at the start of every covered line; in a multi-line block,
-/// empty lines are left alone so no trailing whitespace appears.
+/// empty lines are left alone so no trailing whitespace appears. A selection starting at
+/// column 0 keeps its start there so it still covers the whole indented lines.
 pub fn indent(buf: &mut Buffer) {
     let rope = buf.text();
     let unit = buf.options().indent_unit.clone();
+    let unit_cols = unit.chars().count();
     let mut changes = Vec::new();
+    let mut indented = Vec::new();
     for (s, e) in line_blocks(rope, buf.selection()) {
         for l in s..=e {
             if s < e && line_content_end(rope, l) == line_start(rope, l) {
@@ -235,9 +238,25 @@ pub fn indent(buf: &mut Buffer) {
                 line_start(rope, l),
                 unit.clone(),
             ));
+            indented.push(l);
         }
     }
-    buf.apply(Transaction::new(changes));
+    let shift = move |p: Pos, is_selection_start: bool| {
+        let keep = !indented.contains(&p.line) || (p.col == 0 && is_selection_start);
+        if keep {
+            p
+        } else {
+            Pos {
+                line: p.line,
+                col: p.col + unit_cols,
+            }
+        }
+    };
+    apply_by_pos(buf, changes, |r, anchor, head| {
+        let start_is_anchor = !r.is_empty() && r.anchor < r.head;
+        let start_is_head = !r.is_empty() && r.head < r.anchor;
+        (shift(anchor, start_is_anchor), shift(head, start_is_head))
+    });
 }
 
 /// Removes one leading tab, or up to one indent width of leading spaces, from each covered line.
@@ -470,6 +489,31 @@ mod tests {
         outdent(&mut buf);
         outdent(&mut buf);
         assert_eq!(buf.text().to_string(), "ab\ncd");
+    }
+
+    #[test]
+    fn indent_keeps_selection_start_at_column_0() {
+        // Lines 0..1 fully selected from column 0 (forward and backward): the start stays
+        // at column 0 so the selection still covers the whole indented lines.
+        for (anchor, head) in [(0, 3), (3, 0)] {
+            let mut buf = Buffer::from_str("a\nb\nc");
+            buf.set_selection(Selection::single(anchor, head));
+            indent(&mut buf);
+            assert_eq!(buf.text().to_string(), "    a\n    b\nc");
+            let r = buf.selection().primary();
+            assert_eq!((r.from(), r.to()), (0, 11));
+            assert_eq!(r.head < r.anchor, head < anchor, "direction kept");
+            indent(&mut buf);
+            assert_eq!(buf.text().to_string(), "        a\n        b\nc");
+            let r = buf.selection().primary();
+            assert_eq!((r.from(), r.to()), (0, 19));
+        }
+        // A selection ending at column 0 of the next line leaves that line and the end alone.
+        let mut buf = Buffer::from_str("a\nb\nc");
+        buf.set_selection(Selection::single(0, 4));
+        indent(&mut buf);
+        assert_eq!(buf.text().to_string(), "    a\n    b\nc");
+        assert_eq!(buf.selection(), &Selection::single(0, 12));
     }
 
     #[test]

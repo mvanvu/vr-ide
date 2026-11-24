@@ -48,9 +48,12 @@ impl Transaction {
 }
 
 /// Sorts changes, clamps them to `len`, and drops no-ops and changes overlapping an earlier one,
-/// so a malformed transaction from a caller can never corrupt the rope or panic.
+/// so a malformed transaction can never corrupt the rope. Overlaps are a caller bug: debug
+/// builds assert on them, release builds drop them.
 pub fn normalize(mut changes: Vec<Change>, len: usize) -> Vec<Change> {
-    changes.sort_by_key(|c| c.from.min(c.to));
+    // Sorting by (from, to) puts a pure insertion before a span starting at the same offset,
+    // so the result never depends on the order the caller listed them in.
+    changes.sort_by_key(|c| (c.from.min(c.to), c.from.max(c.to)));
     let mut out: Vec<Change> = Vec::with_capacity(changes.len());
     for mut c in changes {
         if c.from > c.to {
@@ -63,6 +66,7 @@ pub fn normalize(mut changes: Vec<Change>, len: usize) -> Vec<Change> {
         }
         if out.last().is_some_and(|prev| c.from < prev.to) {
             tracing::warn!(from = c.from, to = c.to, "dropping overlapping change");
+            debug_assert!(false, "overlapping change {}..{}", c.from, c.to);
             continue;
         }
         out.push(c);
@@ -142,17 +146,39 @@ mod tests {
     }
 
     #[test]
-    fn normalize_sorts_clamps_and_drops_overlaps() {
+    fn normalize_sorts_clamps_and_drops_noops() {
         let out = normalize(
             vec![
                 Change::new(6, 99, "z"),
                 Change::new(1, 4, "a"),
-                Change::new(2, 3, "overlap"),
                 Change::new(5, 5, ""),
             ],
             8,
         );
         assert_eq!(out, vec![Change::new(1, 4, "a"), Change::new(6, 8, "z")]);
+    }
+
+    #[test]
+    fn normalize_result_does_not_depend_on_list_order() {
+        let delete = Change::new(5, 8, "");
+        let insert = Change::new(5, 5, "x");
+        let expected = vec![insert.clone(), delete.clone()];
+        assert_eq!(
+            normalize(vec![delete.clone(), insert.clone()], 10),
+            expected
+        );
+        assert_eq!(normalize(vec![insert, delete], 10), expected);
+    }
+
+    // Debug builds fail loudly on a caller bug; release builds drop the overlap instead.
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "overlapping change"))]
+    fn normalize_overlap_asserts_in_debug_and_drops_in_release() {
+        let out = normalize(
+            vec![Change::new(1, 4, "a"), Change::new(2, 3, "overlap")],
+            8,
+        );
+        assert_eq!(out, vec![Change::new(1, 4, "a")]);
     }
 
     #[test]

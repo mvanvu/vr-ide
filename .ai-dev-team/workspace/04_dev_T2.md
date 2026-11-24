@@ -84,3 +84,28 @@ Build: vr-core is a library; the test + clippy runs compile it (no separate bina
 | AC-10 (base) | pass | apply_multi_change_one_undo (3 changes, one undo, history empty after) |
 | COST | pass | related tests only, no servers/watchers/background tasks; nothing left running |
 n-a: BASE-5 (no workspace/release build needed for a library task), BASE-14, BASE-15 (no long or background commands), BASE-34 (no web sources)
+
+## Quick pass 1
+Items from 05_review_T2.md (1) normalize order, (2) debug_assert on overlaps, (3) indent keeps start at col 0. unicode_lines item left for T4 (D31).
+- Red run (tests first):
+```
+test edit_ops::tests::indent_keeps_selection_start_at_column_0 ... FAILED   left: (4, 11) right: (0, 11)
+test transaction::tests::normalize_overlap_asserts_in_debug_and_drops_in_release - should panic ... FAILED
+test transaction::tests::normalize_result_does_not_depend_on_list_order ... FAILED   left: [Change{5,8,""}] right: [Change{5,5,"x"}, Change{5,8,""}]
+test result: FAILED. 27 passed; 3 failed
+```
+- Old test normalize_sorts_clamps_and_drops_overlaps split: no-op/clamp/sort part kept as normalize_sorts_clamps_and_drops_noops; overlap part moved to the debug-assert test.
+- After the normalize fix, the new guard test `text::tests::delete_with_cursor_touching_a_selection_does_not_overlap` went red (panicked at transaction.rs:69, the new debug_assert). Cause: `Buffer::delete` built a cursor's grapheme span that reached into a neighbouring selection. Fixed by trimming each span to the previous change's end.
+- Fixes:
+  - (1) crates/vr-core/src/transaction.rs `normalize` sorts by `(from, to)`.
+  - (2) Same function: `debug_assert!(false, "overlapping change …")` next to the existing warn; release builds still drop the overlap.
+  - (3) crates/vr-core/src/edit_ops.rs `indent` builds selection_after with `apply_by_pos`. The start endpoint of a non-empty range at column 0 stays at column 0; other endpoints on indented lines shift by the unit width; a single cursor still moves with the text.
+  - Extra: crates/vr-core/src/text.rs `Buffer::delete` no longer emits overlapping changes (needed for (2)).
+- Green:
+```
+cargo test -p vr-core -> test result: ok. 30 passed; 0 failed
+cargo clippy -p vr-core --all-targets -- -D warnings -> Finished, exit 0
+rustfmt --edition 2024 on transaction.rs, text.rs, edit_ops.rs only
+```
+- not-run: the release-mode branch of `normalize_overlap_asserts_in_debug_and_drops_in_release`. A release test build was skipped (heavy, not requested). `cfg_attr(debug_assertions, should_panic)` makes the same test assert the drop in release.
+- Rule rows touched: BASE-3 pass (red lines above), BASE-4 pass (green output above), BASE-38 pass (rustfmt on 3 own files). No Cargo.toml/Cargo.lock edits, no git commands.
