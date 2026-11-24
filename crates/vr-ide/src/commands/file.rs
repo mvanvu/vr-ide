@@ -74,6 +74,9 @@ pub fn save_doc(app: &mut App, i: usize) -> SaveOutcome {
     let result = doc.save();
     match result {
         Ok(saved) => {
+            if let Some(p) = app.docs[i].path.clone() {
+                super::explorer::note_written(app, &p);
+            }
             hard_link_notice(app, &name, saved);
             SaveOutcome::Saved
         }
@@ -453,6 +456,7 @@ pub fn save_as_doc(
         app.close_doc(j);
     }
     app.rewatch(old.as_deref(), target);
+    super::explorer::note_written(app, target);
     hard_link_notice(app, &name, saved);
     app.dirty = true;
     Ok(())

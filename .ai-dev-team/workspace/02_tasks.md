@@ -18,19 +18,22 @@
 | FR-2 | vr-core: version of any path + save_as_seen (Save As never replaces an unseen target) + FR-1 oracle minors | be | T4, FR-1 | - | AC-3 | crates/vr-core/src/{document,testutil}.rs | `cargo test -p vr-core -p vr-search -p vr-ide` | done | 1 |
 | FR-3 | Racing tests: timing-free both-outcomes coverage, no-version Unprompted case, diagnostic panic for the known rare D75(2) false positive | be | FR-2, T6 | - | AC-3 | crates/vr-core/src/testutil.rs | strict loop + 200× under load | done | 0 |
 | FR-4 | vr-core: non-recursive directory watch, set up off the UI thread | be | T4 | - | AC-7, AC-9 | crates/vr-core/src/watch.rs | `cargo test -p vr-core` | done | 0 |
+| FR-5 | Phase 5 fixes: explorer misses files created by Save As / Save (recreate) (major) + 5 minors (stale search paths after rename, reveal of hidden paths, replace worker vs newly opened tab, two tabs on one path after rename, Esc/F6 below 40 cols) | fe | sign-off report | ui | AC-3, AC-8, AC-9, AC-12 | crates/vr-ide/src/commands/{explorer,search,file}.rs, crates/vr-ide/src/app.rs, tests; crates/vr-core/src/watch.rs only if the fix lives there | `cargo test -p vr-ide` (+ `-p vr-core` if watch.rs changes) | review | 0 |
+| FR-6 | vr-core: disk_version_of_a_file_that_keeps_changing_is_an_error fails on a 1 ms timestamp tick (same-length rewrite inside one tick is not seen by DiskStamp) — decide product defect vs test assumption; data-safety oracle, not loosened without reviewer agreement | be | sign-off report | - | AC-3, AC-7 | crates/vr-core/src/document.rs (+ testutil.rs if needed) | `cargo test -p vr-core` (worktree .worktrees/FR6, branch fr6-disk-version) | fix | 2 |
+| FR-7 | find_tests::find_debounces_rescans_in_a_large_file fails under load (draw() refresh uses the real clock while the test ticks a fake one; red on base and on FR-5, load 6–12) | fe | - | - | AC-10 | crates/vr-ide/src/{find_tests,commands/find}.rs (+ ui/find_bar.rs if the clock lives there) | test 10× under load (worktree .worktrees/FR7) | review | 0 |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
 ## Notes
-- presence: present (user typed, 17:57)
-- hand-off: ready (15:52) — attribution removal approved; message rewrite scheduled after the T10 commit
+- presence: away (user, 19:16) answered: account switch none, commit+push kept, 19:18
+- hand-off: ready (19:18) — account_switch none; commit + push to origin/master after re-sign-off; Phase 5 re-runs via Agent (no Workflow)
 - eta: ~19:00 (set 17:19, +25m: T10 needed rounds 2 and 3; r3 ~25m + recheck 15m → merge + message rewrite 10m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
 - commits: one per task after review + QC pass, push to origin/master (user, 11:21)
 - research: skipped — direction settled in conversation (leader, 11:21)
 - plan gate: greenfield; user approved stack (approach A, Rust), scope M1–M3 and the run in the up-front questions (11:14–11:21)
 - phase0: paths ✓ · profile fields ✓ (greenfield, provisional until T1) · local fields ✓ · e2e one spec n-a (no e2e) · test logins n-a · temporary values ✓ (none) · stray-team-files ✓ · capabilities ✓ (empty) · env-drift n-a · gitignore ✓ · stack n-a (no services) · upstream ✓ (origin empty) · guard coverage n-a (no tests yet)
-- TEAM_BIN: /home/vu-dev/.claude/plugins/cache/mvanvu/ai-dev-team/1.0.37/skills/project-profiling/references (1.0.37)
+- TEAM_BIN: <plugin cache>/ai-dev-team/1.0.38/skills/project-profiling/references (1.0.38, machine rainy)
 - toolchain: rustup stable 1.100.0 installed by the user, `~/.cargo/bin` not on agents' default PATH → every brief exports it
 - model: T1 on sonnet — boilerplate scaffold with one small function, no logic risk
 - parallel plan: T2 ∥ T3 ∥ T7 after T1 — different crates (separate compile units), manifests frozen by T1; shared tree, shared target dir (cargo locks it)
@@ -41,7 +44,7 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - model: T7 review opus — file deletion/move of user files is high-risk (sonnet reviewer stopped 11:35); T8 review on opus too (explorer decides which path is deleted/overwritten)
 - T5 brief must include: call Keymap::validate(&registry_names) at startup (QC T3 note); enable keyboard enhancement flags; F1 fallback for ctrl+shift+p
 - T3 verdicts (11:37): review APPROVE (2 code minors → quick pass), QC_PASS; gate ✓
-- guard: off — session started in /home/vu-dev/DEV/ai-ide (renamed); restart claude in /home/vu-dev/DEV/vr-ide at the next stop point; leader applies guard rules by hand (named-file staging only)
+- guard: off — session started in <old folder ai-ide> (renamed); restart claude in <repo root> at the next stop point; leader applies guard rules by hand (named-file staging only)
 - T7 fix round 1 (11:40): 4 major (F1 EXDEV copy+remove_dir_all, F2 overwrite race, F3 trash symlink loop, F4 data-safety tests) + minors; D24, D25
 - T8 brief must include: reject typed names containing '/', '..' or NUL; confine ops to project root (review T7 minor)
 - T2 verdicts (11:43): review CHANGES (3 minor + 1 uncertain, no major → quick pass), QC_PASS 80/80; gate ✓
@@ -111,9 +114,32 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 ## Resume point (17:57, stopped by the user)
 - State: all planned tasks T1–T11 done; fix-born T12, FR-1…FR-4 done; master = origin/master, tree clean, no worktrees, no agents running.
 - History: authors rewritten to mvanvu <mvanvu@gmail.com>; AI trailers removed; this repo has no AI attribution (CLAUDE.md, .claude/settings.json) — new commits carry no trailer.
-- Next steps for the next session (restart `claude` in /home/vu-dev/DEV/vr-ide so the guard hook works):
+- Next steps for the next session (restart `claude` in <repo root> so the guard hook works):
   1. Sign-off QC (sonnet): full suite once (`run-heavy.sh cargo test --workspace -j 4` + ignored/release timing tests), fmt + clippy, release-binary walk of AC-1…AC-12 and AC-18, one concurrent-writer save run, bench. Known flaky under load: app_tests::external_modify_reloads_within_one_second_with_real_watcher.
   2. Phase 5 final review (board has 4+ tasks): dimensions correctness + ui (opus), cross-task interactions, scope = whole history.
   3. Phase 6 report to the user (Vietnamese): decisions taken while away first, Fable use (T4 escalation, case 1), rule violations ledger, open follow-ups below.
 - Open follow-ups (minor, not started): UI thread canonicalizes open-tab paths when a replace preview starts (T10 R3 review); main-thread panic during a replace exits without joining the worker (D128, accepted); racing-oracle known false positive signature (D99).
 - confirm-on-return decisions for the user: D24, D32, D46, D48, D64, D76, D99, D109.
+
+## Resume (18:40, new machine `rainy`, plugin 1.0.38)
+- phase0: paths ✓ · profile fields ✓ · local fields ✓ (local.md written: heavy_slots 2) · e2e one spec n-a · test logins n-a · temporary values ✓ (none) · stray-team-files ✓ · capabilities ✓ · env-drift n-a · gitignore ✓ · stack n-a (no services) · upstream ✓ (fetched, 0/0) · guard coverage n-a (meta tests none) · commit identity ✓ (repo-local mvanvu <mvanvu@gmail.com> re-applied per the 14:42 decision; global was Rainy <maivubc@…>) · toolchain: rustup stable 1.100.0 installed by the leader (18:40) · absolute /home/vu-dev paths in team files rewritten repo-relative
+- guard: on (session started in the repo folder)
+- Phase 5 started (18:39) beside sign-off: Workflow run wf_649b55fb-552, dimensions correctness + ui (opus), scope bfc49ed..HEAD
+- Phase 5 result (18:45): 1 confirmed major (Save As / recreate missing in explorer — own-write suppression applies to folder watches), 0 uncertain, 5 minor → 06_final_review.json. All six go into FR-5 (minors ride along in the opening round). Model: FR-5 developer + review on opus (replace-worker minor touches writes to user files). Starts after the sign-off QC reports.
+- Sign-off QC (18:53): SIGNOFF_FAIL — 400 pass / 1 fail / 6 ignored; guard clean; AC-1…AC-12, AC-18 pass; racing 20/20; bench 24 ms / 6 MB. Failing test (deterministic here, 1 ms tick) → FR-6. Gate ✓ (rule check table, AC evidence, real numbers). Not re-walked: explorer copy/move, quit during replace (unit tests pass).
+- parallel (18:53): FR-5 (main tree, crates/vr-ide; no vr-core edits) ∥ FR-6 (worktree .worktrees/FR6, vr-core only) — files disjoint; FR-5's watch.rs option dropped so the two do not share vr-core. task-base FR-5 0e5754f.
+- model: FR-6 developer + review opus — save freshness check (overwrite of user files).
+- FR-6 DONE (19:03): (a) product defect — Expected stamp equal but racy was trusted; without RENAME_EXCHANGE (D63 fallback) save_overwrite_seen / save_as_seen / save could overwrite a same-length write in the same tick; fixed. (b) two tests changed only in how they make the change (lengths) — needs reviewer agreement (oracle rule). D130, D131. Gate ✓ (rule compliance table, guard, red lines). Review opus + QC sonnet next.
+- known-red: crates/vr-ide/src/find_tests.rs (find_debounces_rescans_in_a_large_file) — until FR-7. Leader reran once on the main tree (FR-5 edits) and once on base vr-ide in the FR6 worktree (19:03): both red under load 6–12; sign-off at 18:50 passed it at lower load → load-dependent, not FR-5's.
+- FR-5 DONE (19:02): 6 findings fixed in vr-ide; D132–D137; related 111/111, crate 165/1 red (known-red above), guard clean. Gate ✓. Review opus (replace gate = writes to user files) + QC sonnet.
+- FR-6 QC_PASS (19:03): repro 5/5, same-tick 4/4, racing 20/20 under load; independent probe not possible without code hooks (cfg(test) only). Review pending.
+- parallel (19:04): FR-7 in worktree .worktrees/FR7 (vr-ide find files only) ∥ FR-5 verification on the main tree ∥ FR-6 review — files disjoint.
+- model: FR-7 sonnet (small test-timing fix, 1–2 files, not high-risk)
+- FR-6 verdicts (19:08): review CHANGES — 1 blocker (racy decided after the read: same-tick write during a slow hash is marked settled → Keep mine overwrites in the D63 fallback; also save_to_own_path, load); oracle change (b) AGREED by the reviewer in writing; QC_PASS. Gate ✓. Fix round 1 to the same developer.
+- FR-5 review (19:10): APPROVE (opus), 4 minors (Save As bypasses ReplaceGate; refused open still focuses editor + error→warn; check_tab_free wrong '(not on disk)' text; running search returns old paths after rename) + nit (task tags in comments) → one quick pass after QC verdict. Gate ✓.
+- FR-6 r1 DONE (19:14): racy decided right after each stamp (of_path, save_to_own_path, changed_since_snapshot, load); 5 red→green tests; vr-core 151/0; racing 20/20; D138. Gate ✓. Re-check → same reviewer.
+- FR-6 r1 re-check (19:13): review APPROVE (opus); QC re-check of the new case sent to FR-6's qc (rule: review found a defect in behaviour qc had passed).
+- FR-7 DONE (19:12): test-only, editor phase anchored to real instants around draw(); red 3/3 under load, green 10/10 under load 11–14; gate ✓. Review sonnet; QC skipped (test-only, evidence in notes).
+- FR-7 review APPROVE (19:16, sonnet); committed on fr7-find-debounce-test; merge into master after FR-5's QC verdict (same compile unit, no edits under a running verdict).
+- FR-6 QC r1 (19:16): QC_FAIL — strict racing 18/20 under load (2× fast_writer lost-write panic, signature not captured), then 70/70 clean; new tests 5/5, repro 3/3. Gate ✓. Round 2 to the same developer: capture signature, classify vs D75(2)/D76(3), compare with round 0.
+- FR-5 QC_PASS (19:19): 6 findings walked on the release binary (5b not walkable, covered by test); related 63/0. Gate ✓. FR-5 committed (review APPROVE + QC_PASS); 4 review minors + nit → quick pass 1 (same developer), committed after its re-check.

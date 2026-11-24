@@ -1388,3 +1388,175 @@ fn default_layout_with_explorer_clicks_editor_and_tabs() {
 fn explorer_cut_paste_never_loses_a_concurrent_write() {
     race_explorer("cut");
 }
+
+/// FR-5: Save As to a new name in an expanded folder shows the new row at once (the
+/// watcher drops our own writes, so the save refreshes the tree itself) and reveal selects
+/// it.
+#[test]
+fn save_as_new_name_appears_in_the_explorer() {
+    let (_d, mut app) = project();
+    select(&mut app, "src/main.rs");
+    app.open_path(Path::new("src/main.rs")).unwrap();
+    app.focus = Focus::Editor;
+    app.run_command("file.save_as", crate::commands::CmdArgs::None);
+    submit(&mut app, "src/new.rs");
+    assert!(app.dialog.is_none(), "{:?}", prompt(&app));
+    assert_eq!(app.active_name(), "src/new.rs");
+    assert!(
+        rows(&app).contains(&"    new.rs".to_string()),
+        "{:?}",
+        rows(&app)
+    );
+    app.run_command("explorer.reveal", crate::commands::CmdArgs::None);
+    assert_eq!(cursor_name(&app), "new.rs");
+}
+
+/// FR-5: Save on a file deleted on disk recreates it, and its row comes back although the
+/// watcher drops the event of that (own) write.
+#[test]
+fn save_recreating_a_deleted_file_brings_its_row_back() {
+    let (d, mut app) = project();
+    let r = d.path().to_path_buf();
+    app.start_watcher();
+    app.watch_root();
+    select(&mut app, "src/main.rs");
+    app.open_path(Path::new("src/main.rs")).unwrap();
+    app.focus = Focus::Editor;
+    fs::remove_file(r.join("src/main.rs")).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while rows(&app).contains(&"    main.rs".to_string()) {
+        assert!(std::time::Instant::now() < deadline, "{:?}", rows(&app));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.drain_fs_events();
+    }
+    app.run_command("file.save", crate::commands::CmdArgs::None);
+    assert!(r.join("src/main.rs").is_file(), "{}", notices(&app));
+    assert!(
+        rows(&app).contains(&"    main.rs".to_string()),
+        "{:?}",
+        rows(&app)
+    );
+    // Later events of the save (suppressed or not) keep it there.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    app.drain_fs_events();
+    assert!(rows(&app).contains(&"    main.rs".to_string()));
+}
+
+/// FR-5: reveal of a file the tree hides (a dotfile folder while hidden files are off,
+/// a gitignored file) expands nothing, watches nothing and says how to show it.
+#[test]
+fn reveal_of_a_hidden_or_ignored_file_says_how_to_show_it() {
+    let (d, mut app) = project();
+    let r = d.path().to_path_buf();
+    fs::create_dir_all(r.join(".github/workflows")).unwrap();
+    fs::write(r.join(".github/workflows/ci.yml"), "on: push\n").unwrap();
+    fs::write(r.join(".gitignore"), "build/\n").unwrap();
+    fs::create_dir(r.join("build")).unwrap();
+    fs::write(r.join("build/out.txt"), "x\n").unwrap();
+    app.watch_root();
+    app.run_command("explorer.toggle_hidden", crate::commands::CmdArgs::None);
+    assert!(!app.explorer.tree.show_hidden());
+    for (file, dir, hint) in [
+        (
+            ".github/workflows/ci.yml",
+            ".github",
+            "explorer.toggle_hidden",
+        ),
+        ("build/out.txt", "build", "explorer.toggle_ignored"),
+    ] {
+        app.notices.clear();
+        app.open_path(Path::new(file)).unwrap();
+        app.run_command("explorer.reveal", crate::commands::CmdArgs::None);
+        assert!(
+            !app.explorer
+                .expanded
+                .iter()
+                .any(|p| p.starts_with(r.join(dir))),
+            "{file}: hidden folder expanded"
+        );
+        assert!(
+            !app.explorer
+                .watched
+                .iter()
+                .any(|p| p.starts_with(r.join(dir))),
+            "{file}: hidden folder watched"
+        );
+        let n = notices(&app);
+        assert!(n.contains(file) && n.contains(hint), "{file}: {n}");
+    }
+    // Once shown, reveal selects it.
+    app.run_command("explorer.toggle_hidden", crate::commands::CmdArgs::None);
+    app.open_path(Path::new(".github/workflows/ci.yml"))
+        .unwrap();
+    app.run_command("explorer.reveal", crate::commands::CmdArgs::None);
+    assert_eq!(cursor_name(&app), "ci.yml");
+}
+
+/// FR-5 (D95): a rename or move onto a path that a tab already holds (its file deleted on
+/// disk, D82) is refused, so one path never has two tabs.
+#[test]
+fn rename_or_move_onto_a_path_open_in_a_tab_is_refused() {
+    use vr_core::FsEvent;
+    let (d, mut app) = project();
+    let r = d.path().to_path_buf();
+    fs::create_dir(r.join("tests/sub")).unwrap();
+    fs::write(r.join("tests/sub/main.rs"), "old\n").unwrap();
+    fs::write(r.join("src/lib.rs"), "lib\n").unwrap();
+    app.open_path(Path::new("src/lib.rs")).unwrap();
+    app.open_path(Path::new("tests/sub/main.rs")).unwrap();
+    app.open_path(Path::new("src/main.rs")).unwrap();
+    for gone in ["src/lib.rs", "tests/sub/main.rs"] {
+        fs::remove_file(r.join(gone)).unwrap();
+        app.handle_fs_event(FsEvent::Removed(r.join(gone)));
+    }
+    let before = tab_paths(&app);
+
+    // Rename src/main.rs to lib.rs: the lib.rs tab holds that path.
+    select(&mut app, "src/main.rs");
+    app.handle_key(key(KeyCode::F(2)));
+    submit(&mut app, "lib.rs");
+    let err = prompt(&app)
+        .and_then(|p| p.1)
+        .expect("refused in the prompt");
+    assert!(err.contains("src/lib.rs") && err.contains("tab"), "{err}");
+    app.handle_key(key(KeyCode::Esc));
+    assert!(r.join("src/main.rs").is_file() && !r.join("src/lib.rs").exists());
+    assert_eq!(tab_paths(&app), before);
+
+    // Move src/main.rs into tests/sub: the tests/sub/main.rs tab holds that path.
+    select(&mut app, "src/main.rs");
+    app.run_command("explorer.move", crate::commands::CmdArgs::None);
+    submit(&mut app, "tests/sub");
+    assert!(app.dialog.is_none());
+    assert!(
+        notices(&app).contains("not moved") && notices(&app).contains("tests/sub/main.rs"),
+        "{}",
+        notices(&app)
+    );
+    assert!(r.join("src/main.rs").is_file() && !r.join("tests/sub/main.rs").exists());
+    assert_eq!(tab_paths(&app), before);
+}
+
+/// FR-5: closing one of two tabs on a path keeps the watch the other one needs.
+#[test]
+fn closing_a_tab_keeps_the_watch_of_another_tab_on_the_path() {
+    let (d, mut app) = project();
+    let p = d.path().join("README.md");
+    app.start_watcher();
+    app.open_path(&p).unwrap();
+    // Two tabs on one path cannot be made through the UI any more; build the state.
+    app.docs
+        .push(vr_core::Document::open(&p, app.settings.max_highlight_bytes).unwrap());
+    app.views.push(crate::app::View::default());
+    app.close_doc(1);
+    fs::write(&p, "# changed\n").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.docs[0].buffer.text() != "# changed\n" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the remaining tab lost its watch"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.drain_fs_events();
+    }
+}

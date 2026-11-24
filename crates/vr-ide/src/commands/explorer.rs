@@ -575,6 +575,29 @@ pub fn flush(app: &mut App) {
     app.dirty = true;
 }
 
+/// A save of ours wrote `path`. The watcher drops events of our own writes (folder watches
+/// included), so a file a save created (Save As to a new name, a save recreating a file
+/// deleted on disk) would never get its row: the shown folder holding it is re-read when
+/// its listing lacks the file. Content saves of listed files cost nothing.
+pub fn note_written(app: &mut App, path: &Path) {
+    let ex = &mut app.explorer;
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    if !ex.loaded || !ex.expanded.contains(dir) {
+        return;
+    }
+    let listed = ex
+        .children
+        .get(dir)
+        .is_some_and(|nodes| nodes.iter().any(|n| n.path == path));
+    if !listed {
+        ex.reload(dir);
+        ex.rebuild();
+        app.dirty = true;
+    }
+}
+
 // ---- file operations ------------------------------------------------------------------------
 //
 // Every path an operation acts on goes through `ensure_within(root, ..)` and the operation
@@ -741,6 +764,9 @@ pub fn answer_rename(app: &mut App, widget: DialogWidget, path: PathBuf, text: &
     if from == to {
         return;
     }
+    if let Err(e) = check_tab_free(app, &from, &to) {
+        return reopen_with_error(app, widget, action, e);
+    }
     if let Err(e) = vr_fs::ops::rename(&from, &to) {
         let msg = describe(app, &e);
         return reopen_with_error(app, widget, action, msg);
@@ -751,7 +777,7 @@ pub fn answer_rename(app: &mut App, widget: DialogWidget, path: PathBuf, text: &
 }
 
 /// Tabs of `from` (a file, or every file under a folder) now point at `to`, unsaved edits
-/// included, and the watcher follows them.
+/// included, and the watcher and the project search results follow them.
 fn retarget(app: &mut App, from: &Path, to: &Path) {
     let mut moved = Vec::new();
     for doc in &mut app.docs {
@@ -772,7 +798,26 @@ fn retarget(app: &mut App, from: &Path, to: &Path) {
     for (old, new) in moved {
         app.rewatch(Some(&old), &new);
     }
+    super::search::paths_moved(app, from, to);
     app.dirty = true;
+}
+
+/// Refuses moving `from` to `to` while a tab not under `from` holds `to` or a path under it
+/// (a tab whose file was deleted on disk keeps its path, D82): one path never gets two tabs
+/// (D95), as Save As refuses too.
+fn check_tab_free(app: &App, from: &Path, to: &Path) -> Result<(), String> {
+    let held = app
+        .docs
+        .iter()
+        .filter_map(|d| d.path.as_deref())
+        .find(|p| p.starts_with(to) && !p.starts_with(from));
+    match held {
+        Some(p) => Err(format!(
+            "{} is open in a tab (its file is not on disk); close that tab first",
+            app.display_path(p)
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Re-reads the shown folders holding `paths` after an operation of ours.
@@ -973,6 +1018,12 @@ fn move_paths(app: &mut App, paths: Vec<PathBuf>, dest: &Path) -> (Vec<PathBuf>,
             }
         };
         if from.parent() == Some(dest) {
+            continue;
+        }
+        if let Some(name) = from.file_name()
+            && let Err(e) = check_tab_free(app, &from, &dest.join(name))
+        {
+            errors.push(e);
             continue;
         }
         match vr_fs::ops::move_to(&from, dest) {
@@ -1209,18 +1260,77 @@ pub fn reveal_path(app: &mut App, path: &Path) {
         app.info(msg);
         return;
     }
-    let mut dirs: Vec<&Path> = path
+    // Root first: each step must be listed in its parent before the next folder is opened,
+    // so a folder the tree hides is never expanded (nor watched).
+    let mut steps: Vec<&Path> = path
         .ancestors()
-        .skip(1)
-        .take_while(|a| a.starts_with(&root))
+        .take_while(|a| a.starts_with(&root) && *a != root)
         .collect();
-    dirs.reverse();
-    for d in dirs {
-        if !app.explorer.expanded.contains(d) {
-            expand_dir(app, d);
+    steps.reverse();
+    for step in steps {
+        let Some(parent) = step.parent() else {
+            return;
+        };
+        if !app.explorer.expanded.contains(parent) {
+            expand_dir(app, parent);
+            if !app.explorer.expanded.contains(parent) {
+                // Unreadable: expand_dir said so.
+                return;
+            }
+        }
+        if !listed(app, parent, step) {
+            // The listing may predate the file; read it once more before giving up.
+            app.explorer.reload(parent);
+            app.explorer.rebuild();
+        }
+        if !listed(app, parent, step) {
+            let msg = not_shown_reason(app, path);
+            app.info(msg);
+            return;
         }
     }
     select_path(app, path);
+}
+
+/// `child` is in the listing of the expanded folder `dir`.
+fn listed(app: &App, dir: &Path, child: &Path) -> bool {
+    app.explorer
+        .children
+        .get(dir)
+        .is_some_and(|nodes| nodes.iter().any(|n| n.path == child))
+}
+
+/// Why `path` has no row, and how to show it (reveal never turns a filter off itself).
+fn not_shown_reason(app: &App, path: &Path) -> String {
+    let rel = app.display_path(path);
+    let names: Vec<String> = path
+        .strip_prefix(&app.root)
+        .unwrap_or(path)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let how = |cmd: &str| {
+        if app.keymap.keys_for(cmd).is_empty() {
+            format!("the command {cmd}")
+        } else {
+            app.key_hint(cmd)
+        }
+    };
+    if names.iter().any(|n| n == ".git") {
+        format!("{rel} is inside .git, which the explorer never lists")
+    } else if path.symlink_metadata().is_err() {
+        format!("{rel} is not on disk, so the explorer has no row for it")
+    } else if !app.explorer.tree.show_hidden() && names.iter().any(|n| n.starts_with('.')) {
+        format!(
+            "{rel} is hidden in the explorer (hidden files are off); show them with {}",
+            how("explorer.toggle_hidden")
+        )
+    } else {
+        format!(
+            "{rel} is hidden in the explorer (ignored by .gitignore); show ignored files with {}",
+            how("explorer.toggle_ignored")
+        )
+    }
 }
 
 /// Shows or hides paths matched by .gitignore (AC-9); shown ones are drawn dimmed.
@@ -1260,7 +1370,10 @@ fn focus_cycle(app: &mut App, _: CmdArgs) -> CmdResult {
             ensure_loaded(app);
             Focus::Explorer
         }
-        _ => Focus::Editor,
+        _ => {
+            super::search::focus_editor(app);
+            return Ok(());
+        }
     };
     Ok(())
 }

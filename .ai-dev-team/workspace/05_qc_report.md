@@ -546,3 +546,127 @@ Environment note: the first full run overlapped with heavy disk writeback (my 2 
 | Earlier rounds' flows (AC-10/11/12, race 10 runs, 40x12, r1) | pass | all pass on the round-3 binary (race: 10 of 10 writer-final, lost 0) |
 
 Cleanup: scratch fixtures removed (including the 2 GB set), 0 vr-ide processes left, no git index changes.
+
+## Sign-off (machine rainy)
+Commit tested: HEAD bedbf2a (master) with the leader's uncommitted workspace notes only; no product files modified. Rust 1.100.0, Linux 6.8 ext4 (CONFIG_HZ=1000). Artifacts: `qa-artifacts/signoff/` (guard.txt, suite*.txt, ignored.txt, race20.txt, bench*.txt, h.py harness + fl*.py walk scripts, proj fixture). Engine: release binary under a python pty with a small VT screen model (no browser/Flutter).
+
+Verdict: SIGNOFF_FAIL — one deterministic unit-test failure (below), classified as a timing-dependent test, not a product data-loss defect. Everything else passes.
+
+### Guard
+`cargo fmt --all --check` OK; `cargo clippy --workspace --all-targets -- -D warnings` exit 0 (guard.txt).
+
+### Tests (debug, once; cargo stops at the first failing crate, so the rest ran per crate with --no-fail-fast, no whole-suite rerun)
+| Crate | Passed | Failed | Ignored |
+|---|---|---|---|
+| vr-config (unit 3 + tests/config 16) | 19 | 0 | 0 |
+| vr-core (lib, includes testutil racing tests) | 141 | 1 | 1 |
+| vr-fs (lib 43 + racing_writer 2) | 45 | 0 | 1 |
+| vr-search (lib 37 + racing_writer 2) | 39 | 0 | 1 |
+| vr-ide (lib 156, bin 0) incl. app_tests::external_modify_reloads_within_one_second_with_real_watcher (passed, no rerun needed) | 156 | 0 | 3 |
+Doc tests: 0 in every crate. Total: 400 passed, 1 failed, 6 ignored.
+Ignored, run release once: vr-core `open_100mb_under_2s` ok (0.42 s); vr-ide `long_line_keystroke_to_frame_fast` ok (10 MB line, worst median 224 us), `render_large_file_fast` ok (100k lines 0.99 ms, 100 MB 1.06 ms median frame), `find_in_100mb_file_stays_responsive` ok (worst key+draw 0.96 ms, capped scan 8.4 ms, full scan 196 ms). Not run: vr-search `project_search_first_batch_latency` (needs VR_SEARCH_BENCH_ROOT, manual), vr-fs `ops` helper (started by trash tests), AC-11 covered by earlier T9/T10 QC numbers (50k files: first batch 6 ms).
+
+### Defect (1)
+SIGNOFF_FAIL — `vr_core document::tests::disk_version_of_a_file_that_keeps_changing_is_an_error` fails deterministically on this machine (1 in suite + 3 of 3 reruns alone = real, not flaky).
+Repro: `cargo test -p vr-core --lib disk_version_of_a_file_that_keeps_changing`
+Expected: `doc.disk_version()` returns `Err(DocError::Io)` after 5 tries because the ReadingDiskVersion hook rewrites the file (same length, "agent wN\n") between stamp and re-stamp.
+Actual: `Ok(DiskVersion(Expected{stamp: len 9, mtime == ctime, hash: ...}))`, assert at document.rs:1675.
+Cause: `DiskVersion::of_path` (document.rs:~806) detects a change only through `DiskStamp` (len, mtime, ctime, dev, ino). The test's writes happen within the same kernel timestamp tick (coarse clock, 1 ms here: `stat` shows mtime advancing 1 ms per write) as the file creation, and length is the same, so the stamp is identical before/after and the loop accepts it. The returned version still pairs the stamp with the hash of the content read after the write, so it describes the current file; I found no lost-write path (strict racing tests 20/20 clean). It is a test that assumes the timestamp changes (fast hardware / coarse clock), or a documented limit of stamp-based detection. Needs a leader decision: make the test robust (e.g. vary length per write, or sleep > tick before the first hook) or accept the limit in decisions.md.
+
+### Racing results (ledger warning: one check per write path)
+| Write path | Racing test (vr_core::testutil / crate tests) | Result |
+|---|---|---|
+| save | `document_save_never_loses_a_concurrent_write`, `document_save_never_loses_a_write_from_a_fast_writer`, `document_save_race_leaves_whole_content`, `document_save_without_a_writer_writes_ours` | under the suite: pass; again 20x alone (testutil::tests::document_save, 4 tests/run): 20/20 pass, 0 failures (race20.txt). D76/D99 signature never seen |
+| Save As | `save_as_seen_never_loses_a_*`, `unprompted_save_as_never_loses_a_concurrent_write` | pass under suite |
+| explorer paste/move/trash | vr-fs tests/racing_writer.rs (2) | pass |
+| project replace | vr-search tests/racing_writer.rs (2) | pass |
+
+### Bench (scripts/bench-startup.sh, release, 2 runs)
+first_frame_ms = 24 and 23 (target < 100, includes pty setup); max_rss_mb = 6 and 6 (target < 60).
+
+### AC table (M1-M3 + AC-18; AC-13..AC-17 are M4-M8 = n-a)
+| AC | Status | Evidence |
+|---|---|---|
+| AC-1 | pass | bench above; walk: no-arg start shows explorer tree and root path in title/welcome |
+| AC-2 | pass | walk: `vr-ide main.rs` from src/ and `vr-ide /abs/src/main.rs` from /tmp both open src/main.rs, root = proj (git root), status "src/main.rs" |
+| AC-3 | pass | walk: type "ZZ" -> tab "a.txt ●", ctrl+s -> disk `ZZalpha...`, marker cleared; undo -> text and marker back, redo -> ZZ; unit tests in vr-core pass |
+| AC-4 | pass | walk with DISPLAY unset: ctrl+a ctrl+c emits OSC 52 `aGVsbG8K` (= "hello\n"); ctrl+v pastes, disk `hello\nhello\n`; clipboard unit tests pass |
+| AC-5 | pass | walk: ctrl+s saves; keymap with unknown command shows `keymap: ctrl+k is bound to unknown command "no.such.command" (global) (+1 more)`, no crash |
+| AC-6 | pass | walk: F1, "goto" lists "Go to File file.goto ctrl+e / ctrl+p" and "Go to Line nav.goto_line ctrl+g"; Enter runs (go-to-line prompt, "Line (1-3)") |
+| AC-7 | pass | walk: unmodified buffer reloads 0.35 s after external write; modified buffer gets the "File Changed on Disk" Reload / Keep mine dialog; Esc keeps mine; unit test with real watcher passes |
+| AC-8 | pass | walk: ctrl+n creates newfile.txt on disk; F2 renames (disk renamed, open tab and tree follow); Delete -> dialog (default Cancel by D104), Left+Enter -> file in `$XDG_DATA_HOME/Trash/files` + `.trashinfo`, original gone. Copy/move: vr-fs and app tests (not re-walked) |
+| AC-9 | pass | walk: `ignored/` hidden in explorer and `x.txt` gives "No matching files" in go-to-file; project search for "fn " lists 5 results in 2 files, none from ignored/x.txt |
+| AC-10 | pass | walk: regex `fn (\w+)` -> `fn new_$1`, palette "Replace All": 3 lines replaced, one ctrl+z restores all, disk unchanged after save |
+| AC-11 | pass | walk: panel streams results and groups by file; 50k-file numbers from T9 QC (first batch 6 ms); release timing not re-run on a 50k tree |
+| AC-12 | pass | walk: preview with per-file [x]/[ ] and diff lines; unchecked a.txt untouched on disk, checked main.rs written ("replaced 2"); open tab replaced in buffer only, disk untouched, ctrl+z restores |
+| AC-18 | pass | release `open_100mb_under_2s` 0.42 s; frame 1.06 ms on 100 MB; 10 MB single line key+frame 224 us |
+Other walk steps: quit guard (modified + ctrl+q -> Quit dialog listing a.txt, Esc cancels and app stays; ctrl+q + Enter saves ("ZZfn alpha") and exits; clean file quits at once, D128/D129 project-replace quit not re-walked, covered by unit tests passing); sizes 80x24, 120x40, 40x12 render without panic or overlap (explorer + editor + status visible; at 40x12 the notice banner takes rows as already noted in T10). Pty harness answered DA1 only, so the "terminal does not report these keys" notice shows in all walks (expected).
+
+### Rule check sign-off
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-1..AC-12, AC-18 | pass | table above (AC-13..17 n-a) |
+| BASE-25 guard | pass | guard.txt: fmt OK, clippy exit 0 |
+| COST full suite once | pass | one `run-heavy.sh cargo test --workspace -j 4`; failing crate stopped cargo, remaining crates run once each, no whole rerun; failing test rerun 3x alone (deterministic) |
+| Ledger: concurrent writer per write path | pass | racing table above; save 20x clean |
+| Known flaky watcher test | n-o | passed in the suite |
+| BASE-14/15 | pass | background tasks only, own pty children killed by pid (none left) |
+| BASE-17 | pass | fixtures under qa-artifacts/signoff/proj only; config/state/xdg temp dirs removed |
+| Defects | fail | 1 (test above) |
+
+## QC FR-6
+Scope: crates/vr-core/src/document.rs (worktree .worktrees/FR6). Script and raw output: qa-artifacts/FR-6/qc.sh, qc.txt (run through run-heavy.sh, 19 s).
+| Check | Command | Result |
+|---|---|---|
+| Sign-off repro 5x | `cargo test -p vr-core --lib disk_version_of_a_file_that_keeps_changing` | 5/5 ok |
+| Same-tick tests, once each | `... same_tick`, `... disk_version_in_one_tick` | 4/4 ok (save, save_overwrite_seen, save_as_seen, disk_version) |
+| Strict racing tests 20x under 4 busy-loop CPU load | `testutil::tests::document_save`, `save_as_seen_never_loses`, `unprompted_save_as` (7 tests/run) | 20 pass / 0 fail |
+| Independent same-tick probe | shell `stat` of back-to-back same-length writes | tick here is about 2 ms between writes (mtime moves); a same-tick rewrite cannot be forced from outside the process. The seams (`freeze_clock`, `no_exchange`) are cfg(test) only, so no entry point exists without editing code; relied on the in-tree tests, whose helper `rewrite_in_same_tick` asserts the stamp did not move (each test proves its own setup), plus the developer's red-before-fix lines. |
+Note: the same-length keeps_changing test was changed to vary length (developer item (b)); assertions unchanged, mutation proofs in 04_dev_FR-6.md. Reviewer confirms.
+
+## Rule check FR-6
+| Rule | Verdict | Evidence |
+|---|---|---|
+| AC-3 save never loses/overwrites a concurrent write (save) | pass | save_never_replaces_a_write_in_the_same_tick_as_its_check + document_save racing 20/20 under load |
+| AC-3 save_overwrite_seen (Keep mine) | pass | save_overwrite_seen_never_replaces_..._same_tick + racing |
+| AC-3 save_as_seen / save_as | pass | save_as_seen_never_replaces_..._same_tick, save_as_seen_never_loses_*, unprompted_save_as racing 20/20 |
+| AC-3 no false data loss | pass | racing and disk_version tests green; Expected equality ignores `racy`, so no spurious conflicts |
+| AC-7 external change detection (vr-core paths) | pass | disk_version_in_one_tick test (version is of the bytes on disk), check_disk path untouched |
+| Sign-off defect gone | pass | repro 5/5 |
+
+## QC FR-6 r1
+Script/output: qa-artifacts/FR-6/qc_r1.sh, qc_r1.txt (via run-heavy.sh).
+| Check | Result |
+|---|---|
+| 5 `*_racing_the_end_of_the_window_stays_racy` tests, once | 5/5 ok |
+| `disk_version_of_a_file_that_keeps_changing` 3x | 3/3 ok |
+| Strict racing 20x under 4 busy-loop load (7 tests/run) | **18 pass / 2 fail**: `testutil::tests::document_save_never_loses_a_write_from_a_fast_writer` panicked at testutil.rs:402 (the "lost write" assert); the panic detail was cut by my grep and not captured |
+| Follow-up (not requested, to size the flake) | same test alone under load 30/30 pass; full 3-filter set under load 40/40 pass, 0 fail (no panic output left to inspect) |
+Round 0 (before the fix) gave 20/20 and 20/20 (developer and QC), so 2/20 is a new signal, not proven to be caused by the round-1 change: it may be the known rare D75(2)/D76(3) false positive (mode=InPlace, visible=false, saw_ours, replaced_is_ours), which the assert comment says is only tolerated informally. Verdict QC_FAIL on the strict-racing criterion until the signature is identified.
+
+## QC FR-5
+Engine: release binary target/release/vr-ide (built through run-heavy.sh, 49 s) driven through a pseudo-terminal (h.py; flows in qa-artifacts/FR-5/fr5.py, output in qa-artifacts/FR-5/out1.txt and the console). Related tests once: `cargo test -p vr-ide --lib -- explorer_tests:: search_tests:: commands::search::gate_tests::` -> 63 passed, 0 failed.
+
+| # | Flow (release walk) | Result | Evidence |
+|---|---|---|---|
+| 1a | Save As src/new.rs while src is expanded | PASS | row new.rs appears under src, title becomes new.rs, file on disk |
+| 1b | Delete the open src/main.rs externally (tab shows "(deleted)"), Ctrl+S | PASS | main.rs row gone after the delete, back after save; file recreated on disk |
+| 2a | Search fn, rename a.txt -> renamed.txt in the explorer, reopen the search panel | PASS | results list renamed.txt, not a.txt; Search: Next Result works in renamed.txt |
+| 2b | Replace preview containing a.txt, rename a.txt -> moved.txt | PASS | notice "files moved since the preview; Enter in the replace field previews again"; preview dropped; Enter previews again with moved.txt |
+| 3 | Hidden off, reveal .github/workflows/ci.yml; reveal ignored target/out.log | PASS | nothing hidden expanded; ignored file: notice "target/out.log is hidden in the explorer (ignored by .gitignore); show ignored files with the command explorer.toggle_ignored"; with ignored/hidden on, reveal expands and selects. The dotfile notice was queued behind "hidden files hidden" ("+1 more") and not read as text; covered by explorer_tests::reveal_of_a_hidden_or_ignored_file_says_how_to_show_it |
+| 4 | Replace fn->func over 300 files (1.2 MB each, ~9 s), files opened in tabs via Ctrl+P while it runs | PASS | f0250, f0200, f0150, f0100 opened mid-run: disk bytes unchanged (no "func"); result "4 files not replaced: many/f0250.txt (opened in a tab during the replace; not replaced); ..."; 296/300 replaced; files opened after their write show the replaced text; nothing corrupted |
+| 5a | Open a.txt and b.txt, rename b.txt -> a.txt | PASS | rename refused, both files unchanged on disk |
+| 5b | Close one of two tabs on one path, external reload in the other | NOT WALKABLE | state cannot be made through the UI any more; covered by explorer_tests::closing_a_tab_keeps_the_watch_of_another_tab_on_the_path (passes) |
+| 6 | 39 columns, search panel full width: Esc and F6, then type XYZ | PASS | panel closes, explorer + editor visible, XYZ lands in the visible editor (Ln 1, Col 4); never into a width-0 editor. The script's own "no XYZ in a.txt" assertion printed FAIL; the screen shows the editor visible, so that assertion was wrong, not the product |
+
+Regressions: AC-3, AC-8, AC-9, AC-12 behaved as expected in the flows above. Harness note: Go to File needs about 0.3 s after typing before Enter selects (harness timing, not product). The 300-file tree was deleted after the walk.
+
+## Rule check FR-5
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-14 | pass | no waiting loops; every command finished in the foreground |
+| BASE-15 | pass | only the harness's own child processes were killed |
+| BASE-17 | pass | the 300-file test tree deleted after the walk |
+| BASE-19 | pass | flows recorded in this section |
+| COST | pass | one release build, one related-test run, one flow script |
+| Product code and tests | pass | not modified |

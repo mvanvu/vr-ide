@@ -1,0 +1,86 @@
+{
+ "confirmed": [
+  {
+   "title": "Explorer does not show a file created by Save As (or by Save (recreate)) because the watcher drops its own writes for folder watches too",
+   "file": "/home/rainy/DEV/vr-ide/crates/vr-core/src/watch.rs",
+   "line": 396,
+   "severity": "major",
+   "scenario": "The explorer has src/ expanded. In the editor the user runs Save As and types src/new.rs (a new name). Document::write_to (vr-core/src/document.rs:588-592) records the target in OwnWrites. When the debounced inotify batch arrives, translate() reaches `scope.is_own_write(&p) => continue` for src/new.rs, so neither Created nor Modified is sent. explorer::on_fs_event never marks src/ dirty, and save_as_doc (vr-ide/src/commands/file.rs:428-459) does not refresh the explorer itself. The tab shows src/new.rs, but the tree has no row for it until something else changes in that folder or the user toggles hidden/ignored. explorer.reveal then selects nothing. The same thing happens with 'Save (recreate)' on a file deleted on disk: the Removed event takes the row out, the recreating save is suppressed, and the file stays missing from the tree. The own-write suppression (T4) came before folder watches existed (T8/D110). Per-task reviews did not cover this cross-task path, and explorer_tests has no Save As case.",
+   "fix": "Only suppress own writes for the content event of an open file, not for the tree. In translate(), when the path is own but `created.contains(&p)` (or it is not in scope.files), still send FsEvent::Created. Alternatively, have save_as_doc and the recreate path call explorer reload of the target's parent folder (refresh_after(&[target]) + rebuild) after a successful write. Add an explorer test: Save As to a new name in an expanded folder shows the row.",
+   "dimension": "ui",
+   "verdict": {
+    "status": "confirmed",
+    "reason": "The failure path is real; I traced it in the code and did not run anything. The explorer and the open documents share one Watcher. app.rs start_watcher/open_path give every Document `w.own_writes()`, and sync_explorer_watches calls `watch_dir` on the same watcher. So Scope.own covers tree events too.\n\nSave As to a new name goes answer_save_as \u2192 save_as_doc \u2192 Document::save_as_seen \u2192 write_to. It writes atomically: a temp file is renamed onto the target with renameat2 NOREPLACE, or hard-linked. Then write_to calls `own.record(canonical target, snapshot)` (document.rs:588-592). That happens immediately after the write; the watcher only handles events once its debounce period ends, so the record is already there.\n\nIn translate() (watch.rs:390-401), the rename from the temp file calls `touch(to, true)` because `is_save_temp(from)` is true. The target exists, so the `scope.is_own_write(&p) => continue` branch runs. That check comes before the `created.contains(&p) && !scope.files.contains_key(&p)` \u2192 Created branch, so no event is sent at all. The snapshot stamp matches, because the ordinary-save suppression test `watch_ignores_own_save` passes on the same path.\n\nWith no event, explorer::on_fs_event (explorer.rs:516) never marks the parent dirty, and flush() reloads nothing. save_as_doc (file.rs:428-459) only does rewatch, hard_link_notice and `app.dirty = true`. It makes no explorer reload or refresh_after call, and neither caller (file.rs:196, 244, 322) adds one. reveal_path expands only folders that are not already expanded, then calls select_path. For a folder that is already expanded and loaded, the stale list has no row to select.\n\nThe recreate case fails the same way. Save on a file deleted on disk goes through write_to, which records the write, so the recreating rename is suppressed after the earlier Removed event has taken the row out.\n\nNothing refutes this: no decision in decisions.md (D44, D86-D98) accepts it, and there are no explorer tests for Save As or recreate. Only app_tests and dialog_tests test Save As, and they do not check the tree. One limit: on filesystems without renameat2 the hard-link fallback is used. There the unlink of the temp name may change ctime after the snapshot, so suppression can fail and the row can appear. On the normal Linux path the finding holds."
+   }
+  }
+ ],
+ "uncertain": [],
+ "minor": [
+  {
+   "title": "Explorer rename/move can put two tabs on one path when a tab is already open on the target name (breaks D95)",
+   "file": "crates/vr-ide/src/commands/explorer.rs",
+   "line": 755,
+   "severity": "minor",
+   "scenario": "b.txt is open in a tab. An external tool (for example `git checkout`) deletes b.txt, and the tab stays open marked deleted on disk (D82; this also happens for an unmodified buffer). The user then renames a.txt, which is open in another tab, to b.txt in the explorer, or moves or cut-pastes a file with that name into the folder. vr_fs accepts the new name because nothing is on disk there. retarget() sets the a.txt tab's path to b.txt and never checks the other tabs, so two tabs now hold the same path. App::recheck and DocRef::find use only the first match, so the watcher's Created event reloads or prompts only one of the two tabs. Closing either tab calls Watcher::unwatch(p) on the shared path, so the remaining tab stops getting external-change events and shows stale text until a save notices the change on disk.",
+   "fix": "In answer_rename and move_paths, refuse (or ask first) when another tab is already open on the destination path or under it: reuse file::other_tabs_on / check_other_tabs, as Save As does under D95. Also make close_doc unwatch a path only when no other doc still holds it, the same still_open check that rewatch already does.",
+   "dimension": "correctness",
+   "verdict": {
+    "status": "unverified",
+    "reason": "minor severity"
+   }
+  },
+  {
+   "title": "At widths below 40 columns, Esc or F6 from the full-width search panel sends keys to a hidden editor",
+   "file": "crates/vr-ide/src/commands/search.rs",
+   "line": 1421,
+   "severity": "minor",
+   "scenario": "On a terminal narrower than 40 columns, ctrl+shift+f opens the search panel across the whole width (layout::search_width returns the full width, so layout.editor.width is 0). The user types a query and presses Esc with no preview open; escape() sets focus to Editor but leaves search.visible true. focus.cycle (F6) does the same from Focus::Search (explorer.rs:1263). Typed characters, Backspace or Enter then reach edit::handle_builtin_key and change the active buffer, which is not drawn at all, so the user edits a file they cannot see. Only open_selected hides the panel at this width (D118).",
+   "fix": "When the search panel takes the whole width (app.layout.editor.width == 0), have escape() and focus_cycle hide the panel (search.visible = false) whenever they give focus to the editor, as open_selected already does. Or keep Focus::Search while the editor has no width.",
+   "dimension": "correctness",
+   "verdict": {
+    "status": "unverified",
+    "reason": "minor severity"
+   }
+  },
+  {
+   "title": "Project search results and the replace preview keep the old paths after an explorer rename or move",
+   "file": "/home/rainy/DEV/vr-ide/crates/vr-ide/src/commands/explorer.rs",
+   "line": 755,
+   "severity": "minor",
+   "scenario": "The user searches the project, then renames src/a.rs to src/b.rs (or moves its folder) in the explorer. retarget() updates the open tabs and the watches but not app.search.groups. Enter or f4 on an a.rs result calls open_path on the old path and shows a 'No such file' error, even though the file exists and may already be open under its new name. The replace preview has the same problem: a Target::Buffer file whose tab was retargeted fails at apply with 'closed since the preview; not replaced', which is safe but misleading.",
+   "fix": "In retarget(), also rewrite matching paths in app.search.groups/index (same strip_prefix logic) and drop any non-applying preview (drop_preview). Or mark the results stale and show 'files moved since the search; search again' in the panel status.",
+   "dimension": "ui",
+   "verdict": {
+    "status": "unverified",
+    "reason": "minor severity"
+   }
+  },
+  {
+   "title": "Reveal does nothing and says nothing for a file the tree hides (dotfile or gitignored), and leaves a hidden folder expanded and watched",
+   "file": "/home/rainy/DEV/vr-ide/crates/vr-ide/src/commands/explorer.rs",
+   "line": 1218,
+   "severity": "minor",
+   "scenario": "Go to file lists dotfiles (D16), so the user opens .github/workflows/ci.yml while show_hidden is off and then runs explorer.reveal. reveal_path expands .github and .github/workflows: they go into `expanded` and sync_explorer_watches adds inotify watches for them. Their rows are never built because the root's listing hides .github, so select_path finds no row, the cursor stays where it was, and nothing tells the user why. Gitignored files opened with file.open behave the same way.",
+   "fix": "In reveal_path, when the path or one of its ancestors is filtered out (hidden or ignored), skip the expansion and show an info notice such as '<path> is hidden in the explorer; run explorer.toggle_hidden (or toggle_ignored) to show it', using the key hint for the command. Alternatively, turn the matching toggle on for this reveal.",
+   "dimension": "ui",
+   "verdict": {
+    "status": "unverified",
+    "reason": "minor severity"
+   }
+  },
+  {
+   "title": "A file opened in a tab while a project replace is still writing can still be written by the worker",
+   "file": "/home/rainy/DEV/vr-ide/crates/vr-ide/src/commands/search.rs",
+   "line": 1045,
+   "severity": "minor",
+   "scenario": "apply() checks 'opened in a tab since the preview' only once, when the user confirms. The worker then writes the Target::Disk files batch by batch. If the user opens one of the files it has not reached yet (from the explorer, go to file, or a search result) and starts typing, the worker still replaces that file on disk. The doc comment says the worker never writes a file open in a tab. The user then gets an AC-7 'File Changed on Disk' prompt in the middle of editing. Nothing is lost, but the flow contradicts the stated guarantee and the confirm text ('open in tabs change in their buffers').",
+   "fix": "Share a set of canonical paths open in tabs (Arc<Mutex<HashSet>>, updated by open_path and close_doc) with the apply worker, and have it skip a file that is in the set with the result 'opened in a tab during the replace; not replaced'. Or, while replacing(app) is true, refuse to open the pending result files with an info notice.",
+   "dimension": "ui",
+   "verdict": {
+    "status": "unverified",
+    "reason": "minor severity"
+   }
+  }
+ ],
+ "missingDimensions": 0
+}
