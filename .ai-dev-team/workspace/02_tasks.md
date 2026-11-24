@@ -8,7 +8,7 @@
 | T4 | vr-core documents (load/save/encoding) + file watching | be | T2 | - | AC-3, AC-7, AC-18 | crates/vr-core/src/{document,watch,lib}.rs | `cargo test -p vr-core` | in-progress | 0 |
 | T5 | App shell: event loop, editor view, commands, tabs, status, clipboard, recovery | fe | T1, T2, T3, T4 | ui | AC-1, AC-3, AC-4, AC-5, AC-7, AC-18 | crates/vr-ide/src/{main,app,event_loop,clipboard,recovery,theme}.rs, commands/{registry,app,file,edit,tab}.rs, ui/{layout,editor_view,tabs,status_bar}.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T6 | Palette, dialogs, go-to-line, external-change prompt, quit guard | fe | T5 | ui | AC-6, AC-7 | crates/vr-ide/src/ui/{palette,dialog}.rs, commands/{nav,palette}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
-| T7 | vr-fs tree, file ops (trash), fuzzy file index | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-fs/Cargo.toml, crates/vr-fs/src/lib.rs until T1 committed) | - | AC-8, AC-9 | crates/vr-fs/** | `cargo test -p vr-fs` | done | 1 |
+| T7 | vr-fs tree, file ops (trash), fuzzy file index | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-fs/Cargo.toml, crates/vr-fs/src/lib.rs until T1 committed) | - | AC-8, AC-9 | crates/vr-fs/** | `cargo test -p vr-fs` | done | 3 |
 | T8 | Explorer panel + go-to-file | fe | T6, T7 | ui | AC-1, AC-8, AC-9 | crates/vr-ide/src/ui/{explorer,layout,palette}.rs, commands/explorer.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T9 | vr-search engine: find/replace, project search, project replace | be | T2 | - | AC-9, AC-10, AC-11, AC-12 | crates/vr-search/** | `cargo test -p vr-search` | in-progress | 0 |
 | T10 | Find/replace bar + project search panel | fe | T8, T9 | ui | AC-10, AC-11, AC-12 | crates/vr-ide/src/ui/{find_bar,search_panel,layout}.rs, commands/{find,search}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
@@ -19,7 +19,7 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 ## Notes
 - presence: away (user, 11:31)
 - hand-off: ready (11:31) — push verified working (19dbd52)
-- eta: ~20:55 (set 11:27, basis: critical path T1 20m → T2 90m → T4 45m → T5 90m → T6 45m → T8 90m → T10 90m → T11 20m + sign-off 30m + Phase 5 45m, no history, 5 agents)
+- eta: ~16:00 (set 11:57, basis: real durations so far — T1 8m, T3 10m, T2 17m incl quick pass, T7 ~30m with 3 fix rounds; remaining critical path T4 (to ~12:15) → T5 40m → T6 25m → T8 35m → T10 35m → T11 15m + sign-off 25m + Phase 5 40m + ~10m buffer for fix rounds; 5 agents)
 - fable-policy: auto (user, 11:21)
 - commits: one per task after review + QC pass, push to origin/master (user, 11:21)
 - research: skipped — direction settled in conversation (leader, 11:21)
@@ -44,3 +44,8 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - parallel: T9 (vr-search) ∥ T7 fix (vr-fs) ∥ T2 quick pass (vr-core) — files disjoint, 11:44
 - T7 verdicts (11:48): round 1 review APPROVE (opus, 5 minor → quick pass), QC_PASS R1; gate ✓
 - T8 brief must include (review T7): use the path ensure_within returns; never offer rename/trash/move on the root node; drop selected paths nested under another selected path before batch trash; handle per-path BatchResult
+- T7 fix round 2 (11:51): quick pass item (1) — the leader's instruction to undo the extra hard link — opened a delete-by-name race (major); fix (a): never unlink, return BothNamesLeft
+- T7 round 2 gets qc re-check (file-move behaviour changed)
+- T7 fix round 3 (11:53): R2-1 major — hard-link fallback unlinks `from` by name (a concurrent save to `from` lost); + QC note: EACCES into read-only dir reported as AlreadyExists. Last round before escalation (fable-policy auto).
+- T7 verdicts (11:57): round 3 review APPROVE (opus; m1 temp-name collision → quick pass 2, m2 → T8 brief), QC_PASS R3; gate ✓
+- T8 brief must include (review T7 m2): startup notice listing leftover '.*.vr-tmp-*' files in the root and expanded folders

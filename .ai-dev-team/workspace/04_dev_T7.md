@@ -145,3 +145,140 @@ rustfmt --edition 2024 --check crates/vr-fs/src/*.rs  -> exit 0
 | AC-9 | pass | unchanged tests green |
 | Review Focus 4 | pass | tree_lazy_children (listing count = 1), index cancels within 256 entries |
 n-a: BASE-7, BASE-9, BASE-12, BASE-13, BASE-20…BASE-23, BASE-26…BASE-31, BASE-33…BASE-37
+
+## Quick pass 1
+Base: T7 committed as 167c2fa; only crates/vr-fs/src/ops.rs and the notes changed (no Cargo.toml/Cargo.lock edits, no git commands).
+- Progress: read `## Round 1 re-check`; added the `finish_link_move` seam (`remove: &RemoveFn`) with the old behaviour, `LeftAt`/`BothNamesLeft` variants and 3 tests + message assertion → red run `cargo test -p vr-fs ops::` 23 passed; 4 failed:
+  - link_move_undone_when_old_name_cannot_be_removed: `the extra link is undone`
+  - link_move_names_both_paths_when_undo_fails: `expected BothNamesLeft, got Io { path: ".../a.txt", source: Kind(PermissionDenied) }`
+  - case_rename_reports_temp_name_when_restore_fails: `expected LeftAt, got Io { path: ".../A.txt", source: Kind(PermissionDenied) }`
+  - trash_refuses_cross_device_symlink: `.../link was not trashed: symlink on another filesystem than the trash` (message lacked the reason)
+- Progress: fixes applied → green.
+
+| Item | Reply | Where |
+|---|---|---|
+| (1) link ok, unlink of `from` fails | fixed: unlink `to` again only while `same_file(from, to)` holds, then return the original error on `from`; if that undo fails → `FsOpError::BothNamesLeft { from, to, source }` | `finish_link_move` (called from `move_with` fallback); tests link_move_undone_when_old_name_cannot_be_removed, link_move_names_both_paths_when_undo_fails |
+| (2) case-only restore fails | fixed: `FsOpError::LeftAt { path: <temp>, intended: to, source }` | `rename_via_temp`; test case_rename_reports_temp_name_when_restore_fails (seam: step 1 real, steps 2–3 EACCES) |
+| (3) refusal message | fixed, refusal kept: "the symlink is on another device than the trash, which the trash backend cannot move safely; the link and its target are untouched" | `check_symlink_trash`; trash_refuses_cross_device_symlink asserts the text |
+| (4) ensure_within doc | done: callers act on the returned path only (lexical check vs. kernel resolution through links); the root itself is accepted, so rename/move/trash must never be offered on the root | doc comment on `ensure_within` |
+
+For the T8 brief (from the re-check, not changed here): nested selections in a batch trash (`dir` + `dir/a.txt`) give the child a `NotFound` result. T8 should drop descendants of selected dirs before calling `trash`.
+
+```
+cargo test -p vr-fs
+test result: ok. 39 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.04s
+cargo clippy -p vr-fs --all-targets -- -D warnings -> Finished (exit 0)
+rustfmt --edition 2024 --check crates/vr-fs/src/*.rs -> exit 0
+```
+
+### Rule compliance (quick pass 1)
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-1 | pass | only crates/vr-fs/src/ops.rs + notes |
+| BASE-2 | pass | public signatures unchanged; two new error variants (additive) |
+| BASE-3 | pass | 4 red lines above, before the fixes |
+| BASE-4 | pass | output above |
+| BASE-5, BASE-14, BASE-15 | pass | foreground crate commands; nothing running |
+| BASE-6 | pass | English why-comments |
+| BASE-8 | pass | no manifest change |
+| BASE-10 | pass | `cargo test -p vr-fs` only |
+| BASE-11, BASE-24 | pass | no git commands |
+| BASE-16, BASE-17, BASE-18, BASE-19 | pass | nothing new to index; no installs; no sub-agents; progress lines |
+| BASE-25 | pass (crate) | clippy -p vr-fs + rustfmt check exit 0 |
+| BASE-32 | pass | D9/D24/D25 behaviour unchanged |
+| BASE-38 | pass | rustfmt on ops.rs only |
+| COST | pass | related tests only |
+| AC-8 | pass | 39 tests green |
+n-a: BASE-7, BASE-9, BASE-12, BASE-13, BASE-20…BASE-23, BASE-26…BASE-31, BASE-33…BASE-37, AC-9 (untouched)
+
+## Fix round 2
+- Progress: read the leader's round-2 finding (atomic save between `same_file` and the unlink of `to` could be deleted for good) and fix (a).
+- Red: replaced `link_move_undone_when_old_name_cannot_be_removed` and `link_move_names_both_paths_when_undo_fails` with `link_move_keeps_both_names_when_old_name_cannot_be_removed`. Its seam denies only the removal of `from`, so any unlink of `to` would show. `cargo test -p vr-fs link_move` → `expected BothNamesLeft, got Io { path: ".../a.txt", source: Kind(PermissionDenied) }` (1 failed).
+- Fix: `finish_link_move` never unlinks anything after a failed removal of `from`; it returns `BothNamesLeft { from, to, source }`. The comment now says why `to` is never unlinked. Message: "the file now has both names, {from} and {to}; nothing was deleted (removing {from} failed: {source})". The variant doc was updated to match.
+
+| Item | Reply | Where |
+|---|---|---|
+| undo removed | fixed | ops.rs `finish_link_move` |
+| accurate message | fixed | `FsOpError::BothNamesLeft` `#[error]` |
+| test | rewritten: asserts `BothNamesLeft` with both paths, the message text, and both names still present with content "a"; the "undo fails" test was deleted (merged) | `link_move_keeps_both_names_when_old_name_cannot_be_removed` |
+| comment at 495-496 | replaced | ops.rs `finish_link_move` |
+
+```
+cargo test -p vr-fs
+test result: ok. 38 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.04s
+cargo clippy -p vr-fs --all-targets -- -D warnings -> Finished (exit 0)
+rustfmt --edition 2024 --check crates/vr-fs/src/ops.rs -> exit 0
+```
+(38 = 39 − 2 merged tests + 1 new.)
+
+### Rule compliance (round 2)
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-1 | pass | only crates/vr-fs/src/ops.rs + notes |
+| BASE-2 | pass | no signature change; error variant text only |
+| BASE-3 | pass | red line above before the fix |
+| BASE-4 | pass | output above |
+| BASE-5, BASE-14, BASE-15 | pass | foreground crate commands; nothing running |
+| BASE-6 | pass | why-comment, no history |
+| BASE-8 | pass | no manifest change |
+| BASE-10 | pass | `cargo test -p vr-fs` |
+| BASE-11, BASE-24 | pass | no git commands |
+| BASE-16, BASE-17, BASE-18, BASE-19 | pass | nothing new to index; no installs; no sub-agents; progress lines |
+| BASE-25 | pass (crate) | clippy + rustfmt check exit 0 |
+| BASE-32 | pass | D9/D24/D25 unchanged; no permanent delete anywhere in ops |
+| BASE-38 | pass | rustfmt on ops.rs only |
+| COST | pass | related tests only |
+| AC-8 | pass | 38 green |
+n-a: BASE-7, BASE-9, BASE-12, BASE-13, BASE-20…BASE-23, BASE-26…BASE-31, BASE-33…BASE-37, AC-9 (untouched)
+- Round 2 clarification (behaviour over steps): checked again with no code change. Option (a) already gives the required behaviour. After a failed move no path removes or overwrites a name: `finish_link_move` returns `BothNamesLeft` (both names, nothing deleted); `rename_via_temp` returns `LeftAt { path: <temp> }` when the restore fails; restores use the no-replace move. The test failed before the fix (red line above) and passes after it. One window is left, documented since D25 and outside this round: on filesystems with neither RENAME_NOREPLACE nor hard links (vfat/exfat), a file move falls back to the checked rename in `move_with`.
+
+## Fix round 3
+- Progress: read `## Round 2 re-check` (R2-1). The permission-label item was dropped by the leader's update: the reviewer could not reproduce it, and I found no path that mislabels EACCES (it still maps to `Io(PermissionDenied)` on the target), so no test was written for it.
+- Pass A: added the seam `LinkOps { rename, link, remove }` (`LinkOps::REAL` = fs::rename / fs::hard_link / fs::remove_file) and `link_move`, still with the old behaviour (link `from`→`to`, then unlink `from`), plus 5 tests. Red run `cargo test -p vr-fs link_move` → 2 passed; 4 failed:
+  - link_move_only_removes_its_own_temp_name: `removed a shared name: "/tmp/.tmpKNUKuw/a.txt"`
+  - link_move_reports_both_names_when_temp_cannot_be_removed: panicked at `is_own_temp` with `"/tmp/.tmpipx1aU/a.txt"` (the unlink targeted `from`)
+  - link_move_reports_temp_when_source_name_was_taken: `expected LeftAt, got AlreadyExists(".../b.txt")`
+  - link_move_keeps_a_save_made_during_the_move: the test's saving seam panicked with `NotFound` (old code linked and unlinked `from` itself, so the save step never matched)
+  - green at once: link_move_existing_target_restores_source (the old code also refused a target that already existed)
+- Pass B (fix): `link_move` takes the source first:
+  1. `rename(from, temp)`. The temp is a private, unique `.name.vr-tmp-<pid>-<n>` name. This takes whatever is at `from` at that instant, so a save landing on `from` later stays there.
+  2. `link(temp, to)`, which never replaces.
+  3. `remove(temp)`, the only name that is ever unlinked.
+
+  On failure, `restore` links the temp back to `from` (never replacing) and removes the temp. If `from` was taken meanwhile → `LeftAt { path: temp }`. If the temp cannot be removed → `BothNamesLeft` naming the temp and the other name. On filesystems without hard links the temp → `to` step is the checked rename (the D25 window; documented in the code). `finish_link_move` and the `RemoveFn` alias were removed. Destination-side errors use `dest_err(from, to, e)`, because `from` no longer exists after the source is taken.
+- Unlink audit of ops.rs: the only `remove_file` is `sys_remove`, and it is reached only through `ops.remove` on the private temp name (in `link_move` and `restore`). `rename` overwrites nothing: temp names are unique, and the temp → `to` and temp → `from` renames are checked renames that run only on filesystems without hard links (D25 window).
+
+| Item | Reply | Where |
+|---|---|---|
+| R2-1 source unlinked by name | fixed (the reviewer's grab-first design) | ops.rs `link_move`, `restore`, `links_unsupported`, `dest_err`, `temp_sibling` |
+| required seam test (remove never gets `from`/`to`) | added, red then green | `link_move_only_removes_its_own_temp_name` |
+| extra cases | added | `link_move_keeps_a_save_made_during_the_move` (a save on `from` mid-move survives; `to` has the old content), `link_move_existing_target_restores_source`, `link_move_reports_both_names_when_temp_cannot_be_removed`, `link_move_reports_temp_when_source_name_was_taken` |
+| QC permission label | dropped per leader update (not reproducible; no mislabelling path found) | — |
+
+```
+cargo test -p vr-fs
+test result: ok. 42 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.05s
+cargo clippy -p vr-fs --all-targets -- -D warnings -> Finished (exit 0)
+rustfmt --edition 2024 --check crates/vr-fs/src/ops.rs -> exit 0
+```
+(42 = 38 − 1 replaced test + 5 new.)
+
+### Rule compliance (round 3)
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-1 | pass | only crates/vr-fs/src/ops.rs + notes |
+| BASE-2 | pass | no public signature change |
+| BASE-3 | pass | red lines above, before the fix |
+| BASE-4 | pass | output above |
+| BASE-5, BASE-14, BASE-15 | pass | foreground crate commands; nothing running |
+| BASE-6 | pass | why-comments on link_move/restore |
+| BASE-8 | pass | no manifest change |
+| BASE-10 | pass | `cargo test -p vr-fs` |
+| BASE-11, BASE-24 | pass | no git commands |
+| BASE-16, BASE-17, BASE-18, BASE-19 | pass | private helpers only; no installs; no sub-agents; progress lines |
+| BASE-25 | pass (crate) | clippy + rustfmt check exit 0 |
+| BASE-32 | pass | D25 no-loss: no shared name is unlinked; D9/D24 unchanged |
+| BASE-38 | pass | rustfmt on ops.rs only |
+| COST | pass | related tests only |
+| AC-8 | pass | 42 green |
+n-a: BASE-7, BASE-9, BASE-12, BASE-13, BASE-20…BASE-23, BASE-26…BASE-31, BASE-33…BASE-37, AC-9 (untouched)

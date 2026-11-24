@@ -123,3 +123,26 @@ Engine: the Rust probe `qa-artifacts/T7/probe` (mode `ac8`, rewritten for the ne
 | ensure_within (extra) | PASS | rejects `../x`, accepts `src/a` |
 
 QC_PASS T7 R1
+
+## QC T7 re-check (round 2)
+Engine: the same Rust probe (`ac8` mode, release build against the round-2 vr-fs), extended with 6 extra destination-safety checks. Result: 41 PASS lines, 0 FAIL. Fixtures, target and Cargo.lock removed afterwards.
+
+| Check | Result | Evidence |
+|---|---|---|
+| create, rename, move, copy, refusal onto existing target, `a.txt` -> `A.txt`, batch trash, validate_name | PASS | all round-1 results unchanged: refusals return `AlreadyExists` with target and source intact; case-only rename Ok; batch of 3 with 1 missing gives 2 ok + 1 err in order, exactly the 2 in temp XDG `Trash/files` + `info`; validate_name rejects `..`, `a/b`, `""`, `.`, NUL |
+| A failing move never removes a destination file (public API) | PASS | destination `d2/victim` kept in every failing case: move of a missing source, move into own parent, move of a dir onto a same-named dest file, rename of a missing source onto it, rename of a file under itself, move into a read-only dest dir (refused as `already exists`, source kept) |
+| Hard-link fallback | n-o | cannot be forced through the public API (needs a filesystem where `renameat2` NOREPLACE is unsupported); not observed, covered by developer tests only |
+| `BothNamesLeft` / `LeftAt` / symlink trash message | n-o | error-path variants reached only by a failure partway through the fallback, not reproducible from outside |
+
+QC_PASS T7 R2
+
+### Readonly-msg replay (round 2 follow-up)
+WITHDRAW T7 readonly-msg. In my R2 probe the destination name already existed (`d2/victim` created earlier in the same case), so `AlreadyExists` was the correct error. Replay on the current tree (uid 1000, ext4 reported by `stat -f` as ext2/ext3, dest dir set read-only, source `x1/...`):
+- A, `move_to(x1/victim, d2)` with `d2/victim` present: `AlreadyExists(.../d2/victim)`; dest content kept.
+- B, `move_to(x1/fresh, d2)` with the name absent: `Io { path: .../d2/fresh, source: PermissionDenied (os error 13) }`, matching the reviewer.
+Fixtures and target removed.
+
+## QC T7 re-check (round 3)
+Engine: the same Rust probe (`ac8`, release build on the round-3 tree). Result: 41 PASS, 0 FAIL. This covers every R2 case: create, rename, move, copy, refusal onto an existing target, `a.txt` -> `A.txt`, batch trash (2 ok + 1 err, 2 in the temp XDG trash), validate_name, ensure_within, and the 6 failing-move cases (the destination file is kept each time). `find fx8 -name '*vr-tmp*'` after the run: 0 files. Fixtures, target and Cargo.lock removed.
+
+QC_PASS T7 R3

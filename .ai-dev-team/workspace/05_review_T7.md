@@ -141,3 +141,140 @@ Fix: T8 drops selected paths that lie under another selected path before calling
 | AC-8 | pass (vr-fs part) | no overwrite (atomic), no cross-device copy+delete, per-item trash results |
 | AC-9 | pass | unchanged tests green |
 | D9 | pass | no permanent-delete path left in ops |
+
+## Quick pass 1 re-check
+
+Verdict: **CHANGES T7 QP1** (1 major)
+
+Read: `git diff HEAD -- crates/vr-fs` (base 167c2fa; only `ops.rs` changed) and notes `## Quick pass 1`. Reviewer run: `cargo test -p vr-fs` → 39 passed, 1 ignored.
+
+| Round-1 minor | Status |
+|---|---|
+| hard_link ok, unlink of `from` fails | the error is now reported, but the undo opens a data-loss window (Q1) |
+| case-only restore fails | fixed: `LeftAt { path: tmp, intended, source }`; tested with a seam that makes step 2 and the move back fail |
+| `check_symlink_trash` over-refusal | accepted as a refusal; the message now says the link and its target are untouched, and the test asserts the text |
+| `ensure_within` doc | fixed: "act on the returned path" and "root accepted, never offer rename/move/trash on it" are in the doc comment |
+| nested batch trash | moved to the T8 brief (notes) |
+
+[major] crates/vr-fs/src/ops.rs:497 — the undo of the extra hard link checks, then unlinks by path, so a user's new file at `to` can be deleted
+Scenario: this code runs on the fallback path, which is a filesystem without RENAME_NOREPLACE but with hard links, such as NFS. `link(from, to)` succeeds and `unlink(from)` fails. `same_file(from, to)` is checked and holds. Then, before `remove(to)` runs, an agent or editor does its atomic save of `to` (write a temp file, then `rename(temp, to)`). `unlink(to)` now removes that new file. Its contents were never anywhere else, so they are lost for good. Unlink works by name, not by inode, so no check before it can close the window. The comment "unlinking `to` cannot lose anything" is true only at the moment of the check.
+Fix (pick one):
+- (a) Simplest and safe: drop the undo. When `remove(from)` fails, always return `BothNamesLeft { from, to, source }`. No delete happens, both names are reported, and the UI can let the user trash one of them. Update `link_move_undone_when_old_name_cannot_be_removed` to assert `BothNamesLeft` and that both names still exist.
+- (b) Move `to` aside to a unique private temp name first with `rename(2)`, which is atomic: whatever is at `to` goes to the temp name. Then compare the temp name's dev+ino with `from`. If they match, unlink the temp name, which no one else uses. If not, rename it back with a checked rename, and if that fails return `LeftAt`.
+(a) is preferred, because this path is already a rare double-failure case.
+
+[minor] crates/vr-fs/src/ops.rs:500 — `BothNamesLeft` is also returned when `same_file` is false
+Scenario: `to` was replaced before the check, so the two names no longer reach the same file. The message "both name the same file" is then wrong.
+Fix: with (a) this cannot happen any more. With (b), return `LeftAt` or a separate message.
+
+### Rule check T7 QP1
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-1 | pass | ops.rs only |
+| BASE-2 | pass | additive error variants only |
+| BASE-4 | pass | red/green output in notes; reproduced 39 passed |
+| BASE-6 | pass | English why-comments; the comment at :495-496 states an invariant that does not hold (Q1) |
+| BASE-32 | fail | the no-overwrite/no-loss guarantee (D25) is broken by Q1's unlink-by-path window |
+| D9 | pass | trash path unchanged |
+
+## Round 2 re-check
+
+Verdict: **CHANGES T7 R2** (1 major)
+
+Read: `git diff HEAD -- crates/vr-fs` (base 167c2fa, QP1 + round 2) and the notes `## Fix round 2`. Then I listed every call in `ops.rs` that removes, renames onto or truncates a name. Reviewer run: `cargo test -p vr-fs` → 38 passed, 1 ignored.
+
+| QP1 item | Status |
+|---|---|
+| Q1 the undo removed `to` by name | fixed: `finish_link_move` no longer unlinks `to`. It returns `BothNamesLeft`, and the test denies only the removal of `from`, so any unlink of `to` would show |
+| wrong `BothNamesLeft` text | fixed: "the file now has both names …; nothing was deleted" |
+| comment at :495-496 | replaced with an accurate why-comment |
+
+Every call in `ops.rs` that removes, renames onto or truncates a name:
+- `renameat2(NOREPLACE)`: atomic; it cannot replace and takes whatever is at `from` → safe.
+- `create_new`, `create_dir`, `symlink`, `hard_link`: all fail if the name exists → safe.
+- `ops.rs:486` checked `fs::rename`: this is the vfat/exfat fallback. The window is documented and accepted in D25 → accepted, not re-filed.
+- `ops.rs:465` → `finish_link_move` → `fs::remove_file(from)`: this unlinks a shared name. See R2-1.
+
+[major] crates/vr-fs/src/ops.rs:465, 494 — the link-based move unlinks `from` by name, so a file saved to `from` in between is deleted
+Scenario: this runs on a filesystem without RENAME_NOREPLACE but with hard links, such as NFS. `hard_link(from, to)` succeeds. Then an agent or editor does an atomic save of `from` (writes `from.tmp`, then `rename(from.tmp, from)`). Then `remove_file(from)` unlinks that new file. `to` still holds the old contents, so the newly saved contents are lost for good. A plain rename(2) cannot lose a save this way, because it moves whatever is at `from` in one step. Only the two-step link-then-unlink has the window. This is the same kind of problem as Q1, now on the source name. It is also more reachable than Q1, because it only needs this fallback filesystem and a save during the move; no unlink failure is required.
+Fix: never unlink a name that someone else can write to. Grab the source first:
+1. `fs::rename(from, tmp)`, where `tmp` is a unique private name in the same dir (the `rename_via_temp` naming). This atomically takes whatever is at `from` at that instant.
+2. `fs::hard_link(tmp, to)`, which is no-replace and atomic.
+3. `remove_file(tmp)`, which is safe because no one else uses that name.
+4. If step 2 fails (EEXIST etc.), restore with `hard_link(tmp, from)` (no-replace) and then `remove_file(tmp)`. If `from` has been taken meanwhile, return `LeftAt { path: tmp, intended: from }`.
+5. If step 3 fails, return an error naming `tmp`. Nothing is lost.
+
+Test: with a remove seam, assert that `remove` is only ever called with the private temp name, never with `from` or `to`.
+
+### Rule check T7 R2
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-1 | pass | ops.rs only |
+| BASE-2 | pass | no signature change |
+| BASE-4 | pass | red line in notes; reproduced 38 passed |
+| BASE-6 | pass | accurate why-comment in `finish_link_move` |
+| BASE-32 | fail | D25's no-loss guarantee: the link fallback still unlinks `from` by name (R2-1) |
+| D9 | pass | trash path unchanged; nothing deleted permanently except the R2-1 source unlink |
+
+### QC observation — read-only target directory reported as "already exists"
+Probe (`qa-artifacts/T7-review/probe`, a scratch binary against vr-fs, ext4, uid 1000, target dir mode 0555, target name absent):
+```
+move_to:     Err(Io { path: ".../ro/a.txt",   source: Os { code: 13, kind: PermissionDenied } })
+rename:      Err(Io { path: ".../ro/b.txt",   source: Os { code: 13, kind: PermissionDenied } })
+copy:        Err(Io { path: ".../ro/c.txt",   source: Os { code: 13, kind: PermissionDenied } })
+create_file: Err(Io { path: ".../ro/new.txt", source: Os { code: 13, kind: PermissionDenied } })
+src intact: true
+```
+I could not reproduce it on the main path. `renameat2` returns EACCES, `move_err` names `to`, and `io_err` maps PermissionDenied to `Io`, not to `AlreadyExists`. On the fallback path (renameat2 EINVAL), an EACCES from `hard_link` falls through to the checked rename, which also ends in `Io(PermissionDenied)`. The code can report `AlreadyExists` only when EEXIST really came back or `exists(to)` is true. With RENAME_NOREPLACE the kernel reports EEXIST before the write-permission check, so an existing target name in a read-only dir correctly gives "already exists".
+Severity if it is real: **minor**. The operation is refused, the source is intact, and only the reason shown is wrong: nothing is lost and nothing fails silently.
+QC should state the filesystem, the exact op (vr-fs call or T8 UI), whether the target name already existed, and whether the test ran as root or injected the fallback seam. If it happens only in T8, it is a T8 error-mapping item.
+
+## Round 3 re-check
+
+Verdict: **APPROVE T7 R3** (R2-1 fixed; 2 minor items left, neither can lose data in a realistic state)
+
+Read: `git diff HEAD -- crates/vr-fs` (base 167c2fa, QP1 + R2 + R3): `temp_sibling`, `rename_via_temp`, `move_with`, `LinkOps`, `link_move`, `restore`, `links_unsupported`, `dest_err`, and the 5 new `link_move_*` tests. Notes `## Fix round 3`; D25 and D32. Reviewer run: `cargo test -p vr-fs` → 42 passed, 1 ignored. QC's read-only message observation was withdrawn: the target existed, so "already exists" was correct.
+
+R2-1: fixed. `link_move` takes the source first (`rename(from, tmp)`), then `link(tmp, to)`, then `remove(tmp)`.
+- `link_move_only_removes_its_own_temp_name` asserts that `remove` is never called with `from` or `to`.
+- `link_move_keeps_a_save_made_during_the_move` proves that a save made to `from` mid-move survives.
+- Restore links back to `from` without replacing it, and returns `LeftAt` when `from` was taken meanwhile.
+- `BothNamesLeft` names the temp path.
+
+Every call in `ops.rs` that removes, renames onto or truncates a name:
+| Call | Target name | Can it hit someone else's file? |
+|---|---|---|
+| `renameat2(NOREPLACE)` (`rename_noreplace`) | `to` | no: atomic, and it takes whatever is at `from` |
+| `create_new`, `create_dir`, `symlink`, `hard_link` | new names | no: they fail if the name exists |
+| `fs::rename` `ops.rs:477` (directories, fallback) | `to` | can replace only an empty directory (documented) |
+| `sys_rename` step 1 in `link_move` | private temp | only on a temp-name collision (m1) |
+| `sys_rename` temp → `to` / temp → `from` (no hard links) | `to` / `from` | yes, in the check-then-rename window, which is accepted under D25/D32 (vfat/exfat only) |
+| `sys_remove` (the only `remove_file`) | private temp only | no |
+
+[minor] m1 — crates/vr-fs/src/ops.rs:414-417, 519 — creating the temp name can replace an existing name
+Scenario: `temp_sibling` builds `.{name}.vr-tmp-<pid>-<seq>`, and `seq` restarts at 0 in every process. Suppose an earlier vr-ide process was killed between step 1 and step 2. Its leftover temp file is then the only copy of that file. A later process that gets the same pid (pids are reused) and moves a new file with the same name as its first fallback move will run step 1, a plain `rename(from, tmp)`, which silently replaces that leftover. This needs a fallback filesystem, a crash inside a microsecond window, pid reuse, the same seq and the same file name, so it is practically unreachable.
+- The case-only path (`rename_via_temp`) does refuse an existing name, because it goes through `NOREPLACE`.
+- A user dotfile spelled exactly like a temp name is the same case.
+Fix: in `temp_sibling`, add a time or random component (for example `SystemTime::now()` nanos), and/or loop while `exists(tmp)`. That check is against a private name, so the leftover window is irrelevant. Optional test: pre-create the first temp name and assert it survives a `link_move`.
+
+[minor] m2 — leftover hidden `.vr-tmp` files after a crash
+Scenario: the process is killed between step 1 and step 2 of `link_move`, or between the two renames of a case-only rename. The file then lives only under `.a.txt.vr-tmp-…`, which the tree hides by default. No data is lost:
+- go-to-file indexes dotfiles (D16), so the file can still be found;
+- every non-crash failure returns `LeftAt` or `BothNamesLeft` naming the temp path.
+After a crash, though, nothing tells the user. This is acceptable for T7.
+Suggestion for T8 (or T10), not T7: at project open, scan only the root level and the explorer's expanded folders for `.*.vr-tmp-*`, and show a notice with the paths.
+
+D32 path (no RENAME_NOREPLACE and no hard links): `link_move` falls back to check-then-`rename(tmp, to)`, and `restore` to check-then-`rename(tmp, from)`. Both windows are the documented D25/D32 exception, and the code comment states it.
+
+Note: `links_unsupported` also treats EPERM/EACCES from `link(2)` as "no hard links". So on a filesystem without NOREPLACE, a `protected_hardlinks` refusal also takes the D32 window. This is safe enough and is not filed.
+
+### Rule check T7 R3
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-1 | pass | ops.rs only |
+| BASE-2 | pass | no public signature change |
+| BASE-4 | pass | red/green lines in notes; reproduced 42 passed |
+| BASE-6 | pass | why-comments on `link_move`/`restore`, accurate |
+| BASE-32 | pass | D25 no-loss holds (only the private temp name is unlinked); D24, D32, D9 honoured |
+| AC-8 | pass (vr-fs part) | 42 green, including the save-during-move test |
+| D9 | pass | trash path unchanged, no permanent delete |

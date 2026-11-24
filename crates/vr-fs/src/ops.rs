@@ -35,6 +35,23 @@ pub enum FsOpError {
     OutsideRoot(PathBuf),
     #[error("{path} was not trashed: {reason}")]
     TrashRefused { path: PathBuf, reason: String },
+    /// The file is safe but stuck under a hidden temporary name.
+    #[error("{path}: file left under this temporary name; rename to {intended} failed: {source}")]
+    LeftAt {
+        path: PathBuf,
+        intended: PathBuf,
+        source: Box<FsOpError>,
+    },
+    /// The move linked `to` but could not remove `from`. Nothing is undone,
+    /// so nothing is deleted.
+    #[error(
+        "the file now has both names, {from} and {to}; nothing was deleted (removing {from} failed: {source})"
+    )]
+    BothNamesLeft {
+        from: PathBuf,
+        to: PathBuf,
+        source: io::Error,
+    },
     #[error("{path}: {source}")]
     Io { path: PathBuf, source: io::Error },
     #[error("trash failed: {0}")]
@@ -104,6 +121,12 @@ pub fn validate_name(name: &str) -> Result<(), FsOpError> {
 /// Resolves `p` (relative paths are taken from `root`) with `.` and `..`
 /// handled lexically, and refuses a result outside `root`. Symlinks are not
 /// resolved: a link inside the project is the user's own choice of target.
+///
+/// Callers must act on the returned path, never on `p`: the check is
+/// lexical, so `root/link/../x` is approved as `root/x` while the kernel
+/// would resolve the raw input through the link. The root itself is accepted
+/// (`ensure_within(root, "")`), so callers must check separately that rename,
+/// move and trash are never offered on the root.
 pub fn ensure_within(root: &Path, p: &Path) -> Result<PathBuf, FsOpError> {
     let root_norm = normalize(&absolute(root)?);
     let joined = if p.is_absolute() {
@@ -274,7 +297,9 @@ fn check_symlink_trash(path: &Path, trash_dir: &Path) -> Result<(), FsOpError> {
         Some(dev) if dev == link_dev => Ok(()),
         _ => Err(FsOpError::TrashRefused {
             path: path.to_path_buf(),
-            reason: "symlink on another filesystem than the trash".into(),
+            reason: "the symlink is on another device than the trash, which the trash \
+                     backend cannot move safely; the link and its target are untouched"
+                .into(),
         }),
     }
 }
@@ -385,19 +410,29 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// A hidden name next to `p` that only this process uses.
+fn temp_sibling(p: &Path) -> PathBuf {
+    let name = p.file_name().unwrap_or_default().to_string_lossy();
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    p.with_file_name(format!(".{name}.vr-tmp-{}-{seq}", std::process::id()))
+}
+
 /// `a.txt` → `.a.txt.vr-tmp-…` → `A.txt`; on failure of the second step the
 /// temp name is moved back, so the file always keeps one of its names.
 fn rename_via_temp(from: &Path, to: &Path, sys: &RenameFn) -> Result<(), FsOpError> {
-    let name = from.file_name().unwrap_or_default().to_string_lossy();
-    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = from.with_file_name(format!(".{name}.vr-tmp-{}-{seq}", std::process::id()));
+    let tmp = temp_sibling(from);
     move_with(from, &tmp, sys)?;
     match move_with(&tmp, to, sys) {
         Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = move_with(&tmp, from, sys);
-            Err(e)
-        }
+        Err(e) => match move_with(&tmp, from, sys) {
+            Ok(()) => Err(e),
+            // The temp name is hidden in the tree; the error must say where the file is.
+            Err(_) => Err(FsOpError::LeftAt {
+                path: tmp,
+                intended: to.to_path_buf(),
+                source: Box::new(e),
+            }),
+        },
     }
 }
 
@@ -430,30 +465,136 @@ fn move_with(from: &Path, to: &Path, sys: &RenameFn) -> Result<(), FsOpError> {
     }
     let meta = fs::symlink_metadata(from).map_err(io_err(from))?;
     if !meta.is_dir() {
-        // link(2) does not follow symlinks and fails with EEXIST atomically.
-        match fs::hard_link(from, to) {
-            Ok(()) => return fs::remove_file(from).map_err(io_err(from)),
-            Err(e)
-                if !matches!(
-                    e.kind(),
-                    io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
-                ) =>
-            {
-                return Err(move_err(from, to, e));
-            }
-            // Filesystem without hard links (vfat, exfat): checked rename below.
-            Err(_) => {}
-        }
+        return link_move(from, to, &LinkOps::REAL);
     }
-    // Checked rename. Race window: something created at `to` between the check
-    // and rename(2) could be replaced. For a directory source rename(2) only
+    // Checked rename for directories. Race window: something created at `to`
+    // between the check and rename(2) could be replaced, but rename(2) only
     // replaces an empty directory (non-empty → ENOTEMPTY, file → ENOTDIR), so
-    // no file content can be lost; files reach this only on filesystems with
-    // neither RENAME_NOREPLACE nor hard links.
+    // no file content can be lost.
     if exists(to) {
         return Err(FsOpError::AlreadyExists(to.to_path_buf()));
     }
     fs::rename(from, to).map_err(|e| move_err(from, to, e))
+}
+
+/// Syscalls of the link-based move, as seams for tests.
+struct LinkOps<'a> {
+    rename: &'a (dyn Fn(&Path, &Path) -> io::Result<()> + 'a),
+    link: &'a (dyn Fn(&Path, &Path) -> io::Result<()> + 'a),
+    remove: &'a (dyn Fn(&Path) -> io::Result<()> + 'a),
+}
+
+fn sys_rename(a: &Path, b: &Path) -> io::Result<()> {
+    fs::rename(a, b)
+}
+
+fn sys_link(a: &Path, b: &Path) -> io::Result<()> {
+    fs::hard_link(a, b)
+}
+
+fn sys_remove(p: &Path) -> io::Result<()> {
+    fs::remove_file(p)
+}
+
+impl LinkOps<'static> {
+    const REAL: LinkOps<'static> = LinkOps {
+        rename: &sys_rename,
+        link: &sys_link,
+        remove: &sys_remove,
+    };
+}
+
+/// Moves a file or symlink where `RENAME_NOREPLACE` is missing, without ever
+/// unlinking or replacing a name someone else can write to:
+/// 1. rename `from` to a private temp name — atomically takes whatever is at
+///    `from` right now, so a save landing on `from` afterwards stays there;
+/// 2. `link(temp, to)` — fails with EEXIST instead of replacing `to`;
+/// 3. unlink the temp name, which only this process uses.
+///
+/// On failure the file goes back to `from` (again by link, no replace); if
+/// that name has been taken meanwhile, `LeftAt` says where the file is.
+fn link_move(from: &Path, to: &Path, ops: &LinkOps) -> Result<(), FsOpError> {
+    let tmp = temp_sibling(from);
+    // The temp name is unique to this process and call, so a plain rename
+    // cannot replace anyone's file.
+    (ops.rename)(from, &tmp).map_err(|e| move_err(from, to, e))?;
+    match (ops.link)(&tmp, to) {
+        Ok(()) => (ops.remove)(&tmp).map_err(|e| FsOpError::BothNamesLeft {
+            from: tmp.clone(),
+            to: to.to_path_buf(),
+            source: e,
+        }),
+        // Filesystem without hard links (vfat, exfat): checked rename, the
+        // window documented under D25 (a file created at `to` between the
+        // check and rename(2) could be replaced).
+        Err(e) if links_unsupported(&e) => {
+            if exists(to) {
+                return restore(
+                    &tmp,
+                    from,
+                    to,
+                    ops,
+                    FsOpError::AlreadyExists(to.to_path_buf()),
+                );
+            }
+            match (ops.rename)(&tmp, to) {
+                Ok(()) => Ok(()),
+                Err(e) => restore(&tmp, from, to, ops, dest_err(from, to, e)),
+            }
+        }
+        Err(e) => restore(&tmp, from, to, ops, dest_err(from, to, e)),
+    }
+}
+
+/// Puts the file from `tmp` back at `from`, never replacing a file saved
+/// there meanwhile, and returns `err` (the reason the move failed).
+fn restore(
+    tmp: &Path,
+    from: &Path,
+    to: &Path,
+    ops: &LinkOps,
+    err: FsOpError,
+) -> Result<(), FsOpError> {
+    let left_at = |err: FsOpError| FsOpError::LeftAt {
+        path: tmp.to_path_buf(),
+        intended: to.to_path_buf(),
+        source: Box::new(err),
+    };
+    match (ops.link)(tmp, from) {
+        Ok(()) => match (ops.remove)(tmp) {
+            Ok(()) => Err(err),
+            Err(e) => Err(FsOpError::BothNamesLeft {
+                from: tmp.to_path_buf(),
+                to: from.to_path_buf(),
+                source: e,
+            }),
+        },
+        Err(le) if links_unsupported(&le) && !exists(from) => match (ops.rename)(tmp, from) {
+            Ok(()) => Err(err),
+            Err(_) => Err(left_at(err)),
+        },
+        Err(_) => Err(left_at(err)),
+    }
+}
+
+/// link(2) refused because the filesystem has no hard links (EPERM on vfat),
+/// not because the target exists.
+fn links_unsupported(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+    )
+}
+
+/// An error of a step whose source is the private temp name: it is about `to`.
+fn dest_err(from: &Path, to: &Path, e: io::Error) -> FsOpError {
+    if e.kind() == io::ErrorKind::CrossesDevices {
+        return FsOpError::CrossDevice {
+            from: from.to_path_buf(),
+            to: to.to_path_buf(),
+        };
+    }
+    io_err(to)(e)
 }
 
 /// Copies one entry. The bool says whether `to` had been created when the
@@ -971,10 +1112,224 @@ mod tests {
         }
         let err = check_symlink_trash(&root.join("link"), other_dev).unwrap_err();
         assert!(matches!(err, FsOpError::TrashRefused { .. }), "{err:?}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("another device than the trash") && msg.contains("untouched"),
+            "{msg}"
+        );
         // A trash dir that does not exist yet is judged by its nearest existing parent.
         check_symlink_trash(&root.join("link"), &root.join("data/Trash")).unwrap();
         check_symlink_trash(&root.join("plain.txt"), other_dev).unwrap();
         assert!(root.join("link").exists() && root.join("outside").is_dir());
+    }
+
+    use std::cell::RefCell;
+
+    /// A `remove` seam that records every call.
+    fn recording_remove<'a>(
+        removed: &'a RefCell<Vec<PathBuf>>,
+        remove_ok: bool,
+    ) -> impl Fn(&Path) -> io::Result<()> + 'a {
+        move |p: &Path| {
+            removed.borrow_mut().push(p.to_path_buf());
+            if remove_ok {
+                fs::remove_file(p)
+            } else {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            }
+        }
+    }
+
+    fn is_own_temp(p: &Path, of: &str) -> bool {
+        p.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&format!(".{of}.vr-tmp-"))
+    }
+
+    fn dir_names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn link_move_only_removes_its_own_temp_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (from, to) = (root.join("a.txt"), root.join("b.txt"));
+        write(&from, "a");
+        let removed = RefCell::new(Vec::new());
+        let remove = recording_remove(&removed, true);
+        let ops = LinkOps {
+            rename: &sys_rename,
+            link: &sys_link,
+            remove: &remove,
+        };
+        link_move(&from, &to, &ops).unwrap();
+        assert_eq!(read(&to), "a");
+        assert_eq!(dir_names(root), ["b.txt"]);
+        let removed = removed.borrow().clone();
+        assert!(!removed.is_empty());
+        for p in &removed {
+            assert!(p != &from && p != &to, "removed a shared name: {p:?}");
+            assert!(is_own_temp(p, "a.txt"), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn link_move_keeps_a_save_made_during_the_move() {
+        // An editor or agent atomically saves `from` right after the source was
+        // taken: the new save must survive untouched under `from`.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (from, to) = (root.join("a.txt"), root.join("b.txt"));
+        write(&from, "old");
+        let from_c = from.clone();
+        let saving_link = move |a: &Path, b: &Path| {
+            if !exists(&from_c) {
+                fs::write(from_c.with_file_name("a.txt.save"), "new save").unwrap();
+                fs::rename(from_c.with_file_name("a.txt.save"), &from_c).unwrap();
+            }
+            fs::hard_link(a, b)
+        };
+        let rename = |a: &Path, b: &Path| fs::rename(a, b);
+        let remove = |p: &Path| fs::remove_file(p);
+        let ops = LinkOps {
+            rename: &rename,
+            link: &saving_link,
+            remove: &remove,
+        };
+        link_move(&from, &to, &ops).unwrap();
+        assert_eq!(read(&to), "old");
+        assert_eq!(read(&from), "new save");
+        assert_eq!(dir_names(root), ["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn link_move_existing_target_restores_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (from, to) = (root.join("a.txt"), root.join("b.txt"));
+        write(&from, "a");
+        write(&to, "b");
+        let removed = RefCell::new(Vec::new());
+        let remove = recording_remove(&removed, true);
+        let ops = LinkOps {
+            rename: &sys_rename,
+            link: &sys_link,
+            remove: &remove,
+        };
+        let err = link_move(&from, &to, &ops).unwrap_err();
+        assert!(
+            matches!(err, FsOpError::AlreadyExists(ref p) if *p == to),
+            "{err:?}"
+        );
+        assert_eq!(read(&from), "a");
+        assert_eq!(read(&to), "b");
+        assert_eq!(dir_names(root), ["a.txt", "b.txt"]);
+        assert!(
+            removed
+                .borrow()
+                .clone()
+                .iter()
+                .all(|p| is_own_temp(p, "a.txt"))
+        );
+    }
+
+    #[test]
+    fn link_move_reports_both_names_when_temp_cannot_be_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (from, to) = (root.join("a.txt"), root.join("b.txt"));
+        write(&from, "a");
+        let removed = RefCell::new(Vec::new());
+        let remove = recording_remove(&removed, false);
+        let ops = LinkOps {
+            rename: &sys_rename,
+            link: &sys_link,
+            remove: &remove,
+        };
+        let err = link_move(&from, &to, &ops).unwrap_err();
+        match &err {
+            FsOpError::BothNamesLeft { from: f, to: t, .. } => {
+                assert!(is_own_temp(f, "a.txt"), "{f:?}");
+                assert_eq!(t, &to);
+                assert_eq!(read(f), "a", "the error names where the file is");
+            }
+            other => panic!("expected BothNamesLeft, got {other:?}"),
+        }
+        assert!(err.to_string().contains("nothing was deleted"));
+        assert_eq!(read(&to), "a");
+    }
+
+    #[test]
+    fn link_move_reports_temp_when_source_name_was_taken() {
+        // The target exists, and while the move runs a new file is saved at
+        // `from`; the original stays under the temp name, which the error names.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (from, to) = (root.join("a.txt"), root.join("b.txt"));
+        write(&from, "a");
+        write(&to, "b");
+        let from_c = from.clone();
+        let saving_link = move |a: &Path, b: &Path| {
+            if !exists(&from_c) {
+                fs::write(&from_c, "new save").unwrap();
+            }
+            fs::hard_link(a, b)
+        };
+        let rename = |a: &Path, b: &Path| fs::rename(a, b);
+        let remove = |p: &Path| fs::remove_file(p);
+        let ops = LinkOps {
+            rename: &rename,
+            link: &saving_link,
+            remove: &remove,
+        };
+        let err = link_move(&from, &to, &ops).unwrap_err();
+        match &err {
+            FsOpError::LeftAt { path, .. } => {
+                assert!(is_own_temp(path, "a.txt"), "{path:?}");
+                assert_eq!(read(path), "a");
+            }
+            other => panic!("expected LeftAt, got {other:?}"),
+        }
+        assert_eq!(read(&from), "new save");
+        assert_eq!(read(&to), "b");
+    }
+
+    #[test]
+    fn case_rename_reports_temp_name_when_restore_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(&root.join("a.txt"), "a");
+        let calls = std::cell::Cell::new(0);
+        // Step 1 (to the temp name) works; step 2 and the move back fail.
+        let flaky = move |f: &Path, t: &Path| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                fs::rename(f, t)
+            } else {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            }
+        };
+        let err = rename_via_temp(&root.join("a.txt"), &root.join("A.txt"), &flaky).unwrap_err();
+        match &err {
+            FsOpError::LeftAt { path, intended, .. } => {
+                assert_eq!(intended, &root.join("A.txt"));
+                assert_eq!(read(path), "a", "the error names where the file is");
+                assert!(
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(".a.txt.vr-tmp-")
+                );
+            }
+            other => panic!("expected LeftAt, got {other:?}"),
+        }
     }
 
     const CHILD_PROJECT_VAR: &str = "VR_FS_TRASH_TEST_PROJECT";
