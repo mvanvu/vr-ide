@@ -15,7 +15,7 @@ max_agents: 5
 max_verifiers: 4
 test_isolation: per-crate   # crates compile separately; concurrent tasks only in different crates
 test_logins: none
-design_taste: "minimal, quiet terminal look; nvim-like density; no decoration that costs space"
+design_taste: "minimal, nvim-like density; no decoration that costs space; a colourful themed look (Dracula / Homebrew style) with its own background, not the terminal's default colours (user, 2026-11-24 20:40)"
 ---
 
 # Project profile — vr-ide

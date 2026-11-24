@@ -748,3 +748,26 @@ Fixtures deleted after the walk (FR-8 dir 360K).
 | BASE-25 guard | pass | fmt OK, clippy 0 |
 | BASE-14/15/17 | pass | no background tasks, fixtures under qa-artifacts/FR-8 removed |
 | Defects | none | |
+
+## QC FR-10
+Engine: pty harness (qa-artifacts/FR-10/fr10.py, fr10b.py), TERM=xterm-256color 80x24, legacy and kitty (answers CSI ? 0 u). Binary target/release/vr-ide (mtime 21:01:44, `cargo build --release` Finished, no source newer than the binary).
+Results (qc_legacy_show.txt, qc_kitty_show.txt, qc_extra.txt; the non-SHOW runs of the old section are void: tree hidden by design, harness crashes on click):
+- (1) HIDDEN explorer at start-up: both modes.
+- (2) ctrl+e then Down Right: WORKS both modes; application-cursor ESC O B / ESC O C: WORKS both. Enter opens file, Home, shift+Down, ctrl+w: WORKS.
+- (3) ctrl+e shows, ctrl+e hides (typing "Q" reaches b.txt), ctrl+e shows again, arrows move: WORKS both.
+- (4) ctrl+e from find bar: hides (bar stays), editor focus; show again + arrows: PASS both. From search panel (kitty, ctrl+shift+f): explorer shown, arrows work: PASS. With a file open: PASS (flow above).
+- (5) ctrl+p opens Go to File: PASS; ctrl+b toggles: PASS; ctrl+b then F6 focuses tree: PASS; mouse click root row: WORKS both (tree shown).
+- (6) legacy ctrl+shift+e = ctrl+e: from hidden shows + focuses (WORKS); from a shown tree hides it. Kitty ctrl+shift+e: focus, WORKS. Esc / palette close return to the editor (D100, unchanged, listed as "FAILS" by the old scenario by design). ctrl+b shows without focus (unchanged by design).
+- AC-8: Enter opens b.txt from the tree, F6 back, Home: WORKS both.
+Tests: `cargo test -p vr-ide --lib -- explorer_tests:: app_tests::` 65 passed, 0 failed; `cargo test -p vr-config` 3 + 16 passed.
+Notes (not defects): a shown tree + legacy terminal: ctrl+shift+e hides it (D143); a startup notice lists unreported keys incl. ctrl+shift+e.
+
+## Rule check FR-10
+| rule | status | evidence |
+|---|---|---|
+| AC-8 | pass | keyboard tree use incl. Enter-open, both terminal modes |
+| D100 | pass | Esc/Enter behaviour unchanged in replay |
+| D101/D142 | pass | hidden at start, amended per user |
+| D143/D144 | pass | find bar / search panel / legacy ctrl+e checked |
+| USER-1 | pass | ctrl+e override logged (D142) |
+| BASE-14/15/17 | pass | background run, nothing left running, no data probes |

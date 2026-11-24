@@ -41,6 +41,7 @@ const KNOWN: &[&str] = &[
     "nav.goto_line",
     "file.reload",
     "explorer.toggle",
+    "explorer.toggle_focus",
     "explorer.focus",
     "explorer.reveal",
     "explorer.new_file",

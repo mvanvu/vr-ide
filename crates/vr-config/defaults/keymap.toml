@@ -25,7 +25,6 @@
 "f1" = "app.palette"
 "ctrl+q" = "app.quit"
 "ctrl+p" = "file.goto"
-"ctrl+e" = "file.goto"
 "ctrl+o" = "file.open"
 "ctrl+s" = "file.save"
 "ctrl+shift+s" = "file.save_as"
@@ -36,6 +35,9 @@
 "ctrl+pagedown" = "tab.next"
 "ctrl+pageup" = "tab.prev"
 "ctrl+b" = "explorer.toggle"
+# Not VS Code's (there ctrl+e is a second Go to File key): the user's choice. Hidden explorer:
+# show it and focus it; shown: hide it and the editor gets the keys.
+"ctrl+e" = "explorer.toggle_focus"
 "ctrl+shift+e" = "explorer.focus"
 "ctrl+shift+f" = "search.project"
 "ctrl+shift+h" = "search.replace_project"
