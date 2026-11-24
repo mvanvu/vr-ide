@@ -1,13 +1,16 @@
 //! A shell in a PTY with an emulator fed by a reader thread.
 //!
-//! Threads per terminal (all end on their own once the child and its PTY are gone):
-//! - reader: reads the PTY master, feeds the emulator in small locked slices, raises `Notify`;
-//! - writer: writes queued input (keys, pastes, emulator replies) so neither the UI nor the
-//!   reader ever blocks on a program that does not read its input;
+//! Threads per terminal (they end when the PTY is hung up, and at the latest when `Drop` fires
+//! the wake eventfd, even if a process outside the child's group still holds the slave):
+//! - reader: reads its own non-blocking copy of the PTY master, feeds the emulator in small
+//!   locked slices, raises `Notify`;
+//! - writer: writes queued input (keys, pastes, emulator replies; at most
+//!   [`MAX_PENDING_INPUT`] bytes queued) so neither the UI nor the reader ever blocks on a
+//!   program that does not read its input;
 //! - waiter: waits for the child without reaping it, then reaps it under the status lock so a
 //!   process-group signal can never reach a recycled pid.
 
-use std::io::{Read, Write};
+use std::os::fd::{BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -19,6 +22,8 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config, Osc52, Term};
 use alacritty_terminal::vte::ansi::Processor;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use rustix::event::{PollFd, PollFlags, poll};
+use rustix::io::Errno;
 
 use crate::snapshot;
 use crate::types::{Grid, Notify, SpawnOptions, TermError, TermStatus};
@@ -33,6 +38,70 @@ const READ_BUF: usize = 64 * 1024;
 const PARSE_SLICE: usize = 4 * 1024;
 /// Input queued for a program that is not reading it; more is refused rather than buffered.
 pub const MAX_PENDING_INPUT: usize = 1024 * 1024;
+
+/// Variables that describe the terminal vr-ide itself runs in; a shell in vr-ide's terminal must
+/// not see them (`tmux` would refuse to start as "nested", programs would size themselves to
+/// the wrong window or pick features of the wrong emulator).
+const OUTER_TERMINAL_ENV: &[&str] = &[
+    "TMUX",
+    "TMUX_PANE",
+    "STY",
+    "WINDOW",
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "TERM_SESSION_ID",
+    "TERMINAL_EMULATOR",
+    "VTE_VERSION",
+    "COLUMNS",
+    "LINES",
+    "WINDOWID",
+    "KITTY_WINDOW_ID",
+    "KITTY_PID",
+    "KITTY_PUBLIC_KEY",
+    "KITTY_LISTEN_ON",
+    "KITTY_INSTALLATION_DIR",
+    "WEZTERM_PANE",
+    "WEZTERM_UNIX_SOCKET",
+    "WEZTERM_EXECUTABLE",
+    "WEZTERM_EXECUTABLE_DIR",
+    "WEZTERM_CONFIG_DIR",
+    "WEZTERM_CONFIG_FILE",
+    "ALACRITTY_WINDOW_ID",
+    "ALACRITTY_SOCKET",
+    "ALACRITTY_LOG",
+    "KONSOLE_VERSION",
+    "KONSOLE_DBUS_SESSION",
+    "KONSOLE_DBUS_SERVICE",
+    "KONSOLE_DBUS_WINDOW",
+    "SHELL_SESSION_ID",
+    "GNOME_TERMINAL_SCREEN",
+    "GNOME_TERMINAL_SERVICE",
+    "TERMINATOR_UUID",
+    "TERMINATOR_DBUS_NAME",
+    "TERMINATOR_DBUS_PATH",
+    "TILIX_ID",
+    "GHOSTTY_RESOURCES_DIR",
+    "GHOSTTY_BIN_DIR",
+    "GHOSTTY_SHELL_FEATURES",
+    "WT_SESSION",
+    "WT_PROFILE_ID",
+    "ITERM_SESSION_ID",
+    "ITERM_PROFILE",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+    "VSCODE_INJECTION",
+    "VSCODE_GIT_IPC_HANDLE",
+];
+
+/// Adds `len` to the queued-input count unless that passes [`MAX_PENDING_INPUT`]; on refusal
+/// returns the count as it was.
+fn reserve(pending: &AtomicUsize, len: usize) -> Result<(), usize> {
+    pending
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            (n + len <= MAX_PENDING_INPUT).then_some(n + len)
+        })
+        .map(|_| ())
+}
 
 pub(crate) struct Size {
     pub cols: usize,
@@ -72,8 +141,9 @@ impl EventListener for Listener {
             Event::ResetTitle => *lock(&self.title) = None,
             // Replies to queries (cursor position, device attributes) go through the input queue:
             // writing here could block the reader with the emulator locked.
-            Event::PtyWrite(text) => {
-                self.pending.fetch_add(text.len(), Ordering::SeqCst);
+            // Over the cap the reply is dropped: a program that leaves its input unread cannot use
+            // the answer, and queueing it would let printed queries grow memory without bound.
+            Event::PtyWrite(text) if reserve(&self.pending, text.len()).is_ok() => {
                 let _ = self.input.send(Input::Bytes(text.into_bytes()));
             }
             // Clipboard (OSC 52 is disabled), colour and pixel-size queries are not answered;
@@ -123,6 +193,9 @@ pub struct Terminal {
     threads: Vec<JoinHandle<()>>,
     /// Disconnects once every helper thread has ended.
     alive: Receiver<()>,
+    /// Made readable by `Drop` so the reader and writer leave their polls and close their
+    /// master fds even when something outside our process group still holds the slave.
+    wake: Arc<OwnedFd>,
 }
 
 impl std::fmt::Debug for Terminal {
@@ -154,6 +227,9 @@ impl Terminal {
         let mut cmd = CommandBuilder::new(&opts.shell);
         cmd.args(&opts.args);
         cmd.cwd(&opts.cwd);
+        for key in OUTER_TERMINAL_ENV {
+            cmd.env_remove(key);
+        }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         for (key, value) in &opts.env {
@@ -172,11 +248,7 @@ impl Terminal {
             .process_id()
             .and_then(|p| rustix::process::Pid::from_raw(p as i32));
 
-        let io = pair
-            .master
-            .try_clone_reader()
-            .and_then(|r| Ok((r, pair.master.take_writer()?)));
-        let (reader, writer) = match io {
+        let (reader, writer, wake) = match pty_io(pair.master.as_ref()) {
             Ok(io) => io,
             Err(e) => {
                 if let Some(pid) = pid {
@@ -250,14 +322,16 @@ impl Terminal {
             size: Mutex::new((opts.cols, opts.rows)),
             threads: vec![waiter],
             alive,
+            wake: wake.clone(),
         };
+        let reader_wake = wake.clone();
         terminal.threads.push(spawn_thread(
             "vr-term-reader",
-            Box::new(move || read_loop(reader, &shared)),
+            Box::new(move || read_loop(&reader, &reader_wake, &shared)),
         )?);
         terminal.threads.push(spawn_thread(
             "vr-term-writer",
-            Box::new(move || write_loop(writer, input_rx, &pending)),
+            Box::new(move || write_loop(&writer, &wake, input_rx, &pending)),
         )?);
         drop(alive_tx);
         Ok(terminal)
@@ -273,6 +347,11 @@ impl Terminal {
         *lock(&self.size)
     }
 
+    /// Bytes queued for the program (typed input and emulator replies) and not yet written.
+    pub fn pending_input(&self) -> usize {
+        self.pending.load(Ordering::SeqCst)
+    }
+
     /// Queues bytes for the program (use the `encode_*` helpers). Never blocks.
     pub fn write(&self, bytes: &[u8]) -> Result<(), TermError> {
         if self.status() != TermStatus::Running {
@@ -281,11 +360,7 @@ impl Terminal {
         if bytes.is_empty() {
             return Ok(());
         }
-        let pending = self.pending.load(Ordering::SeqCst);
-        if pending + bytes.len() > MAX_PENDING_INPUT {
-            return Err(TermError::InputBacklog(pending));
-        }
-        self.pending.fetch_add(bytes.len(), Ordering::SeqCst);
+        reserve(&self.pending, bytes.len()).map_err(TermError::InputBacklog)?;
         self.input.send(Input::Bytes(bytes.to_vec())).map_err(|_| {
             self.pending.fetch_sub(bytes.len(), Ordering::SeqCst);
             TermError::Closed
@@ -385,10 +460,12 @@ impl Drop for Terminal {
         self.shared.closed.store(true, Ordering::SeqCst);
         self.kill();
         let _ = self.input.send(Input::Stop);
+        // Wake the reader and writer: they return and close their master fds, so with ours
+        // gone the master is closed and the kernel hangs up whatever still holds the slave.
+        let _ = rustix::io::write(&*self.wake, &1u64.to_ne_bytes());
         self.master.take();
-        // Helper threads end once the child's side of the PTY closes. A grandchild that left
-        // the group (setsid) and still holds the PTY keeps the reader blocked: it is detached
-        // after JOIN_WAIT instead of holding up the caller.
+        // Normally both are gone within microseconds; a thread stuck anyway (never seen) is
+        // detached after JOIN_WAIT instead of holding up the caller.
         let deadline = Instant::now() + JOIN_WAIT;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -414,16 +491,61 @@ fn pty_size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
-fn read_loop(mut reader: Box<dyn Read + Send>, shared: &Shared) {
+/// Our own non-blocking, close-on-exec copies of the master for the reader and the writer, and
+/// the wake eventfd. portable-pty's reader / writer block in read/write, which `Drop` could not
+/// interrupt.
+fn pty_io(master: &(dyn MasterPty + Send)) -> std::io::Result<(OwnedFd, OwnedFd, Arc<OwnedFd>)> {
+    use rustix::event::{EventfdFlags, eventfd};
+    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+    use rustix::io::fcntl_dupfd_cloexec;
+    let raw = master
+        .as_raw_fd()
+        .ok_or_else(|| std::io::Error::other("pty master has no fd"))?;
+    // SAFETY: `master` owns `raw` and outlives this borrow; it is only duplicated here.
+    let fd = unsafe { BorrowedFd::borrow_raw(raw) };
+    // CLOEXEC: another terminal spawned later must not inherit (and so keep alive) this PTY.
+    let reader = fcntl_dupfd_cloexec(fd, 0)?;
+    let writer = fcntl_dupfd_cloexec(fd, 0)?;
+    // O_NONBLOCK lives on the shared open file description: one call covers every copy.
+    fcntl_setfl(&reader, fcntl_getfl(&reader)? | OFlags::NONBLOCK)?;
+    let wake = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
+    Ok((reader, writer, Arc::new(wake)))
+}
+
+/// Waits until `fd` is ready for `events` or `wake` fires; false on wake or a poll error.
+fn ready(fd: &OwnedFd, events: PollFlags, wake: &OwnedFd) -> bool {
+    loop {
+        let mut fds = [PollFd::new(fd, events), PollFd::new(wake, PollFlags::IN)];
+        match poll(&mut fds, None) {
+            Ok(_) if !fds[1].revents().is_empty() => return false,
+            Ok(_) if !fds[0].revents().is_empty() => return true,
+            Ok(_) | Err(Errno::INTR) => continue,
+            Err(_) => return false,
+        }
+    }
+}
+
+fn read_loop(reader: &OwnedFd, wake: &OwnedFd, shared: &Shared) {
     let mut parser: Processor = Processor::new();
     let mut buf = vec![0u8; READ_BUF];
     loop {
-        let n = match reader.read(&mut buf) {
-            Ok(0) => break,
+        // A holder of the slave that writes faster than we parse would never let the read hit
+        // EAGAIN (where the wake fd is polled), so look at the close flag on every round too.
+        if shared.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        let n = match rustix::io::read(reader, &mut buf[..]) {
+            // EOF, or EIO once every holder of the slave side has gone.
+            Ok(0) => return,
             Ok(n) => n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            // EIO once every holder of the slave side has gone.
-            Err(_) => break,
+            Err(Errno::INTR) => continue,
+            Err(Errno::AGAIN) => {
+                if ready(reader, PollFlags::IN, wake) {
+                    continue;
+                }
+                return;
+            }
+            Err(_) => return,
         };
         for slice in buf[..n].chunks(PARSE_SLICE) {
             while shared.snapshot_waiting.load(Ordering::SeqCst) > 0 {
@@ -435,15 +557,27 @@ fn read_loop(mut reader: Box<dyn Read + Send>, shared: &Shared) {
     }
 }
 
-fn write_loop(mut writer: Box<dyn Write + Send>, rx: Receiver<Input>, pending: &AtomicUsize) {
+fn write_loop(writer: &OwnedFd, wake: &OwnedFd, rx: Receiver<Input>, pending: &AtomicUsize) {
     while let Ok(Input::Bytes(bytes)) = rx.recv() {
-        let ok = writer
-            .write_all(&bytes)
-            .and_then(|()| writer.flush())
-            .is_ok();
+        let mut rest = &bytes[..];
+        let ok = loop {
+            if rest.is_empty() {
+                break true;
+            }
+            match rustix::io::write(writer, rest) {
+                Ok(n) => rest = &rest[n..],
+                Err(Errno::INTR) => {}
+                Err(Errno::AGAIN) => {
+                    if !ready(writer, PollFlags::OUT, wake) {
+                        break false;
+                    }
+                }
+                Err(_) => break false,
+            }
+        };
         pending.fetch_sub(bytes.len(), Ordering::SeqCst);
         if !ok {
-            break;
+            return;
         }
     }
 }
