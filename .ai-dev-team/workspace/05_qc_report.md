@@ -241,3 +241,71 @@ Same probe (release) after round 2.
 Cleanup done; probe source and race2 logs remain.
 
 QC_PASS T9 R2
+
+## QC T5 — QC_FAIL T5 (one racing-writer data-loss case, core save path)
+Build: release `target/release/vr-ide` built from commit 1188018 + dirty tree (13 changed/untracked entries, T5 files uncommitted); mtime 12:40, after the last change to crates/vr-ide/src. Engine: real binary under a pty (own VT emulator in `qa-artifacts/T5/qc_flows.py`, 80x24 unless noted, no DISPLAY, `VR_IDE_CONFIG_DIR`/`VR_IDE_STATE_DIR` in per-fixture temp dirs; DA1 answered, kitty query answered only in the kitty flows). One script, one result line per flow.
+
+| Flow | Result | Evidence |
+|---|---|---|
+| AC-1 title shows root | pass | OSC title `vr-ide — <fixture root>`, tab bar row shows root; 40x12 terminal starts and exits 0. Explorer tree is T8, not checked. |
+| AC-3 type/Vietnamese/backspace/undo/redo/save | pass | typed "ASCII " + "Tiếng Việt"; `●` before save, gone after ctrl+s; disk `ASCII Tiếng Việtbase\n`. Exact-bytes run: "ab"+"Tiếng Việt"+"e◌́", backspace removes the whole grapheme, backspace removes "t" → disk `abTiếng Việ` (want identical). ctrl+y and, in kitty mode, ctrl+shift+z (`CSI 122;6u`) redo → disk `one`. |
+| AC-4 copy/cut/paste, OSC 52 | pass | no DISPLAY: copy and cut each emit `ESC]52;c;aGVsbG8=` (decodes `hello`); in-app paste after copy+cut → disk ` worldhellohello\n`. |
+| AC-5 user keymap | pass | `ctrl+s=file.save_as`, `ctrl+t=no.such_command` → startup notice `keymap: ctrl+t is bound to unknown command "no.such_command" (global)`, no crash; ctrl+s then does not write (T6 prompt pending). A keymap with `ctrl+s=file.save` saves (`Yabc\n`). |
+| AC-7a unmodified file `echo >>` | pass | new content on screen after 0.204 s. |
+| AC-7b modified buffer + external change | pass | tab `!`, status `[changed on disk]`, buffer `Mone` kept, ctrl+s leaves disk = external version. |
+| AC-7c Save (overwrite) | pass | ctrl+s refused (disk `one\next\n`); only the bound `file.save_overwrite` command (ctrl+u in the test keymap) writes `Mone\n`. |
+| AC-7d external delete | pass | buffer kept, tab `w.txt (deleted)`. |
+| Concurrent writer, 30 runs (script) | FAIL | writer rewrites every ~1 ms (in-place and temp+rename alternating, start offset -2..+3 ms around the ctrl+s byte). 27 refused, 3 saved, 0 torn, 1 violation: run 11 (rename mode, +3 ms): save reported success and a complete writer version was replaced by our bytes, then later writer versions overwrote ours. |
+| Concurrent writer, extra 150 runs (temp+rename writer, +2.0..+4.75 ms) | FAIL | 41 saved, 109 refused, 0 torn; 1 more lost-write case (run 71, +3.25 ms: writer version 1 replaced by our save, save reported success). Total 2 lost writes in 180 racing runs. strace of a saved run shows the last `statx` of the target 43 us before `rename(.vr-ide-save-*.tmp, r.txt)` — the window that `write_atomic` documents (D25, no compare-and-swap rename). |
+| AC-18 100 MB | pass | 104857600 bytes; first frame 0.123 s after spawn; pgdn x50 latency (key sent → screen changed, 5 ms poll): median 12.4 ms, p95 12.9 ms, max 14.2 ms; RSS 122 MB after scrolling. |
+| Recovery after forced panic | n-o | no debug hook that panics the binary; SIGABRT/SIGKILL are not panics. Covered only by unit test `panic_hook_writes_recovery` (mode 0600, project file untouched); terminal restore after a panic not run on the real binary. |
+
+Defect 1 (blocker by the ledger severity anchor; code is vr-core `Document::save` → `write_atomic`, T4 / D25, reached through T5's ctrl+s): a writer replacing the file in the ~40 us between the last freshness `statx` and `rename(2)` is silently replaced and the app reports a clean save.
+Repro: fixture `r.txt` = `base\n`, `vr-ide r.txt`, type `X`; a second process starts `rename()`-ing complete versions over `r.txt` every ~1 ms starting 3 ms after the byte `\x13` (ctrl+s) is written to the pty; about 1 in 40 saves that succeed loses a writer version (script: `qc_flows.py <bin> <dir> CONCURRENT`). Expected: save refused with the notice, or no writer version replaced. Needs a decision by the leader: either accept D25 as the documented limit, or re-open T4.
+
+Observation (minor, not blocking): in a terminal without the kitty protocol the persistent "this terminal does not report these keys…" startup warning fills the 3 notice rows, so the ctrl+s refusal notice is not visible until Esc is pressed 3 times; the tab `!` and status `[changed on disk]` do show. With kitty keys the refusal notice shows (`w.txt changed on disk; your unsaved changes are kept`).
+
+Cleanup: fixtures, the 100 MB file and probe scripts removed; only `qc_flows.py` (plus the developer's `pty_smoke.py`, `release_checks.sh`) remain in `qa-artifacts/T5/`. No processes left (all pty children killed by pid).
+
+## Rule check T5
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-23 every entry path | pass | save by ctrl+s and by command (`file.save_overwrite`, `file.save_as`); copy/cut/paste by key; external change by real watcher on the real binary. |
+| BASE-26 | n-a | not a rewrite. |
+| BASE-9 / ledger concurrent-writer check | fail | see Defect 1: 2 lost writes in 180 racing runs, via vr-core write_atomic (documented D25 window). |
+| BASE-14 | pass | no waiting loops; builds in foreground via run-heavy (6 s). |
+| BASE-15 | pass | killed only own pty children by pid. |
+| BASE-17 | pass | probes wrote only to fixtures under `qa-artifacts/T5/`, removed. |
+| BASE-19 | pass | each flow's result line written to this report after it ran. |
+| BASE-24 | pass | no git index/history commands (`git init` only inside fixtures, deleted). |
+| BASE-46 | pass | evidence on binary built 12:40 from the current tree (commit 1188018 + dirty). |
+| COST-1 | pass | release build through run-heavy.sh. |
+| COST-13 | pass | scripts and fixtures under `qa-artifacts/T5/`. |
+| AC-1, AC-3, AC-4, AC-5, AC-7, AC-18 | pass | rows above. |
+
+## QC T4 re-check (round 3) — QC_PASS T4 R3
+Build: worktree `.worktrees/T4r3` (branch t4-round3), `crates/vr-core` and `crates/vr-search` via path dependencies, own target dirs. Engine: Rust probes (release). Logs: `qa-artifacts/T4/r3/`. Fixtures, target dirs and the 100 MB file removed afterwards.
+| Check | Result | Evidence |
+|---|---|---|
+| AC-3 corpus (LF, CRLF, CR, mixed, BOM, no final newline, Vietnamese, empty, 0o755, symlinks, Latin-1/UTF-16 read-only) | pass | 46 PASS, 0 FAIL; byte-exact; mode and symlinks kept; `ls -a` shows no temp or conflict files. Unwritable 0o444 file: refused (pass). 0o464 file: refused with PermissionDenied (the one FAIL line is the known probe entry-count bug from round 1, entries list shows only the file) |
+| Concurrent writer, 4 runs x 50 at the round-2 offsets (400 us and 2000 us steps, 8 loops, 400 saves) | pass | Ok/ChangedOnDisk at 400 us: 43/7, 42/8, 43/7, 42/8; at 2000 us: 48/2 in all four. Every Err left the writer's content; every Ok left our bytes or later writer bytes. Our-bytes-with-writer-write-during-save (replaced a writer version): 0 in all 8 loops. 0 bad contents, 0 leftover or conflict files |
+| Revert (save C1, external C2, reload, file back to C1 bytes) | pass | own save no event; external write 100 ms later Modified; revert to C1: Modified, `check_disk()` ChangedOnDisk, `save()` refused; temp+rename revert: Modified |
+| AC-18 100 MB open | pass | 104,857,638 bytes, 1,436,407 lines, open 116 ms and 120 ms (limit 2 s); peak RSS 223,028 kB (about 218 MB) |
+| vr-search probe (T9) AC-12 core | pass | plan writes nothing; CRLF and no-final-newline files byte-exact after apply; unconfirmed BOM file, Latin-1 (refused "not UTF-8") and binary files untouched; mode 750 kept; stale file refused ("changed on disk since the preview; not written") and its bytes kept; BOM apply after re-plan exact; directory has no extra files |
+| vr-search racing, 2 x 30 runs (atomic writer and in-place writer, 200 files, victim file rewritten every ~1 ms) | pass | atomic: dropped_or_torn 0, 14 refused, 16 Ok, other files all clean, 0 extra files; in-place: dropped_or_torn 0, 12 refused, 18 Ok, other files clean, 0 extra files. The "unchanged_but_apply_ok" figure (16 and 18; round 2 was 19) is the writer's own later write of content identical to the preview, which cannot be told from a lost replace by content, and the T9 probe counts it that way too; no torn or other content seen |
+
+## QC T5 re-check (round 1) — QC_PASS T5 R1
+Build: release `target/release/vr-ide` rebuilt 13:01 from commit 1188018 + dirty tree (19 changed/untracked entries; newest src edit 12:58:59). Same pty harness (`qa-artifacts/T5/qc_flows.py`, flows AC-3, AC-7, R1), concurrent-writer flow skipped as instructed (T4 escalation, re-test when it lands in vr-core).
+
+| Check | Result | Evidence |
+|---|---|---|
+| AC-3 Vietnamese typing, grapheme backspace, undo/redo (ctrl+y, kitty ctrl+shift+z), save | pass | disk `ASCII Tiếng Việtbase\n`; `abTiếng Việ` exact; redo → `one`; `●` before save, gone after. |
+| AC-7 a/b/c/d | pass | reload in 0.203 s; modified+external: tab `!`, buffer kept, ctrl+s refused, overwrite only via `file.save_overwrite` → `Mone\n`; delete keeps buffer. |
+| Hold ctrl+w 1 s (30 presses) on modified tab | pass | tab stays open, notice `m.txt has unsaved changes: ctrl+w / ctrl+f4 again to close without saving`; file untouched. (Recovery dir empty: nothing closed.) |
+| ctrl+q, Esc, wait 1 s, ctrl+q | pass | process alive, warning `1 unsaved file(s): ctrl+q again to quit without saving` shown again. |
+| Bracketed paste `a\rb` and `a\r\nb` into LF file, save | pass | disk `a\nbx\n` both cases, no CR. |
+| 10 MB single line, cursor at end (Ln 1, Col 10485771) | pass | first frame 0.022 s; End 11.4 ms; per key (30 arrows + 10 typed, 5 ms poll): median 10.9 ms, p95 11.7 ms, max 11.8 ms. |
+| Legacy terminal (no kitty): ctrl+s refusal visible without Esc | pass | bottom row shows `w.txt changed on disk; your unsaved changes are kept  (+1 more · Esc)` immediately after ctrl+s. |
+| 40x12 status bar file name | pass | ` name_of_file.txt · Ln 1, Col 1`, still visible after typing. |
+
+Cleanup: fixtures removed, no processes left, no git index changes.

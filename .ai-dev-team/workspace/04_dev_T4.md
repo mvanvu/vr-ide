@@ -207,3 +207,66 @@ Files changed this round: crates/vr-core/src/document.rs, crates/vr-core/src/wat
 | BASE-38 | pass | rustfmt on document.rs, watch.rs only |
 | COST-9 | pass | nothing left running (ps) |
 | AC-7 | pass | revert_to_our_saved_content_is_reported, revert_without_reload_is_reported |
+
+## Fix round 3 (worktree .worktrees/T4r3, branch t4-round3)
+- Progress: read brief (T12 finding: strict racing-writer test loses ~13%), testutil.rs, 04_dev_T12.md, vr-search replace.rs commit_replace (D49). Plan: shared `vr_core::safe_replace` (exchange + verify swapped-out file + swap-back that must bring back our own inode, else keep a visible conflict copy; NOREPLACE when no file is expected; documented stat+rename fallback without EXCHANGE); Document::save and vr-search replace both use it; vr-core gains the workspace `rustix` dependency (D25/D45 crate).
+- Progress: red — new cfg(test) stage `BeforeSwap` (after the last check, right before the file is put in place) + 3 document tests: save_never_replaces_in_place_write_at_swap → `Ok(Saved { other_hard_links: 0 })` (agent version replaced), save_never_replaces_renamed_in_version_at_swap → `Ok(Saved { other_hard_links: 0 })`, save_never_replaces_file_created_at_swap → `assertion failed: matches!(doc.save(), Err(DocError::ChangedOnDisk))`. Strict racing test before the fix: `2/20 failed` ("lost write: 1 writer version(s) begun before the operation finished were replaced by our bytes and the operation reported success").
+- Progress: red — `vr_core::safe_replace` API on `todo!()` + 4 tests (replaces_an_unchanged_file, write_between_check_and_swap_is_swapped_back [exchange and fallback], version_put_in_place_during_swap_back_is_kept [new: swap-back must return our inode], create_if_absent_never_replaces) → 4 FAILED (not yet implemented).
+- Progress: green — helper implemented (logic moved from vr-search replace.rs, plus the inode check on swap-back and create_if_absent); `write_atomic` commits through it; vr-core 94 passed. Strict test un-ignored. vr-search `commit_replace` now a wrapper over the helper (its seam tests unchanged and green).
+
+### Design (closes the D25 window)
+- `save()` (check on): 1) the existing pre-check (stamp, else content) refuses early; 2) after the temp file is written and fsynced, `safe_replace::replace_if_unchanged`: check the target again, `renameat2(RENAME_EXCHANGE)` temp ⇄ target, then check the swapped-out file by content (length + SipHash = the snapshot hash; its ctime changed with the swap, so no stamp shortcut). Match → delete it, `Ok`. Mismatch → swap back; the file that comes back must be our temp inode → delete it, `ChangedOnDisk` (other version untouched at the path). If a third version was put at the path between the two swaps, or the swap-back / verify fails, that version is kept as `<name>.vr-ide-conflict-PID-N` (never deleted) and save returns `DocError::Io` whose message ends "kept at <path>".
+- File expected absent (deleted on disk): `create_if_absent` = `RENAME_NOREPLACE` → else hard link (atomic no-replace) → else check + rename.
+- `save_overwrite` / `save_as` (user chose): plain `rename` as before.
+- Not a loss by definition (testutil `visible = false`): a writer that holds the old file open and writes after the swap writes into a file no longer at the path.
+- Public API unchanged (`save/save_overwrite/save_as -> Result<Saved, DocError>`, `ChangedOnDisk`); additive: `pub mod vr_core::safe_replace`. vr-core gains `rustix.workspace = true` (fs feature, already a workspace dependency per D25/D45; Cargo.lock: rustix added under vr-core only).
+
+### Fallback without RENAME_EXCHANGE (for decisions.md)
+Proposed line: `D? (T4 r3) Save commit — Document::save and vr-search replace share vr_core::safe_replace: RENAME_EXCHANGE + content check of the swapped-out file + swap-back that must return our own inode (else the other version is kept as <name>.vr-ide-conflict-PID-N, never deleted, error "kept at"); absent target → RENAME_NOREPLACE → hard link → check+rename. Fallback where EXCHANGE answers EINVAL/ENOTSUP (non-Linux, some FUSE/network filesystems): check right before a plain rename(2); a write landing between that check and the rename is replaced (the D25/D32 window, measured ≈10–15 % under a racing writer on this machine); on vfat/exFAT without hard links the absent-target case has the same window. Amends D25 for vr-core and D49.`
+Code documents it in `crates/vr-core/src/safe_replace.rs` (module doc) and `create_if_absent` doc. Mutation evidence that the fallback has the window: forcing it in `save` → strict test `3/20 failed`.
+
+### Acceptance evidence
+(1) strict test enabled (testutil.rs, `#[ignore]` removed), 50 consecutive runs:
+```
+strict loop: pass=50 fail=0
+     13 save: ok=23 refused=17      (per-run split of the 40 racing saves; log: qa-artifacts/T4r3/strict_loop.log)
+     13 save: ok=22 refused=18
+     11 save: ok=24 refused=16
+      4 save: ok=26 refused=14
+      4 save: ok=25 refused=15
+mutant (exchange forced off): 3/20 failed  → restored
+```
+(2) `cargo test -p vr-core -p vr-fs -p vr-search` (worktree):
+```
+vr-core   test result: ok. 95 passed; 0 failed; 1 ignored (open_100mb, AC-18 timing)
+vr-fs     test result: ok. 43 passed; 0 failed; 1 ignored (pre-existing trash helper) + racing_writer 2 passed
+vr-search test result: ok. 34 passed; 0 failed; 1 ignored (pre-existing project.rs:817) + racing_writer 2 passed
+vr-search racing_writer + replace tests looped 30×: failures=0
+```
+`cargo clippy -p vr-core -p vr-search --all-targets --features vr-core/test-util -- -D warnings` → Finished, no warnings. `rustfmt --edition 2024 --check` on document.rs, safe_replace.rs, testutil.rs, lib.rs, vr-search replace.rs → exit 0. `ps`: no test process left.
+(3) fallback documented above and in code.
+
+Files changed (worktree): crates/vr-core/Cargo.toml (+rustix), Cargo.lock (rustix under vr-core), crates/vr-core/src/{lib.rs (+`pub mod safe_replace`), safe_replace.rs (new), document.rs (commit via helper, `holds_expected`, stage BeforeSwap, 3 tests), testutil.rs (strict test enabled)}, crates/vr-search/src/replace.rs (commit_replace → wrapper; exchange_files/keep_conflict/TmpHolds/commit_inner moved to vr-core). Main tree: .ai-dev-team/capabilities.md (safe_replace line), these notes. Edit methods: Write for the new module (tests first, then the implementation spliced over the saved test module), Edit for document.rs, perl -0pi for small multi-edits and the mutation, sed/cat splice for replace.rs.
+
+### Reuse
+| Needed | Looked in | Result |
+|---|---|---|
+| compare-and-swap replace | vr-search replace.rs `commit_replace` (D49), capabilities.md | moved into `vr_core::safe_replace` (strengthened swap-back inode check), vr-search now calls it — one implementation |
+| racing writer | `vr_core::testutil` (T12) | reused unchanged; strict test enabled |
+
+### Rule rows touched
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-2 | pass | Document API unchanged; additive `vr_core::safe_replace` |
+| BASE-3 | pass | reds above (3 document, 4 helper, strict 2/20) before code; mutation 3/20 |
+| BASE-4 | pass | Acceptance evidence above |
+| BASE-8 | pass | rustix is a workspace dependency (D25/D45); added to vr-core per leader brief (shared helper) |
+| BASE-16 | pass | Reuse table; capabilities.md line |
+| BASE-32 | pass | D24/D25/D49 no-overwrite, now without the window where EXCHANGE exists |
+| BASE-38 | pass | rustfmt on the 5 changed files only |
+| COST-9 | pass | no background tasks; ps check clean |
+| AC-3 | pass | save still atomic (exchange/rename), all save_* tests green |
+
+## Escalation (worktree .worktrees/T4r3, branch t4-round3)
+Skills called: ai-dev-team:implementation. Tools available: Bash, Read, Edit, Write, Skill, ToolSearch, SubagentHandback (Agent/Artifact not used: BASE-18 / user rule).
+- Progress: read brief-common, notes (all rounds), 05_review_T4.md (R0–R3), QC T4 r3, decisions D25/D32/D45–D49/D63/D64, safe_replace.rs, testutil.rs, document.rs save path, vr-search replace.rs commit path and tests.

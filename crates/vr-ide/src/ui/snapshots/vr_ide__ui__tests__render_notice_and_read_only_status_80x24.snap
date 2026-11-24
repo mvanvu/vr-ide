@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/mod.rs
+expression: t.backend()
+---
+" l1.txt                                                                         "
+"  1 café                                                                        "
+"  2                                                                             "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"l1.txt is not valid UTF-8; opened read-only  (+1 more · Esc)                    "
+" l1.txt [read-only] · Ln 1, Col 1 · LF · non-UTF-8                              "
