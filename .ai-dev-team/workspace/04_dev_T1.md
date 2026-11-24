@@ -47,3 +47,25 @@ scripts/bench-startup.sh -> first_frame_ms=28  max_rss_mb=2
 | TOOL-4 | pass | none held back |
 | AC-1 | pass | stub renders "vr-ide — <root>" for no args (`main.rs`); `cli_resolves_root` no-arg case |
 | AC-2 | pass | `cli_resolves_root` file/git and file/non-git cases |
+
+## Quick pass 1
+Fixed review minors (files: `crates/vr-ide/src/main.rs`, `crates/vr-ide/src/cli.rs`, `scripts/bench-startup.sh`):
+- main.rs: `restore_terminal()` is called when `EnterAlternateScreen` fails, before the error is returned.
+- bench-startup.sh: empty `rss_kb` exits 1 with a message; the `script -c` command line is built with `printf %q`, so quotes and spaces in paths survive.
+- cli.rs: `fs::metadata` replaces `exists()`; only `NotFound` maps to `CliError::NotFound`, other errors to `CliError::Io(path, e)`. New test `cli_reports_permission_error_as_io` (mode 000 dir, returns early when running as root).
+Evidence:
+- Test seen red before the fix: `expected CliError::Io, got Err(NotFound("/tmp/.tmpa6h4U6/locked/f.txt"))`.
+- `cargo test -p vr-ide`: 2 passed, 0 failed.
+- `cargo clippy -p vr-ide --all-targets -- -D warnings`: Finished (only manifest warnings about unused deps, not code).
+- `rustfmt --edition 2024` on both .rs files; `bash -n scripts/bench-startup.sh` ok; bench run: first_frame_ms=24, max_rss_mb=2.
+
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-1 | pass | only the three listed files changed |
+| BASE-3 | pass | red output above, then green |
+| BASE-4 | pass | outputs above |
+| BASE-6 | pass | English "why" comments only |
+| BASE-11 | pass | no stash/checkout/reset |
+| BASE-24 | pass | no git add/commit |
+| BASE-25 | pass | package-scoped clippy clean |
+| BASE-38 | pass | rustfmt on the two changed .rs files only |

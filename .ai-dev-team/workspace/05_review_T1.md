@@ -34,3 +34,10 @@ Cargo.toml read; Cargo.lock skipped — generated (ropey 1.6.1 checked); rust-to
 | AC-1 | pass | main.rs draws "vr-ide — <root>" |
 | AC-2 | pass | cli_resolves_root covers git/non-git |
 | Panic hook / EXIT_AFTER_FIRST_FRAME | pass | main.rs hook; bench sets var, run() honours it |
+
+## Quick pass 1 re-check
+APPROVE T1 QP1. Diff vs 19dbd52 read (main.rs, cli.rs, bench-startup.sh); `cargo test -p vr-ide cli` run: 2 passed.
+- main.rs: restore_terminal() runs before returning the EnterAlternateScreen error — fixed.
+- bench-startup.sh: empty rss_kb exits 1 with a message; command built with `printf %q`, so quotes/spaces survive — fixed.
+- cli.rs: `fs::metadata` replaces `exists()`; only NotFound maps to NotFound, others to Io; new permission test (skips as root, restores mode) — fixed. Broken symlinks still give NotFound.
+No new findings.

@@ -13,9 +13,13 @@ trap 'rm -f "$time_log"' EXIT
 
 start=$(date +%s%N)
 (cd "$target_dir" && VR_IDE_EXIT_AFTER_FIRST_FRAME=1 \
-  script -qec "/usr/bin/time -v -o '$time_log' '$bin'" /dev/null >/dev/null)
+  script -qec "$(printf '%q ' /usr/bin/time -v -o "$time_log" "$bin")" /dev/null >/dev/null)
 end=$(date +%s%N)
 
 rss_kb=$(awk -F': ' '/Maximum resident set size/ {print $2}' "$time_log")
+if [ -z "$rss_kb" ]; then
+  echo "bench-startup: no max RSS found in $time_log" >&2
+  exit 1
+fi
 echo "first_frame_ms=$(( (end - start) / 1000000 ))  (target < 100, includes pty setup)"
 echo "max_rss_mb=$(( rss_kb / 1024 ))  (target < 60)"

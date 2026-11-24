@@ -36,7 +36,10 @@ fn main() -> Result<()> {
     }));
 
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    if let Err(e) = execute!(io::stdout(), EnterAlternateScreen) {
+        restore_terminal();
+        return Err(e.into());
+    }
     let result = run(&launch);
     restore_terminal();
     result

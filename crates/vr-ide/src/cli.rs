@@ -40,8 +40,12 @@ pub fn resolve(args: &[OsString], cwd: &Path) -> Result<Launch, CliError> {
         [one] => cwd.join(one),
         _ => return Err(CliError::TooManyArgs),
     };
-    if !target.exists() {
-        return Err(CliError::NotFound(target));
+    match std::fs::metadata(&target) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CliError::NotFound(target));
+        }
+        Err(e) => return Err(CliError::Io(target, e)),
     }
     let target = canonical(&target)?;
     if target.is_dir() {
@@ -128,5 +132,32 @@ mod tests {
 
         // more than one argument -> usage error
         assert!(resolve(&[os("a"), os("b")], &base).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_reports_permission_error_as_io() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let locked = base.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("f.txt"), "x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root bypasses mode bits, so the scenario cannot be produced there.
+        let bypassed = std::fs::metadata(locked.join("f.txt")).is_ok();
+        let res = resolve(&[os("locked/f.txt")], &base);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if bypassed {
+            return;
+        }
+        match res {
+            Err(CliError::Io(p, e)) => {
+                assert!(p.ends_with("locked/f.txt"));
+                assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected CliError::Io, got {other:?}"),
+        }
     }
 }
