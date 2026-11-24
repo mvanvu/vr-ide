@@ -21,12 +21,13 @@
 | FR-5 | Phase 5 fixes: explorer misses files created by Save As / Save (recreate) (major) + 5 minors (stale search paths after rename, reveal of hidden paths, replace worker vs newly opened tab, two tabs on one path after rename, Esc/F6 below 40 cols) | fe | sign-off report | ui | AC-3, AC-8, AC-9, AC-12 | crates/vr-ide/src/commands/{explorer,search,file}.rs, crates/vr-ide/src/app.rs, tests; crates/vr-core/src/watch.rs only if the fix lives there | `cargo test -p vr-ide` (+ `-p vr-core` if watch.rs changes) | done | 0 (+qp1) |
 | FR-6 | vr-core: disk_version_of_a_file_that_keeps_changing_is_an_error fails on a 1 ms timestamp tick (same-length rewrite inside one tick is not seen by DiskStamp) — decide product defect vs test assumption; data-safety oracle, not loosened without reviewer agreement | be | sign-off report | - | AC-3, AC-7 | crates/vr-core/src/document.rs (+ testutil.rs if needed) | `cargo test -p vr-core` (worktree .worktrees/FR6, branch fr6-disk-version) | done | 2 |
 | FR-7 | find_tests::find_debounces_rescans_in_a_large_file fails under load (draw() refresh uses the real clock while the test ticks a fake one; red on base and on FR-5, load 6–12) | fe | - | - | AC-10 | crates/vr-ide/src/{find_tests,commands/find}.rs (+ ui/find_bar.rs if the clock lives there) | test 10× under load (worktree .worktrees/FR7) | done | 0 |
+| FR-8 | Phase 5 resume fixes: Keep mine recreate → explorer row (major) + note_written reload for filtered files + BeingReplaced wording/severity outside the panel (minors) | fe | re-sign-off report | ui | AC-3, AC-7, AC-8, AC-12 | crates/vr-ide/src/commands/{file,explorer,palette,search}.rs, explorer_tests.rs, search_tests.rs | `cargo test -p vr-ide` related | in progress | 0 |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
 ## Notes
-- presence: away (user, 19:16) answered: account switch none, commit+push kept, 19:18
-- hand-off: ready (19:18) — account_switch none; commit + push to origin/master after re-sign-off; Phase 5 re-runs via Agent (no Workflow)
+- presence: away (user, 19:32)
+- hand-off: ready (19:32) — nothing new open; account_switch none; commit + push after re-sign-off and FR-8
 - eta: ~19:00 (set 17:19, +25m: T10 needed rounds 2 and 3; r3 ~25m + recheck 15m → merge + message rewrite 10m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
 - commits: one per task after review + QC pass, push to origin/master (user, 11:21)
@@ -147,3 +148,6 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - FR-6 r2 DONE (19:28): no code change; 600 runs under load: r1 4/300, r0 3/300 fail, all 7 = known D75(2)/D76(3) signature (leader checked the files); oracle unchanged (D99). Sent to FR-6's QC to confirm/withdraw by replay with full panic capture.
 - FR-6 QC r2 (19:31): QC_PASS, r1 racing failure WITHDRAWN by its QC (replay 20/20 with full capture; dev's 7 failures all known signature). FR-6 done; committed a07259d, merged --no-ff 1c54589 (master merged into the branch first); worktree removed.
 - FR-5 qp1 re-check (19:35): APPROVE (opus). Two copy nits left for the report (Save As refusal says 'open it again'; explorer/palette show the temporary refusal as error). Committed. Next: re-sign-off QC (full suite once — vr-core shared code changed) ∥ Phase 5 resume on the fix diff bedbf2a..HEAD (one opus reviewer via Agent, unattended).
+- Phase 5 resume (19:31): 1 major (Keep mine recreating a deleted file → no explorer row; note_written missing on D64 path) + 2 minors (note_written re-reads folder on every save of a filtered file; BeingReplaced as error outside the panel + Save As 'open it again' wording). Major → adversarial verifier (opus). Fixes wait for the re-sign-off report.
+- Phase 5 resume major CONFIRMED (19:34) → FR-8; model sonnet (≤4 files, one module, UI refresh + copy; keep_mine write path untouched beyond the note_written call) — review sonnet, qc sonnet.
+- Re-sign-off (19:40 QC): SIGNOFF_PASS at 9133968 — 424 pass / 0 fail / 6 ignored; guard clean; release timing ok; racing 20/20; walk AC-3/7/8/9/10/12 pass (re-run on fresh binary); bench 26 ms / 6 MB. Gate ✓. Pushed master. FR-8 started (task-base below).

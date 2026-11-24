@@ -675,3 +675,51 @@ Regressions: AC-3, AC-8, AC-9, AC-12 behaved as expected in the flows above. Har
 Replay of the r1 check on the current worktree (no code change): the 3 filters (`testutil::tests::document_save`, `save_as_seen_never_loses`, `unprompted_save_as`) 20x under 4 busy-loop hogs, `--nocapture`, full output per run in qa-artifacts/FR-6/qc_r2/run_N.txt (failing runs would be fail_N.txt).
 Result: 20 pass / 0 fail. Developer's r2 evidence checked: 7 fail-*.txt in qa-artifacts/FR-6/r2/, all 7 carry exactly `[mode=InPlace visible=false saw_ours=true replaced_is_ours=true]` (the known D75(2)/D76(3) false positive, D99); r1 4/300 vs r0 3/300 is not distinguishable, so the r1 change adds no new racing signature.
 Withdrawn: the r1 racing failure was the known false positive (my r1 grep had cut its signature). Verdict QC_PASS.
+
+## Re-sign-off (19:40)
+Commit tested: HEAD 9133968 (master), clean product tree. Artifacts: `qa-artifacts/resignoff/` (suite.txt, guard.txt, ignored.txt, race20.txt + race_N.txt, walk.py/h.py, out.txt (walk on a stale 19:05 binary, discarded), out2.txt (final walk on the fresh release binary built 19:29 from HEAD), save3.txt, bench.txt). Engine: release binary under a python pty (no browser/Flutter).
+
+Verdict: SIGNOFF_PASS.
+
+### Tests (debug, once: `run-heavy.sh cargo test --workspace --no-fail-fast -j 4`, EXIT=0)
+| Crate | Passed | Failed | Ignored |
+|---|---|---|---|
+| vr-config (unit 3 + tests/config 16) | 19 | 0 | 0 |
+| vr-core (lib) | 151 | 0 | 1 |
+| vr-fs (lib 43 + racing_writer 2) | 45 | 0 | 1 |
+| vr-search (lib 37 + racing_writer 2) | 39 | 0 | 1 |
+| vr-ide (lib 170, bin 0) | 170 | 0 | 3 |
+Doc tests 0 everywhere. Total 424 passed, 0 failed, 6 ignored (sign-off 1 had 400 passed / 1 failed).
+Guard: `cargo fmt --all --check` OK; `cargo clippy --workspace --all-targets -- -D warnings` exit 0 (guard.txt).
+Ignored timing tests, release, once: vr-core `open_100mb_under_2s` ok (0.41 s); vr-ide `long_line_keystroke_to_frame_fast`, `render_large_file_fast`, `find_in_100mb_file_stays_responsive` ok (3/3).
+
+### Racing (strict, 20x, 7 tests per run: testutil::tests::document_save*, save_as_seen_never_loses*, unprompted_save_as*)
+20/20 runs exit 0, 0 panics (race20.txt). The D75(2)/D76(3) signature never appeared; no unclassified failure.
+
+### Walk on the release binary (out2.txt)
+| Flow | Result | Evidence |
+|---|---|---|
+| AC-3 save | pass | type ZZ, ctrl+s -> disk `ZZalpha fn` |
+| AC-7 external change + Keep mine | pass | "File Changed on Disk" dialog; Esc keeps mine; ctrl+s asks again ([Keep mine] [Reload] [Cancel], Enter = Cancel, safe default); Keep mine -> disk `ZZYYalpha fn` |
+| Save As (AC-3) | pass | src/new.rs row appears, file on disk |
+| AC-8/AC-9 explorer rename + project search | pass | search results list renamed.txt after rename; Next Result and reopen work |
+| AC-12 replace preview + rename | pass | notice "files moved since the preview; Enter in the replace field previews again", moved.txt re-previewed |
+| AC-12 replace with tabs opened mid-run (300 files) | pass | f0290 opened at 1.26 s, f0250 at "Replacing 284/302"; further opens during/after; all 300 files replaced on disk, 0 files still contain the old text, open tabs show the replaced text, no corruption. Note: the replace now finishes in about 2.5 s (FR-5 run: 9 s), so the "opened in a tab; not replaced" skip path was not triggered in this run; it stays covered by the FR-5 walk and unit tests |
+| AC-10 find bar | pass | ctrl+f "fn" shows 1/3, Enter/F3 reaches 3/3, Esc closes, typing goes to the editor |
+Earlier evidence for AC-1, 2, 4, 5, 6, 11, 18 is unchanged (flows untouched by FR-5/6/7).
+
+### Bench (scripts/bench-startup.sh, release, once)
+first_frame_ms = 26 (target < 100), max_rss_mb = 6 (target < 60).
+
+## Rule check re-sign-off
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-1..AC-12, AC-18 | pass | walk above + earlier sign-off evidence for untouched flows |
+| BASE-25 guard | pass | fmt OK, clippy exit 0 |
+| COST full suite once | pass | one workspace run, --no-fail-fast, 424/0 |
+| Ledger concurrent writer per write path | pass | racing 20/20 clean; vr-fs and vr-search racing_writer in the suite |
+| Sign-off 1 defect (vr-core disk_version test) | pass | vr-core 151/0 |
+| FR-7 load-flaky find test | pass | passed in the suite (vr-ide 170/0) |
+| BASE-14/15 | pass | background tasks only, own pty children killed by the harness |
+| BASE-17 | pass | fixtures only under qa-artifacts/resignoff; no data in shared stores |
+| Defects | none | |
