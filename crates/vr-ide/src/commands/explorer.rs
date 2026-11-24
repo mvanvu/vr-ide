@@ -759,7 +759,11 @@ pub fn answer_new(app: &mut App, widget: DialogWidget, dir: PathBuf, folder: boo
         app.focus = Focus::Explorer;
     } else {
         match app.open_path(&path) {
-            Ok(()) => app.focus = Focus::Editor,
+            // A new file is made to be written: it opens in edit mode (D145, ctrl+n).
+            Ok(()) => {
+                app.focus = Focus::Editor;
+                app.enter_edit_mode();
+            }
             Err(e) => super::search::report_open_error(app, &e),
         }
     }

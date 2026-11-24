@@ -1,6 +1,5 @@
 ---
 source: crates/vr-ide/src/ui/mod.rs
-assertion_line: 73
 expression: t.backend()
 ---
 "SEARCH                Aa .* ab │ README.md                                      "
@@ -26,4 +25,4 @@ expression: t.backend()
 "                               │                                                "
 "                               │                                                "
 "                               │                                                "
-" README.md · Ln 1, Col 1 · LF · UTF-8                                           "
+" READ README.md · Ln 1, Col 1 · LF · UTF-8                                      "

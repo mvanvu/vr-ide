@@ -2,6 +2,7 @@ use std::io::{self, Stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -27,6 +28,7 @@ fn restore_terminal() {
     }
     let _ = execute!(
         out,
+        SetCursorStyle::DefaultUserShape,
         DisableBracketedPaste,
         DisableMouseCapture,
         LeaveAlternateScreen

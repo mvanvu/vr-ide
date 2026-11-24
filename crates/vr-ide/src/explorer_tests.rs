@@ -254,6 +254,7 @@ fn explorer_rename_open_file_updates_tab() {
     let (d, mut app) = project();
     let r = d.path().to_path_buf();
     app.open_path(Path::new("src/main.rs")).unwrap();
+    app.handle_key(ctrl('i'));
     typ(&mut app, "x");
     app.open_path(Path::new("README.md")).unwrap();
     select(&mut app, "src/main.rs");
@@ -345,6 +346,7 @@ fn explorer_delete_confirms_then_trashes() {
     let trash = fake_trash(&mut app, &side.path().join("trash"));
     app.recovery_dir = Some(side.path().join("recovery"));
     app.open_path(Path::new("README.md")).unwrap();
+    app.handle_key(ctrl('i'));
     typ(&mut app, "unsaved ");
     app.open_path(Path::new("composer.json")).unwrap();
     app.open_path(Path::new("src/main.rs")).unwrap();
@@ -832,6 +834,7 @@ fn trash_of_unsaved_file_stops_when_recovery_fails() {
     fs::write(side.path().join("blocked"), "").unwrap();
     app.recovery_dir = Some(side.path().join("blocked/recovery"));
     app.open_path(Path::new("README.md")).unwrap();
+    app.handle_key(ctrl('i'));
     typ(&mut app, "mine ");
     select(&mut app, "README.md");
     app.handle_key(key(KeyCode::Delete));
@@ -1695,7 +1698,8 @@ fn ctrl_e_hides_the_explorer_and_returns_focus_to_the_editor() {
         assert_eq!(app.focus, Focus::Editor, "from {focus:?}");
         assert!(app.palette.is_none());
     }
-    // Keys typed now edit the file, not the hidden tree.
+    // Keys typed now go to the file, not the hidden tree: ctrl+i edits it (D145).
+    app.handle_key(ctrl('i'));
     app.handle_key(key(KeyCode::Char('x')));
     assert_eq!(
         app.active_doc().unwrap().buffer.text().to_string(),

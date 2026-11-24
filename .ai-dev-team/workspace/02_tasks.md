@@ -25,12 +25,18 @@
 | FR-9 | README: install and usage guide (user request 19:50) | be | - | docs | AC-1, AC-2 | README.md (docs/keymap.md links only) | commands in the README run as written | done | 0 (+qp1) |
 | T13 | Theme: Dracula palette (Homebrew later, D140) painted with their own background, default dracula, previews for the user | fe | - | ui | AC-5 | crates/vr-ide/src/theme.rs, ui/* style use only, crates/vr-config defaults + settings docs, ui/snapshots/, README theme line, docs | snapshots + preview HTML; design QA | done | 1 |
 | FR-10 | Bug: arrow keys do not move in the explorer tree (user 20:55) + explorer hidden at start, ctrl+e toggles (user 21:02) — reproduce on the release binary in the user's terminal setup, every way to focus the explorer | fe | - | ui | AC-8 | crates/vr-ide/src/{app,event_loop}.rs, commands/explorer.rs, ui/explorer.rs (keys/focus only), tests | repro test red→green | done | 0 (+qp1) |
+| T14 | Read mode / edit mode per editor tab: read on focus, ctrl+i edit, Esc read (D145) | fe | - | ui | AC-3, AC-5, AC-10 | crates/vr-ide/src/{app,event_loop}.rs, commands/{edit,find,registry,tab,file}.rs, ui/{status_bar,editor_view}.rs, theme.rs (mode colours only), crates/vr-config/defaults/keymap.toml + tests/config.rs KNOWN list, docs/keymap.md, README, tests | `cargo test -p vr-ide` + pty walk | review | 0 |
+| T15 | Theme "cooler": 3 bolder palette directions as previews (D146), user picks, then implement | fe | T14 (theme.rs shared: implement step after T14 merges) | ui | AC-5 | crates/vr-ide/src/theme.rs, ui/tests/preview.rs, mockups | previews + design QA, then contrast tests | waiting T14 (pick: C Synthwave, D148) | 0 |
+| M4-1 | vr-syntax scaffold + grammar inventory (one test per D7 language: parses a sample, highlights query compiles; licence table) | be | - (relaxed: own crate; root Cargo.toml/Cargo.lock not edited by T14/T15) | - | AC-13, AC-13e | Cargo.toml, Cargo.lock, crates/vr-syntax/** | `cargo test -p vr-syntax` (worktree .worktrees/M4-1) | done (branch m4-1-vr-syntax, merge with M4-2) | 0 |
+| M4-2 | Highlighter engine: registry, languages.toml (vr-config), incremental reparse, worker + versions, timeout, size limit, injections | be | M4-1 | - | AC-13a, AC-13b, AC-13c, AC-13d | crates/vr-syntax/**, crates/vr-config (languages) | `cargo test -p vr-syntax -p vr-config` | in progress (worktree .worktrees/M4-1) | 0 |
+| M4-3 | Editor wiring + theme captures (all themes), notices, previews | fe | M4-2, T14, T15 | ui | AC-13, AC-13b, AC-13c, AC-13e | crates/vr-ide (app, editor_view, theme, document hooks) | `cargo test -p vr-ide` | queued | 0 |
+| M4-4 | Samples + per-language snapshots, README/docs, bench (startup, RSS, binary size) | fe | M4-3 | ui | AC-13, AC-13a, AC-1 | crates/vr-ide tests/samples, README.md, docs | snapshots + bench | queued | 0 |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
 ## Notes
-- presence: present (user typed, 19:50)
-- hand-off: ready (19:32) — nothing new open; account_switch none; commit + push after re-sign-off and FR-8
+- presence: away (user, 23:52)
+- hand-off: ready (23:52) — T14 → T15 (Synthwave, D148) → M4-1…M4-4 → sign-off → Phase 5 → report; commit + push per task; account_switch none
 - eta: ~19:00 (set 17:19, +25m: T10 needed rounds 2 and 3; r3 ~25m + recheck 15m → merge + message rewrite 10m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
 - commits: one per task after review + QC pass, push to origin/master (user, 11:21)
@@ -178,3 +184,13 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - FR-10 review (21:33): APPROVE (sonnet); 2 minors (welcome hint for the explorer toggle; doc line on legacy ctrl+shift+e) → quick pass after QC verdict.
 - FR-10 QC_PASS (21:40): both terminal modes on a fresh release build; related tests 65/0, vr-config ok. Gate ✓. Committed; then T13 merged; quick pass for the 2 review minors on master.
 - FR-10 qp1 re-check (21:48): APPROVE; vr-ide 197/0 after the T13 merge; guard clean. Committed, pushed, vr-ide reinstalled to ~/.cargo/bin.
+- T14 (21:53, user request, user present): modal read/edit per D145; developer opus (key routing across every context, touches every text-changing command); review sonnet + qc sonnet.
+- T15 (21:56, user): 'cooler theme' — design step in worktree .worktrees/T15 (previews only, sonnet) while T14 runs on the main tree; implementation of the pick waits for T14 merge (theme.rs overlap: T14 adds mode colours).
+- keys (22:00, user): user reviews hotkeys while testing and will name changes one by one; batch them into one keymap task after T14 (keymap.toml shared). 9 ctrl+shift chords unreachable in the user's terminal (no kitty protocol) listed to the user.
+- user (22:05): 'follow your suggestions' → M4 starts after T14 + T15 (spec + plan drafted now, D7 language list unchanged, default highlight size limit); T15 colours = design QA's top-ranked candidate. D147.
+- M4 planned (22:10): spec 01_spec_M4.md, plan 02_plan_M4.md, rows M4-1…M4-4 + sign-off/Phase 5. M4-1 starts now in worktree .worktrees/M4-1 (own crate; T14/T15 do not edit Cargo.toml/Cargo.lock). Model: M4-1 opus (grammar ABI / build decisions), M4-2 opus (concurrency), M4-3 opus, M4-4 sonnet.
+- usage limit (21:45): gaps.md written; T14 and M4-1 agents may stop mid-task — next 'tiếp' resumes from Phase 0 + their notes.
+- 23:51 resumed after usage reset. T14 DONE: one gate (editable_doc), View.edit, editor.edit_mode/read_mode, badge, cursor shape; D149–D155; vr-ide 219/0; pty 16/16 both modes. Gate ✓. Review sonnet + QC sonnet. M4-1 agent stopped by the limit mid-edit → resumed by message.
+- T14 review (00:00): APPROVE (sonnet); 3 minors (status bar 40 cols → D156; Go to File on the active tab keeps EDIT → set read; test gaps: palette click-outside, dark/light badge contrast) → quick pass after QC.
+- M4-1 DONE (00:05): all 20 D7 ids compiled in (Blade/Twig/Vue vendored, MIT); tree-sitter 0.27.2; +14.7 MB binary, +23 MB repo (D159); findings for M4-2 (last-match-wins queries, nvim captures). D157–D158. Gate ✓. Review sonnet (deps, licences, build); QC n-a (library, tests prove it).
+- M4-1 review APPROVE (00:10); 2 minors (Blade-only capture test; @spell inside strings) folded into M4-2 (same crate). Committed on m4-1-vr-syntax; M4-2 continues on that branch/worktree; merge to master after M4-2 so T14's QC build is not disturbed.

@@ -160,8 +160,10 @@ mod tests {
         }
         // second.rs: modified; third.md: active, changed on disk while modified.
         app.set_active(1);
+        key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         app.set_active(2);
+        key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
         app.docs[2].disk_state = vr_core::DiskState::ChangedOnDisk;
         app.notices.clear();
@@ -295,6 +297,7 @@ mod tests {
         key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         std::fs::write(d.path().join("second.rs"), "fn a() {}\n").unwrap();
         app.open_path(std::path::Path::new("second.rs")).unwrap();
+        key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
         app.run_command("app.quit", crate::commands::CmdArgs::None);
         snap("render_confirm_dialog", &mut app);
@@ -327,6 +330,8 @@ mod tests {
         assert!(app.palette.is_none());
         // Dialog buttons answer clicks; clicks elsewhere do nothing while it is open.
         std::fs::write(d.path().join("b.txt"), "b\n").unwrap();
+        // Closed from outside: back in read mode (D145).
+        key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
         app.run_command("app.quit", crate::commands::CmdArgs::None);
         draw(&mut app, 40, 12);
@@ -426,6 +431,7 @@ mod tests {
         std::fs::write(dir.path().join("l1.txt"), b"caf\xe9\n").unwrap();
         let (mut app, _) = test_app(dir.path());
         app.open_path(&deep.join("handler.rs")).unwrap();
+        key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         app.docs[0].disk_state = vr_core::DiskState::ChangedOnDisk;
         for w in [40u16, 30, 80] {

@@ -1,4 +1,4 @@
-//! Status bar (`file · Ln x, Col y · LF/CRLF · UTF-8`) and the notice lines above it.
+//! Status bar (`READ/EDIT file · Ln x, Col y · LF/CRLF · UTF-8`) and the notice lines above it.
 //! Notices get their own rows (up to three, wrapped) so a long startup notice stays readable
 //! even at 40 columns; Escape dismisses the oldest.
 
@@ -105,15 +105,32 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         }
         DiskState::InSync => {}
     }
-    let path = format!(" {}", app.active_name());
+    let path = app.active_name();
     let file = doc
         .path
         .as_deref()
         .and_then(|p| p.file_name())
         .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+    // Room for the file name and a cut mark.
+    let need = width_of(&file) + 1;
+    // The mode badge (D145) comes first and also separates the path from the bar's edge; it
+    // shrinks to its initial when the full word would leave no room for the file name with
+    // the shortest position.
+    let (badges, badge_style) = if app.edit_mode() {
+        ([" EDIT ", " E ", "E"], theme.mode_edit)
+    } else {
+        ([" READ ", " R ", "R"], theme.mode_read)
+    };
+    let least = width_of(&rights[2]) + width_of(&short) + need;
+    let badge = badges
+        .into_iter()
+        .find(|b| width_of(b) + least <= width)
+        .unwrap_or(badges[2]);
+    let bw = width_of(badge).min(width);
+    buf.set_stringn(area.x, area.y, badge, width, badge_style);
+    let (x0, width) = (area.x + bw as u16, width - bw);
     // Give up detail in this order: the directory part of the path, the long flag text, EOL
     // and encoding, then "Col"; the file name itself is cut only when nothing else is left.
-    let need = width_of(&file) + 2;
     let pick = rights
         .iter()
         .flat_map(|r| [(r, &long), (r, &short)])
@@ -123,8 +140,8 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     let room = width.saturating_sub(width_of(right) + width_of(flags));
     let left = format!("{}{flags}", shorten_left(&path, room));
     let left_w = width_of(&left).min(width);
-    buf.set_stringn(area.x, area.y, &left, width, theme.status);
-    let rx = area.x + left_w as u16;
+    buf.set_stringn(x0, area.y, &left, width, theme.status);
+    let rx = x0 + left_w as u16;
     buf.set_stringn(rx, area.y, right, width - left_w, theme.status);
 }
 

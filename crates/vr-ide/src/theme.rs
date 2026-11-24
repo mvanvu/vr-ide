@@ -44,6 +44,9 @@ pub struct Theme {
     pub focus: Style,
     /// Line number of the cursor line while the editor has the focus.
     pub gutter_active: Style,
+    /// Status bar badge of the active tab's mode (D145): READ and EDIT, told apart by colour.
+    pub mode_read: Style,
+    pub mode_edit: Style,
 }
 
 impl Theme {
@@ -101,6 +104,14 @@ impl Theme {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
             gutter_active: Style::default().fg(Color::Gray),
+            mode_read: Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            mode_edit: Style::default()
+                .bg(Color::Green)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
         }
     }
 
@@ -141,6 +152,14 @@ impl Theme {
                 .fg(Color::Blue)
                 .add_modifier(Modifier::BOLD),
             gutter_active: Style::default().fg(Color::Black),
+            mode_read: Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            mode_edit: Style::default()
+                .bg(Color::Indexed(28))
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         }
     }
 }
@@ -320,6 +339,16 @@ impl Theme {
             list_selected: Style::default().bg(picked).fg(fg),
             matched: Style::default().fg(yellow).add_modifier(Modifier::BOLD),
             focus: Style::default().fg(green).add_modifier(Modifier::BOLD),
+            // Badges in the palette colours with the editor background as text: purple for
+            // reading (like the active tab), green for typing.
+            mode_read: Style::default()
+                .bg(purple)
+                .fg(bg)
+                .add_modifier(Modifier::BOLD),
+            mode_edit: Style::default()
+                .bg(green)
+                .fg(bg)
+                .add_modifier(Modifier::BOLD),
         }
     }
 }
@@ -392,6 +421,8 @@ mod tests {
             t.matched,
             t.focus,
             t.gutter_active,
+            t.mode_read,
+            t.mode_edit,
         ]
     }
 
@@ -529,6 +560,8 @@ mod tests {
         ));
         v.push(("focus", fg(t.focus), editor, 4.5));
         v.push(("gutter_active", fg(t.gutter_active), editor, 4.5));
+        v.push(("mode_read", fg(t.mode_read), bg(t.mode_read), 4.5));
+        v.push(("mode_edit", fg(t.mode_edit), bg(t.mode_edit), 4.5));
         v.push(("popup_border", fg(t.popup_border), bg(t.popup), 4.5));
         for (name, surface) in [
             ("dim/editor", editor),
@@ -613,6 +646,20 @@ mod tests {
             }
             assert!(ratio(t.popup.bg.unwrap(), t.tab_bar.bg.unwrap()) >= 1.1);
             assert!(ratio(t.input.bg.unwrap(), t.popup.bg.unwrap()) >= 1.1);
+        }
+    }
+
+    #[test]
+    fn read_and_edit_badges_have_distinct_colours_in_every_theme() {
+        let mut themes = vec![Theme::dark(), Theme::light()];
+        themes.extend(BOTH.map(Theme::dracula_with));
+        for t in themes {
+            let (r, e) = (t.mode_read, t.mode_edit);
+            assert!(r.bg.is_some() && e.bg.is_some(), "{r:?} {e:?}");
+            assert_ne!(r.bg, e.bg);
+            assert_ne!(r.bg, t.status.bg, "READ does not stand out of the bar");
+            assert_ne!(e.bg, t.status.bg, "EDIT does not stand out of the bar");
+            assert!(r.fg.is_some() && e.fg.is_some());
         }
     }
 

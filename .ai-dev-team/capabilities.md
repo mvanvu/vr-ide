@@ -26,6 +26,8 @@ Greenfield: nothing reusable yet. Developers append one line per reusable piece 
 - `crates/vr-search/src/find.rs` — `find_all(rope, q)` char ranges, `replace_all_tx(rope, q, repl)` one-undo Transaction ($1 captures); crate-internal `Matcher` (per-line, whole-word retry, zero-length safe), `line_spans` (D31 line split)
 - `crates/vr-search/src/project.rs` — `search_project(root, q, cancel, tx)` streams `SearchMsg::{Batch,Error,Done}` (≤200 or 50 ms, Done last); internal `walk_builder(root)` = vr-fs ignore policy (D15)
 - `crates/vr-search/src/replace.rs` — `plan_replace(root, q, repl, files)` → `FilePreview{path,hunks,error}`, `apply_replace(previews, confirmed)` temp + renameat2 EXCHANGE verify-and-swap-back, refuses changed/read-only/hard-linked/outside-root files, 32 MB cap
+## vr-syntax
+- `crates/vr-syntax/src/lib.rs` — compiled-in grammar table: `grammar(id) -> Option<&Grammar>` (`language()`, `highlights_query()` (layered + spell captures stripped), `injections_query()`, `locals_query()`, `source()`), `grammars()`, `inventory() -> Vec<Entry{id,status,source}>` (`Status::{CompiledIn, FeatureOff}`), `D7_LANGUAGES`; one cargo feature per grammar group (default all); samples per language in `tests/samples/`
 ## vr-ide (app)
 - `crates/vr-ide/src/cli.rs` — `cli::resolve(args, cwd) -> Launch{root, open_file}` (D5 launch rules)
 - `scripts/bench-startup.sh` — release first-frame ms + max RSS under a pty
@@ -53,3 +55,5 @@ Greenfield: nothing reusable yet. Developers append one line per reusable piece 
 - `commands::search::paths_moved(app, from, to)` (FR-5): project search results follow a rename/move; a stale replace preview is dropped.
 - `commands::search::ReplaceGate` / `before_tab_opens` (FR-5): UI thread ↔ apply worker hand-off so a file opened in a tab during a replace is never written.
 - `commands::search::focus_editor(app)` (FR-5): give the editor the keys, hiding a full-width search panel first.
+- `App::editable_doc()` (T14): the one gate for every user text change — refuses read-only files and tabs in read mode (D145, shows the hint). New text-changing commands must take the document through it; project replace / reload write buffers directly on purpose. `App::edit_mode()`, `enter_edit_mode()`, `enter_read_mode()`, `sync_mode()` hold the mode rule.
+- `.ai-dev-team/workspace/qa-artifacts/T14/t14.py` (T14): pty replay of read/edit mode, legacy and kitty (`t14.py <bin> [kitty]`), records raw output to check cursor-shape escapes.

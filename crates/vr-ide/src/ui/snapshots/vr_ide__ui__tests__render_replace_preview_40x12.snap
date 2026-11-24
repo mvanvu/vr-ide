@@ -1,6 +1,5 @@
 ---
 source: crates/vr-ide/src/ui/mod.rs
-assertion_line: 73
 expression: t.backend()
 ---
 "REPLACE       Aa .* ab │ README.md      "
@@ -14,4 +13,4 @@ expression: t.backend()
 "  -4 private int $total│                "
 "  +4 private int $sum =│                "
 "                       │                "
-" README.md · Ln 1, Col 1 · LF · UTF-8   "
+" READ README.md · Ln 1, Col 1           "

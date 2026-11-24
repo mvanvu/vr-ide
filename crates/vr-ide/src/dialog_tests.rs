@@ -213,6 +213,7 @@ fn two_modified() -> (tempfile::TempDir, App) {
     std::fs::write(d.path().join("b.txt"), "b\n").unwrap();
     typ(&mut app, "1");
     app.open_path(Path::new("b.txt")).unwrap();
+    app.handle_key(ctrl('i'));
     typ(&mut app, "2");
     (d, app)
 }
@@ -367,6 +368,7 @@ fn save_as_prompt() {
     assert_eq!(app.active_name(), "sub/copy.txt");
     // An existing file is replaced only after a confirmation.
     std::fs::write(d.path().join("other.txt"), "keep\n").unwrap();
+    app.handle_key(ctrl('i'));
     typ(&mut app, "y");
     app.run_command("file.save_as", CmdArgs::None);
     submit(&mut app, "other.txt");
@@ -421,6 +423,7 @@ fn modified_doc_changed_on_disk_prompts() {
     choose(&mut app, "Reload");
     assert_eq!(text(&app), "theirs\n");
     assert!(!app.active_doc().unwrap().is_modified());
+    app.handle_key(ctrl('i'));
     app.handle_key(ctrl('z'));
     assert_eq!(text(&app), "mine old\n");
 
@@ -865,6 +868,7 @@ fn save_as_onto_a_file_open_in_another_tab() {
     std::fs::write(&b, "b\n").unwrap();
     app.open_path(&b).unwrap();
     app.set_active(0);
+    app.handle_key(ctrl('i'));
     typ(&mut app, "x");
     app.run_command("file.save_as", CmdArgs::None);
     submit(&mut app, "b.txt");
@@ -879,8 +883,10 @@ fn save_as_onto_a_file_open_in_another_tab() {
     let b = d.path().join("b.txt");
     std::fs::write(&b, "b\n").unwrap();
     app.open_path(&b).unwrap();
+    app.handle_key(ctrl('i'));
     typ(&mut app, "y");
     app.set_active(0);
+    app.handle_key(ctrl('i'));
     typ(&mut app, "x");
     app.run_command("file.save_as", CmdArgs::None);
     submit(&mut app, "b.txt");
