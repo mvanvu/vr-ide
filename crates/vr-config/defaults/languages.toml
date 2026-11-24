@@ -89,6 +89,12 @@ extensions = ["toml"]
 files = ["Cargo.lock", "Pipfile", "poetry.lock"]
 lsp = ["taplo", "lsp", "stdio"]
 
+[xml]
+extensions = ["xml", "xsd", "xsl", "xslt", "svg", "plist", "rss", "atom", "csproj", "props", "targets", "xaml"]
+
+[dtd]
+extensions = ["dtd"]
+
 [markdown]
 extensions = ["md", "markdown", "mdx"]
 aliases = ["md"]

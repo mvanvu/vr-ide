@@ -26,6 +26,7 @@ default = [
     "yaml",
     "toml",
     "markdown",
+    "xml",
 ]
 php = ["dep:tree-sitter-php"]
 # Blade's queries inherit the HTML ones, so the HTML crate is needed for its query text.
@@ -47,6 +48,8 @@ json = ["dep:tree-sitter-json"]
 yaml = ["dep:tree-sitter-yaml"]
 toml = ["dep:tree-sitter-toml-ng"]
 markdown = ["dep:tree-sitter-md"]
+# One crate, two grammars: the `xml` and `dtd` language ids.
+xml = ["dep:tree-sitter-xml"]
 
 [dependencies]
 tree-sitter.workspace = true
@@ -68,6 +71,7 @@ tree-sitter-json = { workspace = true, optional = true }
 tree-sitter-yaml = { workspace = true, optional = true }
 tree-sitter-toml-ng = { workspace = true, optional = true }
 tree-sitter-md = { workspace = true, optional = true }
+tree-sitter-xml = { workspace = true, optional = true }
 
 # The highlight engine (M4-2) moves this to [dependencies]; here only the tests build configurations.
 [dev-dependencies]

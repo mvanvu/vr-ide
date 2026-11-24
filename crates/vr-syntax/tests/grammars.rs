@@ -229,6 +229,21 @@ lang_test!(
     ["text", "punctuation"]
 );
 
+lang_test!(
+    xml,
+    "xml",
+    "xml",
+    "sample.xml",
+    ["tag", "property", "string", "comment", "keyword"]
+);
+lang_test!(
+    dtd,
+    "xml",
+    "dtd",
+    "sample.dtd",
+    ["keyword", "tag", "comment", "type"]
+);
+
 #[test]
 fn inventory_lists_every_d7_language_with_a_status() {
     let expected = [
@@ -252,6 +267,8 @@ fn inventory_lists_every_d7_language_with_a_status() {
         "toml",
         "markdown",
         "markdown_inline",
+        "xml",
+        "dtd",
     ];
     assert_eq!(D7_LANGUAGES, expected);
     let inv = inventory();
@@ -301,7 +318,8 @@ fn default_build_compiles_every_d7_language_in() {
         feature = "json",
         feature = "yaml",
         feature = "toml",
-        feature = "markdown"
+        feature = "markdown",
+        feature = "xml"
     )) {
         assert_eq!(inventory().len(), D7_LANGUAGES.len());
         let missing: Vec<&str> = inventory()

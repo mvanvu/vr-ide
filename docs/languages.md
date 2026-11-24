@@ -27,6 +27,8 @@ under which licence. Every grammar is MIT-licensed.
 | `toml` | toml | `Cargo.lock`, `Pipfile`, `poetry.lock` | crate `tree-sitter-toml-ng` | 0.7.0 |
 | `markdown` | md, markdown, mdx | | crate `tree-sitter-md` (block grammar) | 0.5.4 |
 | `markdown_inline` | none (see below) | | crate `tree-sitter-md` (inline grammar) | 0.5.4 |
+| `xml` | xml, xsd, xsl, xslt, svg, plist, rss, atom, csproj, props, targets, xaml | | crate `tree-sitter-xml` (XML grammar) | 0.7.0 |
+| `dtd` | dtd | | crate `tree-sitter-xml` (DTD grammar) | 0.7.0 |
 
 Notes:
 

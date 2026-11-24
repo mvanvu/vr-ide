@@ -1,0 +1,20 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+<!-- A tiny document type -->
+ccccccccccccccccccccccccccccc
+<!ELEMENT note (to, from, body)>
+uukkkkkkk.gggg.uppo.ppppo.ppppuu
+<!ELEMENT to (#PCDATA)>
+uukkkkkkk.gg.utttttttuu
+<!ELEMENT from (#PCDATA)>
+uukkkkkkk.gggg.utttttttuu
+<!ELEMENT body (#PCDATA | em)*>
+uukkkkkkk.gggg.uttttttt.o.ppuou
+<!ATTLIST note id ID #REQUIRED lang CDATA "en">
+uukkkkkkk.gggg.pp.tt.aaaaaaaaa.pppp.ttttt.ussuu
+<!ENTITY copy "(c) Example">
+uukkkkkk.CCCC.usssssssssssuu
+<!ENTITY % common "id ID #IMPLIED">
+uukkkkkk.o.CCCCCC.ussssssssssssssuu

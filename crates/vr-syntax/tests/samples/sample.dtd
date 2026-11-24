@@ -1,0 +1,8 @@
+<!-- A tiny document type -->
+<!ELEMENT note (to, from, body)>
+<!ELEMENT to (#PCDATA)>
+<!ELEMENT from (#PCDATA)>
+<!ELEMENT body (#PCDATA | em)*>
+<!ATTLIST note id ID #REQUIRED lang CDATA "en">
+<!ENTITY copy "(c) Example">
+<!ENTITY % common "id ID #IMPLIED">

@@ -1,0 +1,38 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+uukkk.pppppppounnnu.ppppppppousssssu.ppppppppppouCCCuuu
+<?xml-stylesheet type="text/xsl" href="style.xsl"?>
+uukkkkkkkkkkkkkk.ppppoussssssssu.ppppousssssssssuuu
+<!DOCTYPE catalog [
+uukkkkkkk.ttttttt.u
+  <!ELEMENT catalog (book+)>
+..uukkkkkkk.ggggggg.uppppouu
+  <!ENTITY publisher "Example Press">
+..uukkkkkk.CCCCCCCCC.usssssssssssssuu
+]>
+uu
+<!-- A small catalog -->
+cccccccccccccccccccccccc
+<catalog xmlns="http://example.com/catalog" xmlns:meta="http://example.com/m
+uggggggg.pppppoussssssssssssssssssssssssssu.ppppppppppoussssssssssssssssssss
+  <book id="b1" meta:lang="en">
+..ugggg.ppoussu.pppppppppoussuu
+    <title>Fish &amp; Chips</title>
+....ugggggu.....CCCCC......uugggggu
+    <author>A. Writer</author>
+....uggggggu.........uuggggggu
+    <note><![CDATA[Raw <text> & more]]></note>
+....uggggukkkkkkkkussssssssssssssssskkkuuggggu
+    <publisher>&publisher;</publisher>
+....uggggggggguCCCCCCCCCCCuugggggggggu
+    <price currency="USD">12.50</price>
+....uggggg.ppppppppousssuu.....uugggggu
+    <meta:tags/>
+....uggggggggguu
+  </book>
+..uuggggu
+</catalog>
+uugggggggu

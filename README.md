@@ -280,7 +280,7 @@ and more). Colours do not depend on read or edit mode, and they stay under the s
 matches in synthwave and dracula (dark and light show plain text there, since the terminal's palette is unknown).
 
 - Languages: PHP, Blade, Twig, JavaScript (and JSX), TypeScript, TSX, Vue, HTML, CSS, SCSS, Dart,
-  Go, Python, Rust, JSON, YAML, TOML, Markdown. Embedded code is coloured in its own language:
+  Go, Python, Rust, JSON, YAML, TOML, Markdown, XML (and DTD). Embedded code is coloured in its own language:
   `<script>` / `<style>` in HTML and Vue, HTML around PHP, Markdown fenced code by its info string.
   Every language with its extensions, grammar source and licence: [docs/languages.md](docs/languages.md).
 - A file with an unknown extension opens as plain text, with no notice.

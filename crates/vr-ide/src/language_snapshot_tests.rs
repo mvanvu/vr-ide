@@ -210,6 +210,30 @@ plain_sample!(yaml, "yaml.yaml");
 plain_sample!(blade, "blade.blade.php");
 plain_sample!(twig, "twig.html.twig");
 
+#[test]
+fn xml() {
+    let shot = check("xml", "sample.xml", "sample.xml", None);
+    assert_eq!(
+        shot.at("catalog xmlns").chars().next(),
+        Some('g'),
+        "element name"
+    );
+    assert_eq!(shot.at("currency"), "pppppppp", "attribute name");
+    assert_eq!(
+        shot.at("\"USD\"").chars().nth(1),
+        Some('s'),
+        "attribute value"
+    );
+    assert_eq!(shot.at("<!-- A").chars().nth(1), Some('c'), "comment");
+}
+
+/// DTD files open as the `dtd` language through their own extension.
+#[test]
+fn dtd() {
+    let shot = check("dtd", "sample.dtd", "sample.dtd", None);
+    assert_eq!(shot.at("ELEMENT"), "kkkkkkk");
+}
+
 /// The built-in table has no extension for `php_only` (it is the Blade / embedded-snippet
 /// grammar), so the test names it in a `languages.toml`; a plain `.php` file would be `php`.
 #[test]

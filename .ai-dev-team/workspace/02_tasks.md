@@ -32,11 +32,15 @@
 | M4-3 | Editor wiring + theme captures (all themes), notices, previews | fe | M4-2, T14, T15 | ui | AC-13, AC-13b, AC-13c, AC-13e | crates/vr-ide (app, editor_view, theme, document hooks) | `cargo test -p vr-ide` | done | 2 |
 | M4-4 | Samples + per-language snapshots, README/docs, bench (startup, RSS, binary size) | fe | M4-3 | ui | AC-13, AC-13a, AC-1 | crates/vr-ide tests/samples, README.md, docs | snapshots + bench | done | 2 |
 | FR-11 | Phase 5 (follow-ups) minors: read-only file cannot enter EDIT; notice Esc hint vs edit mode; hint wording pattern; worker panics never print over the TUI; 40x12 combined preview + preview labels | fe | sign-off after M4 | ui | AC-3, AC-5 | crates/vr-ide (commands/edit.rs, app.rs, ui/status_bar.rs, recovery.rs, ui/tests/preview.rs), README.md, docs/keymap.md | `cargo test -p vr-ide` | done | 1 |
+| M4-5 | XML highlighting (user 03:12): tree-sitter-xml grammar, languages.toml entry, sample + snapshot, docs | be+fe tests | - | ui | AC-13, AC-13e | Cargo.toml, Cargo.lock, crates/vr-syntax (grammar table, samples, tests), crates/vr-config/defaults/languages.toml, crates/vr-ide language snapshot test + snapshot, docs/languages.md, README language list | `cargo test -p vr-syntax -p vr-config -p vr-ide` | done | 0 |
+| M5-1 | vr-term crate: PTY spawn, reader thread, alacritty_terminal emulator, resize, kill, status, notify, snapshot, key/paste/mouse encoding | be | - | - | AC-14b, AC-14c, AC-14d | Cargo.toml, Cargo.lock, crates/vr-term/** | `cargo test -p vr-term` (worktree .worktrees/M5-1) | in progress | 0 |
+| M5-2 | Terminal panel in vr-ide: layout, render, tabs, focus/D8, ctrl+` (+legacy NUL), scrollback, copy/paste, exited state, quit guard, theme ANSI | fe | M5-1, M4-5 | ui | AC-14, AC-14a, AC-14b, AC-14d, AC-1 | crates/vr-ide/**, crates/vr-config defaults, docs | `cargo test -p vr-ide` | queued | 0 |
+| M5-3 | Docs, previews, bench, AC-14 walk (htop/lazygit/vim) | fe | M5-2 | ui | AC-14, AC-1 | README.md, docs/, scripts | qc walk | queued | 0 |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
 ## Notes
-- presence: away (user, 23:52)
+- presence: present (user typed, 03:11)
 - hand-off: ready (23:52) — T14 → T15 (Synthwave, D148) → M4-1…M4-4 → sign-off → Phase 5 → report; commit + push per task; account_switch none
 - eta: ~19:00 (set 17:19, +25m: T10 needed rounds 2 and 3; r3 ~25m + recheck 15m → merge + message rewrite 10m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
@@ -227,3 +231,8 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - FR-11 review (02:30): CHANGES (opus) — major: new panic-hook test races the existing one (40/40 fail together); BASE-25 guard output missing; 4 minors (deferred print before finish(), tui_active on main panic, bound deferred list, read-only reason from encoding) + new-states section. Design QA pass. Round 1 to the same developer.
 - FR-11 r1 re-check APPROVE (02:33); race 0/40; committed + pushed; vr-ide reinstalled. All tasks done. Phase 6 report next.
 - Run end (02:34): all rows done (T13–T15, FR-9…FR-11, M4-1…M4-4); master = origin/master 5e91793; vr-ide reinstalled; no worktrees, no agents.
+- M4-5 (03:13, user present): XML highlighting; light tier: developer sonnet, reviewer sonnet; qc n-a (snapshot + oracle prove it); D184.
+- M4-5 DONE (03:21): tree-sitter-xml 0.7.0 (MIT), ids xml + dtd, Last precedence, incremental (oracle ok), snapshots; vr-ide 278/0. Gate ✓. Review sonnet.
+- M4-5 review (03:22): code APPROVE-level, but notes lack evidence (BASE-3/25) → sent back for notes (DONE gate, not a fix round).
+- M5 planned (03:22): spec 01_spec_M5.md, plan 02_plan_M5.md, rows M5-1…M5-3 (+ sign-off, Phase 5); D185. M5-1 starts now in worktree .worktrees/M5-1 (own crate; M4-5 on the main tree touches Cargo.toml/Cargo.lock → M5-1 merges master after M4-5 is committed).
+- M4-5 notes complete (03:23); gate ✓ (review findings were evidence only; code approved). Committed, pushed, vr-ide reinstalled.

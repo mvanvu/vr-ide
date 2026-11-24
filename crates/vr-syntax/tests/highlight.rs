@@ -436,6 +436,27 @@ fn every_grammar_declares_its_precedence_and_specific_patterns_win() {
             Capture::Escape,
             false,
         ),
+        // The PI target is a child of the `(PI) @embedded` node, so no two patterns capture the
+        // same node: flipping the order changes nothing (checked with a flip probe).
+        (
+            "xml",
+            Last,
+            "<?php echo 1; ?>\n<a/>\n",
+            "php",
+            0,
+            Capture::Keyword,
+            false,
+        ),
+        // No two DTD patterns disagree on a node in the probes, so the case does not decide.
+        (
+            "dtd",
+            Last,
+            "<!ENTITY a \"b\">\n<!ELEMENT e (#PCDATA)>\n",
+            "#PCDATA",
+            0,
+            Capture::Type,
+            false,
+        ),
     ];
     for g in vr_syntax::grammars() {
         assert!(

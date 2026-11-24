@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<?xml-stylesheet type="text/xsl" href="style.xsl"?>
+<!DOCTYPE catalog [
+  <!ELEMENT catalog (book+)>
+  <!ENTITY publisher "Example Press">
+]>
+<!-- A small catalog -->
+<catalog xmlns="http://example.com/catalog" xmlns:meta="http://example.com/meta">
+  <book id="b1" meta:lang="en">
+    <title>Fish &amp; Chips</title>
+    <author>A. Writer</author>
+    <note><![CDATA[Raw <text> & more]]></note>
+    <publisher>&publisher;</publisher>
+    <price currency="USD">12.50</price>
+    <meta:tags/>
+  </book>
+</catalog>

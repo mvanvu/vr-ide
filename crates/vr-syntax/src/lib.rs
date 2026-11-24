@@ -40,6 +40,8 @@ pub const D7_LANGUAGES: &[&str] = &[
     "toml",
     "markdown",
     "markdown_inline",
+    "xml",
+    "dtd",
 ];
 
 /// Where a grammar and its queries come from.
@@ -316,6 +318,8 @@ const SOURCES: &[(&str, &str, Source)] = &[
         "markdown",
         crate_source("tree-sitter-md", "0.5.4"),
     ),
+    ("xml", "xml", crate_source("tree-sitter-xml", "0.7.0")),
+    ("dtd", "xml", crate_source("tree-sitter-xml", "0.7.0")),
 ];
 
 fn source_of(id: &str) -> Source {
@@ -606,6 +610,29 @@ static GRAMMARS: &[Grammar] = &[
         tree_sitter_md::INLINE_LANGUAGE.into(),
         [tree_sitter_md::HIGHLIGHT_QUERY_INLINE],
         [tree_sitter_md::INJECTION_QUERY_INLINE],
+        []
+    ),
+    // The crate's queries put generic patterns before specific ones (nvim order): last wins.
+    #[cfg(feature = "xml")]
+    grammar!(
+        "xml",
+        "xml",
+        Last,
+        Incremental,
+        tree_sitter_xml::LANGUAGE_XML.into(),
+        [tree_sitter_xml::XML_HIGHLIGHT_QUERY],
+        [],
+        []
+    ),
+    #[cfg(feature = "xml")]
+    grammar!(
+        "dtd",
+        "xml",
+        Last,
+        Incremental,
+        tree_sitter_xml::LANGUAGE_DTD.into(),
+        [tree_sitter_xml::DTD_HIGHLIGHT_QUERY],
+        [],
         []
     ),
 ];
