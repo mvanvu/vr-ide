@@ -17,7 +17,7 @@ Greenfield: nothing reusable yet. Developers append one line per reusable piece 
 - `crates/vr-config/src/paths.rs` — `config_dir()`/`state_dir()` with `VR_IDE_CONFIG_DIR`/`VR_IDE_STATE_DIR` override
 ## vr-fs
 - `crates/vr-fs/src/tree.rs` — `Tree::new(root, show_hidden, show_ignored).children(dir)` lazy one-dir listing, dirs first, `Node{path,kind,ignored,depth}`, `NodeKind::Symlink(SymlinkTarget::{File,Dir,Loop,Broken})`, `set_show_hidden/ignored`
-- `crates/vr-fs/src/ops.rs` — `create_file` (makes parents), `create_dir`, `rename`, `copy` (recursive, links copied as links), `move_to(from, dest_dir) -> new path`, `trash(paths)`; never overwrite; `FsOpError`; `Trash` trait with `SystemTrash` and `FakeTrash::new(holding_dir).trashed()` for UI tests
+- `crates/vr-fs/src/ops.rs` — `create_file` (makes parents), `create_dir`, `rename`, `copy` (recursive, links copied as links), `move_to(from, dest_dir) -> new path`, `trash(paths) -> BatchResult` (per-path results); atomic no-overwrite (renameat2 NOREPLACE / O_EXCL), cross-device move → `FsOpError::CrossDevice`; `validate_name(name)`, `ensure_within(root, p)` for typed names; `Trash` trait with `SystemTrash` and `FakeTrash::new(holding_dir).trashed()` for UI tests
 - `crates/vr-fs/src/file_index.rs` — `FileIndex::build(root, tx) -> JoinHandle` sends `IndexMsg::{Progress,Ready,Error}` (drop rx to cancel); `query(q, limit)` basename-first nucleo ranking, smart case, char indices into the relative path; `from_paths` for tests
 ## vr-search
 ## vr-ide (app)

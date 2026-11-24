@@ -10,5 +10,8 @@ trash.workspace = true
 nucleo-matcher.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true

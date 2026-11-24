@@ -105,3 +105,21 @@ Note: probe-side mistakes found and fixed in my own test (model cursor after red
 | BASE-24 | pass | no git index changes |
 | BASE-30 | pass | probe target dir deleted |
 | COST-13 | pass | throwaways in qa-artifacts/T2 |
+
+## QC T2 re-check (quick pass 1) — QC_PASS
+Scope: Buffer::delete clipping, normalize ordering, random model. Probe `qa-artifacts/T2/probe/` run in release (`run_qp1_release.txt`: 90 PASS, TOTAL FAILS 0) and debug with debug_asserts active (`run_qp1_debug.txt`: 89 PASS, TOTAL FAILS 0; phase C malformed-transaction run skipped in debug because overlap now debug_asserts by design; it ran in release without panic).
+Added cases (all pass, both profiles): backspace with cursor touching selection end ("abcdef" ranges 1..3 + cursor 3 -> "adef"); delete_forward cursor before selection -> "abf"; reversed-order ranges touching -> "adef"; two-selection delete -> "cf" and one undo step restores; 3 adjacent cursors backspace -> "def", delete_forward -> "aef"; cursors at 0 and 1 backspace -> "bcdef"; combining-mark multi-delete clipped without panic; duplicate cursors no panic. Random model (2 000 ops per-op groups + 20 seeds x 2 000 coalescing) still matches String model; no debug_assert fired. Target dir removed.
+
+## QC T7 re-check (round 1)
+Engine: the Rust probe `qa-artifacts/T7/probe` (mode `ac8`, rewritten for the new signatures: `trash` returns a per-path batch result, `AlreadyExists(PathBuf)`, `validate_name`, `ensure_within`). AC-9 and perf skipped as asked. Fixtures and target removed afterwards.
+
+| Check | Result | Evidence |
+|---|---|---|
+| create / rename / copy / move / trash disk state | PASS | 11 base checks PASS (create over existing refused with content kept, rename file+dir, recursive copy keeps source, move_to returns new path, move into itself refused with dir intact, rename missing errors) |
+| rename, move, copy onto existing file or folder refused, target unchanged | PASS | 9 checks: rename file->file, dir->dir, file->dir; move file and dir onto existing; copy file and dir onto existing (also nested dir). Each returns `AlreadyExists`, target content and source both intact, no partial merge (`tdir/f`, `dest/sdir/f` absent) |
+| `a.txt` -> `A.txt` | PASS | Ok, only `A.txt` in the listing, content kept. Also `b.txt` -> existing distinct `B.txt` refused, both intact |
+| batch trash of 3 with 1 missing | PASS | results in order: CtlCopy Ok, missing.bin Err("... does not exist"), renamed.rs Ok (2 ok, 1 err); docs entries 3 -> 1; temp XDG `Trash/files` = [CtlCopy, renamed.rs], `Trash/info` = the 2 `.trashinfo`; dir content preserved; user trash untouched |
+| validate_name | PASS | rejects `..`, `a/b`, `""`, `.`, NUL name; accepts `ok.txt`, `.hidden`, `a b` |
+| ensure_within (extra) | PASS | rejects `../x`, accepts `src/a` |
+
+QC_PASS T7 R1

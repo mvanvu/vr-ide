@@ -47,3 +47,6 @@ Notes end with `## Rule compliance` (rule-packs.md §6: one row per exercised ru
 
 ## Ledger warning (failed in two tasks: T3, T7)
 - BASE-3: write each test, run it and SEE IT FAIL before writing the code it covers — one test at a time, not a batch written together with the implementation. Record the red line per test in the notes.
+
+## Guard hook off (session folder renamed)
+- The guard hook is off for this run (session folder renamed): never run `git checkout --`, `git restore`, `git stash`, `git clean`, `git reset --hard`, `pkill`/`killall`, `nohup` or a trailing `&`.

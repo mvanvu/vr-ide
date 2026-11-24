@@ -2426,6 +2426,7 @@ version = "0.1.0"
 dependencies = [
  "ignore",
  "nucleo-matcher",
+ "rustix",
  "tempfile",
  "thiserror 2.0.21",
  "trash",
