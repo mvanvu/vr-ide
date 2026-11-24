@@ -410,3 +410,48 @@ Build: release binary rebuilt from commit e4c7cf2 plus a dirty tree (31 changed 
 | New-name Save As with a writer creating it (30 runs) | pass | 30/30 writer first, its content kept, Replace asked |
 
 Cleanup: work dirs removed, no vr-ide process left.
+
+## QC T8
+Build: HEAD 907cdf2 + dirty tree (T8 uncommitted), release binary rebuilt via run-heavy.sh (`cargo build --release -p vr-ide`, Finished) before the run. Engine: real binary under a pty (script `qa-artifacts/T8/qc_flows.py`, harness T5/T6), 80x24 unless noted; temp VR_IDE_CONFIG_DIR/STATE_DIR/XDG_DATA_HOME under /tmp, removed afterwards. Not browser/Flutter.
+| AC / item | Status | Evidence |
+|---|---|---|
+| AC-1 tree, folders first | pass | `FLOW AC-1+AC-9: PASS` tree=['▾ ac19','  ▸ src','  ▸ zdir','    .gitignore','    a.txt','    b.txt'] |
+| AC-9 ignored hidden, toggle shows flagged | pass | node_modules/vendor/z.log hidden; toggle shows them in dim grey (SGR 38;5;8), toggle back hides |
+| AC-8 create file/folder | pass | ctrl+n -> n.txt on disk and in a tab; New Folder via palette -> dir on disk |
+| AC-8 rename open modified file | pass | tab renamed a2.txt, still modified, ctrl+s writes Xaye to new path, old path absent |
+| AC-8 rename folder with open file | pass | tab retargeted, modified kept, ctrl+s saves under srcx/ |
+| AC-8 copy/paste files | pass | "b copy.txt", "b copy 2.txt"; existing "a copy.txt" untouched (new name used) |
+| AC-8 copy/paste folder in same parent | FAIL | see defect |
+| AC-8 move | pass | b.txt -> zdir/b.txt; second move onto an existing name refused ("already exists; nothing was replaced") |
+| AC-8 delete confirm | pass | dialog first; Enter at 0.15 s ignored; Enter later = Cancel, nothing trashed; confirm -> XDG Trash/files/a.txt + info/a.txt.trashinfo ([Trash Info], Path, DeletionDate) |
+| AC-8 delete unsaved | pass | message names unsaved changes; recovery copy with content in state/recovery; then trashed |
+| Safety names | pass | `../x`, `a/b`, `..` refused: dialog stays open with `invalid name ...`; nothing created inside/outside root |
+| Safety root row | pass | f2 and Delete on root: no prompt/dialog, message "the project folder itself cannot be renamed, moved or deleted from the explorer" |
+| Safety folder + inner file | pass | one trash entry (`src`, `src.trashinfo`), no error text |
+| Leftovers | pass | notice names `.a.txt.vr-ide-conflict-1-1` and `.vr-ide-save-1-s1.tmp`; both files remain |
+| External changes | pass | root create visible in 0.25 s, create inside expanded folder visible at once, outside delete disappears <1 s; expanded kept, selection kept (rename prompt names b.txt) |
+| Go-to-file | pass | ctrl+p, "smrs" lists m.rs (src), Enter opens it, content shown, palette closed |
+| Big tree | pass | 55 019 files (50 000 under gitignored node_modules): first frame 13 ms, keys respond 70 ms (x2 runs), no inotify warning (max_user_watches 65536), 563 watches (ignored folder not watched), RSS 7.6 MB |
+| Concurrent writer vs rename, 20 runs | pass | writer rewrites every 1 ms (10 replace, 10 in-place), f2 rename: ok 20, violation 0, torn 0; renamed file holds a complete writer version, writer's last version present under old or new name, no stray files. Not run with the file open in a tab (external-change dialog would take the keys): tab-open rename is covered by AC-8 rename flows |
+| 40x12 | pass | explorer + editor render, f6/ctrl+p/f2/typing without panic, process alive |
+
+### Defect
+QC_FAIL T8 — copying a folder and pasting it next to itself fails instead of making "name copy"
+Repro: fixture with folder `src` and file `a.txt`; focus explorer (f6), cursor on `src`, ctrl+c, cursor on `a.txt` (target = project root), ctrl+v.
+Expected: `src copy` created (files do get `b copy.txt`, `b copy 2.txt`).
+Actual: error "not pasted: cannot move or copy src into itself (src)"; nothing copied.
+Evidence: crates/vr-ide/src/commands/explorer.rs `copy_into` (n=0 tries `dest/src` == source); `vr_fs::ops::copy` calls `refuse_into_itself` (crates/vr-fs/src/ops.rs:353-370) before the AlreadyExists check, so IntoItself is returned and the `continue` on AlreadyExists never fires. No data loss (nothing overwritten).
+
+## Rule check T8
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-9 / write paths | pass | rename racing writer 20/20 no loss; delete recovery copy; move/copy never overwrite |
+| BASE-21 | pass | no secrets in output |
+| BASE-23 | pass | explorer by keys, palette; go-to-file by key |
+| BASE-24 | pass | no git index change |
+| BASE-46 | pass | runtime checks on 907cdf2 + dirty tree release build |
+| BASE-15/17 | pass | no processes left (sessions killed/quit), temp dirs removed; no data committed to real stores |
+| UI-fit 40x12 | pass | Tiny-40x12 flow |
+| D9 delete confirm, Cancel default | pass | Delete flow |
+| D76 leftovers kept, noticed | pass | Leftovers flow |
+| Folder paste in place (copy naming) | fail | defect above |
