@@ -18,3 +18,7 @@ mod app_tests;
 mod dialog_tests;
 #[cfg(test)]
 mod explorer_tests;
+#[cfg(test)]
+mod find_tests;
+#[cfg(test)]
+mod search_tests;

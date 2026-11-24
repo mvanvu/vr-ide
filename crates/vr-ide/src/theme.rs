@@ -29,6 +29,8 @@ pub struct Theme {
     pub button_selected: Style,
     /// Selected palette row.
     pub list_selected: Style,
+    /// Other matches of the find bar in the editor (the current one is selected).
+    pub find_match: Style,
     /// Matched characters in palette rows.
     pub matched: Style,
 }
@@ -54,6 +56,7 @@ impl Theme {
             gutter: Style::default().fg(Color::DarkGray),
             gutter_current: Style::default().fg(Color::Gray),
             selection: Style::default().bg(Color::Indexed(239)),
+            find_match: Style::default().bg(Color::Indexed(58)),
             control: Style::default().fg(Color::Red),
             tab_bar: Style::default().bg(Color::Indexed(235)),
             tab_active: Style::default()
@@ -89,6 +92,7 @@ impl Theme {
             gutter: Style::default().fg(Color::Gray),
             gutter_current: Style::default().fg(Color::Black),
             selection: Style::default().bg(Color::Indexed(153)),
+            find_match: Style::default().bg(Color::Indexed(229)),
             control: Style::default().fg(Color::Red),
             tab_bar: Style::default().bg(Color::Indexed(254)),
             tab_active: Style::default()

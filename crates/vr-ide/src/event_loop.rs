@@ -138,6 +138,7 @@ where
     loop {
         app.drain_fs_events();
         app.drain_index();
+        app.drain_search();
         app.tick(Instant::now());
         if app.dirty {
             draw_frame(terminal, app, &recovery::GLOBAL, ui::render)?;

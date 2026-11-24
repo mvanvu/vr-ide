@@ -37,7 +37,7 @@ impl DocRef {
     }
 }
 
-/// The action behind an open dialog. T10 adds its own variants and a match arm in
+/// The action behind an open dialog; each variant has a match arm in
 /// [`answer`].
 #[derive(Debug, Clone)]
 pub enum DialogAction {
@@ -77,6 +77,8 @@ pub enum DialogAction {
     MoveTo(Vec<PathBuf>),
     /// Explorer: Move to Trash / Cancel for `paths` (D9).
     Trash(Vec<PathBuf>),
+    /// Search panel: Replace / Cancel for the checked files of the replace preview (AC-12).
+    ReplaceInFiles,
 }
 
 pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
@@ -119,6 +121,7 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
         (DialogAction::Trash(paths), Outcome::Chosen(0)) => {
             super::explorer::answer_trash(app, &paths);
         }
+        (DialogAction::ReplaceInFiles, Outcome::Chosen(0)) => super::search::apply(app),
         _ => {}
     }
 }

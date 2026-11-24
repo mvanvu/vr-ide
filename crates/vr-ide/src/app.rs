@@ -21,21 +21,29 @@ use crate::event_loop::{chord_from_key, legacy_unreachable};
 use crate::ui::dialog::{DialogWidget, Outcome};
 use crate::ui::layout::AppLayout;
 
-/// Which part of the screen receives keys. T10 adds the find bar. A dialog is modal
-/// and takes every key while open, whatever the focus.
+/// Which part of the screen receives keys. A dialog is modal and takes every key while
+/// open, whatever the focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Editor,
     Explorer,
     Palette,
+    /// The in-file find / replace bar.
+    FindBar,
+    /// The project search panel.
+    Search,
 }
 
 impl Focus {
+    /// Keymap context. The find bar sits on the editor, so the editor's chords (f3, ctrl+h,
+    /// ctrl+alt+enter) work in it; the search panel has no table of its own and gets the
+    /// global keys (f4, ctrl+shift+f).
     pub fn context(self) -> Context {
         match self {
-            Focus::Editor => Context::Editor,
+            Focus::Editor | Focus::FindBar => Context::Editor,
             Focus::Explorer => Context::Explorer,
             Focus::Palette => Context::Palette,
+            Focus::Search => Context::Global,
         }
     }
 }
@@ -142,6 +150,13 @@ pub struct App {
     /// Go-to-file index (built in the background) and its build in progress.
     pub file_index: Option<vr_fs::FileIndex>,
     pub(crate) index_rx: Option<Receiver<vr_fs::IndexMsg>>,
+    /// The "go to file lists the first N files" notice was shown (once per session: the
+    /// index is rebuilt on every go-to-file open).
+    index_cap_noticed: bool,
+    /// In-file find / replace bar (AC-10).
+    pub find: commands::find::FindBar,
+    /// Project search / replace panel (AC-11, AC-12).
+    pub search: commands::search::SearchPanel,
 }
 
 impl App {
@@ -182,6 +197,9 @@ impl App {
             trash: Box::new(vr_fs::SystemTrash),
             file_index: None,
             index_rx: None,
+            index_cap_noticed: false,
+            find: Default::default(),
+            search: Default::default(),
         }
     }
 
@@ -674,6 +692,13 @@ impl App {
         if self.focus == Focus::Palette && commands::palette::handle_key(self, &key) {
             return;
         }
+        // The find bar and the search panel use Esc themselves (close / back to the editor).
+        if self.focus == Focus::FindBar && commands::find::handle_key(self, &key) {
+            return;
+        }
+        if self.focus == Focus::Search && commands::search::handle_key(self, &key) {
+            return;
+        }
         if key.code == DISMISS_KEY && key.modifiers.is_empty() && !self.notices.is_empty() {
             self.notices.pop_front();
             return;
@@ -728,6 +753,8 @@ impl App {
         }
         match self.focus {
             Focus::Palette => commands::palette::paste(self, text),
+            Focus::FindBar => commands::find::paste(self, text),
+            Focus::Search => commands::search::paste(self, text),
             // Nothing in the explorer takes text.
             Focus::Explorer => {}
             Focus::Editor => commands::edit::insert_pasted(self, text),
@@ -763,7 +790,19 @@ impl App {
             commands::explorer::handle_mouse(self, &ev);
             return;
         }
-        if matches!(ev.kind, MouseEventKind::Down(_)) && self.focus == Focus::Explorer {
+        if inside(l.search) {
+            commands::search::handle_mouse(self, &ev);
+            return;
+        }
+        if inside(l.find_bar) {
+            if matches!(ev.kind, MouseEventKind::Down(_)) {
+                self.focus = Focus::FindBar;
+            }
+            return;
+        }
+        if matches!(ev.kind, MouseEventKind::Down(_))
+            && matches!(self.focus, Focus::Explorer | Focus::Search | Focus::FindBar)
+        {
             self.focus = Focus::Editor;
         }
         match ev.kind {
@@ -943,16 +982,29 @@ impl App {
         match done {
             Ok(index) => {
                 if index.truncated() {
-                    self.info(format!(
-                        "go to file lists the first {} files of this project",
-                        index.len()
-                    ));
+                    self.note_index_cap(index.len());
                 }
                 self.file_index = Some(index);
             }
             Err(e) => self.warn(format!("go to file: {e}")),
         }
         commands::palette::refresh_keeping_selection(self);
+    }
+
+    /// Says that go to file lists only the first `listed` files of a project above the
+    /// index cap.
+    pub(crate) fn note_index_cap(&mut self, listed: usize) {
+        if !self.index_cap_noticed {
+            self.index_cap_noticed = true;
+            self.info(format!(
+                "go to file lists the first {listed} files of this project"
+            ));
+        }
+    }
+
+    /// Takes the results the project search sent so far (see `commands::search::drain`).
+    pub fn drain_search(&mut self) {
+        commands::search::drain(self);
     }
 
     /// Builds the go-to-file index on a background thread; [`App::drain_index`] takes it.

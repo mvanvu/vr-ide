@@ -294,8 +294,17 @@ pub fn ensure_loaded(app: &mut App) {
     report_leftovers(app, &root);
 }
 
-/// Shows or hides the panel; hiding it while focused gives the editor the keys.
+/// Shows or hides the panel; hiding it while focused gives the editor the keys. While the
+/// search panel holds the side column, the toggle closes that first (VS Code's ctrl+b
+/// hides the whole side bar).
 fn toggle(app: &mut App, _: CmdArgs) -> CmdResult {
+    if app.search.visible {
+        app.search.visible = false;
+        if app.focus == Focus::Search {
+            app.focus = Focus::Editor;
+        }
+        return Ok(());
+    }
     app.explorer.visible = !app.explorer.visible;
     if app.explorer.visible {
         ensure_loaded(app);
@@ -312,6 +321,8 @@ fn focus(app: &mut App, _: CmdArgs) -> CmdResult {
 }
 
 fn show_and_focus(app: &mut App) {
+    // The explorer and the search panel share the side column.
+    app.search.visible = false;
     app.explorer.visible = true;
     ensure_loaded(app);
     app.focus = Focus::Explorer;
@@ -1240,10 +1251,12 @@ fn toggle_hidden(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
-/// Editor → explorer (when shown) → editor. T10 adds its panels to the cycle.
+/// Editor → find bar (when open) → side panel (search or explorer, when shown) → editor.
 fn focus_cycle(app: &mut App, _: CmdArgs) -> CmdResult {
     app.focus = match app.focus {
-        Focus::Editor if app.explorer.visible => {
+        Focus::Editor if app.find.open && app.active_doc().is_some() => Focus::FindBar,
+        Focus::Editor | Focus::FindBar if app.search.visible => Focus::Search,
+        Focus::Editor | Focus::FindBar if app.explorer.visible => {
             ensure_loaded(app);
             Focus::Explorer
         }
