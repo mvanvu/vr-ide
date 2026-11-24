@@ -269,6 +269,9 @@ Environment overrides:
   At start-up vr-ide shows a notice listing the keys it cannot receive. Use the palette (`F1`), a
   terminal with the kitty keyboard protocol, or rebind the command in `keymap.toml` to a chord your
   terminal sends. Some chords are also taken by the terminal itself or by your window manager.
+- **`ctrl+shift+e` hides the explorer instead of focusing it.** Without the kitty keyboard
+  protocol the terminal sends `ctrl+shift+e` as `ctrl+e`, which toggles the explorer (shows and
+  focuses it when hidden, hides it when shown). Use `ctrl+e` or `F6` to reach the tree there.
 - **`ctrl+[` does not outdent.** Terminals send it as `Esc`; use `shift+tab`.
 - **Copy does not reach the clipboard over SSH.** vr-ide uses OSC 52 there, which your local
   terminal must allow (it is off by default in some, for example tmux needs `set -g set-clipboard

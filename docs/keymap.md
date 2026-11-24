@@ -144,4 +144,6 @@ Key spelling:
 
 An unknown command name is reported in a startup notice; the rest of the file still applies.
 A terminal without the kitty keyboard protocol cannot send some chords (for example `ctrl+shift+p`);
-vr-ide lists those in a startup notice, and `F1` opens the palette there.
+vr-ide lists those in a startup notice, and `F1` opens the palette there. In such a terminal
+`ctrl+shift+e` arrives as `ctrl+e` and toggles the explorer (a shown explorer hides); use `ctrl+e`
+or `f6` to reach the tree.

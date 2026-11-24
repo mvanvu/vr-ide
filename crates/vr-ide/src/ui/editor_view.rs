@@ -341,6 +341,8 @@ fn render_welcome(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     let hints = [
         ("app.palette", "Command palette"),
         ("file.goto", "Go to file"),
+        // The explorer starts hidden; this is the way to it.
+        ("explorer.toggle_focus", "Toggle explorer"),
         ("app.quit", "Quit"),
     ];
     let mut lines = vec![

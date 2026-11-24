@@ -109,3 +109,18 @@ None: no thread, job or kept value; `explorer.toggle_focus` only flips `explorer
 | AC-8 | pass | tree usable by keyboard: ctrl+e then arrows (pty replay, both terminal modes) |
 | USER-1 | pass | VS Code keys kept except ctrl+e, overridden by the user's explicit key (logged) |
 n-a: none
+
+## Quick pass 1
+- start: review minors 1 (welcome hint) and 2 (legacy ctrl+shift+e docs); master at ef16b74 (T13 merged)
+- minor 1: welcome hints gain ("explorer.toggle_focus", "Toggle explorer"), key read from the keymap (crates/vr-ide/src/ui/editor_view.rs). "Toggle explorer" rather than a longer title so it fits the 40x12 golden (the longer one was cut to "Show / hide the exp")
+  - red: ui::tests::welcome_names_the_explorer_key — panicked at ui/mod.rs:104 "no explorer hint"
+  - green: ok; render_empty_project_{80x24,40x12}.snap regenerated once; only change is the new line `  ctrl+e             Toggle explorer`
+- minor 2 (docs only): README Troubleshooting gets a "`ctrl+shift+e` hides the explorer instead of focusing it" item, and the kitty paragraph in docs/keymap.md gains the same note: without the kitty protocol, ctrl+shift+e arrives as ctrl+e and toggles the explorer (D143); use ctrl+e or F6 to reach the tree
+- files: crates/vr-ide/src/ui/editor_view.rs, crates/vr-ide/src/ui/mod.rs (test), the 2 snapshots, README.md, docs/keymap.md
+- first run after the T13 merge (ef16b74):
+```
+cargo test -p vr-ide   test result: ok. 197 passed; 0 failed; 3 ignored  (bin/doc: 0)
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.81s   (exit 0)
+```
+- rustfmt run only on editor_view.rs and ui/mod.rs; the diff holds only my lines. Nothing left running.

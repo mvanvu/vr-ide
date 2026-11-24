@@ -33,3 +33,9 @@ README.md read; docs/keymap.md read; crates/vr-config/defaults/keymap.toml read;
 | AC-1 (amended) | pass (hidden at start; welcome still shows root) |
 | AC-8 | pass |
 | USER-1 | pass (override for ctrl+e logged; finding 1 keeps hint keymap-driven) |
+
+## Quick pass 1 re-check
+APPROVE. Diff ef16b74 read in full (README.md, docs/keymap.md, ui/editor_view.rs, ui/mod.rs, both snapshots).
+- Minor 1 closed: welcome gains ("explorer.toggle_focus", "Toggle explorer"), key read from the keymap; snapshots add only that line (the trailing blank row removed is the fixed-height shift); test welcome_names_the_explorer_key has a red line and checks both the keymap hint and "ctrl+e".
+- Minor 2 closed: README Troubleshooting and docs/keymap.md state exactly what the code does (legacy ctrl+shift+e = ctrl+e toggles; shown hides; use ctrl+e or F6).
+- Nothing else changed; no code outside the welcome hint. Test counts (197 passed) taken from the notes.

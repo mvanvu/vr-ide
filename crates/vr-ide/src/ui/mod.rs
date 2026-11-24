@@ -93,6 +93,22 @@ mod tests {
         snap("render_empty_project", &mut app);
     }
 
+    /// The explorer starts hidden, so the welcome screen names its key (from the keymap).
+    #[test]
+    fn welcome_names_the_explorer_key() {
+        let (mut app, _) = test_app(std::path::Path::new("/home/user/DEV/shop"));
+        let screen = format!("{:?}", draw(&mut app, 80, 24).backend());
+        let line = screen
+            .lines()
+            .find(|l| l.contains("explorer"))
+            .unwrap_or_else(|| panic!("no explorer hint:\n{screen}"));
+        assert!(
+            line.contains(&app.key_hint("explorer.toggle_focus")),
+            "{line}"
+        );
+        assert!(line.contains("ctrl+e"), "{line}");
+    }
+
     #[test]
     fn render_file_with_selection() {
         let (_d, _p, mut app, _) =
