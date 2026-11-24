@@ -8,7 +8,7 @@
 //! Own saves: give each `Document` the watcher's `own_writes()` once (`set_own_writes`);
 //! `save` then records what it wrote and the watcher drops events while the file still holds
 //! exactly that content. A kernel queue overflow becomes `Modified`/`Removed` for every watched
-//! file plus `Rescan` per directory; later watcher failures arrive as `FsEvent::Error`.
+//! file plus `Rescan` per watched directory (`watch` and `watch_dir`); later watcher failures arrive as `FsEvent::Error`.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -57,6 +57,8 @@ struct Scope {
     files: HashMap<PathBuf, PathBuf>,
     /// Resolved directory root (recursive) → path as given.
     dirs: HashMap<PathBuf, PathBuf>,
+    /// Resolved directory watched for its own entries only (`watch_dir`) → path as given.
+    flat: HashMap<PathBuf, PathBuf>,
     /// Saves of our own documents (filled by `Document::save`).
     own: OwnWrites,
 }
@@ -66,8 +68,20 @@ impl Scope {
         self.dirs.iter().find(|(root, _)| p.starts_with(root))
     }
 
+    /// The `watch_dir` directory that `p` is, or is a direct entry of.
+    fn flat_root(&self, p: &Path) -> Option<(&PathBuf, &PathBuf)> {
+        self.flat
+            .get_key_value(p)
+            .or_else(|| p.parent().and_then(|d| self.flat.get_key_value(d)))
+    }
+
+    /// The watched directory (recursive first) whose scope includes `p`.
+    fn tree_root(&self, p: &Path) -> Option<(&PathBuf, &PathBuf)> {
+        self.dir_root(p).or_else(|| self.flat_root(p))
+    }
+
     fn contains(&self, p: &Path) -> bool {
-        self.files.contains_key(p) || self.dir_root(p).is_some()
+        self.files.contains_key(p) || self.tree_root(p).is_some()
     }
 
     /// The caller's spelling of `p`.
@@ -75,7 +89,7 @@ impl Scope {
         if let Some(given) = self.files.get(p) {
             return given.clone();
         }
-        match self.dir_root(p) {
+        match self.tree_root(p) {
             Some((root, given)) => match p.strip_prefix(root) {
                 Ok(rest) if rest.as_os_str().is_empty() => given.clone(),
                 Ok(rest) => given.join(rest),
@@ -90,13 +104,19 @@ impl Scope {
         self.own.is_own(p)
     }
 
-    /// Notify watches needed: recursive roots, plus the parent of each file outside them.
+    /// Notify watches needed: recursive roots, each `watch_dir` directory outside them (one
+    /// inotify watch, no walk), plus the parent of each file outside both.
     fn notify_roots(&self) -> HashMap<PathBuf, RecursiveMode> {
         let mut roots = HashMap::new();
         for r in self.dirs.keys() {
             let nested = self.dirs.keys().any(|o| o != r && r.starts_with(o));
             if !nested {
                 roots.insert(r.clone(), RecursiveMode::Recursive);
+            }
+        }
+        for d in self.flat.keys() {
+            if self.dir_root(d).is_none() {
+                roots.insert(d.clone(), RecursiveMode::NonRecursive);
             }
         }
         for f in self.files.keys() {
@@ -164,12 +184,51 @@ impl Watcher {
             scope.files.retain(|_, given| given != p);
             scope.dirs.retain(|_, given| given != p);
             let scope = &*scope;
-            scope
-                .own
-                .retain(|r| scope.files.contains_key(r) || scope.dir_root(r).is_some());
+            scope.own.retain(|r| scope.contains(r));
         }
         if let Err(e) = self.sync() {
             tracing::warn!(path = %p.display(), error = %e, "unwatch could not update watches");
+        }
+    }
+
+    /// Watches one directory for its own entries only: an entry created, removed, renamed or
+    /// modified in `dir` is reported (with `dir` as given here as the prefix), and so is `dir`
+    /// itself being removed; nothing below its subdirectories is. This is the explorer's
+    /// watch: the root plus each expanded folder.
+    ///
+    /// Cost: one inotify watch and no directory walk, whatever `dir` holds (Linux uses no
+    /// file-id cache; elsewhere the debouncer caches only the direct entries). The call is a
+    /// canonicalize plus one request to notify's event-loop thread, so it is safe on the UI
+    /// thread (about 1 ms, debug build, for a directory of 10,000 subdirectories). Symlinked
+    /// entries are not followed; a symlink passed as `dir` itself is resolved once.
+    pub fn watch_dir(&mut self, dir: &Path) -> Result<(), WatchError> {
+        let resolved = fs::canonicalize(dir).map_err(|e| WatchError::Path(dir.to_path_buf(), e))?;
+        if !resolved.is_dir() {
+            let e = io::Error::from(io::ErrorKind::NotADirectory);
+            return Err(WatchError::Path(dir.to_path_buf(), e));
+        }
+        lock(&self.scope)
+            .flat
+            .insert(resolved.clone(), dir.to_path_buf());
+        if let Err(e) = self.sync() {
+            lock(&self.scope).flat.remove(&resolved);
+            let _ = self.sync();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Ends a `watch_dir` of `dir` (spelled as given there); file watches and recursive
+    /// watches are untouched.
+    pub fn unwatch_dir(&mut self, dir: &Path) {
+        {
+            let mut scope = lock(&self.scope);
+            scope.flat.retain(|_, given| given != dir);
+            let scope = &*scope;
+            scope.own.retain(|r| scope.contains(r));
+        }
+        if let Err(e) = self.sync() {
+            tracing::warn!(path = %dir.display(), error = %e, "unwatch_dir could not update watches");
         }
     }
 
@@ -305,6 +364,14 @@ fn translate(events: &[DebouncedEvent], scope: &Scope) -> Vec<FsEvent> {
             scope
                 .dirs
                 .values()
+                .chain(
+                    // A directory also watched recursively already gets its Rescan above.
+                    scope
+                        .flat
+                        .iter()
+                        .filter(|(resolved, _)| !scope.dirs.contains_key(*resolved))
+                        .map(|(_, given)| given),
+                )
                 .map(|given| FsEvent::Rescan(given.clone())),
         );
     }
@@ -587,6 +654,178 @@ mod tests {
             Ok(FsEvent::Error(m)) => assert!(m.contains("watch limit"), "{m}"),
             other => panic!("expected FsEvent::Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dir_watch_reports_entry_create_modify_rename_remove() {
+        let (dir, mut w, rx) = setup();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        w.watch_dir(dir.path()).unwrap();
+        fs::write(&a, "x").unwrap();
+        assert_eq!(
+            collect(&rx, Duration::from_millis(700)),
+            vec![FsEvent::Created(a.clone())]
+        );
+        fs::write(&a, "y").unwrap();
+        assert_eq!(
+            collect(&rx, Duration::from_millis(700)),
+            vec![FsEvent::Modified(a.clone())]
+        );
+        fs::rename(&a, &b).unwrap();
+        assert_eq!(
+            collect(&rx, Duration::from_millis(700)),
+            vec![FsEvent::Renamed(a, b.clone())]
+        );
+        fs::remove_file(&b).unwrap();
+        assert_eq!(
+            collect(&rx, Duration::from_millis(700)),
+            vec![FsEvent::Removed(b)]
+        );
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        assert_eq!(
+            collect(&rx, Duration::from_millis(700)),
+            vec![FsEvent::Created(sub)]
+        );
+    }
+
+    /// Kernel inotify watches held by the watcher that watches `dir`: the lines of the one
+    /// inotify fd of this process that has a watch on `dir`'s inode (each `Watcher` owns its
+    /// own inotify instance, so parallel tests do not interfere). 0 when none watches it.
+    fn inotify_watches(dir: &Path) -> usize {
+        use std::os::unix::fs::MetadataExt;
+        let ino = format!("ino:{:x} ", fs::metadata(dir).unwrap().ino());
+        let mut found = 0;
+        for entry in fs::read_dir("/proc/self/fdinfo").unwrap().flatten() {
+            let Ok(info) = fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let lines: Vec<&str> = info.lines().filter(|l| l.starts_with("inotify ")).collect();
+            if lines.iter().any(|l| l.contains(&ino)) {
+                assert_eq!(found, 0, "two inotify instances watch {}", dir.display());
+                found = lines.len();
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn dir_watch_ignores_deeper_levels_and_adds_no_watch() {
+        let (dir, mut w, rx) = setup();
+        let deep = dir.path().join("sub").join("deep");
+        fs::create_dir_all(&deep).unwrap();
+        w.watch_dir(dir.path()).unwrap();
+        assert_eq!(inotify_watches(dir.path()), 1);
+        fs::write(deep.join("f.txt"), "x").unwrap();
+        fs::write(dir.path().join("sub").join("g.txt"), "x").unwrap();
+        fs::create_dir(deep.join("deeper")).unwrap();
+        assert_eq!(collect(&rx, Duration::from_millis(600)), vec![]);
+        assert_eq!(inotify_watches(dir.path()), 1);
+        // A direct entry is still reported, so the silence above is not a dead watcher.
+        let direct = dir.path().join("direct.txt");
+        fs::write(&direct, "x").unwrap();
+        assert_eq!(
+            collect(&rx, Duration::from_millis(700)),
+            vec![FsEvent::Created(direct)]
+        );
+    }
+
+    #[test]
+    fn unwatch_dir_stops_events_and_keeps_file_watches() {
+        let (dir, mut w, rx) = setup();
+        let open = dir.path().join("open.txt");
+        fs::write(&open, "1").unwrap();
+        w.watch(&open).unwrap();
+        w.watch_dir(dir.path()).unwrap();
+        let a = dir.path().join("a.txt");
+        fs::write(&a, "x").unwrap();
+        assert_eq!(
+            collect(&rx, Duration::from_millis(700)),
+            vec![FsEvent::Created(a)]
+        );
+        w.unwatch_dir(dir.path());
+        fs::write(dir.path().join("b.txt"), "x").unwrap();
+        assert_eq!(collect(&rx, Duration::from_millis(600)), vec![]);
+        // The open file in the same directory is still watched.
+        fs::write(&open, "2").unwrap();
+        assert_eq!(
+            collect(&rx, Duration::from_millis(700)),
+            vec![FsEvent::Modified(open.clone())]
+        );
+        w.unwatch(&open);
+        assert_eq!(inotify_watches(dir.path()), 0);
+    }
+
+    #[test]
+    fn dir_watch_of_ten_thousand_subdirs_is_one_watch_and_fast() {
+        let (dir, mut w, rx) = setup();
+        for i in 0..10_000 {
+            fs::create_dir(dir.path().join(format!("d{i:05}"))).unwrap();
+        }
+        let t = Instant::now();
+        w.watch_dir(dir.path()).unwrap();
+        let took = t.elapsed();
+        eprintln!("watch_dir over 10,000 subdirs took {took:?}");
+        // The watch count is the O(1) proof; the time bound only catches a walk (10k dirs in
+        // a debug build cost far more) while leaving room for a loaded CI runner.
+        assert_eq!(inotify_watches(dir.path()), 1);
+        assert!(took < Duration::from_millis(50), "watch_dir took {took:?}");
+        let t = Instant::now();
+        w.unwatch_dir(dir.path());
+        let took = t.elapsed();
+        eprintln!("unwatch_dir took {took:?}");
+        assert!(
+            took < Duration::from_millis(50),
+            "unwatch_dir took {took:?}"
+        );
+        assert_eq!(inotify_watches(dir.path()), 0);
+        assert_eq!(collect(&rx, Duration::from_millis(300)), vec![]);
+    }
+
+    #[test]
+    fn dir_watch_does_not_follow_symlinked_dirs() {
+        let (dir, mut w, rx) = setup();
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), dir.path().join("link")).unwrap();
+        w.watch_dir(dir.path()).unwrap();
+        fs::write(outside.path().join("f.txt"), "x").unwrap();
+        fs::create_dir(outside.path().join("sub")).unwrap();
+        assert_eq!(collect(&rx, Duration::from_millis(600)), vec![]);
+        assert_eq!(inotify_watches(dir.path()), 1);
+        assert_eq!(inotify_watches(outside.path()), 0);
+        let direct = dir.path().join("direct.txt");
+        fs::write(&direct, "x").unwrap();
+        assert_eq!(
+            collect(&rx, Duration::from_millis(700)),
+            vec![FsEvent::Created(direct)]
+        );
+    }
+
+    #[test]
+    fn rescan_covers_dir_watches() {
+        let (_dir, mut w, _rx) = setup();
+        let flat = tempfile::tempdir().unwrap();
+        w.watch_dir(flat.path()).unwrap();
+        let overflow = DebouncedEvent {
+            event: notify::Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan),
+            time: Instant::now(),
+        };
+        let out = translate(&[overflow], &lock(&w.scope));
+        assert_eq!(out, vec![FsEvent::Rescan(flat.path().to_path_buf())]);
+    }
+
+    #[test]
+    fn rescan_is_sent_once_for_a_dir_watched_both_ways() {
+        let (dir, mut w, _rx) = setup();
+        w.watch(dir.path()).unwrap();
+        w.watch_dir(dir.path()).unwrap();
+        let overflow = DebouncedEvent {
+            event: notify::Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan),
+            time: Instant::now(),
+        };
+        let out = translate(&[overflow], &lock(&w.scope));
+        assert_eq!(out, vec![FsEvent::Rescan(dir.path().to_path_buf())]);
     }
 
     #[test]
