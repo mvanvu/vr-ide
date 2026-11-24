@@ -6,8 +6,8 @@ use std::time::Duration;
 const STEP: Duration = Duration::from_micros(400);
 
 use vr_core::testutil::{
-    RacingWriter, WriterMode, assert_no_lost_write, assert_no_lost_write_swapping, sweep_offsets,
-    timed,
+    RacingWriter, WriterMode, assert_exchange_proofs_known, assert_no_lost_write,
+    assert_no_lost_write_swapping, sweep_offsets, timed,
 };
 use vr_search::{Query, apply_replace, plan_replace};
 
@@ -41,6 +41,7 @@ fn apply_replace_never_loses_a_concurrent_write() {
                 |r| r[0].1.is_ok(),
             );
             let versions = writer.stop();
+            assert_exchange_proofs_known(root, &versions);
             let final_bytes = fs::read(&file).unwrap();
             // The conflict copy a refused replace names, if any.
             let kept: Vec<Vec<u8>> = result[0]

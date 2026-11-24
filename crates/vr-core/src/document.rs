@@ -234,6 +234,8 @@ pub(crate) mod hook {
         AfterRename,
         /// In `disk_version`, between taking the stamp and reading the content.
         ReadingDiskVersion,
+        /// In `save_as` to another path, right after the version of the target was taken.
+        SaveAsVersionTaken,
     }
 
     type Hook = (Stage, Box<dyn FnOnce()>);
@@ -256,10 +258,26 @@ pub(crate) mod hook {
             f();
         }
     }
+
+    thread_local! {
+        static TAKEN: RefCell<Option<super::DiskVersion>> = const { RefCell::new(None) };
+    }
+
+    /// `save_as` records the version of the target it took (racing tests match it).
+    pub(crate) fn version_taken(v: &super::DiskVersion) {
+        TAKEN.with(|t| *t.borrow_mut() = Some(*v));
+    }
+
+    pub(crate) fn take_version_taken() -> Option<super::DiskVersion> {
+        TAKEN.with(|t| t.borrow_mut().take())
+    }
 }
 
 #[cfg(not(test))]
 mod hook {
+    #[inline(always)]
+    pub(crate) fn version_taken(_v: &super::DiskVersion) {}
+
     #[derive(Clone, Copy)]
     pub(crate) enum Stage {
         BeforeRename,
@@ -270,6 +288,8 @@ mod hook {
         AfterRename,
         /// In `disk_version`, between taking the stamp and reading the content.
         ReadingDiskVersion,
+        /// In `save_as` to another path, right after the version of the target was taken.
+        SaveAsVersionTaken,
     }
 
     #[inline(always)]
@@ -352,35 +372,7 @@ impl Document {
     /// reading the text the prompt shows: the user then sees this version or a later one,
     /// and a later one makes `save_overwrite_seen` refuse.
     pub fn disk_version(&self) -> Result<DiskVersion, DocError> {
-        let path = self.path.as_deref().ok_or(DocError::NoPath)?;
-        // A stamp and a hash taken around a write would describe two different versions, and
-        // the save would then accept the later one as "seen": read until the file held still.
-        for _ in 0..DISK_VERSION_TRIES {
-            let read = || {
-                let Some(stamp) = DiskStamp::of(path)? else {
-                    return Ok(Some(Expected {
-                        stamp: None,
-                        hash: None,
-                    }));
-                };
-                hook::fire(hook::Stage::ReadingDiskVersion);
-                let hash = hash_file(path)?;
-                io::Result::Ok((DiskStamp::of(path)? == Some(stamp)).then_some(Expected {
-                    stamp: Some(stamp),
-                    hash: Some(hash),
-                }))
-            };
-            match read() {
-                Ok(Some(version)) => return Ok(DiskVersion(version)),
-                Ok(None) => {}
-                // Deleted between the stamp and the read: look again.
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(io_error(e, path)),
-            }
-        }
-        Err(DocError::Io(io::Error::other(
-            "the file keeps changing on disk; try again",
-        )))
+        DiskVersion::of_path(self.path.as_deref().ok_or(DocError::NoPath)?)
     }
 
     /// Saves over the file only if it still is the version `seen` (from `disk_version`) the
@@ -400,15 +392,63 @@ impl Document {
         self.write_to(&path, Some(seen.0))
     }
 
-    /// Writes to `p` (the UI confirms replacing an existing file) and makes it the document path.
+    /// Writes to `p` and makes it the document path. The document's own path (also through
+    /// `.` or a symlink) is a `save`, with its changed-on-disk check. Another path replaces
+    /// the version that is there when the call begins, and only that one: a version written
+    /// during the save is never replaced (`Err(ChangedOnDisk)`), D89. A prompt uses
+    /// `save_as_seen` with the version the user was shown.
     pub fn save_as(&mut self, p: &Path) -> Result<Saved, DocError> {
         if self.read_only {
             return Err(DocError::NotUtf8ReadOnly);
         }
-        // The user confirmed replacing whatever is at `p`.
-        let saved = self.write_to(p, None)?;
+        if self.is_own_path(p) {
+            return self.save();
+        }
+        let now = DiskVersion::of_path(p)?;
+        hook::version_taken(&now);
+        hook::fire(hook::Stage::SaveAsVersionTaken);
+        self.save_as_seen(p, &now)
+    }
+
+    /// Save As that writes to `p` only if it still is the version `seen`
+    /// (`DiskVersion::of_path`, an absent file included) and makes `p` the document path.
+    /// Same commit as `save`: another version is never replaced, and a file created meanwhile
+    /// is never replaced either (no-replace create).
+    ///
+    /// Another path: `Err(ChangedOnDisk)` when anything but `seen` is there; the document
+    /// keeps its path and `disk_state`, and the UI asks again (Replace) with a fresh version.
+    ///
+    /// The document's own path is a `save` that also expects `seen`. Its `Err(ChangedOnDisk)`
+    /// sets `disk_state = ChangedOnDisk` and means the file differs from what the document
+    /// last loaded or saved: a fresh version does not help. The UI shows the external-change
+    /// prompt instead (Keep mine → `save_overwrite_seen`, or Reload; D81).
+    pub fn save_as_seen(&mut self, p: &Path, seen: &DiskVersion) -> Result<Saved, DocError> {
+        if self.read_only {
+            return Err(DocError::NotUtf8ReadOnly);
+        }
+        let own = self.is_own_path(p);
+        // Refuse before the temp file is written; the commit checks again.
+        if !still_fresh(p, &seen.0).map_err(|e| io_error(e, p))? {
+            if own {
+                self.disk_state = DiskState::ChangedOnDisk;
+            }
+            return Err(DocError::ChangedOnDisk);
+        }
+        if own {
+            return self.save();
+        }
+        let saved = self.write_to(p, Some(seen.0))?;
         self.path = Some(p.to_path_buf());
         Ok(saved)
+    }
+
+    /// `p` names the file the document is saved to: the same path, or the same final location
+    /// once symlinks are followed and the directory is made canonical.
+    fn is_own_path(&self, p: &Path) -> bool {
+        let Some(own) = self.path.as_deref() else {
+            return false;
+        };
+        own == p || location(own).is_some_and(|a| location(p).is_some_and(|b| a == b))
     }
 
     /// Replaces the text with the file's content as one undo step, keeping the cursor
@@ -522,15 +562,21 @@ impl Document {
         let bom = self.encoding == Encoding::Utf8Bom;
         let written = write_atomic(&target, bom, self.buffer.text(), expect)
             .map_err(|e| io_error(e, path))?;
+        // A refused Save As to another file says nothing about the document's own file.
+        let own = self.path.as_deref() == Some(path);
         let (snapshot, saved) = match written {
             Written::Done { snapshot, saved } => (snapshot, saved),
             Written::ChangedOnDisk => {
-                self.disk_state = DiskState::ChangedOnDisk;
+                if own {
+                    self.disk_state = DiskState::ChangedOnDisk;
+                }
                 return Err(DocError::ChangedOnDisk);
             }
             Written::Kept(e) => {
                 // The path holds someone else's version, not what we loaded.
-                self.disk_state = DiskState::ChangedOnDisk;
+                if own {
+                    self.disk_state = DiskState::ChangedOnDisk;
+                }
                 return Err(DocError::Io(e));
             }
         };
@@ -635,8 +681,25 @@ fn content_hash(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
+/// Hashes a regular file. Anything else is refused before it is read: `/dev/zero` never ends,
+/// and opening a FIFO waits for a writer. The open does not block (O_NONBLOCK) and the opened
+/// file is checked again, so a FIFO put at the path after the stat is refused too.
 fn hash_file(path: &Path) -> io::Result<u64> {
-    hash_reader(&File::open(path)?)
+    if !fs::metadata(path)?.is_file() {
+        return Err(not_regular());
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(not_regular());
+    }
+    hash_reader(&file)
+}
+
+fn not_regular() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "not a regular file")
 }
 
 fn hash_reader(mut file: &File) -> io::Result<u64> {
@@ -672,6 +735,18 @@ fn resolve_links(path: &Path) -> io::Result<PathBuf> {
         }
     }
     Err(io::Error::other("too many levels of symbolic links"))
+}
+
+/// Where a save to `path` lands: links followed, the directory canonical. `None` when the
+/// directory cannot be resolved.
+fn location(path: &Path) -> Option<PathBuf> {
+    let target = resolve_links(path).ok()?;
+    let name = target.file_name()?;
+    let dir = match target.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    Some(fs::canonicalize(dir).ok()?.join(name))
 }
 
 /// Removes the temp file unless the rename consumed it.
@@ -716,6 +791,49 @@ const DISK_VERSION_TRIES: usize = 5;
 /// A version of a file on disk as the user was shown it (`Document::disk_version`); opaque.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiskVersion(Expected);
+
+impl DiskVersion {
+    /// This version is a file holding exactly `bytes` (racing tests).
+    #[cfg(test)]
+    pub(crate) fn holds(&self, bytes: &[u8]) -> bool {
+        self.0.hash == Some(content_hash(bytes))
+    }
+
+    /// The version of whatever is at `path` now (links followed); an absent file is a version
+    /// too (D74). Take it when the user is shown the target, e.g. the Replace prompt of Save
+    /// As, or at submit for a name that does not exist, and pass it to
+    /// `Document::save_as_seen`.
+    pub fn of_path(path: &Path) -> Result<DiskVersion, DocError> {
+        // A stamp and a hash taken around a write would describe two different versions, and
+        // the save would then accept the later one as "seen": read until the file held still.
+        for _ in 0..DISK_VERSION_TRIES {
+            let read = || {
+                let Some(stamp) = DiskStamp::of(path)? else {
+                    return Ok(Some(Expected {
+                        stamp: None,
+                        hash: None,
+                    }));
+                };
+                hook::fire(hook::Stage::ReadingDiskVersion);
+                let hash = hash_file(path)?;
+                io::Result::Ok((DiskStamp::of(path)? == Some(stamp)).then_some(Expected {
+                    stamp: Some(stamp),
+                    hash: Some(hash),
+                }))
+            };
+            match read() {
+                Ok(Some(version)) => return Ok(DiskVersion(version)),
+                Ok(None) => {}
+                // Deleted between the stamp and the read: look again.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_error(e, path)),
+            }
+        }
+        Err(DocError::Io(io::Error::other(
+            "the file keeps changing on disk; try again",
+        )))
+    }
+}
 
 /// What the caller's changed-on-disk check saw: the target's stamp (`None`: absent) and the
 /// hash of the content it holds.
@@ -1612,6 +1730,206 @@ mod tests {
             Document::untitled().disk_version(),
             Err(DocError::NoPath)
         ));
+    }
+
+    #[test]
+    fn disk_version_of_any_path_counts_absence_as_a_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("other.txt");
+        let absent = DiskVersion::of_path(&p).unwrap();
+        assert_eq!(absent, DiskVersion::of_path(&p).unwrap());
+        fs::write(&p, "agent v1\n").unwrap();
+        let v1 = DiskVersion::of_path(&p).unwrap();
+        assert_ne!(v1, absent);
+        fs::write(&p, "agent v2\n").unwrap();
+        assert_ne!(DiskVersion::of_path(&p).unwrap(), v1);
+        // The document's own version is the version of its path.
+        let doc = Document::open(&p, 1 << 20).unwrap();
+        assert_eq!(
+            doc.disk_version().unwrap(),
+            DiskVersion::of_path(&p).unwrap()
+        );
+    }
+
+    /// A modified document at `a.txt` and an existing `other.txt` holding "theirs v1\n".
+    fn doc_and_other() -> (tempfile::TempDir, Document, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.txt");
+        fs::write(&p, "mine\n").unwrap();
+        let mut doc = Document::open(&p, 1 << 20).unwrap();
+        type_at_end(&mut doc, "edit");
+        let other = dir.path().join("other.txt");
+        fs::write(&other, "theirs v1\n").unwrap();
+        (dir, doc, p, other)
+    }
+
+    /// The refused Save As left the document as it was: same path, still modified.
+    fn assert_untouched_doc(doc: &Document, p: &Path) {
+        assert_eq!(doc.path.as_deref(), Some(p));
+        assert!(doc.is_modified());
+        assert_eq!(doc.disk_state, DiskState::InSync);
+    }
+
+    #[test]
+    fn save_as_seen_never_replaces_a_version_written_after_the_replace_prompt() {
+        let (dir, mut doc, p, other) = doc_and_other();
+        // The Replace prompt shows v1; the agent writes v2 before the user answers.
+        let seen = DiskVersion::of_path(&other).unwrap();
+        fs::write(&other, "theirs v2\n").unwrap();
+        let r = doc.save_as_seen(&other, &seen);
+        assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+        assert_eq!(fs::read_to_string(&other).unwrap(), "theirs v2\n");
+        assert_untouched_doc(&doc, &p);
+        // Writes after the last check, right before the file is put in place.
+        let seen = DiskVersion::of_path(&other).unwrap();
+        for stage in [hook::Stage::BeforeRename, hook::Stage::BeforeSwap] {
+            let at = other.clone();
+            hook::set(stage, move || fs::write(&at, "theirs v3\n").unwrap());
+            let r = doc.save_as_seen(&other, &seen);
+            assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{stage:?} {r:?}");
+            assert_eq!(fs::read_to_string(&other).unwrap(), "theirs v3\n");
+            assert_untouched_doc(&doc, &p);
+            fs::write(&other, "theirs v2\n").unwrap();
+        }
+        assert_eq!(dir_names(dir.path()), vec!["a.txt", "other.txt"]);
+        // The version the user confirmed is replaced and becomes the document's file.
+        let seen = DiskVersion::of_path(&other).unwrap();
+        doc.save_as_seen(&other, &seen).unwrap();
+        assert_eq!(fs::read_to_string(&other).unwrap(), "mine\nedit");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "mine\n");
+        assert_eq!(doc.path.as_deref(), Some(other.as_path()));
+        assert!(!doc.is_modified());
+        assert_eq!(doc.check_disk(), DiskState::InSync);
+    }
+
+    #[test]
+    fn save_as_seen_never_replaces_a_file_created_after_it_was_seen_absent() {
+        let (dir, mut doc, p, _) = doc_and_other();
+        let new = dir.path().join("new.txt");
+        let seen = DiskVersion::of_path(&new).unwrap();
+        fs::write(&new, "agent\n").unwrap();
+        let r = doc.save_as_seen(&new, &seen);
+        assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+        assert_eq!(fs::read_to_string(&new).unwrap(), "agent\n");
+        assert_untouched_doc(&doc, &p);
+        // Created after the last check, right before the file is put in place.
+        fs::remove_file(&new).unwrap();
+        for stage in [hook::Stage::BeforeRename, hook::Stage::BeforeSwap] {
+            let at = new.clone();
+            hook::set(stage, move || fs::write(&at, "agent\n").unwrap());
+            let r = doc.save_as_seen(&new, &seen);
+            assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{stage:?} {r:?}");
+            assert_eq!(fs::read_to_string(&new).unwrap(), "agent\n");
+            assert_untouched_doc(&doc, &p);
+            fs::remove_file(&new).unwrap();
+        }
+        assert_eq!(dir_names(dir.path()), vec!["a.txt", "other.txt"]);
+        doc.save_as_seen(&new, &seen).unwrap();
+        assert_eq!(fs::read_to_string(&new).unwrap(), "mine\nedit");
+        assert_eq!(doc.path.as_deref(), Some(new.as_path()));
+    }
+
+    #[test]
+    fn save_as_to_the_own_path_checks_freshness_like_save() {
+        let (dir, mut doc, p, _) = doc_and_other();
+        fs::write(&p, "agent\n").unwrap();
+        // The prompt is prefilled with the current name and the user presses Enter; the
+        // version taken at submit is the agent's, which the user never chose to replace.
+        let same = dir.path().join(".").join("a.txt");
+        for path in [p.clone(), same] {
+            let seen = DiskVersion::of_path(&path).unwrap();
+            let r = doc.save_as_seen(&path, &seen);
+            assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+            assert_eq!(fs::read_to_string(&p).unwrap(), "agent\n");
+            let r = doc.save_as(&path);
+            assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+            assert_eq!(fs::read_to_string(&p).unwrap(), "agent\n");
+            assert_eq!(doc.disk_state, DiskState::ChangedOnDisk);
+            assert_eq!(doc.path.as_deref(), Some(p.as_path()));
+            assert!(doc.is_modified());
+        }
+        assert_eq!(dir_names(dir.path()), vec!["a.txt", "other.txt"]);
+    }
+
+    #[test]
+    fn save_as_to_the_own_path_saves_an_unchanged_file() {
+        let (_dir, mut doc, p, _) = doc_and_other();
+        let seen = DiskVersion::of_path(&p).unwrap();
+        doc.save_as_seen(&p, &seen).unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "mine\nedit");
+        type_at_end(&mut doc, "2");
+        doc.save_as(&p).unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "mine\nedit2");
+        assert!(!doc.is_modified());
+        // A version seen before another writer's change is not the one on disk.
+        let seen = DiskVersion::of_path(&p).unwrap();
+        fs::write(&p, "agent\n").unwrap();
+        doc.reload().unwrap();
+        type_at_end(&mut doc, "3");
+        let r = doc.save_as_seen(&p, &seen);
+        assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "agent\n");
+    }
+
+    /// Runs `f` on another thread and fails when it has not returned within two seconds (a
+    /// blocked read or open would otherwise hang the test run).
+    fn within_2s<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("blocked for more than 2 s")
+    }
+
+    fn mkfifo(p: &Path) {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            p,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o644),
+            0,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn disk_version_of_a_device_is_an_error_without_reading_it() {
+        let r = within_2s(|| DiskVersion::of_path(Path::new("/dev/zero")));
+        assert!(
+            matches!(&r, Err(DocError::Io(e)) if e.kind() == io::ErrorKind::InvalidInput),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn disk_version_of_a_fifo_is_an_error_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        mkfifo(&fifo);
+        let at = fifo.clone();
+        let r = within_2s(move || DiskVersion::of_path(&at));
+        assert!(
+            matches!(&r, Err(DocError::Io(e)) if e.kind() == io::ErrorKind::InvalidInput),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn save_as_seen_refuses_a_fifo_put_at_the_target_without_blocking() {
+        // Seen as an empty file; a FIFO (also length 0) takes its place before the commit.
+        let (dir, mut doc, p, _) = doc_and_other();
+        let target = dir.path().join("empty.txt");
+        fs::write(&target, "").unwrap();
+        let seen = DiskVersion::of_path(&target).unwrap();
+        fs::remove_file(&target).unwrap();
+        mkfifo(&target);
+        let (r, doc) = within_2s(move || {
+            let r = doc.save_as_seen(&target, &seen);
+            (r, doc)
+        });
+        assert!(r.is_err(), "{r:?}");
+        assert_untouched_doc(&doc, &p);
     }
 
     #[test]
