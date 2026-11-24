@@ -518,6 +518,21 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
     app.dirty = true;
 }
 
+/// Ignore rules changed: files that were filtered out may be listed now.
+fn is_ignore_file_name(p: &Path) -> bool {
+    p.file_name()
+        .is_some_and(|n| n == ".gitignore" || n == ".ignore")
+}
+
+fn is_ignore_file(ev: &vr_core::FsEvent) -> bool {
+    use vr_core::FsEvent;
+    match ev {
+        FsEvent::Created(p) | FsEvent::Removed(p) | FsEvent::Modified(p) => is_ignore_file_name(p),
+        FsEvent::Renamed(a, b) => is_ignore_file_name(a) || is_ignore_file_name(b),
+        _ => false,
+    }
+}
+
 /// Notes the expanded folders a watcher event touched; [`flush`] re-reads them (once per
 /// batch of events). Content changes of listed files cost nothing.
 pub fn on_fs_event(app: &mut App, ev: &vr_core::FsEvent) {
@@ -525,6 +540,9 @@ pub fn on_fs_event(app: &mut App, ev: &vr_core::FsEvent) {
     let ex = &mut app.explorer;
     if !ex.loaded {
         return;
+    }
+    if is_ignore_file(ev) {
+        ex.filtered.clear();
     }
     let touch = |p: &Path, ex: &mut Explorer| {
         if let Some(parent) = p.parent()
@@ -599,6 +617,9 @@ pub fn reload_count() -> usize {
 /// its listing lacks the file. Content saves of listed files cost nothing.
 pub fn note_written(app: &mut App, path: &Path) {
     let ex = &mut app.explorer;
+    if is_ignore_file_name(path) {
+        ex.filtered.clear();
+    }
     let Some(dir) = path.parent() else {
         return;
     };

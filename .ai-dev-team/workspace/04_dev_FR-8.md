@@ -18,3 +18,9 @@
 | BASE-14,15,18,19 | nothing background; notes kept |
 | AC-3,7,8,12 | save/keep-mine/open paths covered by tests above |
 n-a: BASE-5,16,17,32 (no heavy cmds, no new reusable, no installs, no new decisions), COST (related tests only)
+
+## Quick pass 1
+- Red: explorer_tests::unignoring_a_saved_file_shows_its_row_on_the_next_save (row missing after .gitignore edit + save); commands::search::gate_tests::being_replaced_refusal_is_a_warning_on_every_path extended with `file.open` (Error "Open File: ..." vs Warning). Both green after the fixes.
+- Fix 1: explorer.rs clears `filtered` when a watcher event or our own save touches a `.gitignore` / `.ignore` file.
+- Fix 2: file.rs `open` with a path reports through `search::report_open_error` (warning, no prefix; other errors still errors, now without the "Open File:" prefix).
+- Final: 174 passed / 0 failed / 3 ignored; fmt and clippy -D warnings clean.

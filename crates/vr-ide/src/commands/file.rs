@@ -528,7 +528,12 @@ pub fn discard_and_close(app: &mut App, i: usize) {
 /// Without a path, asks for one ([`answer_open`]).
 fn open(app: &mut App, args: CmdArgs) -> CmdResult {
     match args {
-        CmdArgs::Path(p) => app.open_path(&p),
+        CmdArgs::Path(p) => {
+            if let Err(e) = app.open_path(&p) {
+                super::search::report_open_error(app, &e);
+            }
+            Ok(())
+        }
         CmdArgs::None => {
             app.open_dialog(
                 DialogWidget::Prompt(PromptDialog::new(

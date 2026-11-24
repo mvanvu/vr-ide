@@ -1607,3 +1607,33 @@ fn saving_a_filtered_file_does_not_re_read_the_folder() {
     app.run_command("file.save", crate::commands::CmdArgs::None);
     assert_eq!(explorer::reload_count(), base);
 }
+
+/// FR-8 qp1: editing .gitignore forgets which saved files were filtered, so a file that is
+/// no longer ignored gets its row on its next save.
+#[test]
+fn unignoring_a_saved_file_shows_its_row_on_the_next_save() {
+    let (d, mut app) = project();
+    let r = d.path().to_path_buf();
+    fs::write(r.join(".gitignore"), "x.txt\n").unwrap();
+    fs::write(r.join("x.txt"), "x\n").unwrap();
+    if app.explorer.tree.show_ignored() {
+        app.run_command("explorer.toggle_ignored", crate::commands::CmdArgs::None);
+    }
+    app.explorer.reload_all();
+    app.open_path(Path::new("x.txt")).unwrap();
+    app.focus = Focus::Editor;
+    assert!(
+        !rows(&app).contains(&"  x.txt".to_string()),
+        "{:?}",
+        rows(&app)
+    );
+    app.run_command("file.save", crate::commands::CmdArgs::None);
+    fs::write(r.join(".gitignore"), "").unwrap();
+    explorer::on_fs_event(&mut app, &vr_core::FsEvent::Modified(r.join(".gitignore")));
+    app.run_command("file.save", crate::commands::CmdArgs::None);
+    assert!(
+        rows(&app).contains(&"  x.txt".to_string()),
+        "{:?}",
+        rows(&app)
+    );
+}

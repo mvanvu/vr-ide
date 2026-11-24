@@ -31,3 +31,22 @@ crates/vr-ide/src/commands/explorer.rs read; file.rs read; palette.rs read; sear
 | BASE-32 | pass (no new decision needed) |
 | new-states (`filtered`) | pass with the minor above; no I/O, no data written |
 | AC-3, AC-7, AC-8, AC-12 | pass |
+
+## Quick pass 1 re-check — APPROVE
+Diff read: `git diff 73d4ebf -- crates/vr-ide` (explorer.rs, file.rs, search.rs, explorer_tests.rs); only these four files changed.
+- Minor 1 closed: `filtered` is cleared on a watcher event (Created/Removed/Modified/Renamed) for `.gitignore`/`.ignore`, and in `note_written` for our own save of one. The next save of a no-longer-ignored file then finds it neither listed nor filtered and re-reads the folder. The clear sits before the `loaded` early-return only in `note_written` (harmless); in `on_fs_event` it sits after the `loaded` check, which is fine because `filtered` is empty when nothing is loaded.
+- Minor 2 closed: `file.open` with a path goes through `report_open_error` (warning for BeingReplaced).
+- Side change accepted: other open errors stay errors but lose the "Open File:" prefix and no longer pass through run_command's error path; the arm now returns Ok(()). The only CmdArgs::Path caller is programmatic (main.rs uses `open_path` directly), and the messages already carry the path. No behavior is lost.
+- Nothing else changed; no new states beyond `filtered` clearing (memory only, no I/O).
+- Tests: the new test fails without the fix by construction (row stays hidden after the second save because the entry is in `filtered`); the extended gate test fails without the fix (Error with "Open File:" prefix, per the notes). Notes carry 174/0/3, fmt, clippy clean.
+
+| Rule | Result |
+| BASE-1 | pass |
+| BASE-2 | pass |
+| BASE-3 | pass |
+| BASE-6 | pass |
+| BASE-16 | pass |
+| BASE-25 | pass |
+| BASE-32 | pass |
+| new-states (`filtered`) | pass |
+| AC-3, AC-7, AC-8, AC-12 | pass |

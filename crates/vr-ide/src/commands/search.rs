@@ -2038,6 +2038,11 @@ mod gate_tests {
         assert_eq!(n.level, NoticeLevel::Warning, "{}", n.text);
         assert!(!n.text.contains("open it again"), "{}", n.text);
         assert!(app.docs.is_empty());
+        app.notices.clear();
+        app.run_command("file.open", crate::commands::CmdArgs::Path(f.clone()));
+        let n = app.notices.back().expect("a notice");
+        assert_eq!(n.level, NoticeLevel::Warning, "{}", n.text);
+        assert!(!n.text.starts_with("Open File"), "{}", n.text);
     }
 }
 
