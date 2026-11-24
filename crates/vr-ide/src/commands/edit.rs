@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use vr_core::{Selection, edit_ops, motion};
 
 use super::registry::{CmdArgs, CmdResult, CommandSpec};
-use crate::app::App;
+use crate::app::{App, Focus};
 
 macro_rules! cmd {
     ($name:literal, $title:literal, $run:expr) => {
@@ -31,7 +31,31 @@ pub const COMMANDS: &[CommandSpec] = &[
     cmd!("edit.indent", "Indent", indent),
     cmd!("edit.outdent", "Outdent", outdent),
     cmd!("edit.toggle_comment", "Toggle Line Comment", toggle_comment),
+    cmd!("editor.edit_mode", "Enter Edit Mode", edit_mode),
+    cmd!("editor.read_mode", "Enter Read Mode", read_mode),
 ];
+
+/// Edit mode on the active tab (D145). From the palette or a side panel the editor also
+/// gets the keys, so the mode is not dropped again on the way back.
+fn edit_mode(app: &mut App, _: CmdArgs) -> CmdResult {
+    if app.active_doc().is_none() {
+        return Ok(());
+    }
+    if !matches!(app.focus, Focus::Editor | Focus::FindBar) {
+        app.focus = Focus::Editor;
+    }
+    app.enter_edit_mode();
+    Ok(())
+}
+
+/// Read mode on the active tab; the selection goes too (D145).
+fn read_mode(app: &mut App, _: CmdArgs) -> CmdResult {
+    if app.active_doc().is_some() {
+        app.enter_read_mode();
+        app.cursor_moved();
+    }
+    Ok(())
+}
 
 fn undo(app: &mut App, _: CmdArgs) -> CmdResult {
     if let Some(doc) = app.editable_doc() {
@@ -231,6 +255,11 @@ pub fn handle_builtin_key(app: &mut App, key: &KeyEvent) -> bool {
             }
         }
         KeyCode::Enter if !ctrl => insert_newline(app),
+        // Terminals without the kitty protocol send ctrl+i as Tab: in read mode it is the
+        // edit-mode key, in edit mode it indents as before (D145).
+        KeyCode::Tab if !ctrl && !shift && !app.edit_mode() => {
+            app.run_command("editor.edit_mode", CmdArgs::None);
+        }
         KeyCode::Tab if !ctrl && !shift => insert_tab(app),
         KeyCode::Backspace if !ctrl => {
             if let Some(doc) = app.editable_doc() {

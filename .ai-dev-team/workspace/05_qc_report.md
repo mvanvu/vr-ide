@@ -771,3 +771,19 @@ Notes (not defects): a shown tree + legacy terminal: ctrl+shift+e hides it (D143
 | D143/D144 | pass | find bar / search panel / legacy ctrl+e checked |
 | USER-1 | pass | ctrl+e override logged (D142) |
 | BASE-14/15/17 | pass | background run, nothing left running, no data probes |
+
+## QC T14 — read mode / edit mode (QC_PASS)
+Engine: own pty harness (qa-artifacts/FR-10/h.py + qa-artifacts/T14/qc_flows.py), TERM=xterm-256color, release build (binary 21:34, newer than all product sources; `cargo build --release` = Finished, no rebuild needed), legacy and kitty (flags answered to the `CSI ? u` query). One run per mode, 14 flows each; outputs qc_legacy.txt, qc_kitty.txt.
+Flows (both modes, all PASS): open from ctrl+p -> READ; from explorer (ctrl+e, Down, Enter) -> READ; tab switch (ctrl+pagedown, other tab was EDIT) -> READ and typing refused; F1 + Esc -> READ; Save As dialog + Esc -> READ; project search panel -> READ; blocked keys (typing, Enter, Backspace, Delete, ctrl+v, bracketed paste, ctrl+x, ctrl+z, ctrl+y, alt+up/down, ctrl+], ctrl+/, kitty ctrl+shift+k) each show "Read mode — ctrl+i to edit", buffer and saved bytes unchanged; replace-all via palette from the open replace bar: hint shown, buffer/disk unchanged (script reported FAIL only because my assertion matched the "Replace ZZZ" input row; screen dump shows hello/world unchanged — false negative); ctrl+i (Tab in legacy) -> EDIT, edit + ctrl+s + undo + redo each verified on disk; Esc -> READ and clears selection; Esc closes find bar and palette; ctrl+n file opens EDIT; cursor CSI 2 SP q (read) / 5 SP q (edit) / 0 SP q on quit; badge at 80x24 and 40x12.
+Legacy terminals do not report ctrl+shift+* keys, so dialog/search/replace-all were reached through the palette in both modes.
+Not walked in pty: project replace into an open READ tab — covered by `search_tests::project_replace_preview_and_confirm` (+8 project_replace tests, 9/9 ok).
+Tests: `cargo test -p vr-ide --lib mode_tests::` 21 passed, 0 failed.
+Defects: none.
+
+## Rule check T14
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE (QC: no product edits, no git writes) | ok | only files under qa-artifacts/T14 and this report touched |
+| BASE-14/15 | ok | one background task, ended by notification, nothing killed |
+| BASE-17 | ok | probes only in mktemp dirs, no shared DB/app |
+| Decisions D145, D149-D155 | ok | flows above |

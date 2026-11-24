@@ -38,6 +38,8 @@ const KNOWN: &[&str] = &[
     "edit.indent",
     "edit.outdent",
     "edit.toggle_comment",
+    "editor.edit_mode",
+    "editor.read_mode",
     "nav.goto_line",
     "file.reload",
     "explorer.toggle",

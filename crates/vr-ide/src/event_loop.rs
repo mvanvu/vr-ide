@@ -156,11 +156,30 @@ pub fn exit(
     result
 }
 
+/// Block cursor in read mode, bar where typing goes into text (D145); only written when it
+/// changes. Terminals without cursor shapes ignore the sequence; `main` restores the user's
+/// shape on exit.
+fn set_cursor_shape(current: &mut Option<bool>, bar: bool) {
+    use crossterm::cursor::SetCursorStyle;
+    if *current == Some(bar) {
+        return;
+    }
+    let style = if bar {
+        SetCursorStyle::BlinkingBar
+    } else {
+        SetCursorStyle::SteadyBlock
+    };
+    if crossterm::execute!(std::io::stdout(), style).is_ok() {
+        *current = Some(bar);
+    }
+}
+
 /// Runs until a command sets `app.quit`. Draws only when something changed.
 pub fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Result<()>
 where
     B::Error: Send + Sync + 'static,
 {
+    let mut bar: Option<bool> = None;
     loop {
         app.drain_fs_events();
         app.drain_index();
@@ -168,6 +187,7 @@ where
         app.tick(Instant::now());
         if app.dirty {
             draw_frame(terminal, app, &recovery::GLOBAL, ui::render)?;
+            set_cursor_shape(&mut bar, app.wants_bar_cursor());
         }
         if app.quit {
             return Ok(());

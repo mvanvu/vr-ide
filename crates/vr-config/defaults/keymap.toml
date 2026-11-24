@@ -59,6 +59,11 @@
 # [editor] "f2" = "lsp.rename"            # M8
 
 [editor]
+# Read mode / edit mode (D145, the user's keys): a file is opened in read mode; ctrl+i edits,
+# escape goes back to reading. Without the kitty protocol ctrl+i arrives as tab, which also
+# enters edit mode from read mode (and indents in edit mode).
+"ctrl+i" = "editor.edit_mode"
+"escape" = "editor.read_mode"
 "ctrl+z" = "edit.undo"
 "ctrl+shift+z" = "edit.redo"
 "ctrl+y" = "edit.redo"

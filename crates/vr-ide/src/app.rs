@@ -102,6 +102,9 @@ pub struct View {
     /// Scroll so the cursor is visible on the next render (set by edits and cursor moves,
     /// not by wheel scrolling).
     pub follow_cursor: bool,
+    /// Edit mode (D145): text-changing keys and commands work only while this is set. A file
+    /// tab drops back to read mode whenever the editor gains the keys on it.
+    pub edit: bool,
 }
 
 pub struct App {
@@ -157,6 +160,9 @@ pub struct App {
     pub find: commands::find::FindBar,
     /// Project search / replace panel (AC-11, AC-12).
     pub search: commands::search::SearchPanel,
+    /// The tab that had the editor focus at the last [`App::sync_mode`] (None: the keys were
+    /// elsewhere), to tell when the editor gains the keys on a tab.
+    editor_seen: Option<usize>,
 }
 
 impl App {
@@ -200,6 +206,7 @@ impl App {
             index_cap_noticed: false,
             find: Default::default(),
             search: Default::default(),
+            editor_seen: None,
         }
     }
 
@@ -415,6 +422,7 @@ impl App {
             ..View::default()
         });
         self.set_active(self.docs.len() - 1);
+        self.sync_mode();
         Ok(())
     }
 
@@ -508,6 +516,13 @@ impl App {
         if self.active > i || self.active >= self.docs.len() {
             self.active = self.active.saturating_sub(1);
         }
+        // Keep pointing at the same tab; the closed one is forgotten, so the tab that takes
+        // its place starts in read mode.
+        self.editor_seen = match self.editor_seen {
+            Some(s) if s == i => None,
+            Some(s) if s > i => Some(s - 1),
+            other => other,
+        };
         self.dirty = true;
     }
 
@@ -523,16 +538,120 @@ impl App {
         self.views.get_mut(self.active)
     }
 
-    /// The active document if it may be edited; a read-only one gets a notice instead.
-    /// The view follows the cursor afterwards.
+    /// The active document if it may be edited; a read-only one, or a tab in read mode
+    /// (D145), gets a notice instead. Every text-changing key and command of the user goes
+    /// through here; project replace and reloads from disk do not, so they still update
+    /// buffers in read mode. The view follows the cursor afterwards.
     pub fn editable_doc(&mut self) -> Option<&mut Document> {
         let read_only = self.active_doc()?.read_only;
         if read_only {
             self.warn("file is read-only (not UTF-8)");
             return None;
         }
+        self.sync_mode();
+        if !self.edit_mode() {
+            self.read_mode_hint();
+            return None;
+        }
         self.cursor_moved();
         self.docs.get_mut(self.active)
+    }
+
+    // ---- read / edit mode (D145) ---------------------------------------------------------
+
+    /// The active tab is in edit mode.
+    pub fn edit_mode(&self) -> bool {
+        self.views.get(self.active).is_some_and(|v| v.edit)
+    }
+
+    /// Applies the mode rule after focus or the active tab changed: when the editor gains
+    /// the keys on a tab (open, tab switch, back from the explorer, palette, search panel or
+    /// a dialog), file tabs are in read mode and an untitled buffer in edit mode. The find
+    /// bar sits on the editor and keeps the mode; so does the palette opened over it while
+    /// it is open, so a command picked there acts in the mode the tab had. Closing the
+    /// palette without a command (Esc, a click outside) returns in read mode, see
+    /// [`App::palette_dismissed`]. Called at the end of every input and
+    /// watcher event, so the many places that move the focus need no hook of their own.
+    pub(crate) fn sync_mode(&mut self) {
+        let focus = match &self.palette {
+            Some(p) => p.prev_focus,
+            None => self.focus,
+        };
+        let on_editor = self.dialog.is_none() && matches!(focus, Focus::Editor | Focus::FindBar);
+        let here = Some(self.active).filter(|&i| on_editor && i < self.docs.len());
+        if here == self.editor_seen {
+            return;
+        }
+        // Only the tab with the keys can be in edit mode, so leaving resets them all.
+        for v in &mut self.views {
+            v.edit = false;
+        }
+        if let Some(i) = here
+            && let (Some(d), Some(v)) = (self.docs.get(i), self.views.get_mut(i))
+        {
+            v.edit = d.path.is_none();
+        }
+        self.editor_seen = here;
+        self.dirty = true;
+    }
+
+    /// Edit mode on the active tab (ctrl+i).
+    pub fn enter_edit_mode(&mut self) {
+        self.sync_mode();
+        if let Some(v) = self.views.get_mut(self.active) {
+            v.edit = true;
+        }
+        self.dirty = true;
+    }
+
+    /// Read mode on the active tab; the selection collapses to the cursor (Esc).
+    pub fn enter_read_mode(&mut self) {
+        self.sync_mode();
+        if let Some(v) = self.views.get_mut(self.active) {
+            v.edit = false;
+        }
+        if let Some(doc) = self.docs.get_mut(self.active) {
+            let head = doc.buffer.selection().primary().head;
+            doc.buffer.set_selection(Selection::point(head));
+        }
+        self.dirty = true;
+    }
+
+    /// The short non-modal hint for an edit attempt in read mode: one notice per burst of
+    /// attempts (a repeat only extends its time).
+    fn read_mode_hint(&mut self) {
+        let text = format!("Read mode — {} to edit", self.key_hint("editor.edit_mode"));
+        let expires = Some(Instant::now() + INFO_NOTICE_TTL);
+        if let Some(n) = self.notices.iter_mut().find(|n| n.text == text) {
+            n.expires = expires;
+            self.dirty = true;
+            return;
+        }
+        self.push_notice(Notice {
+            level: NoticeLevel::Info,
+            text,
+            expires,
+            until_next: true,
+        });
+    }
+
+    /// After a palette key or click: a palette closed without running anything (`dismissed`)
+    /// hands the editor back in read mode (D145).
+    fn palette_dismissed(&mut self, dismissed: bool) {
+        if dismissed && self.palette.is_none() {
+            self.editor_seen = None;
+        }
+    }
+
+    /// The terminal cursor should be a bar (typing goes into text) rather than a block (the
+    /// editor in read mode).
+    pub fn wants_bar_cursor(&self) -> bool {
+        let reading = self.dialog.is_none()
+            && self.palette.is_none()
+            && self.focus == Focus::Editor
+            && self.active_doc().is_some()
+            && !self.edit_mode();
+        !reading
     }
 
     /// Marks the frame dirty and scrolls to the cursor on the next render.
@@ -669,6 +788,7 @@ impl App {
         if let Err(e) = (spec.run)(self, args) {
             self.error(format!("{}: {e}", spec.title));
         }
+        self.sync_mode();
         self.sync_explorer_watches();
         self.dirty = true;
         true
@@ -685,6 +805,7 @@ impl App {
         self.event_time = Some(now);
         self.route_key(key, now);
         self.event_time = None;
+        self.sync_mode();
         self.sync_explorer_watches();
     }
 
@@ -706,7 +827,9 @@ impl App {
             self.answer_dialog(outcome);
             return;
         }
+        let palette_esc = key.code == KeyCode::Esc;
         if self.focus == Focus::Palette && commands::palette::handle_key(self, &key) {
+            self.palette_dismissed(palette_esc);
             return;
         }
         // The find bar and the search panel use Esc themselves (close / back to the editor).
@@ -719,6 +842,17 @@ impl App {
         }
         if self.focus == Focus::Search && commands::search::handle_key(self, &key) {
             return;
+        }
+        // The key that leaves edit mode (Esc) does that before it dismisses a notice: the
+        // user is typing, the notice can wait for the next press.
+        if self.focus == Focus::Editor && self.edit_mode() {
+            let leaves = chord_from_key(&key, self.keyboard_enhanced).is_some_and(|c| {
+                self.keymap.command_for_in(Context::Editor, &c) == Some("editor.read_mode")
+            });
+            if leaves {
+                self.run_command("editor.read_mode", CmdArgs::None);
+                return;
+            }
         }
         if key.code == DISMISS_KEY && key.modifiers.is_empty() && !self.notices.is_empty() {
             self.notices.pop_front();
@@ -786,6 +920,7 @@ impl App {
     /// view without moving the cursor, a click on a tab activates it.
     pub fn handle_mouse(&mut self, ev: MouseEvent) {
         self.route_mouse(ev);
+        self.sync_mode();
         self.sync_explorer_watches();
     }
 
@@ -803,7 +938,12 @@ impl App {
             return;
         }
         if self.palette.is_some() {
+            let outside = self
+                .palette
+                .as_ref()
+                .is_some_and(|p| matches!(ev.kind, MouseEventKind::Down(_)) && !inside(p.area));
             commands::palette::handle_mouse(self, &ev);
+            self.palette_dismissed(outside);
             return;
         }
         let l = self.layout;
@@ -904,6 +1044,7 @@ impl App {
         self.apply_fs_event(ev);
         commands::explorer::flush(self);
         self.sync_explorer_watches();
+        self.sync_mode();
     }
 
     /// [`App::handle_fs_event`] without re-reading the explorer folders it touched.
@@ -1051,6 +1192,7 @@ impl App {
         }
         commands::explorer::flush(self);
         self.sync_explorer_watches();
+        self.sync_mode();
     }
 }
 

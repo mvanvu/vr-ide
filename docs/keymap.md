@@ -31,6 +31,15 @@ vr-ide ships VS Code's default Linux keybindings. The list below comes from
 
 ### `[editor]`
 
+A file opens in **read mode**: everything that does not change the text works (move, select, copy,
+find, save, go to line, palette); typing and every text-changing key or command (enter, backspace,
+delete, paste, cut, undo, redo, indent, line operations, replace in the file) does nothing and shows
+the hint "Read mode — ctrl+i to edit". `ctrl+i` switches the tab to **edit mode**; `esc` returns to
+read mode. A tab is back in read mode whenever the editor gets the keys on it again (tab switch,
+back from the explorer, search panel, a dialog, or a palette closed without running a command).
+The status bar shows `READ` or `EDIT`. Project replace and reloads from disk still update open
+files in either mode.
+
 | Command | Title | Keys |
 |---|---|---|
 | `edit.undo` | Undo | `ctrl+z` |
@@ -46,6 +55,8 @@ vr-ide ships VS Code's default Linux keybindings. The list below comes from
 | `edit.indent` | Indent | `ctrl+]` |
 | `edit.outdent` | Outdent | `ctrl+[`, `shift+tab` (most terminals send `ctrl+[` as Escape) |
 | `edit.toggle_comment` | Toggle Line Comment | `ctrl+/` |
+| `editor.edit_mode` | Enter Edit Mode | `ctrl+i` (without the kitty protocol the terminal sends it as `tab`; `tab` in read mode enters edit mode too) |
+| `editor.read_mode` | Enter Read Mode (also clears the selection) | `escape` (in the find bar, palette, dialogs and panels `esc` keeps its own meaning) |
 | `nav.goto_line` | Go to Line | `ctrl+g` |
 | `find.open` | Find | `ctrl+f` |
 | `find.replace_open` | Replace | `ctrl+h` |
@@ -97,8 +108,8 @@ Typing and cursor movement are built in and not listed in `keymap.toml`.
 
 | Where | Keys |
 |---|---|
-| Editor | Arrows move; `home`/`end` go to line start/end; `ctrl+home`/`ctrl+end` go to document start/end; `pageup`/`pagedown` move one screen; `ctrl+left`/`ctrl+right` move by word; hold `shift` with any of these to extend the selection; `enter`, `tab`, `backspace`, `delete` and characters edit the text |
-| Everywhere | `esc` dismisses the oldest notice (when the palette, find bar or search panel is not focused) |
+| Editor | Arrows move; `home`/`end` go to line start/end; `ctrl+home`/`ctrl+end` go to document start/end; `pageup`/`pagedown` move one screen; `ctrl+left`/`ctrl+right` move by word; hold `shift` with any of these to extend the selection; `enter`, `tab`, `backspace`, `delete` and characters edit the text in edit mode; in read mode `tab` enters edit mode (it is what `ctrl+i` arrives as without the kitty protocol) |
+| Everywhere | `esc` dismisses the oldest notice (when the palette, find bar or search panel is not focused; in the editor in edit mode `esc` first returns to read mode) |
 | Explorer | `up`/`down`, `pageup`/`pagedown`, `home`/`end` move (with `shift`, extend the selection); `right` expands a folder or steps into it; `left` collapses or goes to the parent; `enter` opens the file or toggles the folder; `esc` returns focus to the editor. The explorer swallows plain typing |
 | Palette | `up`/`down`, `pageup`/`pagedown` move; `enter` runs; `esc` closes |
 | Dialogs | `left`/`right`/`tab`/`shift+tab` choose a button; `enter` confirms; `esc` cancels. A held (repeating) `enter` never confirms |

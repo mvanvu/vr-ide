@@ -447,6 +447,7 @@ fn project_replace_preview_and_confirm() {
     // The open file's change is one undo step.
     app.set_active(ci);
     app.focus = Focus::Editor;
+    app.handle_key(ctrl('i'));
     app.handle_key(ctrl('z'));
     assert_eq!(app.docs[ci].buffer.text().to_string(), "foo c\n");
     assert!(!app.docs[ci].buffer.history().can_undo());
@@ -487,6 +488,7 @@ fn project_replace_never_writes_behind_a_tab() {
         .unwrap();
     app.set_active(bi);
     app.focus = Focus::Editor;
+    app.handle_key(ctrl('i'));
     typ(&mut app, "mine ");
     let ci = app
         .docs
@@ -715,6 +717,7 @@ fn narrow_click_on_result_gives_keys_to_the_editor() {
     assert!(!app.search.visible);
     assert_eq!(app.focus, Focus::Editor);
     app.handle_key(key(KeyCode::End));
+    app.handle_key(ctrl('i'));
     typ(&mut app, "X");
     assert!(
         app.active_doc()
@@ -993,6 +996,7 @@ fn quit_is_refused_while_a_replace_runs() {
     let (d, mut app, hold, names) = held_apply(40, 0);
     app.open_path(Path::new("f000.txt")).unwrap();
     app.focus = Focus::Editor;
+    app.handle_key(ctrl('i'));
     app.handle_key(key(KeyCode::Char('x')));
     app.run_command("app.quit", crate::commands::CmdArgs::None);
     assert!(!app.quit, "quit during a replace");
@@ -1136,6 +1140,7 @@ fn tab_opened_during_a_replace_is_never_written() {
     let (d, mut app, hold, names) = held_apply(40, 0);
     app.open_path(Path::new("f005.txt")).unwrap();
     app.focus = Focus::Editor;
+    app.handle_key(ctrl('i'));
     app.handle_key(key(KeyCode::Char('x')));
     let i = app.active;
     hold.store(usize::MAX, Ordering::SeqCst);

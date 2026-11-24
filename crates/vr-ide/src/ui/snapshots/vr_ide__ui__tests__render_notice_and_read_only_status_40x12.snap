@@ -13,4 +13,4 @@ expression: t.backend()
 "                                        "
 "l1.txt is not valid UTF-8; opened       "
 "read-only  (+1 more · Esc)              "
-" l1.txt [read-only] · Ln 1, Col 1       "
+" READ l1.txt [read-only] · Ln 1, Col 1  "

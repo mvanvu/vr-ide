@@ -84,6 +84,9 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
 
 - The explorer starts hidden: `ctrl+e` shows it with the keys in the tree (arrows move, `enter`
   opens) and hides it again.
+- A file opens in **read mode** (status bar `READ`): you can move, select, copy, find and save, but
+  typing does nothing. Press `ctrl+i` to edit (`EDIT`) and `esc` to go back to reading. A new file
+  from `ctrl+n` opens ready to type.
 - The **project root** is the folder the explorer shows and the one project search, "Go to File" and
   relative paths in prompts refer to.
 - With no argument it is the current directory; with a directory it is that directory (the path
@@ -122,8 +125,18 @@ changes in the [recovery folder](#recovery).
 
 ### Editing
 
+Files open in read mode, so a stray key never changes them. `ctrl+i` switches the tab to edit mode
+and `esc` back to read mode (it also clears the selection). The tab returns to read mode whenever
+the editor gets the keys on it again: switching tabs, coming back from the explorer, the search
+panel or a dialog, or closing the palette without running a command. In read mode, typing and the
+editing keys below show the hint "Read mode — ctrl+i to edit"; moving, selecting, copying, find,
+Go to Line and save work as usual. The status bar shows `READ` or `EDIT`, and where the terminal
+supports it the cursor is a block in read mode and a bar in edit mode. Project replace and reloads
+from disk still update open files in either mode.
+
 | Task | Keys |
 |---|---|
+| Edit mode / read mode | `ctrl+i` / `esc` |
 | Undo / redo | `ctrl+z` / `ctrl+shift+z` or `ctrl+y` |
 | Copy / cut / paste | `ctrl+c` / `ctrl+x` / `ctrl+v` |
 | Select all | `ctrl+a` |
@@ -146,7 +159,7 @@ Most terminals send `ctrl+[` as `Esc`; use `shift+tab` to outdent there.
 | Find | `ctrl+f` |
 | Replace | `ctrl+h` |
 | Next / previous match | `enter` / `shift+enter` in the find bar, or `f3` / `shift+f3` |
-| Replace one / replace all | `ctrl+shift+1` / `ctrl+alt+enter` (or `enter` in the replace field to replace one) |
+| Replace one / replace all (edit mode only; find works in read mode) | `ctrl+shift+1` / `ctrl+alt+enter` (or `enter` in the replace field to replace one) |
 | Match case / whole word / regex | `alt+c` / `alt+w` / `alt+r` |
 | Switch between the find and replace fields | `tab` / `shift+tab` |
 | Close the bar | `esc` |
@@ -272,6 +285,9 @@ Environment overrides:
 - **`ctrl+shift+e` hides the explorer instead of focusing it.** Without the kitty keyboard
   protocol the terminal sends `ctrl+shift+e` as `ctrl+e`, which toggles the explorer (shows and
   focuses it when hidden, hides it when shown). Use `ctrl+e` or `F6` to reach the tree there.
+- **Typing does nothing and "Read mode — ctrl+i to edit" appears.** The tab is in read mode;
+  press `ctrl+i` (or `tab`, which is what `ctrl+i` arrives as in a terminal without the kitty
+  keyboard protocol) to edit.
 - **`ctrl+[` does not outdent.** Terminals send it as `Esc`; use `shift+tab`.
 - **Copy does not reach the clipboard over SSH.** vr-ide uses OSC 52 there, which your local
   terminal must allow (it is off by default in some, for example tmux needs `set -g set-clipboard

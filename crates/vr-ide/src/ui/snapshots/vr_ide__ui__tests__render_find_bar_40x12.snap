@@ -1,6 +1,5 @@
 ---
 source: crates/vr-ide/src/ui/mod.rs
-assertion_line: 73
 expression: t.backend()
 ---
 " a.txt                                  "
@@ -14,4 +13,4 @@ expression: t.backend()
 "                                        "
 "                                        "
 "                                        "
-" a.txt · Ln 1, Col 9 · LF · UTF-8       "
+" EDIT a.txt · Ln 1, Col 9 · LF · UTF-8  "

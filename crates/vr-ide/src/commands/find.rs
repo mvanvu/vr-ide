@@ -527,7 +527,11 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             .command_for_in(Context::Editor, &c)
             .map(str::to_owned)
     });
-    if bound.as_deref().is_some_and(|c| !c.starts_with("edit.")) {
+    // Esc keeps closing the bar although the editor table binds it to editor.read_mode.
+    if bound
+        .as_deref()
+        .is_some_and(|c| !c.starts_with("edit.") && c != "editor.read_mode")
+    {
         // The keymap runs it (find.next, find.replace_all, ...).
         return false;
     }

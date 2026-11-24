@@ -23,13 +23,15 @@ pub(crate) fn test_app(root: &Path) -> (App, MemoryClipboard) {
     (app, clip)
 }
 
-/// A temp project with one file, opened in the app.
+/// A temp project with one file, opened in the app and put in edit mode with ctrl+i (D145),
+/// the state the editing tests start from; `mode_tests` covers read mode.
 pub(crate) fn app_with_file(content: &str) -> (tempfile::TempDir, PathBuf, App, MemoryClipboard) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("a.txt");
     std::fs::write(&path, content).unwrap();
     let (mut app, clip) = test_app(dir.path());
     app.open_path(&path).unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL));
     (dir, path, app, clip)
 }
 
@@ -127,6 +129,7 @@ fn unknown_command_in_keymap_shows_notice_not_crash() {
     // The rest of the keymap still works and the unknown key does nothing.
     std::fs::write(dir.path().join("f.txt"), "1").unwrap();
     app.open_path(Path::new("f.txt")).unwrap();
+    app.handle_key(ctrl('i'));
     app.handle_key(ctrl('k'));
     typ(&mut app, "x");
     app.handle_key(ctrl('s'));
@@ -426,6 +429,7 @@ fn rescan_renamed_and_error_events() {
     let (mut app, _) = test_app(dir.path());
     app.open_path(&a).unwrap();
     app.open_path(&b).unwrap();
+    app.handle_key(ctrl('i'));
     typ(&mut app, "mine ");
     std::fs::write(&a, "a2\n").unwrap();
     std::fs::write(&b, "b2\n").unwrap();
