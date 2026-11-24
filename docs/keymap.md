@@ -12,7 +12,7 @@ vr-ide ships VS Code's default Linux keybindings. The list below comes from
 |---|---|---|
 | `app.palette` | Command Palette | `ctrl+shift+p`, `f1` |
 | `app.quit` | Quit | `ctrl+q` |
-| `file.goto` | Go to File | `ctrl+p`, `ctrl+e` |
+| `file.goto` | Go to File | `ctrl+p` |
 | `file.open` | Open File | `ctrl+o` |
 | `file.save` | Save | `ctrl+s` |
 | `file.save_as` | Save As | `ctrl+shift+s` |
@@ -21,6 +21,7 @@ vr-ide ships VS Code's default Linux keybindings. The list below comes from
 | `tab.next` | Next Tab | `ctrl+pagedown` |
 | `tab.prev` | Previous Tab | `ctrl+pageup` |
 | `explorer.toggle` | Explorer: Toggle | `ctrl+b` |
+| `explorer.toggle_focus` | Explorer: Toggle and Focus | `ctrl+e` (hidden: shows the explorer and focuses it; shown: hides it and the editor gets the keys) |
 | `explorer.focus` | Explorer: Focus | `ctrl+shift+e` |
 | `search.project` | Search in Project | `ctrl+shift+f` |
 | `search.replace_project` | Replace in Project | `ctrl+shift+h` |

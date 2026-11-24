@@ -82,6 +82,8 @@ vr-ide <dir>        # open <dir> as the project root
 vr-ide <file>       # open <file>; the project root is its enclosing git root
 ```
 
+- The explorer starts hidden: `ctrl+e` shows it with the keys in the tree (arrows move, `enter`
+  opens) and hides it again.
 - The **project root** is the folder the explorer shows and the one project search, "Go to File" and
   relative paths in prompts refer to.
 - With no argument it is the current directory; with a directory it is that directory (the path
@@ -107,7 +109,7 @@ that cannot be changed, is in [docs/keymap.md](docs/keymap.md); every key can be
 | Task | Keys |
 |---|---|
 | Open a file by path (relative to the project root) | `ctrl+o` |
-| Go to File (fuzzy search by name) | `ctrl+p` or `ctrl+e` |
+| Go to File (fuzzy search by name) | `ctrl+p` |
 | New file (created on disk at once; there are no untitled buffers) | `ctrl+n` |
 | Save | `ctrl+s` |
 | Save As (a new file name, relative to the project root) | `ctrl+shift+s` |
@@ -180,7 +182,8 @@ not overwritten.
 
 | Task | Keys |
 |---|---|
-| Show / hide the explorer | `ctrl+b` |
+| Show the explorer and focus it / hide it (the editor gets the keys) | `ctrl+e` |
+| Show / hide the explorer (focus stays where it is) | `ctrl+b` |
 | Focus the explorer | `ctrl+shift+e` |
 | Cycle focus between the parts | `f6` |
 | Back to the editor | `esc` |

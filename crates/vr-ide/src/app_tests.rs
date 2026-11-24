@@ -20,8 +20,6 @@ pub(crate) fn test_app(root: &Path) -> (App, MemoryClipboard) {
     // Timing of Enter is tested on its own (held_or_in_flight_enter_never_answers_a_dialog).
     app.enter_settle = std::time::Duration::ZERO;
     app.enter_repeat_gap = std::time::Duration::ZERO;
-    // The T5/T6 editor tests address screen cells by absolute column; explorer tests show it.
-    app.explorer.visible = false;
     (app, clip)
 }
 

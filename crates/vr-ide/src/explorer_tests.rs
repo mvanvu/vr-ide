@@ -1637,3 +1637,122 @@ fn unignoring_a_saved_file_shows_its_row_on_the_next_save() {
         rows(&app)
     );
 }
+
+/// FR-10: the explorer starts hidden (user 21:02, amends D101); ctrl+e shows it.
+#[test]
+fn explorer_is_hidden_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::new(
+        dir.path().to_path_buf(),
+        vr_config::Keymap::load(None).0,
+        vr_config::Settings::default(),
+        Box::new(crate::clipboard::MemoryClipboard::new()),
+    );
+    assert!(!app.explorer.visible);
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+/// FR-10: ctrl+e on a hidden explorer shows it and gives it the keys, so the arrows move
+/// the tree cursor at once (the user's report: arrows did nothing in the tree).
+#[test]
+fn ctrl_e_shows_and_focuses_the_explorer_so_arrows_move() {
+    let (_d, mut app) = project();
+    app.open_path(Path::new("README.md")).unwrap();
+    app.explorer.visible = false;
+    app.handle_key(ctrl('e'));
+    assert!(app.explorer.visible);
+    assert!(app.palette.is_none(), "ctrl+e is no longer Go to File");
+    assert_eq!(app.focus, Focus::Explorer);
+    draw(&mut app, 80, 24);
+    let start = app.explorer.cursor;
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.explorer.cursor, start + 1);
+    let folder = cursor_name(&app);
+    app.handle_key(key(KeyCode::Right));
+    assert!(
+        app.explorer.expanded.iter().any(|p| p.ends_with(&folder)),
+        "Right expands {folder}"
+    );
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.explorer.cursor, start);
+    assert_eq!(
+        app.active_doc().unwrap().buffer.text().to_string(),
+        "# shop\n"
+    );
+}
+
+/// FR-10: ctrl+e on a shown explorer hides it and the editor gets the keys, whether the
+/// explorer or the editor had them.
+#[test]
+fn ctrl_e_hides_the_explorer_and_returns_focus_to_the_editor() {
+    let (_d, mut app) = project();
+    app.open_path(Path::new("README.md")).unwrap();
+    for focus in [Focus::Explorer, Focus::Editor] {
+        app.explorer.visible = true;
+        app.focus = focus;
+        app.handle_key(ctrl('e'));
+        assert!(!app.explorer.visible, "from {focus:?}");
+        assert_eq!(app.focus, Focus::Editor, "from {focus:?}");
+        assert!(app.palette.is_none());
+    }
+    // Keys typed now edit the file, not the hidden tree.
+    app.handle_key(key(KeyCode::Char('x')));
+    assert_eq!(
+        app.active_doc().unwrap().buffer.text().to_string(),
+        "x# shop\n"
+    );
+}
+
+/// FR-10: ctrl+e acts in every place ctrl+b does (editor, explorer, find bar, search
+/// panel, palette), shown or hidden.
+#[test]
+fn ctrl_e_works_wherever_ctrl_b_does() {
+    fn setup(app: &mut App, place: &str, shown: bool) {
+        app.explorer.visible = shown;
+        app.focus = Focus::Editor;
+        let ok = match place {
+            "editor" => true,
+            "explorer" => {
+                app.explorer.visible = true;
+                app.focus = Focus::Explorer;
+                true
+            }
+            "find bar" => app.run_command("find.open", crate::commands::CmdArgs::None),
+            "search panel" => app.run_command("search.project", crate::commands::CmdArgs::None),
+            "palette" => app.run_command("app.palette", crate::commands::CmdArgs::None),
+            _ => unreachable!(),
+        };
+        assert!(ok, "{place}");
+    }
+    fn side(app: &App) -> (bool, bool) {
+        (app.explorer.visible, app.search.visible)
+    }
+    for place in ["editor", "explorer", "find bar", "search panel", "palette"] {
+        for shown in [false, true] {
+            let (_d, mut app) = project();
+            app.open_path(Path::new("README.md")).unwrap();
+            setup(&mut app, place, shown);
+            let before = side(&app);
+            app.handle_key(ctrl('b'));
+            let b_acts = side(&app) != before;
+            let (_d2, mut app) = project();
+            app.open_path(Path::new("README.md")).unwrap();
+            setup(&mut app, place, shown);
+            let before = side(&app);
+            app.handle_key(ctrl('e'));
+            let e_acts = side(&app) != before;
+            if b_acts {
+                assert!(e_acts, "ctrl+e does nothing in the {place} (shown {shown})");
+            }
+            // Hiding gives the editor the keys; showing gives them to the tree.
+            if e_acts {
+                let want = if app.explorer.visible && !app.search.visible {
+                    Focus::Explorer
+                } else {
+                    Focus::Editor
+                };
+                assert_eq!(app.focus, want, "{place} (shown {shown})");
+            }
+        }
+    }
+}

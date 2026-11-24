@@ -8,7 +8,7 @@ expression: t.backend()
 "  /home/user/DEV/shop                                                           "
 "                                                                                "
 "  ctrl+shift+p / f1  Command palette                                            "
-"  ctrl+e / ctrl+p    Go to file                                                 "
+"  ctrl+p             Go to file                                                 "
 "  ctrl+q             Quit                                                       "
 "                                                                                "
 "                                                                                "

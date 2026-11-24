@@ -23,6 +23,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         run: toggle,
     },
     CommandSpec {
+        name: "explorer.toggle_focus",
+        title: "Explorer: Toggle and Focus",
+        run: toggle_focus,
+    },
+    CommandSpec {
         name: "explorer.focus",
         title: "Explorer: Focus",
         run: focus,
@@ -159,7 +164,7 @@ impl Explorer {
     pub fn new(root: &Path, show_hidden: bool, show_ignored: bool) -> Explorer {
         Explorer {
             tree: Tree::new(root, show_hidden, show_ignored),
-            visible: true,
+            visible: false,
             expanded: HashSet::new(),
             children: HashMap::new(),
             rows: Vec::new(),
@@ -317,6 +322,18 @@ fn toggle(app: &mut App, _: CmdArgs) -> CmdResult {
         ensure_loaded(app);
     } else if app.focus == Focus::Explorer {
         app.focus = Focus::Editor;
+    }
+    Ok(())
+}
+
+/// Shown explorer: hides it and the editor gets the keys. Hidden (or the search panel holds
+/// the side column): shows it and gives it the keys, so the arrows move in the tree at once.
+fn toggle_focus(app: &mut App, _: CmdArgs) -> CmdResult {
+    if app.explorer.visible && !app.search.visible {
+        app.explorer.visible = false;
+        app.focus = Focus::Editor;
+    } else {
+        show_and_focus(app);
     }
     Ok(())
 }
