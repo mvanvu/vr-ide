@@ -1,0 +1,18 @@
+[package]
+name = "vr-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ropey.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+notify.workspace = true
+notify-debouncer-full.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+similar.workspace = true

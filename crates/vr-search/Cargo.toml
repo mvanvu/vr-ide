@@ -1,0 +1,18 @@
+[package]
+name = "vr-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vr-core.workspace = true
+ropey.workspace = true
+regex.workspace = true
+grep-searcher.workspace = true
+grep-regex.workspace = true
+grep-matcher.workspace = true
+ignore.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
