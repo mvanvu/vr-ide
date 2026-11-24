@@ -376,8 +376,17 @@ impl App {
             self.set_active(i);
             return Ok(());
         }
-        let mut doc = Document::open(&path, self.settings.max_highlight_bytes)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        // A running project replace never writes a file a tab opens on (FR-5).
+        let claim = commands::search::before_tab_opens(self, &path).map_err(anyhow::Error::msg)?;
+        let mut doc = match Document::open(&path, self.settings.max_highlight_bytes) {
+            Ok(d) => d,
+            Err(e) => {
+                if let Some((gate, c)) = claim {
+                    gate.open_failed(&c);
+                }
+                anyhow::bail!("{}: {e}", path.display());
+            }
+        };
         doc.buffer.set_options(self.buffer_options());
         if let Some(w) = &mut self.watcher {
             doc.set_own_writes(w.own_writes());
@@ -486,7 +495,12 @@ impl App {
         }
         let doc = self.docs.remove(i);
         self.views.remove(i);
-        if let (Some(w), Some(p)) = (&mut self.watcher, &doc.path) {
+        // The watch is per path: another tab still on it keeps needing it.
+        let shared = doc
+            .path
+            .as_deref()
+            .is_some_and(|p| self.docs.iter().any(|d| d.path.as_deref() == Some(p)));
+        if let (Some(w), Some(p), false) = (&mut self.watcher, &doc.path, shared) {
             w.unwatch(p);
         }
         if self.active > i || self.active >= self.docs.len() {

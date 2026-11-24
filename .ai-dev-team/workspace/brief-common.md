@@ -1,8 +1,8 @@
 # Common brief part (every developer / reviewer / qc of this run reads this first)
 
 ## Paths — put in front of every command (each tool call is a new shell)
-`export PATH=$HOME/.cargo/bin:$PATH TEAM_BIN=/home/vu-dev/.claude/plugins/cache/mvanvu/ai-dev-team/1.0.37/skills/project-profiling/references TEAM_STATE=/home/vu-dev/DEV/vr-ide/.ai-dev-team TEAM_WS=/home/vu-dev/DEV/vr-ide/.ai-dev-team/workspace TEAM_TOOLS=/home/vu-dev/.local/state/ai-dev-team/qa-tools`
-Project root: /home/vu-dev/DEV/vr-ide — run commands as `cd /home/vu-dev/DEV/vr-ide && …` in the same call.
+The export line with this machine's absolute values is the first line of your brief (PATH must include $HOME/.cargo/bin).
+Project root: the repo root named in your brief — run commands as `cd <root> && …` in the same call.
 
 ## Inputs every task reads
 - Spec: `.ai-dev-team/workspace/01_spec.md` (decisions D1–D13, leader calls C1–C6, AC-1…AC-18). D10 = VS Code default keys.

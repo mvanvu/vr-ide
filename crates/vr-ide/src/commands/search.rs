@@ -164,6 +164,8 @@ pub struct Job {
     /// Apply: the file the worker is on (set before it touches the file, cleared after its
     /// result is sent), so a worker blocked in I/O can be named.
     current: Arc<Mutex<Option<PathBuf>>>,
+    /// Apply: files opened in a tab since the replace started are skipped.
+    gate: ReplaceGate,
     /// When Esc cancelled the replace ("Cancelling…" since then).
     cancelled_at: Option<Instant>,
     /// The user confirmed quitting although the cancelled replace has not stopped.
@@ -180,6 +182,7 @@ impl Job {
             rx,
             sent: Vec::new(),
             current: Arc::new(Mutex::new(None)),
+            gate: ReplaceGate::default(),
             cancelled_at: None,
             quit_anyway: false,
         }
@@ -192,6 +195,85 @@ impl Job {
     /// The file the worker is on, if any.
     fn current_file(&self) -> Option<PathBuf> {
         self.current.lock().map_or(None, |c| c.clone())
+    }
+}
+
+/// Hand-off between the UI thread and an apply worker for files opened in a tab while the
+/// replace runs: such a file is never written. Both sides decide under one lock, and no I/O
+/// happens under it, so the UI thread never waits on a write (a hung mount included).
+#[derive(Debug, Default)]
+struct Claims {
+    /// Canonical paths of files a tab opened on since the replace started.
+    opened: HashSet<PathBuf>,
+    /// The file the worker is writing now.
+    writing: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ReplaceGate(Arc<Mutex<Claims>>);
+
+impl ReplaceGate {
+    fn claims(&self) -> std::sync::MutexGuard<'_, Claims> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// UI thread, before a tab opens on `canon`: false while the worker writes that file
+    /// (the tab would read a file being replaced); otherwise the worker skips it from now
+    /// on. `None` when refused, `Some(true)` when this call added it.
+    pub fn open(&self, canon: &Path) -> Option<bool> {
+        let mut c = self.claims();
+        if c.writing.as_deref() == Some(canon) {
+            return None;
+        }
+        Some(c.opened.insert(canon.to_path_buf()))
+    }
+
+    /// UI thread: the tab announced with [`ReplaceGate::open`] did not open after all.
+    pub fn open_failed(&self, canon: &Path) {
+        self.claims().opened.remove(canon);
+    }
+
+    /// Worker, before writing `canon`: false when a tab opened on it.
+    fn begin(&self, canon: &Path) -> bool {
+        let mut c = self.claims();
+        if c.opened.contains(canon) {
+            return false;
+        }
+        c.writing = Some(canon.to_path_buf());
+        true
+    }
+
+    /// Worker: the write of the file from [`ReplaceGate::begin`] is over.
+    fn end(&self) {
+        self.claims().writing = None;
+    }
+}
+
+pub const OPENED_DURING_REPLACE: &str = "opened in a tab during the replace; not replaced";
+
+/// Before a tab opens on `path`: while a replace runs, the worker is told to leave the file
+/// alone; refused (with the message) while the worker is writing that very file. Returns
+/// the gate and canonical path to pass to [`ReplaceGate::open_failed`] if the open fails.
+pub fn before_tab_opens(app: &App, path: &Path) -> Result<Option<(ReplaceGate, PathBuf)>, String> {
+    let Some(job) = app
+        .search
+        .preview
+        .as_ref()
+        .and_then(|p| p.job.as_ref())
+        .filter(|j| j.kind == JobKind::Apply)
+    else {
+        return Ok(None);
+    };
+    let c = canon(path);
+    match job.gate.open(&c) {
+        Some(true) => Ok(Some((job.gate.clone(), c))),
+        Some(false) => Ok(None),
+        None => Err(format!(
+            "{} is being written by Replace in Project right now; open it again in a moment",
+            app.display_path(path)
+        )),
     }
 }
 
@@ -567,10 +649,18 @@ fn open_selected(app: &mut App) {
         Row::File(g) => (g, 0),
     };
     open_match(app, gi, mi);
+    focus_editor(app);
+}
+
+/// Gives the editor the keys. When the panel takes the whole width (a narrow screen, the
+/// editor has no columns) the panel steps aside first: keys never edit a buffer that is
+/// not drawn.
+pub fn focus_editor(app: &mut App) {
     app.focus = Focus::Editor;
-    if app.layout.search.width > 0 && app.layout.editor.width == 0 {
+    if app.search.visible && app.layout.search.width > 0 && app.layout.editor.width == 0 {
         app.search.visible = false;
     }
+    app.dirty = true;
 }
 
 /// f4 / shift+f4: the next (previous) result after the selected row, wrapping; opens it.
@@ -936,6 +1026,56 @@ fn drop_preview(app: &mut App) {
     app.dirty = true;
 }
 
+/// `p` with its `from` prefix replaced by `to` (`from` itself becomes `to`), if under it.
+fn moved_path(p: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    let rest = p.strip_prefix(from).ok()?;
+    Some(if rest.as_os_str().is_empty() {
+        to.to_path_buf()
+    } else {
+        to.join(rest)
+    })
+}
+
+/// The explorer renamed or moved `from` (a file or a folder) to `to`: the results follow
+/// it. A preview that is not applying holds the old paths and the versions read there; it
+/// is dropped (with a notice) rather than confirmed for files that moved. A running replace
+/// keeps its preview: its worker reports a moved file as not found.
+pub fn paths_moved(app: &mut App, from: &Path, to: &Path) {
+    let s = &mut app.search;
+    let mut changed = false;
+    for g in &mut s.groups {
+        if let Some(n) = moved_path(&g.path, from, to) {
+            g.path = n;
+            changed = true;
+        }
+        for m in &mut g.matches {
+            if let Some(n) = moved_path(&m.path, from, to) {
+                m.path = n;
+            }
+        }
+    }
+    if changed {
+        s.index = s
+            .groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (g.path.clone(), i))
+            .collect();
+    }
+    let stale = s.preview.as_ref().is_some_and(|p| {
+        !p.applying() && !p.applied && p.files.iter().any(|f| f.path.starts_with(from))
+    });
+    if stale {
+        drop_preview(app);
+        app.search.field = Field::Results;
+        app.info(
+            "Replace in Project: files moved since the preview; Enter in the replace field \
+             previews again",
+        );
+    }
+    app.dirty = true;
+}
+
 /// Enter on the preview: Replace / Cancel for the checked files (Cancel is the default).
 fn ask_confirm(app: &mut App) {
     let Some(p) = &app.search.preview else {
@@ -999,7 +1139,8 @@ fn ask_confirm(app: &mut App) {
 /// The confirm dialog's Replace: applies the checked files of the preview. Files open in a
 /// tab change in their buffers here, on the UI thread, and only when the buffer still holds
 /// the previewed text; the other files are written by `vr_search::apply_replace` on a worker
-/// thread, never one that is open in a tab now. Each file's result shows in the preview.
+/// thread, never one that is open in a tab: at the confirm, or opened since ([`ReplaceGate`]).
+/// Each file's result shows in the preview.
 pub fn apply(app: &mut App) {
     let Some(mut p) = app.search.preview.take() else {
         return;
@@ -1067,6 +1208,7 @@ pub fn apply(app: &mut App) {
     let mut job = Job::new(JobKind::Apply, items.len(), cancel.clone(), rx);
     job.sent = items.iter().map(|(i, _)| *i).collect();
     let current = job.current.clone();
+    let gate = job.gate.clone();
     p.job = Some(job);
     let hold = app.search.hold.clone();
     // Never joined while the app runs. A file it has not reached when cancelled is reported
@@ -1095,20 +1237,25 @@ pub fn apply(app: &mut App) {
             // is on disk and, if the worker hangs, exactly which file it is on.
             for (i, fp) in batch {
                 set_current(Some(&fp.path));
-                let r = match std::fs::canonicalize(&fp.path) {
+                let c = std::fs::canonicalize(&fp.path);
+                let key = c.as_ref().map_or_else(|_| fp.path.clone(), Clone::clone);
+                let r = match c {
                     Ok(c) if seen.contains(&c) => {
                         Err("same file as another result; replaced once".into())
                     }
+                    _ if !gate.begin(&key) => Err(OPENED_DURING_REPLACE.into()),
                     c => {
                         if let Ok(c) = c {
                             seen.insert(c);
                         }
                         let path = [fp.path.clone()];
-                        vr_search::apply_replace(std::slice::from_ref(fp), &path)
+                        let r = vr_search::apply_replace(std::slice::from_ref(fp), &path)
                             .pop()
                             .map_or(Err("no result".into()), |(_, r)| {
                                 r.map_err(|e| e.to_string())
-                            })
+                            });
+                        gate.end();
+                        r
                     }
                 };
                 let sent = tx.send(JobMsg::Applied(vec![(*i, r)]));
@@ -1398,7 +1545,8 @@ fn next_field(app: &mut App, forward: bool) {
 
 /// Esc: cancels a running replace (the files it has not reached are reported), closes the
 /// preview (stopping it while it is built; after a replace the search runs again so the
-/// results are current), otherwise gives the editor the keys; the panel stays.
+/// results are current), otherwise gives the editor the keys; the panel stays unless it
+/// takes the whole width ([`focus_editor`]).
 fn escape(app: &mut App) {
     app.search.preview_pending = false;
     let now = app.now();
@@ -1418,7 +1566,7 @@ fn escape(app: &mut App) {
             }
             app.search.field = Field::Results;
         }
-        None => app.focus = Focus::Editor,
+        None => focus_editor(app),
     }
 }
 
@@ -1730,5 +1878,93 @@ pub(crate) mod tests {
             dialog::answer(&mut app, d, Outcome::Chosen(button));
             assert_eq!(app.quit, quits, "button {button}");
         }
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// FR-5 racing test: a worker writing files and a UI thread opening tabs on the same
+    /// files at the same time. A file is never written after (or while) a tab opened on it:
+    /// every file both written and opened was opened only after its write was over.
+    #[test]
+    fn a_tab_never_opens_on_a_file_the_worker_writes() {
+        const N: usize = 4000;
+        for _ in 0..5 {
+            let gate = ReplaceGate::default();
+            let clock = Arc::new(AtomicUsize::new(1));
+            let files: Vec<PathBuf> = (0..N).map(|i| PathBuf::from(format!("/p/f{i}"))).collect();
+            let (wg, wc, wf) = (gate.clone(), clock.clone(), files.clone());
+            let worker = std::thread::spawn(move || {
+                let mut writes = vec![None; N];
+                for (i, f) in wf.iter().enumerate() {
+                    if wg.begin(f) {
+                        let s = wc.fetch_add(1, Ordering::SeqCst);
+                        std::hint::spin_loop();
+                        let e = wc.fetch_add(1, Ordering::SeqCst);
+                        wg.end();
+                        writes[i] = Some((s, e));
+                    }
+                }
+                writes
+            });
+            let mut opened = vec![None; N];
+            let mut refused = 0;
+            // Opens run from both ends towards the worker, so they cross it.
+            for i in (0..N).rev().step_by(2).chain((0..N).step_by(3)) {
+                match gate.open(&files[i]) {
+                    Some(_) => {
+                        opened[i].get_or_insert(clock.fetch_add(1, Ordering::SeqCst));
+                    }
+                    None => refused += 1,
+                }
+            }
+            let writes = worker.join().unwrap();
+            for i in 0..N {
+                if let (Some((_, e)), Some(t)) = (writes[i], opened[i]) {
+                    assert!(t > e, "file {i}: opened at {t}, written until {e}");
+                }
+            }
+            // Refusals happen only while that file is being written; they are rare.
+            assert!(refused < N, "{refused}");
+        }
+    }
+
+    /// While the worker writes a file, a tab cannot open on it (the user is told to try
+    /// again); once the write is over it opens, and from then on the worker skips it.
+    #[test]
+    fn opening_the_file_being_written_is_refused_then_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.txt");
+        std::fs::write(&f, "foo\n").unwrap();
+        let (mut app, _) = crate::app_tests::test_app(dir.path());
+        let (_tx, rx) = mpsc::channel();
+        let job = Job::new(JobKind::Apply, 1, Arc::new(AtomicBool::new(false)), rx);
+        let gate = job.gate.clone();
+        app.search.preview = Some(Preview {
+            query: app.search.query(),
+            replacement: String::new(),
+            files: Vec::new(),
+            applied: false,
+            selected: 0,
+            top: 0,
+            job: Some(job),
+            in_tabs: 0,
+        });
+        let c = std::fs::canonicalize(&f).unwrap();
+        assert!(gate.begin(&c));
+        let e = app.open_path(&f).unwrap_err().to_string();
+        assert!(e.contains("being written by Replace in Project"), "{e}");
+        assert!(app.docs.is_empty());
+        gate.end();
+        app.open_path(&f).unwrap();
+        assert_eq!(app.docs.len(), 1);
+        assert!(!gate.begin(&c), "the worker writes a file open in a tab");
+        // A tab that fails to open does not keep its file from being replaced.
+        let missing = dir.path().join("gone.txt");
+        assert!(app.open_path(&missing).is_err());
+        assert!(gate.begin(&missing));
     }
 }

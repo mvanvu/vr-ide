@@ -1128,33 +1128,138 @@ fn apply_reports_a_file_failing_halfway() {
     );
 }
 
-/// A target file opened and edited in a tab while the replace runs: the worker may write
-/// the disk file, the tab keeps the user's edits, and saving the tab prompts instead of
-/// overwriting the replaced file (the save's freshness check, AC-7).
+/// FR-5: a target file opened in a tab while the replace runs (before the worker reached
+/// it) is never written by the worker: it is reported "opened in a tab during the replace",
+/// the disk keeps its text and the tab its edits; the other files are replaced.
 #[test]
-fn tab_edited_during_a_replace_loses_nothing() {
-    let (d, mut app, hold, _) = held_apply(40, 0);
+fn tab_opened_during_a_replace_is_never_written() {
+    let (d, mut app, hold, names) = held_apply(40, 0);
     app.open_path(Path::new("f005.txt")).unwrap();
     app.focus = Focus::Editor;
     app.handle_key(key(KeyCode::Char('x')));
     let i = app.active;
     hold.store(usize::MAX, Ordering::SeqCst);
     wait_search(&mut app);
-    assert_eq!(
-        read(&d, "f005.txt"),
-        "bar\n",
-        "written: the tab was opened after the confirm"
-    );
-    assert_eq!(
-        app.docs[i].buffer.text().to_string(),
-        "xfoo\n",
-        "the tab's edits are kept"
-    );
+    assert_eq!(read(&d, "f005.txt"), "foo\n", "written behind the tab");
+    let e = result(&app, "f005.txt").unwrap().unwrap_err();
+    assert!(e.contains("opened in a tab during the replace"), "{e}");
+    assert_eq!(app.docs[i].buffer.text().to_string(), "xfoo\n");
+    let others: Vec<String> = names.iter().filter(|n| *n != "f005.txt").cloned().collect();
+    assert_eq!(check_results(&app, &d, &others), (39, 0));
     let out = crate::commands::file::save_doc(&mut app, i);
-    assert_eq!(out, crate::commands::file::SaveOutcome::Prompted);
-    assert_eq!(
-        read(&d, "f005.txt"),
-        "bar\n",
-        "the save did not overwrite the replace"
+    assert_eq!(out, crate::commands::file::SaveOutcome::Saved);
+    assert_eq!(read(&d, "f005.txt"), "xfoo\n");
+}
+
+/// Renames `rel` in the explorer to `name` (F2 prompt).
+fn explorer_rename(app: &mut App, rel: &str, name: &str) {
+    let target = app.root.join(rel);
+    app.explorer.visible = true;
+    crate::commands::explorer::ensure_loaded(app);
+    for a in target.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        if a.starts_with(&app.root) && a != target && !app.explorer.expanded.contains(a) {
+            app.explorer.expand(a).unwrap();
+        }
+    }
+    app.explorer.cursor = app
+        .explorer
+        .rows
+        .iter()
+        .position(|r| r.path == target)
+        .unwrap();
+    app.run_command("explorer.rename", crate::commands::CmdArgs::None);
+    let crate::ui::dialog::DialogWidget::Prompt(p) = &app.dialog.as_ref().unwrap().widget else {
+        panic!("rename prompt expected")
+    };
+    let n = p.input.text().chars().count();
+    app.handle_key(key(KeyCode::End));
+    for _ in 0..n {
+        app.handle_key(key(KeyCode::Backspace));
+    }
+    typ(app, name);
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.dialog.is_none(), "rename refused: {}", notices(app));
+}
+
+/// FR-5: results follow an explorer rename (a file, or a folder holding results): Enter on
+/// a result opens the file under its new name instead of failing with "No such file".
+#[test]
+fn search_results_follow_an_explorer_rename() {
+    let (_d, mut app) = project(&[("src/a.rs", "needle\n"), ("src/sub/b.rs", "needle\n")]);
+    search_for(&mut app, "needle");
+    explorer_rename(&mut app, "src/a.rs", "c.rs");
+    explorer_rename(&mut app, "src/sub", "lib");
+    let mut paths: Vec<String> = app
+        .search
+        .groups
+        .iter()
+        .flat_map(|g| {
+            std::iter::once(rel(&app, &g.path)).chain(g.matches.iter().map(|m| rel(&app, &m.path)))
+        })
+        .collect();
+    paths.sort();
+    paths.dedup();
+    assert_eq!(paths, ["src/c.rs", "src/lib/b.rs"]);
+    app.focus = Focus::Search;
+    app.search.field = Field::Results;
+    for i in 0..app.search.rows().len() {
+        app.focus = Focus::Search;
+        app.search.visible = true;
+        app.search.selected = i;
+        app.handle_key(key(KeyCode::Enter));
+        assert!(!notices(&app).contains("No such file"), "{}", notices(&app));
+    }
+    assert_eq!(app.docs.len(), 2);
+}
+
+/// FR-5: a replace preview built before an explorer rename of one of its files is dropped
+/// with a notice (its paths are stale); it is never confirmed with the old paths.
+#[test]
+fn replace_preview_dropped_after_an_explorer_rename() {
+    let (d, mut app) = project(&[("a.txt", "foo\n"), ("b.txt", "foo\n")]);
+    preview(&mut app, "foo", "bar");
+    explorer_rename(&mut app, "a.txt", "c.txt");
+    assert!(app.search.preview.is_none(), "stale preview kept");
+    assert!(
+        notices(&app).contains("search again") || notices(&app).contains("preview"),
+        "{}",
+        notices(&app)
     );
+    assert_eq!(read(&d, "c.txt"), "foo\n");
+    assert_eq!(read(&d, "b.txt"), "foo\n");
+}
+
+/// FR-5: below 40 columns the panel takes the whole width; Esc or focus.cycle from it give
+/// the editor the keys only with the panel out of the way, never to an editor of width 0.
+#[test]
+fn narrow_esc_and_focus_cycle_never_type_into_a_hidden_editor() {
+    for how in ["esc", "cycle"] {
+        let (_d, mut app) = project(&[("a.txt", "needle\n")]);
+        app.open_path(Path::new("a.txt")).unwrap();
+        search_for(&mut app, "needle");
+        draw(&mut app, 36, 12);
+        assert_eq!(app.layout.editor.width, 0, "panel takes the whole width");
+        assert_eq!(app.focus, Focus::Search);
+        match how {
+            "esc" => app.handle_key(key(KeyCode::Esc)),
+            _ => {
+                app.run_command("focus.cycle", crate::commands::CmdArgs::None);
+            }
+        }
+        typ(&mut app, "X");
+        let typed_into_editor = app
+            .active_doc()
+            .unwrap()
+            .buffer
+            .text()
+            .to_string()
+            .contains('X');
+        if app.search.visible {
+            assert!(!typed_into_editor, "{how}: typed into an editor of width 0");
+            assert_eq!(app.focus, Focus::Search, "{how}");
+        } else {
+            draw(&mut app, 36, 12);
+            assert!(app.layout.editor.width > 0, "{how}");
+        }
+    }
 }
