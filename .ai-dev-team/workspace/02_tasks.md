@@ -155,3 +155,9 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - FR-8 review (19:40): APPROVE (sonnet); 2 minors (filtered not cleared on .gitignore edit — narrows a pre-FR-8 refresh; file.open CmdArgs::Path refusal still an error) → quick pass after QC verdict.
 - FR-8 QC_PASS (19:47): rules 1–2 live on a fresh release build; rule 3 unit test only (refusal window too short to hit live). Gate ✓. FR-8 committed; quick pass 1 for the 2 review minors (same developer).
 - FR-8 qp1 re-check (19:52): APPROVE (sonnet); vr-ide lib 174/0; committed and pushed. All tasks done. Phase 6 report next.
+
+## Run end (19:48)
+- All planned tasks T1–T11 and fix tasks T12, FR-1…FR-8 done; master = origin/master (dbf08cc). No agents, no worktrees.
+- Fable used: T4 escalation (case 1, earlier session). None this session.
+- Open follow-ups (minor, not started): UI-thread canonicalize of open-tab paths at replace preview start (T10 R3); main-thread panic during a replace exits without joining the worker (D128); racing-oracle known false positive ~1 %/run under heavy load (D99); "opened in a tab; not replaced" skip not hit live (window too short; unit + FR-5 walk); temporary replace refusal at the Save As prompt only reworded.
+- Final full suite at 9133968 (424/0); FR-8 + qp1 (vr-ide only) verified by vr-ide lib 174/0, related tests, workspace clippy and a release walk — no second full-suite run.
