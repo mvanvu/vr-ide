@@ -573,8 +573,9 @@ impl App {
         self.notify(NoticeLevel::Error, text);
     }
 
-    /// Drops expired info notices.
+    /// Drops expired info notices and runs a find rescan whose typing pause is over.
     pub fn tick(&mut self, now: Instant) {
+        commands::find::poll(self, now);
         let before = self.notices.len();
         self.notices.retain(|n| n.expires.is_none_or(|t| t > now));
         if self.notices.len() != before {
@@ -693,6 +694,10 @@ impl App {
             return;
         }
         // The find bar and the search panel use Esc themselves (close / back to the editor).
+        // Keys never go to a search panel that is not shown.
+        if self.focus == Focus::Search && !self.search.visible {
+            self.focus = Focus::Editor;
+        }
         if self.focus == Focus::FindBar && commands::find::handle_key(self, &key) {
             return;
         }
@@ -1005,6 +1010,12 @@ impl App {
     /// Takes the results the project search sent so far (see `commands::search::drain`).
     pub fn drain_search(&mut self) {
         commands::search::drain(self);
+    }
+
+    /// Before the process exits: stops the project replace worker without killing it
+    /// mid-file (see `commands::search::shutdown`).
+    pub fn shutdown_jobs(&mut self) {
+        commands::search::shutdown(self);
     }
 
     /// Builds the go-to-file index on a background thread; [`App::drain_index`] takes it.

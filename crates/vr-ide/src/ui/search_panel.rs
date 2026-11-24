@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::app::{App, Focus};
-use crate::commands::search::{Field, Preview, PreviewRow, Row, SearchPanel};
+use crate::commands::search::{Field, Preview, PreviewRow, Row, SearchPanel, Target};
 use crate::theme::Theme;
 use crate::ui::dialog::{LineInput, wrap};
 
@@ -85,6 +85,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
 
     // Status, then the errors (wrapped: they must be read).
     let status = match &s.preview {
+        Some(p) if p.job.is_some() => p.progress_text().unwrap_or_default(),
         Some(p) if p.applied => "Replaced; Esc searches again".to_string(),
         Some(_) => "Space toggles, Enter replaces".to_string(),
         None => s.status_text(),
@@ -251,7 +252,9 @@ fn render_preview(
         match *row {
             PreviewRow::File(fi) => {
                 let f = &p.files[fi];
-                let mark = if f.error.is_some() {
+                let mark = if matches!(f.target, Target::Unknown) {
+                    "[…] "
+                } else if f.error.is_some() {
                     "[!] "
                 } else if f.checked {
                     "[x] "

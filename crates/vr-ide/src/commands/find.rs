@@ -9,10 +9,12 @@
 //! into the field and the others do nothing.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use vr_config::Context;
+use vr_core::ropey::Rope;
 use vr_core::{Selection, Transaction};
 use vr_search::Query;
 
@@ -76,9 +78,12 @@ pub struct FindBar {
     pub whole_word: bool,
     /// Char ranges in the active document, in order.
     pub matches: Vec<(usize, usize)>,
+    /// More matches exist than `matches` holds (it stopped at [`MATCH_CAP`]).
+    pub capped: bool,
     /// Why the query finds nothing (an invalid regex).
     pub error: Option<String>,
     cache: Option<CacheKey>,
+    pending: Option<Pending>,
     /// Where the cursor was when the bar opened: typing finds the first match from here.
     origin: usize,
     /// Bar area in the last frame.
@@ -106,41 +111,157 @@ impl FindBar {
     }
 }
 
-/// Recomputes the matches when the query or the active document changed. Used for drawing;
-/// commands call [`refresh_now`] so they never act on matches of an earlier text.
-pub fn refresh(app: &mut App) {
-    let Some(doc) = app.docs.get(app.active) else {
-        app.find.matches.clear();
-        app.find.cache = None;
-        return;
-    };
-    let key = CacheKey {
+/// A rescan waiting for typing to pause.
+#[derive(Debug, Clone)]
+struct Pending {
+    key: CacheKey,
+    due: Instant,
+    /// Select the first match from where the bar opened once the scan ran (the query
+    /// changed).
+    pick: bool,
+}
+
+/// Documents up to this size are rescanned on every change; larger ones once typing pauses
+/// for [`DEBOUNCE`] (D124).
+const INSTANT_BYTES: usize = 1 << 20;
+const DEBOUNCE: Duration = Duration::from_millis(150);
+
+fn cache_key(app: &App) -> Option<CacheKey> {
+    let doc = app.docs.get(app.active)?;
+    Some(CacheKey {
         doc: app.active,
         path: doc.path.clone(),
         version: doc.buffer.version(),
         len: doc.buffer.text().len_chars(),
         query: app.find.query(),
+    })
+}
+
+/// Brings the matches up to date for drawing: at once for a small document, after a pause
+/// in typing for a large one (the old matches are drawn meanwhile). Commands call
+/// [`refresh_now`] so they never act on matches of an earlier text.
+pub fn refresh(app: &mut App) {
+    let now = app.now();
+    refresh_at(app, now, false);
+}
+
+fn refresh_at(app: &mut App, now: Instant, pick: bool) {
+    let Some(key) = cache_key(app) else {
+        app.find.matches.clear();
+        app.find.cache = None;
+        app.find.pending = None;
+        return;
     };
     if app.find.cache.as_ref() == Some(&key) {
+        if pick {
+            pick_from_origin(app);
+        }
         return;
     }
-    match vr_search::find_all(doc.buffer.text(), &key.query) {
-        Ok(m) => {
+    if app.docs[app.active].buffer.text().len_bytes() <= INSTANT_BYTES {
+        rescan(app, key);
+        if pick {
+            pick_from_origin(app);
+        }
+        return;
+    }
+    let f = &mut app.find;
+    match &mut f.pending {
+        Some(p) if p.key == key => p.pick |= pick,
+        _ => {
+            let pick = pick || f.pending.as_ref().is_some_and(|p| p.pick);
+            f.pending = Some(Pending {
+                key,
+                due: now + DEBOUNCE,
+                pick,
+            });
+        }
+    }
+}
+
+/// Runs a rescan whose pause is over (called by `App::tick`).
+pub fn poll(app: &mut App, now: Instant) {
+    if !app.find.pending.as_ref().is_some_and(|p| p.due <= now) {
+        return;
+    }
+    let pick = app.find.pending.take().is_some_and(|p| p.pick);
+    refresh_now(app);
+    if pick {
+        pick_from_origin(app);
+    }
+    app.dirty = true;
+}
+
+fn rescan(app: &mut App, key: CacheKey) {
+    app.find.pending = None;
+    let doc = &app.docs[key.doc];
+    match find_capped(doc.buffer.text(), &key.query, MATCH_CAP, CHUNK_BYTES) {
+        Ok((m, capped)) => {
             app.find.matches = m;
+            app.find.capped = capped;
             app.find.error = None;
         }
         Err(e) => {
             app.find.matches.clear();
+            app.find.capped = false;
             app.find.error = Some(e.to_string());
         }
     }
     app.find.cache = Some(key);
 }
 
-/// [`refresh`] without the cache.
+/// The bar stops collecting matches here (D124, VS Code stops near the same number): the
+/// match list stays small whatever the file holds.
+pub const MATCH_CAP: usize = 20_000;
+
+/// Text handed to `vr_search::find_all` at a time: whole lines, about this many bytes.
+const CHUNK_BYTES: usize = 256 * 1024;
+
+/// The first `cap` matches of `q` in `text` and whether more were left out. The text is
+/// searched in chunks of whole lines, which finds exactly what `find_all` finds on the
+/// whole text (its matches never span lines), but copies one chunk at a time and stops at
+/// the cap instead of copying and scanning the whole file.
+fn find_capped(
+    text: &Rope,
+    q: &Query,
+    cap: usize,
+    chunk_bytes: usize,
+) -> Result<(Vec<(usize, usize)>, bool), vr_search::QueryError> {
+    let mut out = Vec::new();
+    if q.pattern.is_empty() {
+        return Ok((out, false));
+    }
+    let lines = text.len_lines();
+    let mut line = 0;
+    while line < lines {
+        let start_byte = text.line_to_byte(line);
+        let target = (start_byte + chunk_bytes).min(text.len_bytes());
+        // The workspace builds ropey with `cr_lines` only, so its lines end at \n, \r and
+        // \r\n exactly like vr-search's (U+2028 is no line break for either).
+        let end_line = (text.byte_to_line(target) + 1).min(lines).max(line + 1);
+        let (from, to) = (text.line_to_char(line), text.line_to_char(end_line));
+        let chunk = Rope::from(text.slice(from..to));
+        for (s, e) in vr_search::find_all(&chunk, q)? {
+            if out.len() == cap {
+                return Ok((out, true));
+            }
+            out.push((from + s, from + e));
+        }
+        line = end_line;
+    }
+    Ok((out, false))
+}
+
+/// Rescans now, whatever the size of the document (a pending rescan is dropped).
 pub fn refresh_now(app: &mut App) {
-    app.find.cache = None;
-    refresh(app);
+    match cache_key(app) {
+        Some(key) => rescan(app, key),
+        None => {
+            app.find.matches.clear();
+            app.find.cache = None;
+            app.find.pending = None;
+        }
+    }
 }
 
 /// Index of the match the primary selection covers exactly.
@@ -163,9 +284,10 @@ pub fn count_text(app: &App) -> String {
     if n == 0 {
         return "No results".to_string();
     }
+    let more = if app.find.capped { "+" } else { "" };
     match current(app) {
-        Some(i) => format!("{}/{n}", i + 1),
-        None => format!("?/{n}"),
+        Some(i) => format!("{}/{n}{more}", i + 1),
+        None => format!("?/{n}{more}"),
     }
 }
 
@@ -221,6 +343,7 @@ fn open_bar(app: &mut App, replace: bool) {
 }
 
 fn close_bar(app: &mut App) {
+    app.find.pending = None;
     app.find.open = false;
     if app.focus == Focus::FindBar {
         app.focus = Focus::Editor;
@@ -358,9 +481,13 @@ fn replace_all(app: &mut App, _: CmdArgs) -> CmdResult {
 }
 
 /// After the query changed: the first match from where the bar opened is selected (the
-/// cursor goes back there when nothing matches).
+/// cursor goes back there when nothing matches) — once the matches are known.
 fn query_changed(app: &mut App) {
-    refresh_now(app);
+    let now = app.now();
+    refresh_at(app, now, true);
+}
+
+fn pick_from_origin(app: &mut App) {
     let origin = app.find.origin;
     let m = &app.find.matches;
     let pick = m
@@ -469,4 +596,63 @@ pub fn paste(app: &mut App, text: &str) {
         Field::Replace => app.find.replace.insert_str(text),
     }
     app.dirty = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(pattern: &str, regex: bool, whole_word: bool) -> Query {
+        Query {
+            pattern: pattern.to_string(),
+            regex,
+            case_sensitive: false,
+            whole_word,
+        }
+    }
+
+    /// Searching in chunks of lines finds exactly what one `find_all` over the text finds,
+    /// zero-length matches at chunk edges included.
+    #[test]
+    fn chunked_find_equals_find_all() {
+        let texts = [
+            "foo bar\nfoo\n\nbaz foo\r\nfoo",
+            "é foo ü\nfoo\n",
+            "a\u{2028}b foo\u{2028}x\ra\u{85}b\n",
+            "\n\n\n",
+            "line without break",
+            "",
+        ];
+        let queries = [
+            q("foo", false, false),
+            q("foo", false, true),
+            q("^", true, false),
+            q("x*", true, false),
+            q("$", true, false),
+            q(r"\w+", true, false),
+            q("a.b", true, false),
+        ];
+        for t in texts {
+            let rope = Rope::from_str(t);
+            for query in &queries {
+                let want = vr_search::find_all(&rope, query).unwrap();
+                for chunk in [1, 3, 7, 1 << 20] {
+                    let (got, capped) = find_capped(&rope, query, usize::MAX, chunk).unwrap();
+                    assert_eq!(got, want, "{t:?} {:?} chunk {chunk}", query.pattern);
+                    assert!(!capped);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn capped_find_stops_and_says_so() {
+        let rope = Rope::from_str(&"ab\n".repeat(10));
+        let (m, capped) = find_capped(&rope, &q("a", false, false), 4, 5).unwrap();
+        assert_eq!(m, vec![(0, 1), (3, 4), (6, 7), (9, 10)]);
+        assert!(capped);
+        let (m, capped) = find_capped(&rope, &q("a", false, false), 10, 5).unwrap();
+        assert_eq!(m.len(), 10);
+        assert!(!capped, "exactly the cap is not more");
+    }
 }

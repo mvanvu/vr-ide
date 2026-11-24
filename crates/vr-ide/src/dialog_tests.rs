@@ -60,7 +60,7 @@ fn palette_filters_by_fuzzy_name_and_shows_keys() {
     p.input.set("nav.goto");
     crate::commands::palette::refilter(&mut app);
     assert_eq!(app.palette.as_ref().unwrap().items[0].name, "nav.goto_line");
-    // The last placeholders became real commands in T10: they are listed now.
+    // The search commands are listed by their names.
     app.palette
         .as_mut()
         .unwrap()

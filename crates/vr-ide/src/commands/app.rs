@@ -20,7 +20,13 @@ pub const COMMANDS: &[CommandSpec] = &[
 ];
 
 /// With unsaved changes, asks: Save all / Discard / Cancel (the answer is in [`answer_quit`]).
+/// Refused while a project replace writes files: exiting would stop it with some files
+/// replaced and nothing reported.
 fn quit(app: &mut App, _: CmdArgs) -> CmdResult {
+    if super::search::replacing(app) {
+        app.warn("Quit: a replace is running; Esc in the search panel cancels it");
+        return Ok(());
+    }
     let unsaved: Vec<String> = app
         .docs
         .iter()
@@ -58,6 +64,10 @@ pub const DISCARD: &str = "Discard";
 /// Discard: quits once the buffers are in the recovery folder (D57), and prints where after
 /// the terminal is restored; when that write fails nothing is discarded.
 pub fn answer_quit(app: &mut App, button: usize) {
+    if super::search::replacing(app) {
+        app.warn("Quit: a replace is running; Esc in the search panel cancels it");
+        return;
+    }
     match button {
         0 => {
             for i in 0..app.docs.len() {

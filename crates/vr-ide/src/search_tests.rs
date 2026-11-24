@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -49,12 +49,13 @@ fn project(files: &[(&str, &str)]) -> (tempfile::TempDir, App) {
     (d, app)
 }
 
-/// Takes search results until the search is done (test helper; the app never blocks).
+/// Takes search results until the search and the preview / replace worker are done (test
+/// helper; the app never blocks).
 fn wait_search(app: &mut App) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         app.drain_search();
-        if !app.search.running() {
+        if !app.search.running() && !app.search.busy() {
             return;
         }
         assert!(Instant::now() < deadline, "search did not finish");
@@ -362,7 +363,8 @@ fn preview_index(app: &App, name: &str) -> usize {
         .unwrap_or_else(|| panic!("{name} not in the preview"))
 }
 
-/// Enter on the preview, then Replace in the confirm dialog (Cancel is the default).
+/// Enter on the preview, then Replace in the confirm dialog (Cancel is the default); waits
+/// for the replace.
 fn confirm(app: &mut App) {
     app.handle_key(key(KeyCode::Enter));
     let d = app.dialog.as_ref().expect("confirm dialog");
@@ -374,6 +376,7 @@ fn confirm(app: &mut App) {
     app.handle_key(key(KeyCode::Left));
     app.handle_key(key(KeyCode::Enter));
     assert!(app.dialog.is_none());
+    wait_search(app);
 }
 
 fn result(app: &App, name: &str) -> Option<Result<usize, String>> {
@@ -578,6 +581,7 @@ fn project_replace_never_loses_a_concurrent_write() {
             let (_, run) = timed(
                 || {
                     app.handle_key(key(KeyCode::Enter));
+                    wait_search(&mut app);
                     result(&app, "a.txt")
                 },
                 |r| matches!(r, Some(Ok(_))),
@@ -633,4 +637,524 @@ fn search_panel_takes_the_side_column() {
     app.handle_key(key(KeyCode::Esc));
     app.handle_key(key(KeyCode::F(6)));
     assert_eq!(app.focus, Focus::Search);
+}
+
+/// D123: a preview is for the query, replacement and options it was built with; changing
+/// any of them drops it, and Enter on the list then writes nothing.
+#[test]
+fn project_replace_preview_dropped_when_fields_change() {
+    type Edit = (&'static str, fn(&mut App));
+    let edits: [Edit; 4] = [
+        ("replace field", |app| {
+            app.search.field = Field::Replace;
+            typ(app, "z");
+        }),
+        ("query field", |app| {
+            app.search.field = Field::Query;
+            app.handle_key(key(KeyCode::Backspace));
+        }),
+        ("paste", |app| {
+            app.search.field = Field::Replace;
+            app.handle_paste("zz");
+        }),
+        ("option", |app| {
+            app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT));
+        }),
+    ];
+    for (what, edit) in edits {
+        let (d, mut app) = project(&[("a.txt", "foo\n"), ("b.txt", "foo\n")]);
+        preview(&mut app, "foo", "bar");
+        edit(&mut app);
+        assert!(app.search.preview.is_none(), "{what}: preview kept");
+        app.search.field = Field::Results;
+        app.handle_key(key(KeyCode::Enter));
+        assert!(
+            app.dialog.is_none(),
+            "{what}: confirm without a current preview"
+        );
+        wait_search(&mut app);
+        assert_eq!(read(&d, "a.txt"), "foo\n", "{what}");
+        assert_eq!(read(&d, "b.txt"), "foo\n", "{what}");
+    }
+}
+
+/// The confirm itself refuses a preview the fields no longer match, however they changed.
+#[test]
+fn project_replace_confirm_refuses_a_stale_preview() {
+    let (d, mut app) = project(&[("a.txt", "foo\n")]);
+    preview(&mut app, "foo", "bar");
+    app.search.replace.set("baz");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.dialog.is_none(), "confirm of a stale preview");
+    assert!(app.search.preview.is_none());
+    assert_eq!(read(&d, "a.txt"), "foo\n");
+}
+
+/// Below 40 columns the panel takes the whole width; clicking a result opens it, hides
+/// the panel and gives the editor the keys (never a hidden panel).
+#[test]
+fn narrow_click_on_result_gives_keys_to_the_editor() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let (_d, mut app) = project(&[("a.txt", "needle\n")]);
+    search_for(&mut app, "needle");
+    draw(&mut app, 36, 12);
+    assert_eq!(app.layout.editor.width, 0, "panel takes the whole width");
+    let list = app.search.list_area;
+    let match_row = app
+        .search
+        .rows()
+        .iter()
+        .position(|r| matches!(r, Row::Match(..)))
+        .unwrap();
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: list.x + 2,
+        row: list.y + match_row as u16,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(!app.search.visible);
+    assert_eq!(app.focus, Focus::Editor);
+    app.handle_key(key(KeyCode::End));
+    typ(&mut app, "X");
+    assert!(
+        app.active_doc()
+            .unwrap()
+            .buffer
+            .text()
+            .to_string()
+            .contains('X'),
+        "typing reaches the editor"
+    );
+}
+
+/// A preview asked for while the search runs is dropped by Esc and by a new search: it
+/// never appears unasked when that search ends.
+#[test]
+fn pending_preview_cleared_by_esc_and_new_search() {
+    for how in ["esc", "new search"] {
+        let (d, mut app) = project(&[]);
+        let root = d.path().to_path_buf();
+        app.handle_key(ctrl_shift('h'));
+        typ(&mut app, "foo");
+        app.handle_key(key(KeyCode::Tab));
+        typ(&mut app, "bar");
+        let (tx, rx) = mpsc::channel();
+        search::attach(&mut app, rx, Arc::new(AtomicBool::new(false)));
+        app.search.query = Some(app.search.query());
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.search.preview_pending, "{how}");
+        match how {
+            "esc" => app.handle_key(key(KeyCode::Esc)),
+            _ => {
+                app.search.field = Field::Query;
+                app.handle_key(key(KeyCode::Enter));
+            }
+        }
+        assert!(!app.search.preview_pending, "{how}: still pending");
+        if how == "esc" {
+            tx.send(SearchMsg::Batch(vec![pm(&root, "a.txt", 1, "foo")]))
+                .unwrap();
+            tx.send(SearchMsg::Done {
+                files: 1,
+                matches: 1,
+                elapsed: Duration::ZERO,
+            })
+            .unwrap();
+        }
+        wait_search(&mut app);
+        assert!(app.search.preview.is_none(), "{how}: preview unasked");
+    }
+}
+
+/// A search that stopped at the match limit: the confirm says the replace covers only part
+/// of the project.
+#[test]
+fn confirm_names_a_truncated_search() {
+    let (d, mut app) = project(&[("a.txt", "foo\n")]);
+    let root = d.path().to_path_buf();
+    app.handle_key(ctrl_shift('h'));
+    typ(&mut app, "foo");
+    app.handle_key(key(KeyCode::Tab));
+    typ(&mut app, "bar");
+    let (tx, rx) = mpsc::channel();
+    search::attach(&mut app, rx, Arc::new(AtomicBool::new(false)));
+    app.search.query = Some(app.search.query());
+    tx.send(SearchMsg::Batch(vec![pm(&root, "a.txt", 1, "foo")]))
+        .unwrap();
+    tx.send(SearchMsg::Error(
+        "more than 100000 matches; search stopped".into(),
+    ))
+    .unwrap();
+    tx.send(SearchMsg::Done {
+        files: 1,
+        matches: 100_000,
+        elapsed: Duration::ZERO,
+    })
+    .unwrap();
+    wait_search(&mut app);
+    app.handle_key(key(KeyCode::Enter));
+    wait_search(&mut app);
+    assert!(app.search.preview.is_some(), "{}", notices(&app));
+    app.handle_key(key(KeyCode::Enter));
+    let d = app.dialog.as_ref().expect("confirm dialog");
+    let crate::ui::dialog::DialogWidget::Confirm(c) = &d.widget else {
+        panic!("confirm expected")
+    };
+    assert!(
+        c.message.contains("only part of the project"),
+        "{}",
+        c.message
+    );
+}
+
+/// Waits for the search only (a held worker keeps the preview / replace running).
+fn wait_search_only(app: &mut App) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        app.drain_search();
+        if !app.search.running() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "search did not finish");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn many_files(n: usize) -> Vec<(String, String)> {
+    (0..n)
+        .map(|i| (format!("f{i:03}.txt"), "foo\n".to_string()))
+        .collect()
+}
+
+/// D123: the preview is built on a worker: Enter returns before any result file is read,
+/// the panel shows the progress, and Esc cancels it.
+#[test]
+fn project_replace_preview_runs_on_a_worker_with_progress_and_cancel() {
+    let files = many_files(80);
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    for cancel in [false, true] {
+        let (_d, mut app) = project(&refs);
+        let hold = Arc::new(AtomicUsize::new(0));
+        app.search.hold = Some(hold.clone());
+        app.handle_key(ctrl_shift('h'));
+        typ(&mut app, "foo");
+        app.handle_key(key(KeyCode::Tab));
+        typ(&mut app, "bar");
+        app.handle_key(key(KeyCode::Enter));
+        wait_search_only(&mut app);
+        let p = app
+            .search
+            .preview
+            .as_ref()
+            .expect("preview shown while it is built");
+        assert!(p.building(), "the UI thread planned the files itself");
+        assert!(p.files.iter().all(|f| f.count == 0 && f.hunks.is_empty()));
+        let t = draw(&mut app, 80, 24);
+        let text = panel_text(&app, &t);
+        assert!(text.contains("Preparing preview 0/80"), "{text}");
+        // Enter cannot confirm a preview that is not built.
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.dialog.is_none());
+        if cancel {
+            app.handle_key(key(KeyCode::Esc));
+            assert!(app.search.preview.is_none(), "Esc cancels the preview");
+            hold.store(usize::MAX, Ordering::SeqCst);
+            wait_search(&mut app);
+            assert!(app.search.preview.is_none());
+        } else {
+            hold.store(usize::MAX, Ordering::SeqCst);
+            wait_search(&mut app);
+            let p = app.search.preview.as_ref().unwrap();
+            assert!(!p.building());
+            assert_eq!(p.files.len(), 80);
+            assert!(
+                p.files.iter().all(|f| f.count == 1 && f.checked),
+                "{:?}",
+                p.files[0]
+            );
+        }
+    }
+}
+
+/// D123: the replace runs on a worker with progress; Esc cancels the files not yet written
+/// and each of them says so.
+#[test]
+fn project_replace_apply_runs_on_a_worker_with_progress_and_cancel() {
+    let files = many_files(80);
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let (d, mut app) = project(&refs);
+    preview(&mut app, "foo", "bar");
+    wait_search(&mut app);
+    let hold = Arc::new(AtomicUsize::new(0));
+    app.search.hold = Some(hold.clone());
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Left));
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.dialog.is_none());
+    let p = app.search.preview.as_ref().unwrap();
+    assert!(p.applying(), "the replace runs on a worker");
+    let t = draw(&mut app, 80, 24);
+    let text = panel_text(&app, &t);
+    assert!(text.contains("Replacing 0/80"), "{text}");
+    // Editing the fields while it runs keeps the preview: it shows this replace's results.
+    app.search.field = Field::Replace;
+    typ(&mut app, "z");
+    assert!(app.search.preview.is_some());
+    app.handle_key(key(KeyCode::Esc));
+    hold.store(usize::MAX, Ordering::SeqCst);
+    wait_search(&mut app);
+    let p = app.search.preview.as_ref().unwrap();
+    assert!(p.applied);
+    for (name, _) in &files {
+        assert_eq!(read(&d, name), "foo\n", "{name} written after cancel");
+        let r = result(&app, name).unwrap().unwrap_err();
+        assert!(r.contains("cancelled"), "{name}: {r}");
+    }
+    assert!(
+        notices(&app).contains("80 files not replaced"),
+        "{}",
+        notices(&app)
+    );
+}
+
+/// A previewed replace of `n` files ("foo" → "bar") confirmed with a held worker that may
+/// pass `permits` batches of 32 files.
+fn held_apply(n: usize, permits: usize) -> (tempfile::TempDir, App, Arc<AtomicUsize>, Vec<String>) {
+    let files = many_files(n);
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let (d, mut app) = project(&refs);
+    preview(&mut app, "foo", "bar");
+    let hold = Arc::new(AtomicUsize::new(permits));
+    app.search.hold = Some(hold.clone());
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Left));
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.search.preview.as_ref().unwrap().applying());
+    (
+        d,
+        app,
+        hold,
+        files.into_iter().map(|(name, _)| name).collect(),
+    )
+}
+
+/// Takes the worker's messages until it reports `done` files.
+fn wait_done(app: &mut App, done: usize) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while app
+        .search
+        .preview
+        .as_ref()
+        .and_then(|p| p.job.as_ref())
+        .map(|j| j.done)
+        != Some(done)
+    {
+        assert!(Instant::now() < deadline, "worker did not reach {done}");
+        app.drain_search();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Every file has exactly one result, and the disk agrees with it: replaced files hold
+/// "bar", the others still "foo". Returns (replaced, cancelled).
+fn check_results(app: &App, d: &tempfile::TempDir, names: &[String]) -> (usize, usize) {
+    let (mut ok, mut cancelled) = (0, 0);
+    for name in names {
+        match result(app, name) {
+            Some(Ok(1)) => {
+                assert_eq!(read(d, name), "bar\n", "{name}");
+                ok += 1;
+            }
+            Some(Err(e)) => {
+                assert!(e.contains("cancelled"), "{name}: {e}");
+                assert_eq!(read(d, name), "foo\n", "{name}");
+                cancelled += 1;
+            }
+            r => panic!("{name}: {r:?}"),
+        }
+    }
+    assert_eq!(ok + cancelled, names.len());
+    (ok, cancelled)
+}
+
+/// Quitting never kills a running replace: it is refused with a notice (no quit dialog
+/// either); once the replace is over, quit works.
+#[test]
+fn quit_is_refused_while_a_replace_runs() {
+    let (d, mut app, hold, names) = held_apply(40, 0);
+    app.open_path(Path::new("f000.txt")).unwrap();
+    app.focus = Focus::Editor;
+    app.handle_key(key(KeyCode::Char('x')));
+    app.run_command("app.quit", crate::commands::CmdArgs::None);
+    assert!(!app.quit, "quit during a replace");
+    assert!(app.dialog.is_none(), "no quit dialog during a replace");
+    assert!(
+        notices(&app).contains("a replace is running"),
+        "{}",
+        notices(&app)
+    );
+    hold.store(usize::MAX, Ordering::SeqCst);
+    wait_search(&mut app);
+    // f000.txt was opened after the preview: it is skipped with that reason.
+    let others: Vec<String> = names.iter().filter(|n| *n != "f000.txt").cloned().collect();
+    assert_eq!(check_results(&app, &d, &others), (39, 0));
+    let idx = app.docs.iter().position(|doc| doc.is_modified()).unwrap();
+    app.close_doc(idx);
+    app.run_command("app.quit", crate::commands::CmdArgs::None);
+    assert!(app.quit, "quit after the replace");
+}
+
+/// The exit path (normal or after a terminal error) cancels a running replace, lets the
+/// batch in hand finish and joins the worker: every file has its result and none is
+/// half-written.
+#[test]
+fn shutdown_joins_a_running_replace() {
+    let (d, mut app, _hold, names) = held_apply(80, 1);
+    wait_done(&mut app, 32);
+    search::shutdown(&mut app);
+    assert!(!app.search.busy(), "worker still attached");
+    assert_eq!(check_results(&app, &d, &names), (32, 48));
+    let tmp = std::fs::read_dir(d.path())
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp")
+        })
+        .count();
+    assert_eq!(tmp, 0, "temp file left behind");
+}
+
+/// Esc after some batches were written: the rest is cancelled, every file is reported
+/// once, and the warning names a few files, not all of them.
+#[test]
+fn partial_apply_cancel_reports_every_file_once() {
+    let (d, mut app, hold, names) = held_apply(80, 1);
+    wait_done(&mut app, 32);
+    app.handle_key(key(KeyCode::Esc));
+    hold.store(usize::MAX, Ordering::SeqCst);
+    wait_search(&mut app);
+    assert_eq!(check_results(&app, &d, &names), (32, 48));
+    let warn = app
+        .notices
+        .iter()
+        .map(|n| n.text.clone())
+        .find(|t| t.contains("not replaced"))
+        .expect("warning");
+    assert!(warn.contains("48 files not replaced"), "{warn}");
+    assert!(warn.contains("and 43 more"), "{warn}");
+    assert!(warn.len() < 400, "{} chars", warn.len());
+}
+
+/// While a replace runs: option toggles, a new search and a new preview are refused, so
+/// the toggles always match the results and the running replace keeps its preview.
+#[test]
+fn requests_are_refused_while_replacing() {
+    let (_d, mut app, hold, _) = held_apply(40, 0);
+    let before = (
+        app.search.case_sensitive,
+        app.search.regex,
+        app.search.whole_word,
+    );
+    for c in ['c', 'r', 'w'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT));
+    }
+    assert_eq!(
+        (
+            app.search.case_sensitive,
+            app.search.regex,
+            app.search.whole_word
+        ),
+        before,
+        "toggles changed during a replace"
+    );
+    app.search.field = Field::Query;
+    app.handle_key(key(KeyCode::Enter));
+    app.search.field = Field::Replace;
+    app.handle_key(key(KeyCode::Enter));
+    assert!(!app.search.running(), "a search started during a replace");
+    assert!(app.search.preview.as_ref().unwrap().applying());
+    assert!(
+        notices(&app).contains("replace is running"),
+        "{}",
+        notices(&app)
+    );
+    hold.store(usize::MAX, Ordering::SeqCst);
+    wait_search(&mut app);
+    assert!(app.search.preview.as_ref().unwrap().applied);
+}
+
+/// A file that fails in the middle of the run (read-only) is reported with its reason and
+/// left as it was; the batches after it are still written.
+#[test]
+fn apply_reports_a_file_failing_halfway() {
+    use std::os::unix::fs::PermissionsExt;
+    let files = many_files(80);
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let (d, mut app) = project(&refs);
+    preview(&mut app, "foo", "bar");
+    let ro = d.path().join("f040.txt");
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o444)).unwrap();
+    confirm(&mut app);
+    for (name, _) in &files {
+        match result(&app, name) {
+            Some(Ok(1)) => assert_eq!(read(&d, name), "bar\n", "{name}"),
+            Some(Err(e)) => {
+                assert_eq!(name, "f040.txt", "{name}: {e}");
+                assert!(e.contains("read-only"), "{e}");
+                assert_eq!(read(&d, name), "foo\n");
+            }
+            r => panic!("{name}: {r:?}"),
+        }
+    }
+    assert!(
+        notices(&app).contains("1 file not replaced: f040.txt"),
+        "{}",
+        notices(&app)
+    );
+}
+
+/// A target file opened and edited in a tab while the replace runs: the worker may write
+/// the disk file, the tab keeps the user's edits, and saving the tab prompts instead of
+/// overwriting the replaced file (the save's freshness check, AC-7).
+#[test]
+fn tab_edited_during_a_replace_loses_nothing() {
+    let (d, mut app, hold, _) = held_apply(40, 0);
+    app.open_path(Path::new("f005.txt")).unwrap();
+    app.focus = Focus::Editor;
+    app.handle_key(key(KeyCode::Char('x')));
+    let i = app.active;
+    hold.store(usize::MAX, Ordering::SeqCst);
+    wait_search(&mut app);
+    assert_eq!(
+        read(&d, "f005.txt"),
+        "bar\n",
+        "written: the tab was opened after the confirm"
+    );
+    assert_eq!(
+        app.docs[i].buffer.text().to_string(),
+        "xfoo\n",
+        "the tab's edits are kept"
+    );
+    let out = crate::commands::file::save_doc(&mut app, i);
+    assert_eq!(out, crate::commands::file::SaveOutcome::Prompted);
+    assert_eq!(
+        read(&d, "f005.txt"),
+        "bar\n",
+        "the save did not overwrite the replace"
+    );
 }

@@ -357,7 +357,7 @@ fn index_cap_notice_once_per_session() {
     assert_eq!(shown, 1, "{:?}", notices(&app));
 }
 
-/// Every plan command is real now (T10 built the last ones): the palette offers them.
+/// Every plan command is registered and offered in the palette.
 #[test]
 fn find_and_search_commands_are_in_the_palette() {
     let dir = tempfile::tempdir().unwrap();

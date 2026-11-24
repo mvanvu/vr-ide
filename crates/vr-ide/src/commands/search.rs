@@ -17,11 +17,12 @@
 //! the editor (closes a preview first), alt+c / alt+r / alt+w toggle case, regex and whole
 //! word. A chord the keymap binds globally (f4, ctrl+shift+f) runs its command first.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread::JoinHandle;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -106,6 +107,8 @@ pub struct Running {
 /// Where a previewed file's replacement goes.
 #[derive(Debug, Clone)]
 pub enum Target {
+    /// Not previewed yet (the worker has not reached the file).
+    Unknown,
     /// Open in a tab: applied to the buffer as one transaction, only if the buffer still
     /// holds the previewed `text`.
     Buffer { canon: PathBuf, text: Rope },
@@ -125,6 +128,8 @@ pub struct PreviewFile {
     pub target: Target,
     /// After the replace: the number of matches replaced, or why the file was skipped.
     pub result: Option<Result<usize, String>>,
+    /// vr-search's preview of a file that was not open: what `apply_replace` writes.
+    plan: Option<FilePreview>,
 }
 
 /// Rows of the preview list: a file, a note under it (error or result), its changed lines.
@@ -136,17 +141,63 @@ pub enum PreviewRow {
     After(usize, usize),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobKind {
+    /// Reading the result files and computing their replacement.
+    Preview,
+    /// Writing the confirmed files.
+    Apply,
+}
+
+/// The worker building a preview or applying it. Files go in batches of [`JOB_BATCH`];
+/// the worker checks `cancel` before each batch.
+#[derive(Debug)]
+pub struct Job {
+    pub kind: JobKind,
+    /// Files finished so far, of `total`.
+    pub done: usize,
+    pub total: usize,
+    cancel: Arc<AtomicBool>,
+    rx: Receiver<JobMsg>,
+    /// Apply: the files handed to the worker (each must end with a result).
+    sent: Vec<usize>,
+    /// The worker thread: joined on exit so a file it started is finished.
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Job {
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+}
+
+/// A file previewed by the worker: its index, canonical path, whether it was open in a tab
+/// when the preview started (then the UI thread previews its buffer) and vr-search's
+/// preview otherwise.
+type Planned = (usize, PathBuf, bool, Option<FilePreview>);
+
+#[derive(Debug)]
+enum JobMsg {
+    Planned(Vec<Planned>),
+    Applied(Vec<(usize, Result<(), String>)>),
+    Done,
+}
+
+const JOB_BATCH: usize = 32;
+
+#[derive(Debug)]
 pub struct Preview {
     pub query: Query,
     pub replacement: String,
     pub files: Vec<PreviewFile>,
-    /// vr-search previews of the files that were not open.
-    disk: Vec<FilePreview>,
     /// The replace ran; the rows show each file's result.
     pub applied: bool,
     pub selected: usize,
     pub top: usize,
+    /// The worker building or applying this preview.
+    pub job: Option<Job>,
+    /// Files the replace changed in open tabs.
+    in_tabs: usize,
 }
 
 impl Preview {
@@ -163,6 +214,32 @@ impl Preview {
             }
         }
         rows
+    }
+
+    /// The preview is still being built.
+    pub fn building(&self) -> bool {
+        self.job
+            .as_ref()
+            .is_some_and(|j| j.kind == JobKind::Preview)
+    }
+
+    /// A replace of this preview is running.
+    pub fn applying(&self) -> bool {
+        self.job.as_ref().is_some_and(|j| j.kind == JobKind::Apply)
+    }
+
+    /// "Preparing preview 12/80" / "Replacing 3/80": the worker's progress.
+    pub fn progress_text(&self) -> Option<String> {
+        let j = self.job.as_ref()?;
+        Some(match (j.kind, j.cancelled()) {
+            (JobKind::Apply, true) => format!("Cancelling… {}/{}", j.done, j.total),
+            (JobKind::Apply, false) => {
+                format!("Replacing {}/{} (Esc cancels)", j.done, j.total)
+            }
+            (JobKind::Preview, _) => {
+                format!("Preparing preview {}/{} (Esc cancels)", j.done, j.total)
+            }
+        })
     }
 
     /// The file a row belongs to.
@@ -198,6 +275,9 @@ pub struct SearchPanel {
     /// Build the replace preview as soon as the running search is done.
     pub preview_pending: bool,
     pub preview: Option<Preview>,
+    /// Test hook: when set, the preview / replace worker passes a batch of files only while
+    /// this holds permits (one per batch).
+    pub hold: Option<Arc<AtomicUsize>>,
     /// Selected row of the results list, and the first visible one.
     pub selected: usize,
     pub top: usize,
@@ -214,6 +294,11 @@ impl SearchPanel {
             case_sensitive: self.case_sensitive,
             whole_word: self.whole_word,
         }
+    }
+
+    /// A preview is being built or a replace runs.
+    pub fn busy(&self) -> bool {
+        self.preview.as_ref().is_some_and(|p| p.job.is_some())
     }
 
     pub fn running(&self) -> bool {
@@ -258,6 +343,7 @@ fn cancel_running(app: &mut App) {
 /// still sends is never read.
 pub fn attach(app: &mut App, rx: Receiver<SearchMsg>, cancel: Arc<AtomicBool>) {
     cancel_running(app);
+    drop_preview(app);
     let s = &mut app.search;
     s.groups.clear();
     s.index.clear();
@@ -265,23 +351,29 @@ pub fn attach(app: &mut App, rx: Receiver<SearchMsg>, cancel: Arc<AtomicBool>) {
     s.errors.clear();
     s.selected = 0;
     s.top = 0;
-    s.preview = None;
     s.status = Status::Running;
     s.run = Some(Running { cancel, rx });
     app.dirty = true;
 }
 
 /// Starts a search for the panel's query off the UI thread (cancelling the running one).
+/// Not while a replace runs: its results are still coming in.
 pub fn start(app: &mut App) {
+    // A preview asked for earlier is for another search; `request_preview` asks again.
+    app.search.preview_pending = false;
+    if app.search.preview.as_ref().is_some_and(Preview::applying) {
+        app.info("Replace in Project: the replace is running; Esc cancels it");
+        return;
+    }
     let q = app.search.query();
     if q.pattern.is_empty() {
         cancel_running(app);
+        drop_preview(app);
         let s = &mut app.search;
         s.groups.clear();
         s.index.clear();
         s.total = 0;
         s.errors.clear();
-        s.preview = None;
         s.status = Status::Idle;
         s.query = None;
         return;
@@ -294,8 +386,10 @@ pub fn start(app: &mut App) {
     app.search.query = Some(q);
 }
 
-/// Takes every message the running search sent so far, without blocking.
+/// Takes every message the running search and the preview / replace worker sent so far,
+/// without blocking.
 pub fn drain(app: &mut App) {
+    drain_job(app);
     let Some(run) = &app.search.run else {
         return;
     };
@@ -549,6 +643,10 @@ fn request_preview(app: &mut App) {
         app.info("Replace in Project: type what to search for first");
         return;
     }
+    if app.search.preview.as_ref().is_some_and(Preview::applying) {
+        app.info("Replace in Project: the replace is running; Esc cancels it");
+        return;
+    }
     if app.search.query.as_ref() != Some(&q) {
         start(app);
     }
@@ -559,8 +657,29 @@ fn request_preview(app: &mut App) {
     build_preview(app);
 }
 
-/// Builds the per-file preview. Nothing is written. Files open in a tab are previewed from
-/// their buffer; the others from disk by `vr_search::plan_replace`.
+/// Waits while the test hook lets no batch pass (each batch takes one permit); false once
+/// the job is cancelled.
+fn proceed(cancel: &AtomicBool, hold: Option<&AtomicUsize>) -> bool {
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return false;
+        }
+        let Some(h) = hold else {
+            return true;
+        };
+        if h.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// Starts the per-file preview on a worker thread; nothing is written. The UI thread reads
+/// no result file: the worker resolves each path, leaves the files open in a tab (when the
+/// preview starts) to the UI thread, which previews their buffers, and runs
+/// `vr_search::plan_replace` on the others, batch by batch.
 fn build_preview(app: &mut App) {
     let Some(q) = app.search.query.clone() else {
         return;
@@ -569,65 +688,222 @@ fn build_preview(app: &mut App) {
         app.info("Replace in Project: no results to replace");
         return;
     }
+    drop_preview(app);
     let replacement = app.search.replace.text().to_string();
-    let tabs = open_tabs(app);
-    let mut files = Vec::with_capacity(app.search.groups.len());
-    let mut disk_paths = Vec::new();
-    for g in &app.search.groups {
-        let c = canon(&g.path);
-        let mut f = PreviewFile {
-            path: g.path.clone(),
+    let tabs: HashSet<PathBuf> = open_tabs(app).into_keys().collect();
+    let paths: Vec<PathBuf> = app.search.groups.iter().map(|g| g.path.clone()).collect();
+    let files = paths
+        .iter()
+        .map(|p| PreviewFile {
+            path: p.clone(),
             hunks: Vec::new(),
             count: 0,
             error: None,
             checked: false,
-            target: Target::Disk { canon: c.clone() },
+            target: Target::Unknown,
             result: None,
-        };
-        if let Some(&i) = tabs.get(&c) {
-            let doc = &app.docs[i];
-            let text = doc.buffer.text().clone();
-            if doc.read_only {
-                f.error = Some("open read-only (not UTF-8); not replaced".to_string());
-            } else {
-                match buffer_hunks(&text, &q, &replacement) {
-                    Ok((hunks, count)) => {
-                        f.hunks = hunks;
-                        f.count = count;
-                    }
-                    Err(e) => f.error = Some(e),
-                }
+            plan: None,
+        })
+        .collect();
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut job = Job {
+        kind: JobKind::Preview,
+        done: 0,
+        total: paths.len(),
+        cancel: cancel.clone(),
+        rx,
+        sent: Vec::new(),
+        handle: None,
+    };
+    let (root, hold) = (app.root.clone(), app.search.hold.clone());
+    let (wq, wr) = (q.clone(), replacement.clone());
+    // Not joined while the app runs: it stops at the next batch once cancelled or once the
+    // receiver is gone; `shutdown` joins it on exit.
+    job.handle = Some(std::thread::spawn(move || {
+        for (b, batch) in paths.chunks(JOB_BATCH).enumerate() {
+            if !proceed(&cancel, hold.as_deref()) {
+                return;
             }
-            f.target = Target::Buffer { canon: c, text };
-        } else {
-            disk_paths.push(g.path.clone());
+            let canons: Vec<PathBuf> = batch.iter().map(|p| canon(p)).collect();
+            let in_tab: Vec<bool> = canons.iter().map(|c| tabs.contains(c)).collect();
+            let disk: Vec<PathBuf> = batch
+                .iter()
+                .zip(&in_tab)
+                .filter(|&(_, &t)| !t)
+                .map(|(p, _)| p.clone())
+                .collect();
+            // plan_replace answers each path in order: zipped back by position.
+            let mut plans = vr_search::plan_replace(&root, &wq, &wr, &disk).into_iter();
+            let out: Vec<Planned> = canons
+                .into_iter()
+                .zip(in_tab)
+                .enumerate()
+                .map(|(i, (c, t))| (b * JOB_BATCH + i, c, t, if t { None } else { plans.next() }))
+                .collect();
+            if tx.send(JobMsg::Planned(out)).is_err() {
+                return;
+            }
         }
-        files.push(f);
-    }
-    let disk = vr_search::plan_replace(&app.root, &q, &replacement, &disk_paths);
-    for fp in &disk {
-        if let Some(f) = files.iter_mut().find(|f| f.path == fp.path) {
-            f.hunks = fp.hunks.clone();
-            f.count = fp.replacements();
-            f.error = fp.error.clone();
-        }
-    }
-    for f in &mut files {
-        if f.error.is_none() && f.count == 0 {
-            f.error = Some("no match any more (changed since the search)".to_string());
-        }
-        f.checked = f.error.is_none();
-    }
+        let _ = tx.send(JobMsg::Done);
+    }));
     app.search.preview = Some(Preview {
         query: q,
         replacement,
         files,
-        disk,
         applied: false,
         selected: 0,
         top: 0,
+        job: Some(job),
+        in_tabs: 0,
     });
     app.search.field = Field::Results;
+    app.dirty = true;
+}
+
+/// Takes what the preview / replace worker sent so far, without blocking.
+fn drain_job(app: &mut App) {
+    let Some(job) = app.search.preview.as_ref().and_then(|p| p.job.as_ref()) else {
+        return;
+    };
+    let mut msgs = Vec::new();
+    let mut ended = false;
+    loop {
+        match job.rx.try_recv() {
+            Ok(JobMsg::Done) => {
+                ended = true;
+                break;
+            }
+            Ok(m) => msgs.push(m),
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => {
+                ended = true;
+                break;
+            }
+        }
+    }
+    if msgs.is_empty() && !ended {
+        return;
+    }
+    let Some(mut p) = app.search.preview.take() else {
+        return;
+    };
+    let (q, r) = (p.query.clone(), p.replacement.clone());
+    // Files open in a tab are previewed here, from their buffers (few, and in memory).
+    let mut tabs: Option<HashMap<PathBuf, usize>> = None;
+    for m in msgs {
+        match m {
+            JobMsg::Planned(items) => {
+                if let Some(j) = &mut p.job {
+                    j.done += items.len();
+                }
+                for (i, c, in_tab, plan) in items {
+                    let f = &mut p.files[i];
+                    if in_tab {
+                        let tabs = tabs.get_or_insert_with(|| open_tabs(app));
+                        preview_tab(app, f, c, tabs, &q, &r);
+                    } else {
+                        match plan {
+                            Some(fp) => {
+                                f.hunks = fp.hunks.clone();
+                                f.count = fp.replacements();
+                                f.error = fp.error.clone();
+                                f.plan = Some(fp);
+                            }
+                            None => f.error = Some("not previewed".to_string()),
+                        }
+                        f.target = Target::Disk { canon: c };
+                    }
+                }
+            }
+            JobMsg::Applied(items) => {
+                if let Some(j) = &mut p.job {
+                    j.done += items.len();
+                }
+                for (i, r) in items {
+                    let f = &mut p.files[i];
+                    f.result = Some(r.map(|()| f.count));
+                }
+            }
+            JobMsg::Done => {}
+        }
+    }
+    if ended && let Some(j) = p.job.take() {
+        match j.kind {
+            JobKind::Preview => {
+                for f in &mut p.files {
+                    if matches!(f.target, Target::Unknown) {
+                        f.error = Some("the preview stopped before this file".to_string());
+                    } else if f.error.is_none() && f.count == 0 {
+                        f.error = Some("no match any more (changed since the search)".to_string());
+                    }
+                    f.checked = f.error.is_none();
+                }
+            }
+            JobKind::Apply => {
+                for &i in &j.sent {
+                    let f = &mut p.files[i];
+                    if f.result.is_none() {
+                        f.result = Some(Err("the replace stopped before this file".into()));
+                    }
+                }
+                p.applied = true;
+            }
+        }
+        let applied = p.applied;
+        app.search.preview = Some(p);
+        if applied {
+            report_apply(app);
+        }
+    } else {
+        app.search.preview = Some(p);
+    }
+    app.dirty = true;
+}
+
+/// Previews a file that was open in a tab when the preview started, from its buffer.
+fn preview_tab(
+    app: &App,
+    f: &mut PreviewFile,
+    c: PathBuf,
+    tabs: &HashMap<PathBuf, usize>,
+    q: &Query,
+    replacement: &str,
+) {
+    let Some(&i) = tabs.get(&c) else {
+        f.error = Some("closed during the preview; not replaced (search again)".to_string());
+        f.target = Target::Disk { canon: c };
+        return;
+    };
+    let doc = &app.docs[i];
+    let text = doc.buffer.text().clone();
+    if doc.read_only {
+        f.error = Some("open read-only (not UTF-8); not replaced".to_string());
+    } else {
+        match buffer_hunks(&text, q, replacement) {
+            Ok((hunks, count)) => {
+                f.hunks = hunks;
+                f.count = count;
+            }
+            Err(e) => f.error = Some(e),
+        }
+    }
+    f.target = Target::Buffer { canon: c, text };
+}
+
+/// True when `p` was built for what the fields show now.
+fn is_current(s: &SearchPanel, p: &Preview) -> bool {
+    p.query == s.query() && p.replacement == s.replace.text()
+}
+
+/// Drops the preview and stops its worker (a replace that runs is never dropped: callers
+/// check [`Preview::applying`]).
+fn drop_preview(app: &mut App) {
+    if let Some(p) = app.search.preview.take()
+        && let Some(j) = p.job
+    {
+        j.cancel.store(true, Ordering::SeqCst);
+    }
     app.dirty = true;
 }
 
@@ -638,6 +914,15 @@ fn ask_confirm(app: &mut App) {
     };
     if p.applied {
         app.info("Replace in Project: done; Esc searches again");
+        return;
+    }
+    if p.job.is_some() {
+        app.info("Replace in Project: the preview is not ready yet (Esc cancels it)");
+        return;
+    }
+    if !is_current(&app.search, p) {
+        drop_preview(app);
+        app.info("Replace in Project: the fields changed; Enter in the replace field previews");
         return;
     }
     let checked: Vec<&PreviewFile> = p
@@ -666,36 +951,48 @@ fn ask_confirm(app: &mut App) {
         ));
     }
     msg.push_str(" A file changed since the preview is skipped.");
+    // vr-search reports the match limit only as text ("... search stopped").
+    if app
+        .search
+        .errors
+        .iter()
+        .any(|e| e.contains("search stopped"))
+    {
+        msg.push_str(
+            " The search stopped at the match limit: this covers only part of the project.",
+        );
+    }
     let mut dialog = ConfirmDialog::new("Replace in Project", msg, &[REPLACE, CANCEL]);
     dialog.selected = 1;
     app.open_dialog(DialogWidget::Confirm(dialog), DialogAction::ReplaceInFiles);
 }
 
-/// The confirm dialog's Replace: applies the checked files of the preview and reports each
-/// file's result. Never writes a file that is open in a tab now; an open file is changed
-/// only when its buffer still holds the previewed text.
+/// The confirm dialog's Replace: applies the checked files of the preview. Files open in a
+/// tab change in their buffers here, on the UI thread, and only when the buffer still holds
+/// the previewed text; the other files are written by `vr_search::apply_replace` on a worker
+/// thread, never one that is open in a tab now. Each file's result shows in the preview.
 pub fn apply(app: &mut App) {
     let Some(mut p) = app.search.preview.take() else {
         return;
     };
-    if p.applied {
+    if p.applied || p.job.is_some() || !is_current(&app.search, &p) {
         app.search.preview = Some(p);
         return;
     }
     let tabs = open_tabs(app);
-    let mut confirmed = Vec::new();
-    let mut in_tabs = 0;
-    for f in p
+    let mut items: Vec<(usize, FilePreview)> = Vec::new();
+    for (i, f) in p
         .files
         .iter_mut()
-        .filter(|f| f.checked && f.error.is_none())
+        .enumerate()
+        .filter(|(_, f)| f.checked && f.error.is_none())
     {
         match &f.target {
             Target::Buffer { canon, text } => {
                 f.result = Some(match tabs.get(canon) {
                     None => Err("closed since the preview; not replaced (search again)".into()),
-                    Some(&i) => {
-                        let doc = &mut app.docs[i];
+                    Some(&ti) => {
+                        let doc = &mut app.docs[ti];
                         if doc.buffer.text() != text {
                             Err("edited since the preview; not replaced (search again)".into())
                         } else if doc.read_only {
@@ -707,7 +1004,7 @@ pub fn apply(app: &mut App) {
                                     doc.buffer.break_undo_group();
                                     doc.buffer.apply(tx);
                                     doc.buffer.break_undo_group();
-                                    in_tabs += 1;
+                                    p.in_tabs += 1;
                                     Ok(n)
                                 }
                                 Err(e) => Err(e.to_string()),
@@ -721,51 +1018,185 @@ pub fn apply(app: &mut App) {
                     f.result = Some(Err(
                         "opened in a tab since the preview; not replaced (search again)".into(),
                     ));
+                } else if let Some(plan) = f.plan.take() {
+                    items.push((i, plan));
                 } else {
-                    confirmed.push(f.path.clone());
+                    f.result = Some(Err("not previewed; not replaced".into()));
                 }
             }
+            Target::Unknown => f.result = Some(Err("not previewed; not replaced".into())),
         }
     }
-    for (path, r) in vr_search::apply_replace(&p.disk, &confirmed) {
-        if let Some(f) = p.files.iter_mut().find(|f| f.path == path) {
-            f.result = Some(r.map(|()| f.count).map_err(|e| e.to_string()));
-        }
+    if items.is_empty() {
+        p.applied = true;
+        app.search.preview = Some(p);
+        report_apply(app);
+        return;
     }
-    p.applied = true;
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    p.job = Some(Job {
+        kind: JobKind::Apply,
+        done: 0,
+        total: items.len(),
+        cancel: cancel.clone(),
+        rx,
+        sent: items.iter().map(|(i, _)| *i).collect(),
+        handle: None,
+    });
+    let hold = app.search.hold.clone();
+    // Joined only on exit (`shutdown`), like the preview's worker. A file it has not
+    // reached when cancelled is reported as not replaced; one it started is finished (each
+    // write is atomic).
+    let handle = std::thread::spawn(move || {
+        // apply_replace refuses a second path to the same file within one call; the
+        // batches share this set so a link and its target in two batches are refused too.
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        let mut batches = items.chunks(JOB_BATCH);
+        for batch in batches.by_ref() {
+            if !proceed(&cancel, hold.as_deref()) {
+                let rest = batch
+                    .iter()
+                    .map(|(i, _)| (*i, Err("cancelled; not replaced".into())));
+                let _ = tx.send(JobMsg::Applied(rest.collect()));
+                break;
+            }
+            let mut out = Vec::with_capacity(batch.len());
+            let mut previews = Vec::with_capacity(batch.len());
+            let mut idx = Vec::with_capacity(batch.len());
+            for (i, fp) in batch {
+                match std::fs::canonicalize(&fp.path) {
+                    Ok(c) if seen.contains(&c) => {
+                        out.push((*i, Err("same file as another result; replaced once".into())));
+                    }
+                    c => {
+                        if let Ok(c) = c {
+                            seen.insert(c);
+                        }
+                        previews.push(fp.clone());
+                        idx.push(*i);
+                    }
+                }
+            }
+            let paths: Vec<PathBuf> = previews.iter().map(|fp| fp.path.clone()).collect();
+            // One result per confirmed path, in order: zipped back by position.
+            let results = vr_search::apply_replace(&previews, &paths);
+            out.extend(
+                idx.into_iter()
+                    .zip(results)
+                    .map(|(i, (_, r))| (i, r.map_err(|e| e.to_string()))),
+            );
+            if tx.send(JobMsg::Applied(out)).is_err() {
+                return;
+            }
+        }
+        let rest: Vec<(usize, Result<(), String>)> = batches
+            .flatten()
+            .map(|(i, _)| (*i, Err("cancelled; not replaced".into())))
+            .collect();
+        if !rest.is_empty() {
+            let _ = tx.send(JobMsg::Applied(rest));
+        }
+        let _ = tx.send(JobMsg::Done);
+    });
+    if let Some(j) = &mut p.job {
+        j.handle = Some(handle);
+    }
+    app.search.preview = Some(p);
+    app.dirty = true;
+}
+
+/// Files named in the "not replaced" warning; the panel lists every one.
+const NAMED_FAILURES: usize = 5;
+
+/// The replace's summary: "Replaced …" and the files that were not replaced (a few named
+/// with their reasons, the rest counted).
+fn apply_summary(app: &App) -> (Option<String>, Option<String>) {
+    let Some(p) = &app.search.preview else {
+        return (None, None);
+    };
     let (mut files, mut matches) = (0, 0);
-    let mut failed = Vec::new();
+    let mut failed = 0;
+    let mut named = Vec::new();
     for f in &p.files {
         match &f.result {
             Some(Ok(n)) => {
                 files += 1;
                 matches += n;
             }
-            Some(Err(e)) => failed.push(format!("{} ({e})", app.display_path(&f.path))),
+            Some(Err(e)) => {
+                failed += 1;
+                if named.len() < NAMED_FAILURES {
+                    named.push(format!("{} ({e})", app.display_path(&f.path)));
+                }
+            }
             None => {}
         }
     }
-    app.search.preview = Some(p);
-    if files > 0 {
+    let done = (files > 0).then(|| {
         let mut msg = format!(
             "Replaced {matches} match{} in {files} file{}",
             if matches == 1 { "" } else { "es" },
             if files == 1 { "" } else { "s" }
         );
-        if in_tabs > 0 {
-            msg.push_str(&format!(" ({in_tabs} in open tabs, not saved yet)"));
+        if p.in_tabs > 0 {
+            msg.push_str(&format!(" ({} in open tabs, not saved yet)", p.in_tabs));
         }
-        app.info(msg);
+        msg
+    });
+    let not_done = (failed > 0).then(|| {
+        let mut msg = format!(
+            "Replace in Project: {failed} file{} not replaced: {}",
+            if failed == 1 { "" } else { "s" },
+            named.join("; ")
+        );
+        if failed > named.len() {
+            msg.push_str(&format!(
+                " and {} more (see the panel)",
+                failed - named.len()
+            ));
+        }
+        msg
+    });
+    (done, not_done)
+}
+
+/// The notices after a replace.
+fn report_apply(app: &mut App) {
+    let (done, not_done) = apply_summary(app);
+    if let Some(m) = done {
+        app.info(m);
     }
-    if !failed.is_empty() {
-        app.warn(format!(
-            "Replace in Project: {} file{} not replaced: {}",
-            failed.len(),
-            if failed.len() == 1 { "" } else { "s" },
-            failed.join("; ")
-        ));
+    if let Some(m) = not_done {
+        app.warn(m);
     }
     app.dirty = true;
+}
+
+/// True while a project replace writes files.
+pub fn replacing(app: &App) -> bool {
+    app.search.preview.as_ref().is_some_and(Preview::applying)
+}
+
+/// Before the process exits (after a quit or a terminal error): a running worker is
+/// cancelled and joined, so the batch in hand finishes and no file is cut off mid-write;
+/// then every file's result is recorded, and a replace's summary is printed after the
+/// terminal is restored.
+pub fn shutdown(app: &mut App) {
+    let Some(job) = app.search.preview.as_mut().and_then(|p| p.job.as_mut()) else {
+        return;
+    };
+    let apply = job.kind == JobKind::Apply;
+    job.cancel.store(true, Ordering::SeqCst);
+    if let Some(h) = job.handle.take() {
+        // A panicked worker is reported like one that stopped: its files say so.
+        let _ = h.join();
+    }
+    drain_job(app);
+    if apply {
+        let (done, not_done) = apply_summary(app);
+        app.exit_messages.extend(done.into_iter().chain(not_done));
+    }
 }
 
 /// Moves the selected row of the list in view (results or preview) by `delta`.
@@ -784,7 +1215,7 @@ fn toggle_checked(app: &mut App) {
     let Some(p) = &mut app.search.preview else {
         return;
     };
-    if p.applied {
+    if p.applied || p.job.is_some() {
         return;
     }
     let rows = p.rows();
@@ -796,13 +1227,20 @@ fn toggle_checked(app: &mut App) {
     }
 }
 
+/// alt+c / alt+r / alt+w. Refused while a replace runs, so the toggles always show what
+/// the results were searched with (a new search would be refused too).
 fn toggle_option(app: &mut App, c: char) {
+    if replacing(app) {
+        app.info("Replace in Project: the replace is running; Esc cancels it");
+        return;
+    }
     let s = &mut app.search;
     match c {
         'c' => s.case_sensitive = !s.case_sensitive,
         'r' => s.regex = !s.regex,
         _ => s.whole_word = !s.whole_word,
     }
+    fields_changed(app);
     if !app.search.input.text().is_empty() {
         start(app);
     }
@@ -824,16 +1262,26 @@ fn next_field(app: &mut App, forward: bool) {
     }];
 }
 
-/// Esc: closes the preview (after a replace, the search runs again so the results are
-/// current), otherwise gives the editor the keys; the panel stays.
+/// Esc: cancels a running replace (the files it has not reached are reported), closes the
+/// preview (stopping it while it is built; after a replace the search runs again so the
+/// results are current), otherwise gives the editor the keys; the panel stays.
 fn escape(app: &mut App) {
-    if let Some(p) = app.search.preview.take() {
-        if p.applied {
-            start(app);
+    app.search.preview_pending = false;
+    match &app.search.preview {
+        Some(p) if p.applying() => {
+            if let Some(j) = &p.job {
+                j.cancel.store(true, Ordering::SeqCst);
+            }
         }
-        app.search.field = Field::Results;
-    } else {
-        app.focus = Focus::Editor;
+        Some(p) => {
+            let applied = p.applied;
+            drop_preview(app);
+            if applied {
+                start(app);
+            }
+            app.search.field = Field::Results;
+        }
+        None => app.focus = Focus::Editor,
     }
 }
 
@@ -878,13 +1326,28 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
                 Field::Replace => &mut s.replace,
                 _ => &mut s.input,
             };
+            let before = input.text().to_string();
             if !input.handle_key(key) {
                 return false;
+            }
+            if input.text() != before {
+                fields_changed(app);
             }
         }
     }
     app.dirty = true;
     true
+}
+
+/// The query, the replacement or an option changed: a preview built for the old ones is
+/// dropped, so it can never be confirmed (it would write a replacement the fields no longer
+/// show). A replace that already runs keeps its preview: it shows that replace's results.
+fn fields_changed(app: &mut App) {
+    let s = &mut app.search;
+    s.preview_pending = false;
+    if s.preview.as_ref().is_some_and(|p| !p.applying()) {
+        drop_preview(app);
+    }
 }
 
 /// Clicks: a field takes the focus, a list row is selected (a result row also opens, the
@@ -910,7 +1373,10 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
                     if row < app.search.rows().len() {
                         app.search.selected = row;
                         open_selected(app);
-                        app.focus = Focus::Search;
+                        // The panel keeps the keys only while it is shown (a narrow screen hides it).
+                        if app.search.visible {
+                            app.focus = Focus::Search;
+                        }
                     }
                 }
             } else {
@@ -934,7 +1400,83 @@ pub fn paste(app: &mut App, text: &str) {
     match s.field {
         Field::Replace => s.replace.insert_str(text),
         Field::Query => s.input.insert_str(text),
-        Field::Results => {}
+        Field::Results => return,
+    }
+    if !text.is_empty() {
+        fields_changed(app);
     }
     app.dirty = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(name: &str) -> PreviewFile {
+        PreviewFile {
+            path: PathBuf::from(name),
+            hunks: Vec::new(),
+            count: 1,
+            error: None,
+            checked: true,
+            target: Target::Disk {
+                canon: PathBuf::from(name),
+            },
+            result: None,
+            plan: None,
+        }
+    }
+
+    /// A replace worker that panics halfway: the files it reported keep their results, the
+    /// others say the replace stopped before them, and the panel is free again (never stuck
+    /// in "Replacing"). On exit, `shutdown` joins it without panicking itself.
+    #[test]
+    fn panicking_worker_is_reported_not_stuck() {
+        for on_exit in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut app, _) = crate::app_tests::test_app(dir.path());
+            let (tx, rx) = mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                tx.send(JobMsg::Applied(vec![(0, Ok(()))])).unwrap();
+                panic!("worker bug (expected by the test)");
+            });
+            app.search.preview = Some(Preview {
+                query: app.search.query(),
+                replacement: String::new(),
+                files: vec![file("a"), file("b"), file("c")],
+                applied: false,
+                selected: 0,
+                top: 0,
+                job: Some(Job {
+                    kind: JobKind::Apply,
+                    done: 0,
+                    total: 3,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    rx,
+                    sent: vec![0, 1, 2],
+                    handle: Some(handle),
+                }),
+                in_tabs: 0,
+            });
+            if on_exit {
+                shutdown(&mut app);
+                let msgs = app.exit_messages.join(" | ");
+                assert!(msgs.contains("2 files not replaced"), "{msgs}");
+            } else {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while app.search.busy() {
+                    assert!(std::time::Instant::now() < deadline, "stuck in Replacing");
+                    drain(&mut app);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
+            let p = app.search.preview.as_ref().unwrap();
+            assert!(p.applied && p.job.is_none());
+            assert_eq!(p.files[0].result, Some(Ok(1)));
+            for f in &p.files[1..] {
+                let e = f.result.clone().unwrap().unwrap_err();
+                assert!(e.contains("stopped before this file"), "{e}");
+            }
+        }
+    }
 }

@@ -202,7 +202,7 @@ mod tests {
         }
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let deadline = Instant::now() + Duration::from_secs(20);
-        while app.search.running() {
+        while app.search.running() || app.search.busy() {
             assert!(Instant::now() < deadline, "search did not finish");
             std::thread::sleep(Duration::from_millis(2));
             app.drain_search();
@@ -246,6 +246,22 @@ mod tests {
         let pos = t.get_cursor_position().unwrap();
         let input = app.palette.as_ref().unwrap().area;
         assert_eq!(pos.y, input.y + 1, "{pos:?} {input:?}");
+    }
+
+    /// D122: the palette never covers the status row, however small the screen.
+    #[test]
+    fn palette_leaves_the_status_row_visible() {
+        let (_d, _p, mut app, _) = app_with_file("fn main() {}\n");
+        app.run_command("app.palette", crate::commands::CmdArgs::None);
+        for h in 4..=14 {
+            let t = draw(&mut app, 40, h);
+            let buf = t.backend().buffer();
+            let last: String = (0..40).map(|x| buf[(x, h - 1)].symbol()).collect();
+            assert!(
+                !last.contains('└') && !last.contains('│'),
+                "height {h}: {last:?}"
+            );
+        }
     }
 
     #[test]

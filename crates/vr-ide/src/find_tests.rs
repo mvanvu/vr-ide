@@ -258,3 +258,106 @@ fn replace_in_read_only_file_is_refused() {
     assert!(!app.active_doc().unwrap().is_modified());
     assert!(app.notices.iter().any(|n| n.text.contains("read-only")));
 }
+
+/// D124: the bar collects at most 20 000 matches and says there are more.
+#[test]
+fn find_caps_matches_at_20000() {
+    let (_d, _p, mut app, _) = app_with_file(&"e\n".repeat(30_000));
+    app.handle_key(ctrl('f'));
+    typ(&mut app, "e");
+    assert_eq!(app.find.matches.len(), 20_000);
+    assert_eq!(count_text(&app), "1/20000+");
+    app.handle_key(shift(KeyCode::Enter));
+    assert_eq!(
+        count_text(&app),
+        "20000/20000+",
+        "previous wraps to the last known"
+    );
+}
+
+/// D124: in a large file the bar rescans once typing pauses, not on every key in the field
+/// or in the editor; the first match from the cursor is selected when the scan runs.
+#[test]
+fn find_debounces_rescans_in_a_large_file() {
+    use std::time::{Duration, Instant};
+    let ms = Duration::from_millis;
+    let (_d, _p, mut app, _) = app_with_file(&"ee\n".repeat(400_000));
+    let t0 = Instant::now();
+    app.handle_key_at(ctrl('f'), t0);
+    app.handle_key_at(key(KeyCode::Char('e')), t0);
+    assert!(app.find.matches.is_empty(), "no rescan per keystroke");
+    draw(&mut app, 80, 24);
+    assert!(
+        app.find.matches.is_empty(),
+        "drawing does not rescan either"
+    );
+    app.handle_key_at(key(KeyCode::Char('e')), t0 + ms(100));
+    app.tick(t0 + ms(200));
+    assert!(
+        app.find.matches.is_empty(),
+        "the pause restarts with each key"
+    );
+    app.tick(t0 + ms(400));
+    assert_eq!(app.find.matches.len(), 20_000);
+    assert_eq!(count_text(&app), "1/20000+");
+    assert_eq!(selection(&app), (0, 2));
+
+    // Typing in the editor: the old matches stay until the pause.
+    app.focus = Focus::Editor;
+    let t1 = t0 + ms(1000);
+    app.handle_key_at(key(KeyCode::Char('x')), t1);
+    draw(&mut app, 80, 24);
+    assert_eq!(app.find.matches[0], (0, 2), "no rescan per editor key");
+    app.tick(t1 + ms(300));
+    assert_eq!(app.find.matches[0], (2, 4));
+}
+
+/// D124 timing in a 100 MB file with a common letter (run in release:
+/// `cargo test --release -p vr-ide -- --ignored find_in_100mb`).
+#[test]
+#[ignore = "release timing test; run with --release -- --ignored"]
+fn find_in_100mb_file_stays_responsive() {
+    use std::time::{Duration, Instant};
+    let line = "the quick brown fox jumps over the lazy dog\n";
+    let (_d, _p, mut app, _) = app_with_file(&line.repeat(100 * 1024 * 1024 / line.len()));
+    app.handle_key(ctrl('f'));
+    let mut worst = Duration::ZERO;
+    for c in "e".chars() {
+        let t = Instant::now();
+        app.handle_key_at(key(KeyCode::Char(c)), t);
+        draw(&mut app, 120, 40);
+        worst = worst.max(t.elapsed());
+    }
+    let t = Instant::now();
+    app.tick(t + Duration::from_secs(1));
+    let capped_scan = t.elapsed();
+    assert_eq!(count_text(&app), "1/20000+");
+
+    // Typing in the editor while the bar is open: no rescan per key.
+    app.focus = Focus::Editor;
+    for _ in 0..20 {
+        let t = Instant::now();
+        app.handle_key_at(key(KeyCode::Char('x')), t);
+        draw(&mut app, 120, 40);
+        worst = worst.max(t.elapsed());
+    }
+    // A query with no match scans the whole file once (an explicit command, e.g. f3).
+    app.focus = Focus::FindBar;
+    app.find.input.set("zqzq");
+    let t = Instant::now();
+    crate::commands::find::refresh_now(&mut app);
+    let full_scan = t.elapsed();
+    assert!(app.find.matches.is_empty());
+    eprintln!(
+        "100 MB: worst key+draw {worst:?}, capped scan {capped_scan:?}, full scan {full_scan:?}"
+    );
+    assert!(worst < Duration::from_millis(50), "key + draw {worst:?}");
+    assert!(
+        capped_scan < Duration::from_millis(200),
+        "capped scan {capped_scan:?}"
+    );
+    assert!(
+        full_scan < Duration::from_secs(3),
+        "full scan {full_scan:?}"
+    );
+}

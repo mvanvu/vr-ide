@@ -19,7 +19,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let Some(p) = &mut app.palette else {
         return;
     };
-    if area.width < 10 || area.height < 4 {
+    // Borders, the input and one list row, above the status row (D122).
+    if area.width < 10 || area.height < 6 {
         return;
     }
     // A cell of margin each side when the screen allows, just under the tab bar.
@@ -27,7 +28,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         .width
         .saturating_sub(4)
         .clamp(area.width.min(20), MAX_WIDTH);
-    let room = area.height - 1;
+    // The status row stays visible: the box ends above it.
+    let room = area.height - 2;
     let list_rows = (p.items.len().max(1) as u16)
         .min(MAX_ROWS)
         .min(room.saturating_sub(3).max(1));

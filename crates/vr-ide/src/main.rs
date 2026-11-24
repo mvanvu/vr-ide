@@ -68,6 +68,7 @@ fn main() -> Result<()> {
     }
 
     let result = run(&mut app);
+    app.shutdown_jobs();
     restore_terminal();
     // Only now can the user read them (the alternate screen is gone).
     for m in &app.exit_messages {

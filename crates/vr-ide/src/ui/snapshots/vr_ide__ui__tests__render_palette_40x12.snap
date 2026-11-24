@@ -12,5 +12,5 @@ expression: t.backend()
 "  │ Replace in Project  ctrl+shift+h │  "
 "  │ Search in Project   ctrl+shift+f │  "
 "  │ Search: Next Result           f4 │  "
-"  │ Search: Previous Result          │  "
-" a└──────────────────────────────────┘  "
+"  └──────────────────────────────────┘  "
+" a.txt · Ln 1, Col 1 · LF · UTF-8       "

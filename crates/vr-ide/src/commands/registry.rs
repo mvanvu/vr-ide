@@ -58,7 +58,7 @@ pub fn is_pending(name: &str) -> bool {
 }
 
 /// Placeholders of commands a later task builds: registered early so the default keymap
-/// validates cleanly, hidden from the palette. Empty since T10 built `find.*` and `search.*`.
+/// validates cleanly, hidden from the palette. Every plan command is registered, so it is empty.
 const PENDING: &[CommandSpec] = &[];
 
 #[cfg(test)]
