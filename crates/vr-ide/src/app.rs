@@ -236,8 +236,9 @@ impl App {
         }
         if crate::theme::Theme::named(&self.settings.theme).is_none() {
             let msg = format!(
-                "settings: unknown theme {:?}; using dark",
-                self.settings.theme
+                "settings: unknown theme {:?}; using {}",
+                self.settings.theme,
+                crate::theme::DEFAULT_THEME
             );
             self.warn(msg);
         }

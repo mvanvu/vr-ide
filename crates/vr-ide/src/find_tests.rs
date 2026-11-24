@@ -76,7 +76,7 @@ fn find_bar_highlights_matches_and_counts() {
         "{}",
         row_text(&t, bar.y)
     );
-    let theme = Theme::dark();
+    let theme = Theme::from_name(&app.settings.theme);
     let ed = app.layout.editor;
     let gutter = crate::ui::editor_view::gutter_width(app.active_doc().unwrap().buffer.text());
     {

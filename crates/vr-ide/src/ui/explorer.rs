@@ -77,8 +77,9 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
         let shown = format!("{}{marker}", fit(&text, room));
         buf.set_stringn(area.x, y, shown, usize::from(inner), style);
     }
+    let sep = if focused { theme.focus } else { theme.dim };
     for y in area.y..area.y + area.height {
-        buf.set_string(area.x + inner, y, "│", theme.dim);
+        buf.set_string(area.x + inner, y, "│", sep);
     }
 }
 

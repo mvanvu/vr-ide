@@ -17,7 +17,14 @@ use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let theme = Theme::from_name(&app.settings.theme);
+    render_with(frame, app, &theme);
+}
+
+/// `render` with an explicit theme (previews draw every theme from the same state).
+pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     let area = frame.area();
+    // Paint the theme background everywhere first; widgets then only patch their own cells.
+    frame.buffer_mut().set_style(area, theme.text);
     let notice_rows = status_bar::notice_rows(app, area.width);
     let side = if app.search.visible {
         layout::Side::Search
@@ -29,19 +36,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     let layout = layout::compute(area, notice_rows, side, find_bar::rows(app));
     app.layout = layout;
-    explorer::render(frame.buffer_mut(), layout.explorer, app, &theme);
-    search_panel::render(frame, layout.search, app, &theme);
-    tabs::render(frame.buffer_mut(), layout.tabs, app, &theme);
-    find_bar::render(frame, layout.find_bar, app, &theme);
-    editor_view::render(frame, layout.editor, app, &theme);
-    status_bar::render_notice(frame.buffer_mut(), layout.notice, app, &theme);
-    status_bar::render(frame.buffer_mut(), layout.status, app, &theme);
+    explorer::render(frame.buffer_mut(), layout.explorer, app, theme);
+    search_panel::render(frame, layout.search, app, theme);
+    tabs::render(frame.buffer_mut(), layout.tabs, app, theme);
+    find_bar::render(frame, layout.find_bar, app, theme);
+    editor_view::render(frame, layout.editor, app, theme);
+    status_bar::render_notice(frame.buffer_mut(), layout.notice, app, theme);
+    status_bar::render(frame.buffer_mut(), layout.status, app, theme);
     // Overlays last: they draw over the editor and set the cursor.
     if app.palette.is_some() {
-        palette::render(frame, area, app, &theme);
+        palette::render(frame, area, app, theme);
     }
     if let Some(d) = &mut app.dialog {
-        d.widget.render(frame, area, &theme);
+        d.widget.render(frame, area, theme);
     }
 }
 
@@ -58,6 +65,8 @@ mod tests {
 
     use super::*;
     use crate::app_tests::{app_with_file, test_app};
+
+    mod preview;
 
     const SIZES: [(u16, u16); 2] = [(80, 24), (40, 12)];
 
@@ -93,7 +102,7 @@ mod tests {
         snap("render_file_with_selection", &mut app);
         // Selected cells carry the selection style; the rest do not.
         let t = draw(&mut app, 80, 24);
-        let theme = Theme::dark();
+        let theme = Theme::from_name(&app.settings.theme);
         let buf = t.backend().buffer();
         let gutter = editor_view::gutter_width(app.active_doc().unwrap().buffer.text());
         assert_eq!(buf[(gutter, 2)].bg, theme.selection.bg.unwrap());
@@ -356,7 +365,7 @@ mod tests {
         assert_eq!(app.layout.explorer.width, layout::explorer_width(80));
         assert_eq!(app.layout.editor.x, app.layout.explorer.width);
         // Focus in the explorer: the cursor row is highlighted, the editor shows no cursor.
-        let theme = Theme::dark();
+        let theme = Theme::from_name(&app.settings.theme);
         let row = app.layout.explorer.y + app.explorer.cursor as u16;
         assert_eq!(
             t.backend().buffer()[(0, row)].bg,

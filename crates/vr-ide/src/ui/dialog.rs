@@ -369,16 +369,16 @@ impl DialogWidget {
         match &*self {
             DialogWidget::Confirm(d) => {
                 for l in wrap(&d.message, inner_w) {
-                    rows.push(Row::Text(l, theme.text));
+                    rows.push(Row::Text(l, ratatui::style::Style::default()));
                 }
-                rows.push(Row::Text(String::new(), theme.text));
+                rows.push(Row::Text(String::new(), ratatui::style::Style::default()));
                 for r in button_rows(&d.buttons, inner_w) {
                     rows.push(Row::Buttons(r));
                 }
             }
             DialogWidget::Prompt(d) => {
                 for l in wrap(&d.label, inner_w) {
-                    rows.push(Row::Text(l, theme.text));
+                    rows.push(Row::Text(l, ratatui::style::Style::default()));
                 }
                 rows.push(Row::Input);
                 if let Some(e) = &d.error {
