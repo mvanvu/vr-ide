@@ -1,0 +1,74 @@
+[package]
+name = "vr-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Vendored grammars keep their own MIT licences (vendor/*/LICENSE).
+include = ["src/**", "vendor/**", "build.rs", "Cargo.toml"]
+
+[features]
+# C2: every D7 grammar is compiled in by default; one feature per grammar group so a build can drop one.
+default = [
+    "php",
+    "blade",
+    "twig",
+    "javascript",
+    "typescript",
+    "vue",
+    "html",
+    "css",
+    "scss",
+    "dart",
+    "go",
+    "python",
+    "rust",
+    "json",
+    "yaml",
+    "toml",
+    "markdown",
+]
+php = ["dep:tree-sitter-php"]
+# Blade's queries inherit the HTML ones, so the HTML crate is needed for its query text.
+blade = ["dep:tree-sitter-html"]
+twig = []
+javascript = ["dep:tree-sitter-javascript"]
+# TypeScript's highlights are layered on the JavaScript ones.
+typescript = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
+vue = []
+html = ["dep:tree-sitter-html"]
+css = ["dep:tree-sitter-css"]
+# SCSS highlights only add to the CSS ones (nvim-style `inherits: css`).
+scss = ["dep:tree-sitter-scss", "dep:tree-sitter-css"]
+dart = ["dep:tree-sitter-dart"]
+go = ["dep:tree-sitter-go"]
+python = ["dep:tree-sitter-python"]
+rust = ["dep:tree-sitter-rust"]
+json = ["dep:tree-sitter-json"]
+yaml = ["dep:tree-sitter-yaml"]
+toml = ["dep:tree-sitter-toml-ng"]
+markdown = ["dep:tree-sitter-md"]
+
+[dependencies]
+tree-sitter.workspace = true
+tree-sitter-language.workspace = true
+tree-sitter-php = { workspace = true, optional = true }
+tree-sitter-javascript = { workspace = true, optional = true }
+tree-sitter-typescript = { workspace = true, optional = true }
+tree-sitter-html = { workspace = true, optional = true }
+tree-sitter-css = { workspace = true, optional = true }
+tree-sitter-scss = { workspace = true, optional = true }
+tree-sitter-dart = { workspace = true, optional = true }
+tree-sitter-go = { workspace = true, optional = true }
+tree-sitter-python = { workspace = true, optional = true }
+tree-sitter-rust = { workspace = true, optional = true }
+tree-sitter-json = { workspace = true, optional = true }
+tree-sitter-yaml = { workspace = true, optional = true }
+tree-sitter-toml-ng = { workspace = true, optional = true }
+tree-sitter-md = { workspace = true, optional = true }
+
+# The highlight engine (M4-2) moves this to [dependencies]; here only the tests build configurations.
+[dev-dependencies]
+tree-sitter-highlight.workspace = true
+
+[build-dependencies]
+cc.workspace = true

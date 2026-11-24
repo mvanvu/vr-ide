@@ -1,0 +1,7 @@
+{
+  "name": "vr-ide",
+  "version": 1,
+  "enabled": true,
+  "tags": ["editor", "tui"],
+  "parent": null
+}

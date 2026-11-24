@@ -1,0 +1,7 @@
+{# Lists the users. #}
+<ul>
+{% for user in users %}
+    <li>{{ user.name|upper }}</li>
+{% endfor %}
+</ul>
+{% if users is empty %}<p>{{ "No users" }}</p>{% endif %}

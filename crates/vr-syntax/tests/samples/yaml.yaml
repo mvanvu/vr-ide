@@ -1,0 +1,7 @@
+# Build configuration.
+name: vr-ide
+version: 1
+enabled: true
+steps:
+  - run: "cargo test"
+  - run: cargo build --release
