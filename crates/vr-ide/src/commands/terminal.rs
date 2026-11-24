@@ -215,6 +215,8 @@ pub struct TerminalPanel {
     pub scrollback: usize,
     pub selection: Option<Selection>,
     selecting: bool,
+    /// The program got a mouse press; drags and the release go to it until that release.
+    captured: bool,
     /// The panel's top edge (its tab bar) is being dragged.
     resizing: bool,
     /// "Quit anyway" was chosen; the next quit does not ask about terminals again (one shot).
@@ -235,6 +237,7 @@ impl TerminalPanel {
             scrollback,
             selection: None,
             selecting: false,
+            captured: false,
             resizing: false,
             quit_confirmed: false,
             wake: Arc::default(),
@@ -257,21 +260,6 @@ impl TerminalPanel {
     /// Terminals whose program still runs.
     pub fn running(&self) -> usize {
         self.tabs.iter().filter(|t| t.running()).count()
-    }
-
-    /// Tab labels as the tab bar draws them: " 1 bash ", " 2 htop [0] " (exited with code 0).
-    pub fn labels(&self) -> Vec<String> {
-        self.tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let mut title: String = t.title().chars().take(24).collect();
-                if let TermStatus::Exited(code) = t.status() {
-                    title.push_str(&format!(" [{code}]"));
-                }
-                format!(" {} {title} ", i + 1)
-            })
-            .collect()
     }
 }
 
@@ -337,6 +325,14 @@ fn show(app: &mut App) {
 }
 
 fn reveal(app: &mut App) {
+    if !app.terminal.visible {
+        // While hidden, tabs were not snapshot after a wake (their Notify stays disarmed until
+        // the next snapshot): take one of each so titles and exit markers are current, which
+        // also re-arms every Notify.
+        for tab in &mut app.terminal.tabs {
+            tab.refresh();
+        }
+    }
     app.terminal.visible = true;
     app.focus = Focus::Terminal;
     app.dirty = true;
@@ -348,6 +344,7 @@ fn hide(app: &mut App) {
     p.visible = false;
     p.selection = None;
     p.selecting = false;
+    p.captured = false;
     p.resizing = false;
     if app.focus == Focus::Terminal {
         super::search::focus_editor(app);
@@ -367,6 +364,8 @@ fn step(app: &mut App, forward: bool) {
         (p.active + n - 1) % n
     };
     p.selection = None;
+    // A release now would reach another program.
+    p.captured = false;
     reveal(app);
 }
 
@@ -386,6 +385,7 @@ fn add_tab(app: &mut App) -> bool {
             });
             app.terminal.active = app.terminal.tabs.len() - 1;
             app.terminal.selection = None;
+            app.terminal.captured = false;
             true
         }
         Err(e) => {
@@ -422,6 +422,7 @@ fn close_active(app: &mut App) {
     let tab = p.tabs.remove(p.active);
     drop_later(tab.term);
     p.selection = None;
+    p.captured = false;
     if p.tabs.is_empty() {
         p.active = 0;
         hide(app);
@@ -598,6 +599,16 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         app.run_command(&cmd, CmdArgs::None);
         return true;
     }
+    // D214: a legacy terminal sends ctrl+` as NUL; here too it means ctrl+` (a [terminal]
+    // ctrl+space binding was looked up first), unless the user wants NUL for the program.
+    if nul_toggles_in_terminal(app)
+        && is_nul(key)
+        && let Some(cmd) = app.keymap.command_for_in(Context::Terminal, &tick_chord())
+    {
+        let cmd = cmd.to_owned();
+        app.run_command(&cmd, CmdArgs::None);
+        return true;
+    }
     app.terminal.selection = None;
     if let Some(tab) = app.terminal.active_mut() {
         tab.refresh();
@@ -652,9 +663,31 @@ fn paste_chord() -> KeyChord {
     "ctrl+shift+v".parse().expect("valid chord")
 }
 
+fn tick_chord() -> KeyChord {
+    "ctrl+`".parse().expect("valid chord")
+}
+
+/// NUL as crossterm reports it (ctrl+space; `Null` on some platforms).
+fn is_nul(key: &KeyEvent) -> bool {
+    key.code == K::Null || (key.code == K::Char(' ') && key.modifiers == KeyModifiers::CONTROL)
+}
+
+/// Inside a focused terminal NUL stands for ctrl+` too: only without the kitty protocol (there
+/// ctrl+` arrives as itself) and unless `terminal_pass_nul` gives NUL to the program (D214).
+pub fn nul_toggles_in_terminal(app: &App) -> bool {
+    !app.keyboard_enhanced && !app.settings.terminal_pass_nul
+}
+
+/// A focused terminal's toggle key can hide the panel: always with the kitty protocol, and in a
+/// legacy terminal while NUL is not passed to the program (the panel hint follows this).
+pub fn hide_key_works(app: &App) -> bool {
+    app.keyboard_enhanced || nul_toggles_in_terminal(app)
+}
+
 /// A legacy terminal sends ctrl+` as NUL, which crossterm reports as ctrl+space: outside a
 /// focused terminal (and the palette) it runs what ctrl+` is bound to, unless the keymap binds
-/// ctrl+space there itself (D185). With the kitty protocol ctrl+` arrives as itself.
+/// ctrl+space there itself (D185). With the kitty protocol ctrl+` arrives as itself. A focused
+/// terminal handles NUL itself ([`handle_key`], D214).
 pub fn legacy_toggle(app: &mut App, key: &KeyEvent) -> bool {
     if app.keyboard_enhanced
         || app.dialog.is_some()
@@ -662,9 +695,7 @@ pub fn legacy_toggle(app: &mut App, key: &KeyEvent) -> bool {
     {
         return false;
     }
-    let nul =
-        key.code == K::Null || (key.code == K::Char(' ') && key.modifiers == KeyModifiers::CONTROL);
-    if !nul {
+    if !is_nul(key) {
         return false;
     }
     let ctx = app.focus.context();
@@ -672,8 +703,7 @@ pub fn legacy_toggle(app: &mut App, key: &KeyEvent) -> bool {
     if app.keymap.command_for_in(ctx, &space).is_some() {
         return false;
     }
-    let tick: KeyChord = "ctrl+`".parse().expect("valid chord");
-    let Some(cmd) = app.keymap.command_for_in(ctx, &tick) else {
+    let Some(cmd) = app.keymap.command_for_in(ctx, &tick_chord()) else {
         return false;
     };
     let cmd = cmd.to_owned();
@@ -765,6 +795,20 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
         area.width,
         area.height.saturating_sub(1),
     );
+    // A press the program got owns the mouse until its release, wherever that happens: drags
+    // and the release reach the program clamped to its grid, as in any terminal emulator. A
+    // new press ends it (the release was let go where vr-ide could not see it).
+    if matches!(ev.kind, MK::Down(_)) {
+        app.terminal.captured = false;
+    }
+    if app.terminal.captured && matches!(ev.kind, MK::Drag(_) | MK::Up(_)) {
+        let (row, col) = clamp_cell(grid_area, ev.column, ev.row);
+        if matches!(ev.kind, MK::Up(_)) {
+            app.terminal.captured = false;
+        }
+        forward_mouse(app, ev, col as u16, row as u16);
+        return true;
+    }
     if app.terminal.selecting && matches!(ev.kind, MK::Drag(MB::Left) | MK::Up(MB::Left)) {
         let cell = clamp_cell(grid_area, ev.column, ev.row);
         if let Some(sel) = &mut app.terminal.selection {
@@ -788,6 +832,7 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
                 Some(i) => {
                     app.terminal.active = i;
                     app.terminal.selection = None;
+                    app.terminal.captured = false;
                     app.focus = Focus::Terminal;
                 }
                 None => app.terminal.resizing = true,
@@ -806,20 +851,10 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
     let (col, row) = (ev.column - grid_area.x, ev.row - grid_area.y);
     let reporting = modes.mouse_reporting && tab.scroll == 0 && tab.running();
     if reporting && !ev.modifiers.contains(KeyModifiers::SHIFT) {
-        if let Some(kind) = mouse_kind(ev.kind) {
-            let m = vr_term::MouseEvent {
-                kind,
-                col,
-                row,
-                mods: Modifiers {
-                    shift: false,
-                    alt: ev.modifiers.contains(KeyModifiers::ALT),
-                    ctrl: ev.modifiers.contains(KeyModifiers::CONTROL),
-                },
-            };
-            let bytes = encode_mouse(m, modes);
-            send(app, &bytes);
+        if matches!(ev.kind, MK::Down(_)) {
+            app.terminal.captured = true;
         }
+        forward_mouse(app, ev, col, row);
         return true;
     }
     match ev.kind {
@@ -854,6 +889,26 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
     true
 }
 
+/// Sends a mouse event at grid cell (`col`, `row`) to the active terminal's program, encoded
+/// for the mouse mode it asked for.
+fn forward_mouse(app: &mut App, ev: &MouseEvent, col: u16, row: u16) {
+    let (Some(kind), Some(tab)) = (mouse_kind(ev.kind), app.terminal.active_tab()) else {
+        return;
+    };
+    let m = vr_term::MouseEvent {
+        kind,
+        col,
+        row,
+        mods: Modifiers {
+            shift: false,
+            alt: ev.modifiers.contains(KeyModifiers::ALT),
+            ctrl: ev.modifiers.contains(KeyModifiers::CONTROL),
+        },
+    };
+    let bytes = encode_mouse(m, tab.grid.modes);
+    send(app, &bytes);
+}
+
 fn mouse_kind(kind: MK) -> Option<MouseKind> {
     let b = |b: MB| match b {
         MB::Left => MouseButton::Left,
@@ -877,17 +932,13 @@ fn clamp_cell(grid: Rect, column: u16, row: u16) -> (usize, usize) {
     (usize::from(r), usize::from(c))
 }
 
-/// The tab under column `x` of the tab bar.
+/// The tab under column `x` of the tab bar, as the bar is drawn at the panel's width.
 fn tab_at(app: &App, x: u16) -> Option<usize> {
-    let mut start = 0usize;
-    for (i, label) in app.terminal.labels().iter().enumerate() {
-        let w = ratatui::text::Span::raw(label.as_str()).width();
-        if usize::from(x) >= start && usize::from(x) < start + w {
-            return Some(i);
-        }
-        start += w;
-    }
-    None
+    let bar = crate::ui::terminal_view::tab_bar(app, app.layout.terminal.width);
+    bar.tabs
+        .iter()
+        .find(|t| x >= t.x && x < t.x + t.width)
+        .map(|t| t.index)
 }
 
 /// Dragging the top edge: the panel reaches from the mouse row to its bottom.

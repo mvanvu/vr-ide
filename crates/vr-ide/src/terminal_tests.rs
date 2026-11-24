@@ -179,8 +179,14 @@ fn ctrl_backtick_shows_hides_and_focuses_the_panel() {
     assert_eq!(app.terminal.tabs.len(), 1);
 }
 
+/// The panel's tab bar row as drawn at 80x24.
+fn panel_bar(app: &mut App) -> String {
+    let t = draw(app, 80, 24);
+    row_text(&t, app.layout.terminal.y)
+}
+
 #[test]
-fn legacy_nul_toggles_outside_a_terminal_and_reaches_the_shell_inside() {
+fn legacy_nul_toggles_everywhere_and_hides_from_inside_a_terminal() {
     let (_d, mut app, _) = term_app();
     app.keyboard_enhanced = false;
     draw(&mut app, 80, 24);
@@ -188,7 +194,47 @@ fn legacy_nul_toggles_outside_a_terminal_and_reaches_the_shell_inside() {
     nul(&mut app);
     assert!(app.terminal.visible);
     assert_eq!(app.focus, Focus::Terminal);
+    let pid = tab(&app).pid().expect("running shell");
+    // The hint promises what NUL does in here.
+    let bar = panel_bar(&mut app);
+    assert!(bar.contains("alt+q editor · ctrl+` hide"), "{bar}");
+    // D214: inside a focused terminal NUL hides the panel; the shell keeps running.
+    nul(&mut app);
+    assert!(!app.terminal.visible);
+    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(tab(&app).pid(), Some(pid));
+    // Shown again, alt+q leaves; NUL from the editor focuses the shown panel (palette alike).
+    nul(&mut app);
+    alt_q(&mut app);
+    assert_eq!(app.focus, Focus::Editor);
+    assert!(panel_bar(&mut app).contains("ctrl+` focus"));
+    nul(&mut app);
+    assert_eq!(app.focus, Focus::Terminal);
+    alt_q(&mut app);
+    app.run_command("terminal.toggle", CmdArgs::None);
+    assert_eq!(app.focus, Focus::Terminal);
+    assert!(app.terminal.visible);
+    // From the explorer, NUL focuses the shown panel too.
+    alt_q(&mut app);
+    app.focus = Focus::Explorer;
+    nul(&mut app);
+    assert_eq!(app.focus, Focus::Terminal);
+    // ...and hides it from there.
+    nul(&mut app);
+    assert!(!app.terminal.visible);
+    assert_eq!(tab(&app).pid(), Some(pid));
+}
+
+#[test]
+fn terminal_pass_nul_sends_nul_to_the_program() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = false;
+    app.settings.terminal_pass_nul = true;
+    draw(&mut app, 80, 24);
+    nul(&mut app);
+    assert!(app.terminal.visible);
     // Inside a focused terminal it goes to the program: cat -v shows it as ^@.
+    wait_text(&app, "$");
     typ(&mut app, "cat -v\n");
     wait_text(&app, "cat -v");
     nul(&mut app);
@@ -196,19 +242,27 @@ fn legacy_nul_toggles_outside_a_terminal_and_reaches_the_shell_inside() {
     wait_text(&app, "^@x");
     assert!(app.terminal.visible);
     assert_eq!(app.focus, Focus::Terminal);
-    // alt+q leaves; NUL from the editor focuses the shown panel again.
-    alt_q(&mut app);
-    assert_eq!(app.focus, Focus::Editor);
-    nul(&mut app);
-    assert_eq!(app.focus, Focus::Terminal);
-    // From the explorer, NUL toggles as well (hide needs the terminal focused: shown and
-    // unfocused → focus).
-    alt_q(&mut app);
-    app.focus = Focus::Explorer;
-    nul(&mut app);
-    assert_eq!(app.focus, Focus::Terminal);
-    // A kitty-reported ctrl+` inside the terminal hides the panel.
+    // The hint does not promise a hide key that would not work here.
+    let bar = panel_bar(&mut app);
+    assert!(bar.contains("alt+q editor"), "{bar}");
+    assert!(!bar.contains("hide"), "{bar}");
+}
+
+#[test]
+fn kitty_ctrl_backtick_hides_and_ctrl_space_reaches_the_program() {
+    let (_d, mut app, _) = term_app();
     app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    wait_text(&app, "$");
+    typ(&mut app, "cat -v\n");
+    wait_text(&app, "cat -v");
+    // ctrl+space is its own key with the kitty protocol: the program gets it.
+    nul(&mut app);
+    typ(&mut app, "y\n");
+    wait_text(&app, "^@y");
+    assert!(app.terminal.visible);
+    assert!(panel_bar(&mut app).contains("alt+q editor · ctrl+` hide"));
     ctrl_backtick(&mut app);
     assert!(!app.terminal.visible);
     assert_eq!(app.focus, Focus::Editor);
@@ -389,6 +443,30 @@ fn new_close_next_and_previous_terminal() {
 }
 
 #[test]
+fn inactive_tab_titles_are_fresh_when_the_panel_is_shown_again() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    wait_text(&app, "$");
+    // Tab 1 sets its title a moment later, while tab 2 is active and the panel is hidden.
+    typ(&mut app, "sleep 0.3; printf '\\033]2;late-title\\007'\n");
+    app.run_command("terminal.new", CmdArgs::None);
+    ctrl_backtick(&mut app);
+    assert!(!app.terminal.visible);
+    let deadline = Instant::now() + WAIT;
+    while app.terminal.tabs[0].grid_now().title.as_deref() != Some("late-title") {
+        assert!(Instant::now() < deadline, "title never set");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The loop saw the wake while hidden (no snapshot then).
+    crate::commands::terminal::refresh(&mut app);
+    ctrl_backtick(&mut app);
+    let bar = panel_bar(&mut app);
+    assert!(bar.contains("1 late-title"), "{bar}");
+}
+
+#[test]
 fn an_exited_terminal_shows_the_banner_and_enter_restarts_it() {
     let (dir, mut app, _) = term_app();
     app.keyboard_enhanced = true;
@@ -531,6 +609,78 @@ fn the_status_bar_shows_term_while_the_terminal_has_the_keys() {
     assert!(row_text(&t, 23).starts_with(" READ "));
 }
 
+#[test]
+fn a_click_dismisses_a_notice_while_the_terminal_has_the_keys() {
+    let (_d, mut app, _) = term_app();
+    app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
+    app.terminal.visible = true;
+    app.focus = Focus::Terminal;
+    app.warn("something to read");
+    let t = draw(&mut app, 80, 24);
+    let notice = app.layout.notice;
+    assert!(notice.height > 0);
+    // Esc belongs to the program; the notice says how to dismiss it instead.
+    let row = row_text(&t, notice.y);
+    assert!(row.contains("something to read  (click)"), "{row}");
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: notice.x + 3,
+        row: notice.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.notices.is_empty());
+    // The keys stay with the terminal.
+    assert_eq!(app.focus, Focus::Terminal);
+}
+
+#[test]
+fn a_program_drag_released_outside_the_panel_still_gets_the_release() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    draw(&mut app, 80, 24);
+    wait_text(&app, "$");
+    typ(&mut app, "printf '\\033[?1002h\\033[?1006h'; cat -v\n");
+    let deadline = Instant::now() + WAIT;
+    while !tab(&app).grid_now().modes.mouse_reporting {
+        assert!(Instant::now() < deadline, "mouse reporting never enabled");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let area = app.layout.terminal;
+    let mouse = |kind, column, row| MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    // Press on grid cell (row 1, col 2), drag up over the editor and release there.
+    app.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        area.x + 2,
+        area.y + 2,
+    ));
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 2, 3));
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, 3));
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    // The program sees the press, the drag and the release, clamped to its top row.
+    let s = wait_text(&app, "[<0;3;1m");
+    assert!(s.contains("[<0;3;2M") && s.contains("[<32;3;1M"), "{s}");
+    // The editor did not take the release as a click of its own.
+    assert_eq!(app.focus, Focus::Terminal);
+    // A release vr-ide never sees (let go outside the window) does not keep the mouse: the
+    // next press elsewhere and its drag belong to the editor.
+    app.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        area.x + 2,
+        area.y + 2,
+    ));
+    let drag = mouse(MouseEventKind::Drag(MouseButton::Left), 4, 3);
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 3));
+    assert_eq!(app.focus, Focus::Editor);
+    assert!(!crate::commands::terminal::handle_mouse(&mut app, &drag));
+}
+
 fn fake_tab(title: &str, status: TermStatus) -> TermTab {
     TermTab::fake(fake_grid(80, 9), title, status)
 }
@@ -570,6 +720,53 @@ fn mouse_selection_copies_and_a_click_focuses() {
     // A click in the editor area gives it the keys back.
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
     assert_eq!(app.focus, Focus::Editor);
+}
+
+/// Four tabs titled as Ubuntu's bash sets them (`user@host: dir`), the last one active.
+fn long_title_app() -> App {
+    let (mut app, _) = test_app(Path::new("/home/user/DEV/shop"));
+    for dir in ["alpha", "beta", "gamma", "delta"] {
+        let title = format!("rainy@rainy-Lenovo-IdeaPad-5: ~/DEV/{dir}");
+        app.terminal
+            .tabs
+            .push(fake_tab(&title, TermStatus::Running));
+    }
+    app.terminal.active = 3;
+    app.terminal.visible = true;
+    app.focus = Focus::Terminal;
+    app
+}
+
+#[test]
+fn long_titles_keep_the_active_tab_the_hint_and_the_status_in_view() {
+    let mut app = long_title_app();
+    let t = draw(&mut app, 80, 24);
+    let bar = row_text(&t, app.layout.terminal.y);
+    // Every tab is told apart by the end of its title (the directory).
+    for dir in ["alpha", "beta", "gamma", "delta"] {
+        assert!(bar.contains(dir), "{dir} missing: {bar}");
+    }
+    assert!(bar.contains("alt+q editor"), "hint dropped: {bar}");
+    let status = row_text(&t, 23);
+    assert!(status.contains(" 4/4 · 80×9 "), "{status}");
+    // A click on a label activates that tab (hit test matches the drawing).
+    let col = bar.find("beta").map(|b| bar[..b].chars().count()).unwrap() as u16;
+    let area = app.layout.terminal;
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: area.x + col,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.terminal.active, 1);
+    // At 40 columns the active tab stays in view with a marker for the hidden ones.
+    app.terminal.active = 3;
+    let t = draw(&mut app, 40, 12);
+    let bar = row_text(&t, app.layout.terminal.y);
+    assert!(bar.contains(" 4 ") && bar.contains("delta"), "{bar}");
+    assert!(bar.contains("+"), "no marker for hidden tabs: {bar}");
+    let status = row_text(&t, 11);
+    assert!(status.contains("4/4"), "{status}");
 }
 
 // ---- rendering --------------------------------------------------------------------------------
@@ -665,6 +862,51 @@ fn render_exited_terminal() {
     app.terminal.active = 1;
     let t = draw(&mut app, 80, 24);
     insta::assert_snapshot!("render_exited_terminal_80x24", t.backend());
+}
+
+#[test]
+fn the_exited_banner_keeps_both_actions_at_40_columns() {
+    let (_d, mut app) = snapshot_app();
+    app.terminal.tabs[1] = fake_tab("htop", TermStatus::Exited(3));
+    app.terminal.active = 1;
+    let t = draw(&mut app, 40, 12);
+    let area = app.layout.terminal;
+    let banner = row_text(&t, area.y + area.height - 1);
+    assert!(
+        banner.contains("exited 3") && banner.contains("Enter") && banner.contains("ctrl+w"),
+        "{banner}"
+    );
+    insta::assert_snapshot!("render_exited_terminal_40x12", t.backend());
+}
+
+#[test]
+fn concealed_text_is_not_drawn_in_any_theme() {
+    for theme in ["synthwave", "dracula", "dark", "light"] {
+        let (_d, mut app) = snapshot_app();
+        app.settings.theme = theme.to_string();
+        let mut g = fake_grid(80, 9);
+        for (i, ch) in "secret".chars().enumerate() {
+            g.cells[5 * 80 + i] = Cell {
+                ch: ch.to_string(),
+                flags: CellFlags {
+                    hidden: true,
+                    ..CellFlags::default()
+                },
+                ..Cell::default()
+            };
+        }
+        app.terminal.tabs[0] = TermTab::fake(g, "sh", TermStatus::Running);
+        let t = draw(&mut app, 80, 24);
+        let text = frame_text(&t);
+        assert!(!text.contains("secret"), "{theme}:\n{text}");
+    }
+}
+
+#[test]
+fn render_long_titles_80x24() {
+    let mut app = long_title_app();
+    let t = draw(&mut app, 80, 24);
+    insta::assert_snapshot!("render_terminal_long_titles_80x24", t.backend());
 }
 
 #[test]

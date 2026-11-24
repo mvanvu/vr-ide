@@ -28,13 +28,22 @@ pub fn notice_text(app: &App) -> Option<String> {
     let n = app.notices.front()?;
     let more = app.notices.len() - 1;
     let esc = esc_dismisses(app);
-    let suffix = if more > 0 {
-        let key = if esc { " · Esc" } else { "" };
-        format!("  (+{more} more{key})")
-    } else if n.level == NoticeLevel::Info || !esc {
-        String::new()
+    // A focused terminal gives Esc to its program; a click on the notice dismisses it there.
+    let click = crate::commands::terminal::has_keys(app);
+    let key = if esc {
+        Some("Esc")
+    } else if click {
+        Some("click")
     } else {
-        "  (Esc)".to_string()
+        None
+    };
+    let suffix = if more > 0 {
+        let key = key.map_or_else(String::new, |k| format!(" · {k}"));
+        format!("  (+{more} more{key})")
+    } else if let Some(k) = key.filter(|_| n.level != NoticeLevel::Info) {
+        format!("  ({k})")
+    } else {
+        String::new()
     };
     Some(format!("{}{suffix}", n.text))
 }
@@ -170,7 +179,7 @@ fn width_of(s: &str) -> usize {
 }
 
 /// Keeps the end of `s` (the file name) within `room` cells, marking the cut with `…`.
-fn shorten_left(s: &str, room: usize) -> String {
+pub(crate) fn shorten_left(s: &str, room: usize) -> String {
     if Span::raw(s).width() <= room {
         return s.to_string();
     }

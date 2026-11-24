@@ -21,17 +21,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     term::fit(app, grid_area);
     term::snapshot_active(app);
     let focused = term::has_keys(app);
-    let hint = if focused {
-        format!(
-            "{} editor · {} hide ",
-            first_key(app, "focus.editor"),
-            first_key(app, "terminal.toggle")
-        )
-    } else {
-        format!("{} focus ", first_key(app, "terminal.toggle"))
-    };
+    let bar = tab_bar(app, area.width);
     let buf = frame.buffer_mut();
-    render_tab_bar(buf, Rect { height: 1, ..area }, &app.terminal, &hint, theme);
+    render_tab_bar(buf, Rect { height: 1, ..area }, &app.terminal, &bar, theme);
     if grid_area.height == 0 {
         return;
     }
@@ -55,34 +47,188 @@ fn width_of(s: &str) -> usize {
     Span::raw(s).width()
 }
 
-fn render_tab_bar(buf: &mut Buffer, row: Rect, panel: &TerminalPanel, hint: &str, theme: &Theme) {
+/// What the panel's key hint says, in the state the panel is in: hiding is promised only where
+/// the toggle key really reaches vr-ide from a focused terminal (D214).
+fn hint(app: &App) -> String {
+    if !term::has_keys(app) {
+        format!("{} focus ", first_key(app, "terminal.toggle"))
+    } else if term::hide_key_works(app) {
+        format!(
+            "{} editor · {} hide ",
+            first_key(app, "focus.editor"),
+            first_key(app, "terminal.toggle")
+        )
+    } else {
+        // terminal_pass_nul in a legacy terminal: ctrl+` reaches the program as NUL.
+        format!("{} editor ", first_key(app, "focus.editor"))
+    }
+}
+
+/// One drawn tab of the bar: which terminal, its label and where it sits (offset from the
+/// bar's left edge, in cells).
+pub struct BarTab {
+    pub index: usize,
+    pub label: String,
+    pub x: u16,
+    pub width: u16,
+}
+
+/// The tab bar laid out for a width: the tabs drawn, a `+N` marker for those left out, and the
+/// hint when it fits. Rendering and the mouse hit test both use it.
+pub struct TabBar {
+    pub tabs: Vec<BarTab>,
+    pub more: Option<String>,
+    pub hint: Option<String>,
+}
+
+/// A label never gets narrower than this while another layout is possible (" 3 …/alpha ").
+const MIN_LABEL: usize = 12;
+/// A title alone never takes more than this, so one long title does not fill the bar.
+const TITLE_MAX: usize = 32;
+
+/// " 1 bash ", " 2 htop [0] " (exited with code 0); the title is cut keeping its end (the
+/// directory of `user@host: dir`) so the label is at most `cap` cells wide.
+fn tab_label(n: usize, title: &str, exit: &str, cap: usize) -> String {
+    let fixed = width_of(&format!(" {n} {exit} "));
+    let room = cap.saturating_sub(fixed).min(TITLE_MAX);
+    let title = crate::ui::status_bar::shorten_left(title, room);
+    format!(" {n} {title}{exit} ")
+}
+
+/// Labels for tabs `range` within `avail` cells, all cut to one common cap (the widest that
+/// fits); `None` when that cap would be under [`MIN_LABEL`].
+fn fit_labels(
+    items: &[(String, String)],
+    range: std::ops::Range<usize>,
+    avail: usize,
+) -> Option<Vec<String>> {
+    let natural = |i: usize, cap: usize| {
+        let (title, exit) = &items[i];
+        tab_label(i + 1, title, exit, cap)
+    };
+    let widest = range
+        .clone()
+        .map(|i| width_of(&natural(i, usize::MAX)))
+        .max()
+        .unwrap_or(0);
+    let mut cap = widest;
+    loop {
+        let labels: Vec<String> = range.clone().map(|i| natural(i, cap)).collect();
+        if labels.iter().map(|l| width_of(l)).sum::<usize>() <= avail {
+            return Some(labels);
+        }
+        if cap <= MIN_LABEL {
+            return None;
+        }
+        cap -= 1;
+    }
+}
+
+pub fn tab_bar(app: &App, width: u16) -> TabBar {
+    let panel = &app.terminal;
+    let items: Vec<(String, String)> = panel
+        .tabs
+        .iter()
+        .map(|t| {
+            let exit = match t.status() {
+                TermStatus::Exited(code) => format!(" [{code}]"),
+                TermStatus::Running => String::new(),
+            };
+            (t.title(), exit)
+        })
+        .collect();
+    let n = items.len();
+    let width = usize::from(width);
+    let active = panel.active.min(n.saturating_sub(1));
+    let hint = hint(app);
+    let build = |range: std::ops::Range<usize>,
+                 labels: Vec<String>,
+                 more: Option<String>,
+                 hint: Option<String>| {
+        let mut x = 0u16;
+        let tabs = range
+            .zip(labels)
+            .map(|(index, label)| {
+                let w = width_of(&label) as u16;
+                let t = BarTab {
+                    index,
+                    label,
+                    x,
+                    width: w,
+                };
+                x += w;
+                t
+            })
+            .collect();
+        TabBar { tabs, more, hint }
+    };
+    // Detail gives way in this order: long titles (cut keeping the end), the hint, then tabs
+    // other than the active one (behind a `+N` marker), then the hint again.
+    let avail_with =
+        |hint: &Option<String>| width.saturating_sub(hint.as_ref().map_or(0, |h| width_of(h) + 1));
+    for hint in [Some(hint.clone()), None] {
+        if let Some(labels) = fit_labels(&items, 0..n, avail_with(&hint)) {
+            return build(0..n, labels, None, hint);
+        }
+    }
+    for hint in [Some(hint), None] {
+        let avail = avail_with(&hint);
+        for k in (1..n).rev() {
+            let more = format!(" +{} ", n - k);
+            let Some(room) = avail.checked_sub(width_of(&more)) else {
+                continue;
+            };
+            let start = (active + 1).saturating_sub(k).min(n - k);
+            if let Some(labels) = fit_labels(&items, start..start + k, room) {
+                return build(start..start + k, labels, Some(more), hint);
+            }
+        }
+    }
+    // Narrower than one short label: the active tab alone, cut by the bar's edge.
+    let labels = items
+        .get(active)
+        .map(|(title, exit)| vec![tab_label(active + 1, title, exit, width)])
+        .unwrap_or_default();
+    build(active..active + labels.len(), labels, None, None)
+}
+
+fn render_tab_bar(buf: &mut Buffer, row: Rect, panel: &TerminalPanel, bar: &TabBar, theme: &Theme) {
     buf.set_style(row, theme.tab_bar);
     let right = row.x + row.width;
     let mut x = row.x;
-    for (i, label) in panel.labels().iter().enumerate() {
+    for t in &bar.tabs {
+        x = row.x + t.x;
         if x >= right {
             break;
         }
-        let style = if i == panel.active {
+        let style = if t.index == panel.active {
             theme.tab_active
         } else {
             theme.tab_inactive
         };
         let exited = panel
             .tabs
-            .get(i)
+            .get(t.index)
             .is_some_and(|t| matches!(t.status(), TermStatus::Exited(c) if c != 0));
         let style = if exited {
             style.patch(theme.tab_warning)
         } else {
             style
         };
-        let (nx, _) = buf.set_stringn(x, row.y, label, usize::from(right - x), style);
+        let (nx, _) = buf.set_stringn(x, row.y, &t.label, usize::from(right - x), style);
         x = nx;
     }
-    let hw = width_of(hint) as u16;
-    if x + 1 + hw <= right {
-        buf.set_stringn(right - hw, row.y, hint, usize::from(hw), theme.dim);
+    if let Some(more) = &bar.more
+        && x < right
+    {
+        let (nx, _) = buf.set_stringn(x, row.y, more, usize::from(right - x), theme.dim);
+        x = nx;
+    }
+    if let Some(hint) = &bar.hint {
+        let hw = width_of(hint) as u16;
+        if x + 1 + hw <= right {
+            buf.set_stringn(right - hw, row.y, hint, usize::from(hw), theme.dim);
+        }
     }
 }
 
@@ -116,7 +262,9 @@ fn render_grid(
             }
             // The spacer of a wide character is covered by it; a wide character that would
             // stick out of the panel is drawn as a blank.
-            let blank = cell.flags.wide_spacer || cell.ch.is_empty();
+            // Concealed text (SGR 8) is not drawn at all: with the terminal's own default
+            // colours (dark / light) "fg = bg" cannot hide it.
+            let blank = cell.flags.wide_spacer || cell.ch.is_empty() || cell.flags.hidden;
             let symbol = if blank || (cell.flags.wide && c + 1 >= w) {
                 " "
             } else {
@@ -136,7 +284,13 @@ fn render_grid(
         let y = area.y + area.height - 1;
         let row = Rect::new(area.x, y, area.width, 1);
         buf.set_style(row, theme.popup);
-        let text = format!(" [process exited {code}] — Enter to restart, {close_key} to close");
+        // Both actions stay visible: the wording shortens before anything is cut.
+        let forms = [
+            format!(" [process exited {code}] — Enter to restart, {close_key} to close"),
+            format!(" exited {code} · Enter restart · {close_key} close"),
+            format!(" exited {code} · Enter · {close_key}"),
+        ];
+        let text = forms.iter().find(|t| width_of(t) <= w).unwrap_or(&forms[2]);
         buf.set_stringn(area.x, y, text, w, theme.popup);
         return None;
     }
@@ -161,22 +315,32 @@ pub fn render_status(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         TermStatus::Running => String::new(),
         TermStatus::Exited(code) => format!(" [exited {code}]"),
     };
-    let right = format!(" {}/{} · {cols}×{rows} ", p.active + 1, p.tabs.len());
-    let left = format!(" {}{state}", tab.title());
+    let (i, n) = (p.active + 1, p.tabs.len());
+    let rights = [format!(" {i}/{n} · {cols}×{rows} "), format!(" {i}/{n} ")];
     let room = width - bw;
-    let rw = width_of(&right);
     let x = area.x + bw as u16;
-    if width_of(&left) + rw <= room {
-        buf.set_stringn(x, area.y, &left, room, theme.status);
+    // Which terminal of how many always shows (the size first gives way); the title is cut
+    // keeping its end, the directory of `user@host: dir`.
+    let title_min = 6;
+    let right = rights
+        .iter()
+        .find(|r| width_of(r) + title_min <= room)
+        .or_else(|| rights.iter().find(|r| width_of(r) <= room));
+    let rw = right.map_or(0, |r| width_of(r));
+    let title = format!("{}{state}", tab.title());
+    let left = format!(
+        " {}",
+        crate::ui::status_bar::shorten_left(&title, (room - rw).saturating_sub(1))
+    );
+    buf.set_stringn(x, area.y, &left, room - rw, theme.status);
+    if let Some(right) = right {
         buf.set_stringn(
             area.x + (width - rw) as u16,
             area.y,
-            &right,
+            right,
             rw,
             theme.status,
         );
-    } else {
-        buf.set_stringn(x, area.y, &left, room, theme.status);
     }
 }
 

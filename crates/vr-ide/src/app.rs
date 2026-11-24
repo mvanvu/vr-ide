@@ -1051,6 +1051,14 @@ impl App {
         if commands::terminal::handle_mouse(self, &ev) {
             return;
         }
+        // A click on the notice dismisses it without moving the focus: a focused terminal
+        // keeps Esc for its program.
+        if inside(self.layout.notice) {
+            if matches!(ev.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.notices.pop_front();
+            }
+            return;
+        }
         let l = self.layout;
         if inside(l.explorer) {
             commands::explorer::handle_mouse(self, &ev);

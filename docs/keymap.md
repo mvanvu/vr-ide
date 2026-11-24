@@ -28,7 +28,7 @@ vr-ide ships VS Code's default Linux keybindings. The list below comes from
 | `search.next_result` | Search: Next Result | `f4` |
 | `search.prev_result` | Search: Previous Result | `shift+f4` |
 | `focus.cycle` | Focus Next Part | `f6` |
-| `terminal.toggle` | Terminal: Toggle Terminal | ``ctrl+` `` (hidden: shows the terminal panel and focuses it, starting a terminal if none runs; shown and focused: hides it; shown elsewhere: focuses it). Without the kitty protocol the terminal sends ``ctrl+` `` as NUL, the same byte as `ctrl+space`; outside a focused terminal that byte toggles too |
+| `terminal.toggle` | Terminal: Toggle Terminal | ``ctrl+` `` (hidden: shows the terminal panel and focuses it, starting a terminal if none runs; shown and focused: hides it; shown elsewhere: focuses it). Without the kitty protocol the terminal sends ``ctrl+` `` as NUL, the same byte as `ctrl+space`; that byte toggles too, inside a focused terminal as well unless `terminal_pass_nul = true` (see `[terminal]`) |
 | `terminal.new` | Terminal: New Terminal | ``ctrl+shift+` `` (needs the kitty protocol; the palette otherwise) |
 
 ### `[editor]`
@@ -91,8 +91,19 @@ No keymap entries; the palette's keys are built in (see below).
 
 A focused terminal receives every key except the ones in `[terminal]` (D8): global keys such as
 `ctrl+s`, `ctrl+w` or `ctrl+p` go to the program. `alt+q` gives the keys back to the editor and is
-not a VS Code key. Without the kitty protocol ``ctrl+` `` arrives as NUL and goes to the program
-(it is `ctrl+space` there); use `alt+q`. Add your own keys to `[terminal]` to take them from programs.
+not a VS Code key. Add your own keys to `[terminal]` to take them from programs.
+
+What ``ctrl+` `` does in a focused terminal depends on the keyboard protocol:
+
+| Terminal | ``ctrl+` `` in a focused terminal | `ctrl+space` in a focused terminal |
+|---|---|---|
+| kitty protocol | hides the panel | goes to the program |
+| legacy (default) | arrives as NUL and hides the panel | sends the same NUL: hides the panel |
+| legacy, `terminal_pass_nul = true` | arrives as NUL and goes to the program; leave with `alt+q`, hide by closing the terminals | goes to the program |
+
+A `ctrl+space` binding you add to `[terminal]` wins over the NUL rule. From the editor, explorer,
+find bar and search panel NUL always stands for ``ctrl+` `` (shown and unfocused: focuses the
+panel), as does the palette's Toggle Terminal.
 
 ### Commands without a default key (palette only)
 

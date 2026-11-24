@@ -492,6 +492,17 @@ fn terminal_height_percent_is_bounded() {
     }
 }
 
+/// D214: a legacy terminal's NUL toggles the panel from inside a terminal unless the user asks
+/// for it to reach the program.
+#[test]
+fn terminal_pass_nul_defaults_to_off() {
+    assert!(!Settings::load(None).0.terminal_pass_nul);
+    let (_d, path) = write_user("terminal_pass_nul = true\n");
+    let (s, w) = Settings::load(Some(&path));
+    assert!(w.is_empty(), "{w:?}");
+    assert!(s.terminal_pass_nul);
+}
+
 #[test]
 fn unquoted_keys_with_quote_or_brace_parse() {
     let (_d, path) = write_user(
