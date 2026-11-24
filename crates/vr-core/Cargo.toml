@@ -13,6 +13,10 @@ notify-debouncer-full.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[features]
+# Test helpers for crates that race their write paths against a concurrent writer.
+test-util = []
+
 [dev-dependencies]
 tempfile.workspace = true
 similar.workspace = true
