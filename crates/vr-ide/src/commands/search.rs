@@ -266,6 +266,16 @@ impl std::fmt::Display for BeingReplaced {
 
 impl std::error::Error for BeingReplaced {}
 
+/// Shows a failed open: the temporary replace refusal is a warning (it passes by itself),
+/// anything else an error.
+pub fn report_open_error(app: &mut App, e: &anyhow::Error) {
+    if e.is::<BeingReplaced>() {
+        app.warn(e.to_string());
+    } else {
+        app.error(e.to_string());
+    }
+}
+
 /// Before a tab opens on `path`: while a replace runs, the worker is told to leave the file
 /// alone; refused (with the message) while the worker is writing that very file. Returns
 /// the gate and canonical path to pass to [`ReplaceGate::open_failed`] if the open fails.
@@ -284,7 +294,7 @@ pub fn before_tab_opens(app: &App, path: &Path) -> Result<Option<(ReplaceGate, P
         Some(true) => Ok(Some((job.gate.clone(), c))),
         Some(false) => Ok(None),
         None => Err(format!(
-            "{} is being written by Replace in Project right now; open it again in a moment",
+            "{} is being written by Replace in Project right now; try again in a moment",
             app.display_path(path)
         )),
     }
@@ -634,11 +644,7 @@ fn open_match(app: &mut App, gi: usize, mi: usize) -> bool {
         return false;
     };
     if let Err(e) = app.open_path(&m.path) {
-        if e.is::<BeingReplaced>() {
-            app.warn(e.to_string());
-        } else {
-            app.error(e.to_string());
-        }
+        report_open_error(app, &e);
         return false;
     }
     if let Some(doc) = app.active_doc_mut() {
@@ -1993,6 +1999,45 @@ mod gate_tests {
         let missing = dir.path().join("gone.txt");
         assert!(app.open_path(&missing).is_err());
         assert!(gate.begin(&missing));
+    }
+
+    /// FR-8: the temporary refusal is one warning on every open path (explorer, search
+    /// panel) and its wording fits saving too.
+    #[test]
+    fn being_replaced_refusal_is_a_warning_on_every_path() {
+        use crate::app::NoticeLevel;
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.txt");
+        std::fs::write(&f, "foo\n").unwrap();
+        let (mut app, _) = crate::app_tests::test_app(dir.path());
+        app.explorer.visible = true;
+        crate::commands::explorer::ensure_loaded(&mut app);
+        let (_tx, rx) = mpsc::channel();
+        let job = Job::new(JobKind::Apply, 1, Arc::new(AtomicBool::new(false)), rx);
+        let gate = job.gate.clone();
+        app.search.preview = Some(Preview {
+            query: app.search.query(),
+            replacement: String::new(),
+            files: Vec::new(),
+            applied: false,
+            selected: 0,
+            top: 0,
+            job: Some(job),
+            in_tabs: 0,
+        });
+        assert!(gate.begin(&std::fs::canonicalize(&f).unwrap()));
+        let i = app.explorer.rows.iter().position(|r| r.path == f).unwrap();
+        app.explorer.cursor = i;
+        app.focus = crate::app::Focus::Explorer;
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let n = app.notices.back().expect("a notice");
+        assert!(n.text.contains("being written"), "{}", n.text);
+        assert_eq!(n.level, NoticeLevel::Warning, "{}", n.text);
+        assert!(!n.text.contains("open it again"), "{}", n.text);
+        assert!(app.docs.is_empty());
     }
 }
 

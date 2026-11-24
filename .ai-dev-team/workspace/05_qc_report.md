@@ -723,3 +723,28 @@ first_frame_ms = 26 (target < 100), max_rss_mb = 6 (target < 60).
 | BASE-14/15 | pass | background tasks only, own pty children killed by the harness |
 | BASE-17 | pass | fixtures only under qa-artifacts/resignoff; no data in shared stores |
 | Defects | none | |
+
+## QC FR-8
+Fresh release build (run-heavy, binary mtime 19:35:43 after build start 19:35:14). Script: qa-artifacts/FR-8/fr8.py (flows keepdel, dotsave, openrace_gt, openrace_ex), engine: pty harness on the release binary.
+
+| Flow | Result | Evidence |
+|---|---|---|
+| 1 Keep mine recreates a file deleted while the prompt is open | pass | type ZZ, external write, Esc, ctrl+s opens the overwrite prompt, file deleted (row drops, "(deleted)"), Keep mine #1 refused ("changed again on disk; nothing was replaced"), Keep mine #2: row a.txt back in the explorer, disk = 'ZZalpha fn\n' |
+| 2a dotfile save, hidden off | pass | two saves of .gitignore: disk has both edits, row stays hidden, no notice or flicker; re-read count covered by explorer_tests::saving_a_filtered_file_does_not_re_read_the_folder |
+| 2b toggle hidden | pass | "hidden files shown": .gitignore row appears |
+| 3a/3b open of a file mid-write (explorer, go-to-file) | not reproducible live | 4 attempts each with 40 files x 25 MB and reverse-order open bursts: the replace finished before the UI processed the opens (screen showed "Replaced 10002 matches in 42 files" while Go to File was still open); the per-file write window is milliseconds. Covered by commands::search::gate_tests::being_replaced_refusal_is_a_warning_on_every_path (passes: Warning severity on explorer, go-to-file and search panel paths; wording "try again in a moment") |
+
+Tests: `cargo test -p vr-ide --lib -- explorer_tests:: dialog_tests:: commands::search::` 70 passed / 0 failed; fmt check OK; clippy --workspace --all-targets -D warnings exit 0.
+AC-3 (save, recreate), AC-7 (keep mine prompt behaviour unchanged), AC-8 (explorer rows), AC-12 (replace tests incl. concurrent-writer tests in dialog_tests) show no regression.
+Fixtures deleted after the walk (FR-8 dir 360K).
+
+## Rule check FR-8
+| Rule | Result | Evidence |
+|---|---|---|
+| FR-8 (1) keep mine row + bytes | pass | flow 1 |
+| FR-8 (2) dotfile save, no re-read, toggle shows | pass | flows 2a/2b + unit test |
+| FR-8 (3) warning notice "try again in a moment" on all open paths | pass (unit) / live not reachable | gate_tests; live race window too short, see above |
+| AC-3, AC-7, AC-8, AC-12 | pass | flows + 70 tests |
+| BASE-25 guard | pass | fmt OK, clippy 0 |
+| BASE-14/15/17 | pass | no background tasks, fixtures under qa-artifacts/FR-8 removed |
+| Defects | none | |

@@ -1127,3 +1127,34 @@ fn refused_choice_with_an_error_reprompts_with_it() {
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2\n");
 }
+
+/// FR-8: Keep mine that recreates a file deleted while the prompt was open brings its
+/// explorer row back although the watcher drops the event of that (own) write.
+#[test]
+fn keep_mine_recreating_a_deleted_file_brings_its_row_back() {
+    let (d, path, mut app, _) = app_with_file("old\n");
+    app.explorer.visible = true;
+    crate::commands::explorer::ensure_loaded(&mut app);
+    app.start_watcher();
+    app.watch_root();
+    let listed = |app: &App| app.explorer.rows.iter().any(|r| r.path == path);
+    assert!(listed(&app));
+    typ(&mut app, "mine ");
+    std::fs::write(&path, "agent v2\n").unwrap();
+    app.handle_key(ctrl('s'));
+    assert!(is_external(&app, true), "notices: {}", notices(&app));
+    std::fs::remove_file(&path).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while listed(&app) {
+        assert!(std::time::Instant::now() < deadline, "row never dropped");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.drain_fs_events();
+    }
+    // The first choice is refused (the version changed), the second recreates the file.
+    choose(&mut app, "Keep mine");
+    assert!(is_external(&app, true), "notices: {}", notices(&app));
+    choose(&mut app, "Keep mine");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine old\n");
+    assert!(listed(&app), "no row after Keep mine recreated the file");
+    drop(d);
+}

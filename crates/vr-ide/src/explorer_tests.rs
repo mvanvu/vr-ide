@@ -1578,3 +1578,32 @@ fn rename_onto_an_existing_open_file_says_it_exists() {
         "{err}"
     );
 }
+
+/// FR-8: saving a file the tree filters out (hidden, gitignored) re-reads nothing: the missing
+/// row is not stale, and a save runs on the UI thread.
+#[test]
+fn saving_a_filtered_file_does_not_re_read_the_folder() {
+    let (d, mut app) = project();
+    let r = d.path().to_path_buf();
+    fs::write(r.join(".env"), "A=1\n").unwrap();
+    app.run_command("explorer.toggle_hidden", crate::commands::CmdArgs::None);
+    assert!(!app.explorer.tree.show_hidden());
+    app.open_path(Path::new(".env")).unwrap();
+    app.focus = Focus::Editor;
+    assert!(!rows(&app).contains(&"  .env".to_string()));
+    let base = explorer::reload_count();
+    for _ in 0..3 {
+        app.run_command("file.save", crate::commands::CmdArgs::None);
+    }
+    assert_eq!(explorer::reload_count() - base, 1, "one re-read, then none");
+    // Showing hidden files lists it again; a later save still costs nothing.
+    app.run_command("explorer.toggle_hidden", crate::commands::CmdArgs::None);
+    assert!(
+        rows(&app).contains(&"  .env".to_string()),
+        "{:?}",
+        rows(&app)
+    );
+    let base = explorer::reload_count();
+    app.run_command("file.save", crate::commands::CmdArgs::None);
+    assert_eq!(explorer::reload_count(), base);
+}

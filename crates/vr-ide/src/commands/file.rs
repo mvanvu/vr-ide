@@ -604,7 +604,12 @@ fn keep_mine(app: &mut App, i: usize, seen: Option<&DiskVersion>) {
         None => doc.save_overwrite_seen(seen),
     };
     match result {
-        Ok(saved) => hard_link_notice(app, &name, saved),
+        Ok(saved) => {
+            if let Some(p) = app.docs[i].path.clone() {
+                super::explorer::note_written(app, &p);
+            }
+            hard_link_notice(app, &name, saved);
+        }
         Err(DocError::ChangedOnDisk) => {
             let msg = format!("{name} changed again on disk; nothing was replaced");
             app.warn(msg.clone());

@@ -142,6 +142,9 @@ pub struct Explorer {
     /// Panel area in the last frame (mouse hit tests, paging).
     pub area: Rect,
     loaded: bool,
+    /// Files a save wrote that their folder listing leaves out (hidden or gitignored): not
+    /// stale, so saving them again re-reads nothing. A re-read of the folder forgets them.
+    filtered: HashSet<PathBuf>,
     /// Expanded folders to re-read on the next flush (watcher events).
     dirty: HashSet<PathBuf>,
     /// Leftover temp files already named in a notice.
@@ -170,6 +173,7 @@ impl Explorer {
             cut: false,
             area: Rect::default(),
             loaded: false,
+            filtered: HashSet::new(),
             dirty: HashSet::new(),
             reported_leftovers: HashSet::new(),
             watched: HashSet::new(),
@@ -215,6 +219,9 @@ impl Explorer {
         if !self.expanded.contains(dir) {
             return;
         }
+        #[cfg(test)]
+        RELOADS.with(|c| c.set(c.get() + 1));
+        self.filtered.retain(|p| p.parent() != Some(dir));
         match self.tree.children(dir) {
             Ok(nodes) => {
                 self.children.insert(dir.to_path_buf(), nodes);
@@ -373,7 +380,7 @@ fn activate(app: &mut App, to_editor: bool) {
                         app.focus = Focus::Editor;
                     }
                 }
-                Err(e) => app.error(e.to_string()),
+                Err(e) => super::search::report_open_error(app, &e),
             }
         }
         _ => app.warn(format!(
@@ -575,6 +582,17 @@ pub fn flush(app: &mut App) {
     app.dirty = true;
 }
 
+#[cfg(test)]
+thread_local! {
+    static RELOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Folder re-reads done by this thread so far (tests count them).
+#[cfg(test)]
+pub fn reload_count() -> usize {
+    RELOADS.with(std::cell::Cell::get)
+}
+
 /// A save of ours wrote `path`. The watcher drops events of our own writes (folder watches
 /// included), so a file a save created (Save As to a new name, a save recreating a file
 /// deleted on disk) would never get its row: the shown folder holding it is re-read when
@@ -591,8 +609,15 @@ pub fn note_written(app: &mut App, path: &Path) {
         .children
         .get(dir)
         .is_some_and(|nodes| nodes.iter().any(|n| n.path == path));
-    if !listed {
+    if !listed && !ex.filtered.contains(path) {
         ex.reload(dir);
+        let now_listed = ex
+            .children
+            .get(dir)
+            .is_some_and(|nodes| nodes.iter().any(|n| n.path == path));
+        if !now_listed {
+            ex.filtered.insert(path.to_path_buf());
+        }
         ex.rebuild();
         app.dirty = true;
     }
@@ -697,7 +722,7 @@ pub fn answer_new(app: &mut App, widget: DialogWidget, dir: PathBuf, folder: boo
     } else {
         match app.open_path(&path) {
             Ok(()) => app.focus = Focus::Editor,
-            Err(e) => app.error(e.to_string()),
+            Err(e) => super::search::report_open_error(app, &e),
         }
     }
 }

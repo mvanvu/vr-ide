@@ -175,7 +175,7 @@ pub fn accept(app: &mut App) {
     match item.path {
         Some(rel) => match app.open_path(&rel) {
             Ok(()) => app.focus = Focus::Editor,
-            Err(e) => app.error(e.to_string()),
+            Err(e) => super::search::report_open_error(app, &e),
         },
         None => {
             app.run_command(item.name, CmdArgs::None);
