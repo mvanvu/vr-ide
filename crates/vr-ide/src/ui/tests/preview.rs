@@ -138,6 +138,15 @@ fn scenes() -> Vec<Scene> {
             }),
         ),
         (
+            "Edit mode (EDIT badge; the others show READ)",
+            Box::new(|| {
+                let (d, _p, mut app, _) = app_with_file("fn main() {\n    let x = 1;\n}\n");
+                app.focus = Focus::Editor;
+                app.enter_edit_mode();
+                (vec![d], app)
+            }),
+        ),
+        (
             "Explorer focused (focus separator)",
             Box::new(|| {
                 let (d, app) = explorer_app();
@@ -199,7 +208,7 @@ fn page(title: &str, theme: &Theme) -> String {
         "<!doctype html><meta charset=\"utf-8\"><title>vr-ide theme preview: {title}</title>\
 <style>body{{background:#111;color:#ccc;font:14px sans-serif;margin:16px}}\
 h2{{font-size:15px;margin:24px 0 4px}}\
-.g{{font:14px/1.2 'DejaVu Sans Mono',Menlo,monospace;margin:0 0 8px;display:block;overflow-x:auto;width:max-content;max-width:100%}}\
+.g{{font:14px/1.15 'DejaVu Sans Mono',Menlo,monospace;margin:0 0 8px;display:block;overflow-x:auto;width:max-content;max-width:100%}}\
 .g span{{white-space:pre}}</style><h1>vr-ide theme: {title}</h1>"
     );
     for (name, build) in scenes() {
@@ -237,6 +246,8 @@ fn token_table(theme: &Theme) -> String {
         ("error", theme.error.fg, None),
         ("matched", theme.matched.fg, None),
         ("gutter_active", theme.gutter_active.fg, None),
+        ("mode_read bg", theme.mode_read.bg, None),
+        ("mode_edit bg", theme.mode_edit.bg, None),
         ("bar bg", theme.tab_bar.bg, None),
         ("popup bg", theme.popup.bg, None),
         ("selection bg", theme.selection.bg, None),
@@ -265,7 +276,7 @@ fn compare_page(themes: &[(String, Theme)]) -> String {
 <style>body{background:#111;color:#ccc;font:14px sans-serif;margin:16px}\
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,980px),1fr));gap:24px}\
 h2{font-size:16px;margin:0 0 6px}\
-.g{font:14px/1.2 'DejaVu Sans Mono',Menlo,monospace;margin:0 0 8px;display:block;overflow-x:auto;width:max-content;max-width:100%}\
+.g{font:14px/1.15 'DejaVu Sans Mono',Menlo,monospace;margin:0 0 8px;display:block;overflow-x:auto;width:max-content;max-width:100%}\
 .g span{white-space:pre}\
 table{border-collapse:collapse;font-size:12px}td{padding:1px 8px}\
 i{display:inline-block;width:18px;height:12px;border:1px solid #666}</style>\
@@ -293,15 +304,18 @@ fn write_theme_previews() {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();
-    let mut themes = vec![(
-        "dracula (current)".to_string(),
-        "dracula",
-        Theme::dracula_with(ColorDepth::TrueColor),
-    )];
-    for (file, label) in crate::theme::candidates::NAMES {
-        let theme = crate::theme::candidates::by_file_name(file, ColorDepth::TrueColor);
-        themes.push((label.to_string(), file, theme));
-    }
+    let themes = vec![
+        (
+            "synthwave (default)".to_string(),
+            "synthwave",
+            Theme::synthwave_with(ColorDepth::TrueColor),
+        ),
+        (
+            "dracula".to_string(),
+            "dracula",
+            Theme::dracula_with(ColorDepth::TrueColor),
+        ),
+    ];
     for (label, file, theme) in &themes {
         std::fs::write(format!("{dir}/{file}.html"), page(label, theme)).unwrap();
     }
@@ -351,9 +365,9 @@ fn focused_panel_separator_differs() {
 }
 
 #[test]
-fn default_theme_is_dracula() {
+fn default_theme_is_synthwave() {
     let (app, _) = test_app(std::path::Path::new("/tmp"));
-    assert_eq!(app.settings.theme, "dracula");
+    assert_eq!(app.settings.theme, "synthwave");
 }
 
 fn scene(name: &str) -> (Vec<tempfile::TempDir>, App) {
@@ -461,5 +475,5 @@ fn unknown_theme_name_warns_and_names_the_fallback() {
     app.report_config(vec![]);
     let text = &app.notices.back().unwrap().text;
     assert!(text.contains("\"draculaa\""), "{text}");
-    assert!(text.contains("using dracula"), "{text}");
+    assert!(text.contains("using synthwave"), "{text}");
 }
