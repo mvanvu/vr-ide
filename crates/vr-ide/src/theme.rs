@@ -4,6 +4,9 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+#[cfg(test)]
+pub(crate) mod candidates;
+
 /// The theme used when settings name none or an unknown one.
 pub const DEFAULT_THEME: &str = "dracula";
 
@@ -552,6 +555,46 @@ mod tests {
                     "{depth:?} {name}: {f:?} on {b:?} is {:.2}",
                     ratio(f, b)
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn candidate_contrast_meets_the_floor_in_both_depths() {
+        for (file, _) in candidates::NAMES {
+            for depth in BOTH {
+                let t = candidates::by_file_name(file, depth);
+                for (name, f, b, floor) in pairs(&t) {
+                    assert!(
+                        ratio(f, b) >= floor,
+                        "{file} {depth:?} {name}: {f:?} on {b:?} is {:.2}",
+                        ratio(f, b)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn candidate_surfaces_and_roles_stay_distinguishable_in_both_depths() {
+        for (file, _) in candidates::NAMES {
+            for depth in BOTH {
+                let t = candidates::by_file_name(file, depth);
+                let bg = t.text.bg.unwrap();
+                for (name, s) in [
+                    ("bar", t.tab_bar.bg.unwrap()),
+                    ("popup", t.popup.bg.unwrap()),
+                    ("selection", t.selection.bg.unwrap()),
+                    ("list_selected", t.list_selected.bg.unwrap()),
+                ] {
+                    assert!(ratio(s, bg) >= 1.1, "{file} {depth:?} {name} vs bg");
+                }
+                assert!(ratio(t.popup.bg.unwrap(), t.tab_bar.bg.unwrap()) >= 1.1);
+                assert!(ratio(t.input.bg.unwrap(), t.popup.bg.unwrap()) >= 1.1);
+                assert_ne!(t.selection.bg, t.list_selected.bg);
+                assert_ne!(t.info.fg, t.warning.fg);
+                assert_ne!(t.warning.fg, t.error.fg);
+                assert_ne!(t.focus.fg, t.dim.fg);
             }
         }
     }

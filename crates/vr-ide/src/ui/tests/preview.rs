@@ -218,19 +218,95 @@ h2{{font-size:15px;margin:24px 0 4px}}\
     html
 }
 
+fn rgb_hex(c: Color) -> String {
+    css(c, false)
+}
+
+/// Role, colour and its contrast on the editor background, for the comparison page.
+fn token_table(theme: &Theme) -> String {
+    let bg = theme.text.bg.unwrap();
+    let rows = [
+        ("text", theme.text.fg, theme.text.bg),
+        ("gutter", theme.gutter.fg, None),
+        ("dim", theme.dim.fg, None),
+        ("tab_active", theme.tab_active.fg, None),
+        ("focus", theme.focus.fg, None),
+        ("popup_border", theme.popup_border.fg, None),
+        ("info", theme.info.fg, None),
+        ("warning", theme.warning.fg, None),
+        ("error", theme.error.fg, None),
+        ("matched", theme.matched.fg, None),
+        ("gutter_active", theme.gutter_active.fg, None),
+        ("bar bg", theme.tab_bar.bg, None),
+        ("popup bg", theme.popup.bg, None),
+        ("selection bg", theme.selection.bg, None),
+        ("list_selected bg", theme.list_selected.bg, None),
+    ];
+    let mut out = String::from("<table>");
+    for (role, c, _) in rows {
+        let c = c.unwrap();
+        let ratio = crate::theme::contrast(
+            crate::theme::to_rgb(c).unwrap(),
+            crate::theme::to_rgb(bg).unwrap(),
+        );
+        let _ = write!(
+            out,
+            "<tr><td><i style=\"background:{0}\"></i></td><td>{role}</td><td>{0}</td><td>{ratio:.1}:1</td></tr>",
+            rgb_hex(c)
+        );
+    }
+    out.push_str("</table>");
+    out
+}
+
+fn compare_page(themes: &[(String, Theme)]) -> String {
+    let mut html = String::from(
+        "<!doctype html><meta charset=\"utf-8\"><title>vr-ide theme options</title>\
+<style>body{background:#111;color:#ccc;font:14px sans-serif;margin:16px}\
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,980px),1fr));gap:24px}\
+h2{font-size:16px;margin:0 0 6px}\
+.g{font:14px/1.2 'DejaVu Sans Mono',Menlo,monospace;margin:0 0 8px;display:block;overflow-x:auto;width:max-content;max-width:100%}\
+.g span{white-space:pre}\
+table{border-collapse:collapse;font-size:12px}td{padding:1px 8px}\
+i{display:inline-block;width:18px;height:12px;border:1px solid #666}</style>\
+<h1>vr-ide theme options (editor + explorer, 120x40)</h1><div class=\"grid\">",
+    );
+    let (_, build) = scenes().into_iter().next().unwrap();
+    for (name, theme) in themes {
+        let (_keep, mut app) = build();
+        let t = draw_with(&mut app, theme, 120, 40);
+        let _ = write!(
+            html,
+            "<section><h2>{}</h2>{}{}</section>",
+            esc(name),
+            grid_html(t.backend().buffer()),
+            token_table(theme)
+        );
+    }
+    html.push_str("</div>");
+    html
+}
+
 #[test]
 fn write_theme_previews() {
     let Ok(dir) = std::env::var("VR_PREVIEW_DIR") else {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();
-    let themes = [
-        ("dracula", Theme::dracula_with(ColorDepth::TrueColor)),
-        ("dark", Theme::dark()),
-    ];
-    for (name, theme) in &themes {
-        std::fs::write(format!("{dir}/{name}.html"), page(name, theme)).unwrap();
+    let mut themes = vec![(
+        "dracula (current)".to_string(),
+        "dracula",
+        Theme::dracula_with(ColorDepth::TrueColor),
+    )];
+    for (file, label) in crate::theme::candidates::NAMES {
+        let theme = crate::theme::candidates::by_file_name(file, ColorDepth::TrueColor);
+        themes.push((label.to_string(), file, theme));
     }
+    for (label, file, theme) in &themes {
+        std::fs::write(format!("{dir}/{file}.html"), page(label, theme)).unwrap();
+    }
+    let pairs: Vec<_> = themes.into_iter().map(|(l, _, t)| (l, t)).collect();
+    std::fs::write(format!("{dir}/compare.html"), compare_page(&pairs)).unwrap();
 }
 
 /// Every cell of every screen carries the theme background (no terminal-default holes).
