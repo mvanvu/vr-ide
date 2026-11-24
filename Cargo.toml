@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/vr-core", "crates/vr-config", "crates/vr-fs", "crates/vr-search", "crates/vr-ide"]
+members = ["crates/vr-core", "crates/vr-config", "crates/vr-fs", "crates/vr-search", "crates/vr-syntax", "crates/vr-ide"]
 
 [workspace.package]
 version = "0.1.0"
@@ -33,6 +33,26 @@ directories = "6.0.0"
 insta = "1.49.0"
 tempfile = "3.27.0"
 similar = "3.2.1"
+
+# Syntax highlighting (M4). One tree-sitter version; every grammar is ABI 13..=15 compatible with it.
+tree-sitter = "=0.27.2"
+tree-sitter-highlight = "=0.27.2"
+tree-sitter-language = "=0.1.9"
+cc = "=1.11.3"
+tree-sitter-php = "=0.25.2"
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-html = "=0.23.2"
+tree-sitter-css = "=0.25.0"
+tree-sitter-scss = "=1.0.0"
+tree-sitter-dart = "=0.3.0"
+tree-sitter-go = "=0.25.0"
+tree-sitter-python = "=0.25.0"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-json = "=0.24.8"
+tree-sitter-yaml = "=0.7.2"
+tree-sitter-toml-ng = "=0.7.0"
+tree-sitter-md = "=0.5.4"
 
 vr-core = { path = "crates/vr-core" }
 vr-config = { path = "crates/vr-config" }

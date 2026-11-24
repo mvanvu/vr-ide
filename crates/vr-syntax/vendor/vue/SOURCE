@@ -1,0 +1,4 @@
+Upstream: https://github.com/tree-sitter-grammars/tree-sitter-vue
+Commit: ce8011a414fdf8091f4e4071752efc376f4afb08
+Licence: MIT
+Copied: src/*.c, src/*.h, src/tree_sitter/, queries/, LICENSE (generated parser, unmodified)

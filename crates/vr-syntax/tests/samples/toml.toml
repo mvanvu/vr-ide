@@ -1,0 +1,8 @@
+# Editor settings.
+[editor]
+tab_width = 4
+font = "Inter"
+wrap = false
+
+[[languages]]
+name = "rust"
