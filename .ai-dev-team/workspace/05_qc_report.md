@@ -787,3 +787,182 @@ Defects: none.
 | BASE-14/15 | ok | one background task, ended by notification, nothing killed |
 | BASE-17 | ok | probes only in mktemp dirs, no shared DB/app |
 | Decisions D145, D149-D155 | ok | flows above |
+
+## QC M4-2 — highlighter engine (library) — QC_FAIL
+Engines: cargo test (debug + release), throwaway binary (Rust, depends on vr-syntax by path). No browser (library task). Logs in qa-artifacts/M4-2/qc/.
+
+### Commands and results
+- `cargo test -p vr-syntax -p vr-config` once, debug (debug-once.log): all green — vr-config 3+16+7, vr-syntax unit 18, grammars 23, highlight 20 passed / 3 ignored, registry 5.
+- Same suite 5x with 4 `timeout 900` busy loops (stress.sh, stress-1..5.log): runs 1-4 green; **run 5 FAILED**: `worker_never_blocks_the_caller_on_a_5mb_file` — `5 MB: initial parse landed after 11.2s`, assertion at tests/highlight.rs:383 `left: Disabled(Timeout { after: 10s }) right: Ready`. Unloaded debug parse is ~7.3 s, default parse_timeout 10 s, so under CPU load (4 loops + other agents' heavy jobs on the machine) the debug 5 MB parse crosses the timeout. Flaky under load (1/5); the test couples to debug-build speed vs the 10 s default.
+- Release ignored perf tests (perf-release.log), 3 passed, vs developer table:
+  | Case | QC initial | QC edit→spans avg/worst | dev avg/worst |
+  |---|---|---|---|
+  | 200 KB Rust | 79 ms | 14.4 / 24.6 ms | 10.4 / 16.8 |
+  | 200 KB HTML+script/style | 198 ms | 22.8 / 28.0 ms | 22.0 / 26.6 |
+  | 5 MB Rust | 1.61 s | 298 / 374 ms | 327 / 374 |
+  | 10 MB one-line JS | 4.69 s | 1.24 / 1.51 s | 1.24 / 1.53 |
+  spans() worst: 5.8 / 2.8 / 2.0 / 0.54 ms. Consistent with the developer's numbers.
+- Independent check (src/main.rs, independent.log, full-waiteach.log): 20 samples, each Ready, every language >= 3 distinct classes (min json 4, yaml 6, markdown/markdown_inline 5; others 7-11) — see table below. AC-13e and size limit: PASS (texts below).
+- 200 seeded random single-char edits per sample (LCG, insert/delete/replace, includes newline, quotes, `<`, `{`, `` ` ``, é, 中), fresh Highlighter on the final text compared at every 10th edit and at the end: 18 of 20 samples equal. **Mismatches in blade.blade.php and markdown.md**, reproducible and deterministic: with the check after every edit (`WAIT_EACH=1`), markdown.md differs from step 3 on, blade.blade.php from step 115; with checks every 10 edits markdown differs at steps 10-60 (and heals later), blade matched.
+  Example (blade, step 115, edit 30..31 delete, `DUMP=1 WAIT_EACH=1 ./target/release/qc-m4-2`): incremental spans lack `(10..32, Comment)` that the fresh parse has; text `é{{{-- Li#ts <the) … --}}\n…`. Markdown: 16 spans incremental vs 19 fresh at step 3 (full dump in full-waiteach.log). Status is Ready in both, so the stale/missing colour is silent. Developer's random-edit test passes for these languages because its snippet-based edits do not hit this case; AC-13b "colours correct for the changed region" fails for these.
+
+### Per-language class table (spans per class, sample file, Ready)
+blade.blade.php lang=blade ready=true spans=42 distinct=8 OK	 {"Attribute": 2, "Comment": 2, "Operator": 4, "Other": 4, "Property": 2, "Punctuation": 16, "String": 2, "Tag": 10}
+css.css lang=css ready=true spans=46 distinct=11 OK	 {"Attribute": 1, "Comment": 1, "Function": 1, "Keyword": 1, "Number": 4, "Operator": 3, "Property": 6, "Punctuation": 22, "String": 2, "Tag": 2, "Type": 3}
+dart.dart lang=dart ready=true spans=49 distinct=8 OK	 {"Comment": 1, "Function": 5, "Keyword": 6, "Other": 3, "Property": 1, "Punctuation": 24, "String": 4, "Type": 5}
+go.go lang=go ready=true spans=26 distinct=7 OK	 {"Comment": 1, "Function": 5, "Keyword": 7, "Operator": 1, "Other": 5, "String": 5, "Type": 2}
+html.html lang=html ready=true spans=60 distinct=10 OK	 {"Attribute": 2, "Comment": 1, "Constant": 1, "Function": 1, "Number": 1, "Property": 1, "Punctuation": 34, "String": 3, "Tag": 15, "VariableBuiltin": 1}
+javascript.js lang=javascript ready=true spans=52 distinct=11 OK	 {"Comment": 1, "Function": 4, "Keyword": 6, "Number": 4, "Operator": 4, "Other": 5, "Property": 2, "Punctuation": 21, "String": 1, "Type": 2, "VariableBuiltin": 2}
+json.json lang=json ready=true spans=11 distinct=4 OK	 {"Constant": 2, "Number": 1, "Property": 5, "String": 3}
+markdown.md lang=markdown ready=true spans=19 distinct=5 OK	 {"Function": 1, "Keyword": 2, "Other": 1, "Punctuation": 12, "String": 3}
+markdown_inline.md lang=markdown_inline ready=true spans=14 distinct=5 OK	 {"Constant": 1, "Function": 1, "Other": 2, "Punctuation": 9, "String": 1}
+php.php lang=php ready=true spans=36 distinct=10 OK	 {"Comment": 1, "Constant": 1, "Function": 2, "Keyword": 5, "Operator": 3, "Other": 3, "Punctuation": 9, "String": 4, "Tag": 6, "Type": 2}
+php_only.php lang=php_only ready=true spans=20 distinct=7 OK	 {"Comment": 1, "Function": 2, "Keyword": 5, "Operator": 3, "Other": 3, "String": 4, "Type": 2}
+python.py lang=python ready=true spans=46 distinct=11 OK	 {"Comment": 1, "Constant": 1, "Function": 5, "Keyword": 9, "Number": 2, "Operator": 5, "Other": 9, "Property": 5, "Punctuation": 2, "String": 3, "Type": 4}
+rust.rs lang=rust ready=true spans=71 distinct=11 OK	 {"Comment": 2, "Constant": 1, "Function": 5, "Keyword": 9, "Operator": 3, "Other": 2, "Property": 3, "Punctuation": 34, "String": 3, "Type": 7, "VariableBuiltin": 2}
+scss.scss lang=scss ready=true spans=53 distinct=11 OK	 {"Attribute": 1, "Comment": 1, "Function": 2, "Keyword": 2, "Number": 3, "Other": 6, "Property": 6, "Punctuation": 26, "String": 2, "Tag": 1, "Type": 3}
+toml.toml lang=toml ready=true spans=27 distinct=8 OK	 {"Comment": 1, "Constant": 1, "Number": 1, "Operator": 4, "Property": 8, "Punctuation": 4, "String": 2, "Type": 6}
+tsx.tsx lang=tsx ready=true spans=38 distinct=10 OK	 {"Attribute": 2, "Comment": 1, "Keyword": 5, "Operator": 3, "Other": 3, "Property": 1, "Punctuation": 15, "String": 2, "Tag": 2, "Type": 4}
+twig.html.twig lang=twig ready=true spans=41 distinct=8 OK	 {"Comment": 1, "Function": 2, "Keyword": 5, "Operator": 2, "Other": 5, "Punctuation": 19, "String": 1, "Tag": 6}
+typescript.ts lang=typescript ready=true spans=46 distinct=10 OK	 {"Comment": 1, "Function": 1, "Keyword": 7, "Number": 1, "Operator": 5, "Other": 5, "Property": 3, "Punctuation": 13, "String": 1, "Type": 9}
+vue.vue lang=vue ready=true spans=62 distinct=11 OK	 {"Attribute": 4, "Comment": 1, "Function": 2, "Keyword": 3, "Number": 1, "Operator": 5, "Other": 4, "Property": 2, "Punctuation": 29, "String": 3, "Tag": 8}
+yaml.yaml lang=yaml ready=true spans=20 distinct=6 OK	 {"Comment": 1, "Constant": 1, "Number": 1, "Property": 6, "Punctuation": 8, "String": 3}
+
+### AC-13e / AC-13c texts (real output)
+- languages.toml `[klingon] grammar="does_not_exist"`: `languages.toml: [klingon] uses grammar "does_not_exist", which is not compiled into this build; its files open as plain text`; a.kl maps to klingon, Highlighter status `Disabled(NoGrammar)`, 0 spans: `no grammar for klingon in this build; shown as plain text`. Unknown language id: same Disabled(NoGrammar), no panic.
+- 10000 B Rust with max_bytes 5000: `Disabled(TooLarge{10000,5000})`, `file is larger than max_highlight_bytes (10000 > 5000 bytes); shown as plain text`, 0 spans; 100 B under limit: Ready.
+
+### Verdict per criterion
+AC-13 pass (all 20 samples >= 3 classes); AC-13a covered by developer tests (green, not re-derived); **AC-13b FAIL** (incremental != fresh for markdown and blade); AC-13c pass; AC-13d pass (test), but test flaky under load; AC-13e pass.
+
+### Defects
+1. Incremental reparse yields different spans than a fresh parse (markdown.md from edit 3; blade.blade.php edit 115; Blade comment `{{-- --}}` colour lost). Repro: `cd qa-artifacts/M4-2/qc && WAIT_EACH=1 DUMP=1 ./target/release/qc-m4-2` (source src/main.rs, seed 0xC0FFEE ^ file_index*7919). Expected equal to fresh; actual missing/extra spans, status Ready. Likely injection-layer/range reuse (markdown_inline and blade layers).
+2. Flaky `worker_never_blocks_the_caller_on_a_5mb_file` under load (1 of 5 stress runs, debug parse 11.2 s > 10 s timeout). Suggest the test use a larger parse_timeout; engine behaviour (Disabled::Timeout) itself is as designed.
+
+## Rule check M4-2
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-4 evidence | pass | logs above |
+| BASE-5/COST heavy via run-heavy | pass | all cargo runs through run-heavy.sh |
+| BASE-14 no polling | pass | stress run as background task, turn ended |
+| BASE-15 own tasks only | pass | busy loops were `timeout 900` children, killed by PID in stress.sh |
+| BASE-17 no data committed | n-a | no DB/app |
+| BASE-18 no sub-agents | pass | |
+| BASE-24 no git writes / no product edits | pass | throwaway crate only under $TEAM_WS/qa-artifacts/M4-2/qc (own target dir, `[workspace]` detached) |
+| AC-13b | FAIL | defect 1 |
+| AC-13d | pass with flaky note | defect 2 |
+| AC-13/13a/13c/13e | pass | above |
+
+Addendum (full-waiteach.log, checking after every edit): mismatching checkpoints per file — markdown.md 69, markdown_inline.md 3, blade.blade.php 2, rust.rs 3, twig.html.twig 2 (other 15 samples 0). So defect 1 also hits plain Rust, not only injection languages.
+
+## QC M4-2 r1 — QC_FAIL
+Logs in qa-artifacts/M4-2/qc/ (r1-*). The throwaway binary now takes `SEED` (default 0xC0FFEE); it was rebuilt against the current worktree (path dependency).
+
+- Defect 2 (flaky 5 MB test): FIXED. 5 runs of `worker_never_blocks_the_caller_on_a_5mb_file` under 4 busy loops all passed (parse landed 6.1-7.5 s). `cargo test -p vr-syntax -p vr-config` once under the same load: all green (vr-config 3+16+8, vr-syntax 21, grammars 23, highlight 24 passed / 3 ignored, registry 6).
+- Defect 1 (incremental != fresh), `WAIT_EACH=1`, 200 edits per sample:
+  - default seed: 20/20 samples 0 mismatches (r1-waiteach-default.log). The earlier markdown/blade/rust/twig/markdown_inline defects are fixed.
+  - second seed `SEED=987654321` (r1-waiteach-987654321.log): **php_only.php: 4 mismatching checks** (edits 142-145, status Ready on both, 14 vs 13 spans). Other 19 samples 0.
+    Repro: `cd qa-artifacts/M4-2/qc && SEED=987654321 DUMP=1 WAIT_EACH=1 ./target/release/qc-m4-2` (dump in r1-php_only-mismatch.txt). Edit 142 inserts a backtick at char 37 of the php_only sample; the incremental result keeps a stale `(138..141, Function)` that the fresh parse of the same text does not have.
+- No product code or tests edited; busy loops were own `timeout 900` children.
+
+Rule check M4-2 r1: BASE-14, BASE-15, BASE-24, COST (run-heavy.sh) pass; AC-13b FAIL (php_only, seed 987654321); AC-13d pass.
+
+## QC M4-2 r2 — QC_PASS
+Logs in qa-artifacts/M4-2/qc/ (r2-*). Binary rebuilt against the current worktree.
+- `WAIT_EACH=1`, 20 samples x 200 edits, seeds 987654321, default (0xC0FFEE), 1122334455, 271828182, 777000111: every run exit 0, 0 MISMATCH lines, 20/20 samples `mismatches=0`, `FAILURES: 0`. php_only seed 987654321 now equal to a fresh parse.
+- `cargo test -p vr-syntax --test highlight` once under 4 busy loops: `25 passed; 0 failed; 3 ignored`, finished in 273.46 s.
+- Observation (not a failure): the same file took 31.7 s under the same load in r1 and 12-17 s in round 0. The added from-scratch verify pass after error-containing cycles roughly multiplies debug-test time; the release perf numbers were not re-run in this round, so the edit-latency cost of the verify pass (shown as status Parsing until it lands) on multi-MB files was not measured by QC.
+Rule check M4-2 r2: BASE-14, BASE-15, BASE-24, COST pass; AC-13b pass at library level (5 seeds + developer oracle).
+
+## QC M4-3
+Engine: pty (python harness with per-cell SGR tracking), fresh release build of the worktree (`target/release/vr-ide`, 19,596,688 B, built 01:36), TERM=xterm-256color; truecolor run with COLORTERM=truecolor, second run without it (256 colours). Legacy keyboard (ctrl+i = Tab). Script `qa-artifacts/M4-3/m43.py`; outputs `qc_truecolor.txt`, `qc_256.txt`. Method per language: count fg colours on screen that do not appear in a plain copy (.zzz) of the same file.
+
+| Sample | truecolor new fg vs plain | 256 new fg vs plain |
+|---|---|---|
+| rust, python, javascript, typescript, tsx, css, scss, html, vue, php, blade, twig, go, dart, toml | 4-7 (PASS) | PASS |
+| markdown, markdown_inline, yaml | 3 (PASS) | md 3, md_inline 2, yaml 2 (total fg 7 vs 5 plain) |
+| json | 1 (total 5 vs 4): keys and punctuation take the plain colour (Capture::Property = 0xf6eefc, equal to text fg); strings/numbers one colour, true/null another | 0 |
+| php_only.php | 0: sample has no `<?php`; `.php` maps to the php grammar so it is all HTML text (a vr-syntax unit-test sample, not a real file) | 0 |
+
+Flows (truecolor: 46 pass / 3 fail on the first run; the 3 = json, php_only, and a script bug in Save As typing into the pre-filled name; the Save As and 5 MB checks were fixed in the script and rerun green):
+- AC-13a PASS: html script/style, vue script/style, php code, markdown rust fence each show 2-5 distinct fg inside the embedded segment (same in 256).
+- AC-13b PASS: ctrl+i, typing `// ` at line start turns line 1 to a single colour within 1.5 s; 6x ctrl+z restores 4 colours; newly typed `let y = "abc";` coloured.
+- AC-13c PASS: max_highlight_bytes=100 via VR_IDE_CONFIG_DIR: notice "big.rs: file is larger than max_highlight_bytes (328 > 100 bytes); shown as plain text"; fg 5 vs 11 with the default limit; a file under the limit gives no notice.
+- AC-13d PASS: 5 MB Rust: text on the first frame at 0.07-0.08 s with 4-5 fg (chrome only); colours (>=8 fg) land at 2.28 s (truecolor) / 2.27 s (256); typing echo latency max 53-60 ms, median 52-58 ms (pump granularity included).
+- AC-13e PASS: `[klingon] uses grammar "klingon", which is not compiled into this build; its files open as ...` startup notice.
+- Unknown extension: .txt and .zzz plain (1 fg), no notice. PASS.
+- Reload after external change keeps correct colours (4 fg keyword/string line, comment single colour). PASS. Save As a.rs -> b.py: file written, tab shows b.py, `// note` now 2 fg (no longer a comment). PASS.
+- `cargo test -p vr-ide --lib syntax_tests::`: 14 passed, 0 failed, 1 ignored.
+
+Bench (AC-1, scripts/bench-startup.sh x3): first_frame_ms 24, 23, 23 (< 100); max_rss 5 MB (< 60). Binary size 19.6 MB.
+
+Observations (not blocking): (1) JSON highlighting is thin by theme design: keys equal the text colour; only 2 colours beyond plain. (2) in 256 colours yaml / markdown_inline show only 2 colours not present in the plain screen (7 total fg) - palette fitting/baseline overlap, still coloured. 
+
+Verdict: QC_PASS M4-3
+
+## Rule check M4-3
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-13 | pass | per-language table; 2 observations above |
+| AC-13a | pass | embedded segments coloured |
+| AC-13b | pass | typing/undo flow |
+| AC-13c | pass | notice text |
+| AC-13d | pass | first frame 0.08 s, colours 2.3 s, echo <= 60 ms |
+| AC-13e | pass | startup notice |
+| AC-1 | pass | 23-24 ms, 5 MB |
+| BASE-14/15/17 | pass | no polling loops, own tasks only, temp dirs only |
+| BASE-18 | pass | no sub-agents |
+
+## Sign-off after M4
+Commit tested: master HEAD 8968a7b plus the leader's uncommitted workspace notes only; no product files modified. Artifacts: `qa-artifacts/signoff-m4/` (suite.txt, guard.txt, ignored.txt, race20.txt, race_N.txt, bench*.txt, size.txt, walk.py, w2.py, h.py). Engine: release binary under a python pty with a small VT model (no browser/Flutter).
+
+Verdict: SIGNOFF_PASS.
+
+### Tests (debug, once, run-heavy.sh cargo test --workspace --no-fail-fast -j 4, EXIT=0)
+| Crate | Passed | Failed | Ignored |
+|---|---|---|---|
+| vr-config (unit 3, config 16, languages 8) | 27 | 0 | 0 |
+| vr-core | 151 | 0 | 1 |
+| vr-fs (lib 43 + racing_writer 2) | 45 | 0 | 1 |
+| vr-search (lib 37 + racing_writer 2) | 39 | 0 | 1 |
+| vr-ide (lib 270, bin 0) | 270 | 0 | 4 |
+| vr-syntax (lib 24, grammars 23, highlight 26, registry 6) | 79 | 0 | 5 |
+Total 611 passed, 0 failed, 12 ignored; doc tests 0.
+Ignored, release, once (--workspace --release -- --ignored, EXIT=0): all passed: vr-core open_100mb_under_2s (0.44 s); vr-fs trash_child; vr-ide long_line_keystroke_to_frame_fast, render_large_file_fast, find_in_100mb_file_stays_responsive, highlighted_keystroke_to_frame_fast; vr-search project_search_first_batch_latency; vr-syntax perf_edit_to_spans_typical_files, _5mb_file, _10mb_single_line, perf_worker_cpu_while_typing_into_text_with_an_error, every_sample_equals_a_fresh_parse_full_seed_set (5/5, 42.6 s). No reruns needed.
+
+### Guard
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings: EXIT=0 (guard.txt).
+
+### Racing (strict, 20x, 7 tests per run)
+20/20 runs exit 0, no panic; D75(2)/D76(3) signature not seen; nothing unclassified. vr-fs and vr-search racing_writer pass in the suite.
+
+### Walk (release binary, pty 100x30, TERM=xterm-256color, legacy keys, COLORTERM=truecolor; fixtures outside the repo)
+| Flow | Result | Evidence |
+|---|---|---|
+| FR-10 explorer hidden at start | pass | buffer only, no tree |
+| FR-10 ctrl+e shows tree, arrows move in tree without typing into the buffer, ctrl+e hides | pass | tree rows a.txt/b.txt after ctrl+e; buffer unchanged; hidden again |
+| T14 opens READ; typing refused; Tab to EDIT and typing works; Esc to READ; save | pass | status badge READ/EDIT; disk `Qhello\nworld\n` |
+| T15 synthwave default theme (no config) | pass | truecolor bg 10;5;18 / 26;16;40, accents 255;46;151, 45;226;230, 255;157;60 |
+| M4 highlight Rust / Vue / Markdown, edit + save | pass | distinct fg colours 12 / 13 / 9 vs 5 for plain text |
+| FR-8 external change while dirty, Esc keeps mine, ctrl+s asks again, Keep mine | pass | disk `Yhello\nworld\n` |
+| AC-9/AC-12 project search and replace with a tab open | pass | 3 results in 3 files; confirm dialog [Replace][Cancel]; "Replaced 3 matches in 3 files (1 in open tabs, not saved yet)"; open tab dirty with FUNC, its disk file unchanged until saved, other two replaced on disk |
+Untouched flows (AC-2, 4, 5, 6, 11, 18) keep the earlier sign-off evidence. Probe note: the first walk run put fixtures under the repo so project search saw the whole repo; fixtures were moved outside it (probe artifact, not a product issue).
+
+### Bench (scripts/bench-startup.sh, release, 2 runs)
+Empty project: first frame 16 / 17 ms, max RSS 5 MB. 200 KB Rust file: first frame 17 / 18 ms, RSS at first frame 6 MB, max RSS after colours 17 / 18 MB. Targets (< 100 ms, < 60 MB) met. Binary 19,596,336 bytes (about 18.7 MiB).
+
+### Defects
+None.
+
+## Rule check sign-off M4
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-1..AC-12, AC-18 regression on touched flows | pass | walk, earlier sign-off for untouched flows |
+| AC-13 highlighting | pass | walk colours, vr-syntax 79/0 and 5 ignored incl. full seed set |
+| FR-8, FR-10, T14, T15 | pass | walk |
+| BASE-25 guard | pass | fmt OK, clippy exit 0 |
+| COST full suite once | pass | one workspace run, 611/0 |
+| Ledger concurrent writer per write path | pass | racing 20/20, racing_writer tests, Keep mine and project replace walks |
+| Startup / RSS budgets | pass | 16-18 ms, 5-18 MB |
+| BASE-14/15/17 | pass | background tasks only; only own processes touched; fixtures only under scratchpad and qa-artifacts |
+| Defects | none | |

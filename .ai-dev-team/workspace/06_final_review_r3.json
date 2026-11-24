@@ -1,0 +1,7 @@
+{"scope":"dbf08cc..8968a7b (FR-9, FR-10, T13–T15, M4)","dimensions":["correctness","ui"],"confirmed":[],"uncertain":[],
+"minor":[
+{"title":"Read-only (non-UTF-8) file can enter EDIT badge + bar cursor while typing is refused","file":"crates/vr-ide/src/commands/edit.rs","line":40,"dimension":"ui","verdict":"confirmed by opus verifier, re-graded minor"},
+{"title":"Notice '(Esc)' hint: first Esc in edit mode goes to READ instead of dismissing","file":"crates/vr-ide/src/ui/status_bar.rs","line":20,"dimension":"ui"},
+{"title":"Hint wording breaks the '<Feature>: message' pattern (read mode, read-only)","file":"crates/vr-ide/src/app.rs","line":665,"dimension":"ui"},
+{"title":"No 40x12 colour preview of the combined screen; two preview scenes mislabelled","file":"crates/vr-ide/src/ui/tests/preview.rs","line":302,"dimension":"ui"},
+{"title":"Worker thread panic prints over the TUI via the default panic hook","file":"crates/vr-ide/src/recovery.rs","line":213,"dimension":"correctness"}],"missingDimensions":0}
