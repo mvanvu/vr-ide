@@ -10,7 +10,7 @@ license = "MIT"
 [workspace.dependencies]
 ratatui = "0.30.2"
 crossterm = "0.29.0"
-ropey = "=1.6.1"
+ropey = { version = "=1.6.1", default-features = false, features = ["simd", "cr_lines"] }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.3"
 arboard = "3.7.0"

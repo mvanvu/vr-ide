@@ -10,6 +10,8 @@ Greenfield: nothing reusable yet. Developers append one line per reusable piece 
 - `crates/vr-core/src/history.rs` — `History` (`can_undo/can_redo/revision/break_group`), `Clock`, `SystemClock`, `ManualClock` (test time injection), `EditKind`, `GROUP_IDLE` = 1 s
 - `crates/vr-core/src/motion.rs` — move_left/right/up/down, word_left/right, line_start (smart home), line_end, doc_start/end (`buf, extend`)
 - `crates/vr-core/src/edit_ops.rs` — delete_line, duplicate_line, move_line_up/down, indent, outdent, toggle_comment(buf, token); each one undo step
+- `crates/vr-core/src/document.rs` — `Document::{open(path, max_size_highlight), untitled, is_modified, save/save_overwrite/save_as -> Saved{other_hard_links}, reload, check_disk, disk_stamp, set_own_writes}` (atomic temp+rename keeping mode/owner, writability probe, symlink write-through, ChangedOnDisk refusal re-checked right before rename), `DocError`, `DiskState`, `DiskStamp::of(path)`, `LineEnding::{detect, as_str}`, `Encoding`, `is_save_temp(path)`, `BINARY_SNIFF_LEN`
+- `crates/vr-core/src/watch.rs` — `Watcher::new(Sender<FsEvent>)`, `watch(file|dir) -> Result`, `unwatch`, `own_writes()` (give to `Document::set_own_writes` once; own saves never echo back); `FsEvent::{Modified,Removed,Created,Renamed,Rescan,Error}` with caller paths, 200 ms `DEBOUNCE`
 ## vr-config
 - `crates/vr-config/src/keymap.rs` — `Keymap::load(user) -> (Keymap, warnings)`, `command_for` (editor focus), `command_for_in(Context, chord)` (context then global; Terminal no fallback, D8), `keys_for(cmd)`, `bindings()` iterator (docs/palette), `validate(known)`; `RESERVED_COMMANDS`; defaults in `defaults/keymap.toml`
 - `crates/vr-config/src/keys.rs` — `KeyChord{code,mods}` (crossterm-free), `FromStr`/`Display` (`ctrl+shift+alt+<key>`), `KeyChord::new` lowercases letters (use it when converting terminal events)
@@ -20,6 +22,9 @@ Greenfield: nothing reusable yet. Developers append one line per reusable piece 
 - `crates/vr-fs/src/ops.rs` — `create_file` (makes parents), `create_dir`, `rename`, `copy` (recursive, links copied as links), `move_to(from, dest_dir) -> new path`, `trash(paths) -> BatchResult` (per-path results); atomic no-overwrite (renameat2 NOREPLACE / O_EXCL), cross-device move → `FsOpError::CrossDevice`; `validate_name(name)`, `ensure_within(root, p)` for typed names; `Trash` trait with `SystemTrash` and `FakeTrash::new(holding_dir).trashed()` for UI tests
 - `crates/vr-fs/src/file_index.rs` — `FileIndex::build(root, tx) -> JoinHandle` sends `IndexMsg::{Progress,Ready,Error}` (drop rx to cancel); `query(q, limit)` basename-first nucleo ranking, smart case, char indices into the relative path; `from_paths` for tests
 ## vr-search
+- `crates/vr-search/src/find.rs` — `find_all(rope, q)` char ranges, `replace_all_tx(rope, q, repl)` one-undo Transaction ($1 captures); crate-internal `Matcher` (per-line, whole-word retry, zero-length safe), `line_spans` (D31 line split)
+- `crates/vr-search/src/project.rs` — `search_project(root, q, cancel, tx)` streams `SearchMsg::{Batch,Error,Done}` (≤200 or 50 ms, Done last); internal `walk_builder(root)` = vr-fs ignore policy (D15)
+- `crates/vr-search/src/replace.rs` — `plan_replace(root, q, repl, files)` → `FilePreview{path,hunks,error}`, `apply_replace(previews, confirmed)` temp + renameat2 EXCHANGE verify-and-swap-back, refuses changed/read-only/hard-linked/outside-root files, 32 MB cap
 ## vr-ide (app)
 - `crates/vr-ide/src/cli.rs` — `cli::resolve(args, cwd) -> Launch{root, open_file}` (D5 launch rules)
 - `scripts/bench-startup.sh` — release first-frame ms + max RSS under a pty

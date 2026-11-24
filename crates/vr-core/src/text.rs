@@ -247,12 +247,9 @@ impl Buffer {
     }
 }
 
-/// Line breaks ropey counts with its default `unicode_lines` feature.
+/// Line breaks: LF, CR and CRLF only (D31; ropey built with `cr_lines`, without `unicode_lines`).
 pub fn is_line_break(c: char) -> bool {
-    matches!(
-        c,
-        '\n' | '\r' | '\u{0B}' | '\u{0C}' | '\u{85}' | '\u{2028}' | '\u{2029}'
-    )
+    matches!(c, '\n' | '\r')
 }
 
 /// Screen column of `char_idx` within `line` (a line slice; offsets relative to its start).
@@ -559,6 +556,17 @@ mod tests {
         buf.set_selection(Selection::point(2));
         buf.delete_forward();
         assert_eq!(buf.text().to_string(), "abcd");
+    }
+
+    #[test]
+    fn only_lf_crlf_cr_break_lines() {
+        // Form feed, VT, NEL and U+2028/2029 stay inside the line (D31: matches git, grep -n).
+        let rope = Rope::from_str("a\u{0C}b\u{0B}c\u{85}d\u{2028}e\u{2029}f\ng\r\nh\ri");
+        assert_eq!(rope.len_lines(), 4);
+        assert_eq!(line_content_end(&rope, 0), 11);
+        assert!(!is_line_break('\u{0C}'));
+        assert!(!is_line_break('\u{2028}'));
+        assert!(is_line_break('\n') && is_line_break('\r'));
     }
 
     #[test]

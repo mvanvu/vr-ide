@@ -5,21 +5,22 @@
 | T1 | Workspace scaffold, CLI root resolution, bench script | be | - | - | TOOL, AC-1, AC-2 | Cargo.toml, Cargo.lock, rust-toolchain.toml, .gitignore, rustfmt.toml, crates/*/Cargo.toml, crates/*/src/lib.rs, crates/vr-ide/src/{main,cli}.rs, scripts/bench-startup.sh, README.md | guard + `cargo test -p vr-ide cli` | done | 0 |
 | T2 | vr-core text, selection, transactions, history, edit ops | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-core/Cargo.toml, crates/vr-core/src/lib.rs until T1 committed) | - | AC-3, AC-10 | crates/vr-core/src/{lib,text,selection,transaction,history,motion,edit_ops}.rs | `cargo test -p vr-core` | done | 0 |
 | T3 | vr-config keymap + settings (D10 defaults) | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-config/Cargo.toml, crates/vr-config/src/lib.rs until T1 committed) | - | AC-5 | crates/vr-config/** | `cargo test -p vr-config` | done | 0 |
-| T4 | vr-core documents (load/save/encoding) + file watching | be | T2 | - | AC-3, AC-7, AC-18 | crates/vr-core/src/{document,watch,lib}.rs | `cargo test -p vr-core` | in-progress | 0 |
+| T4 | vr-core documents (load/save/encoding) + file watching | be | T2 | - | AC-3, AC-7, AC-18 | crates/vr-core/src/{document,watch,lib}.rs | `cargo test -p vr-core` | done | 2 |
 | T5 | App shell: event loop, editor view, commands, tabs, status, clipboard, recovery | fe | T1, T2, T3, T4 | ui | AC-1, AC-3, AC-4, AC-5, AC-7, AC-18 | crates/vr-ide/src/{main,app,event_loop,clipboard,recovery,theme}.rs, commands/{registry,app,file,edit,tab}.rs, ui/{layout,editor_view,tabs,status_bar}.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T6 | Palette, dialogs, go-to-line, external-change prompt, quit guard | fe | T5 | ui | AC-6, AC-7 | crates/vr-ide/src/ui/{palette,dialog}.rs, commands/{nav,palette}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T7 | vr-fs tree, file ops (trash), fuzzy file index | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-fs/Cargo.toml, crates/vr-fs/src/lib.rs until T1 committed) | - | AC-8, AC-9 | crates/vr-fs/** | `cargo test -p vr-fs` | done | 3 |
 | T8 | Explorer panel + go-to-file | fe | T6, T7 | ui | AC-1, AC-8, AC-9 | crates/vr-ide/src/ui/{explorer,layout,palette}.rs, commands/explorer.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
-| T9 | vr-search engine: find/replace, project search, project replace | be | T2 | - | AC-9, AC-10, AC-11, AC-12 | crates/vr-search/** | `cargo test -p vr-search` | in-progress | 0 |
+| T9 | vr-search engine: find/replace, project search, project replace | be | T2 | - | AC-9, AC-10, AC-11, AC-12 | crates/vr-search/** | `cargo test -p vr-search` | fix | 2 |
 | T10 | Find/replace bar + project search panel | fe | T8, T9 | ui | AC-10, AC-11, AC-12 | crates/vr-ide/src/ui/{find_bar,search_panel,layout}.rs, commands/{find,search}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T11 | Bench run, README, docs/keymap.md | be | T10 | - | AC-1 | README.md, scripts/bench-startup.sh, docs/keymap.md | bench script | todo | 0 |
+| T12 | Shared racing-writer test helper (vr-core test utils) + use it in T4/T7/T9 write-path tests | be | T4, T9 | - | AC-3, AC-8, AC-12 | crates/vr-core/src/testutil.rs (cfg test feature), tests in vr-core, vr-fs, vr-search | `cargo test -p vr-core -p vr-fs -p vr-search` | todo | 0 |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
 ## Notes
 - presence: away (user, 11:31)
 - hand-off: ready (11:31) — push verified working (19dbd52)
-- eta: ~16:00 (set 11:57, basis: real durations so far — T1 8m, T3 10m, T2 17m incl quick pass, T7 ~30m with 3 fix rounds; remaining critical path T4 (to ~12:15) → T5 40m → T6 25m → T8 35m → T10 35m → T11 15m + sign-off 25m + Phase 5 40m + ~10m buffer for fix rounds; 5 agents)
+- eta: ~16:35 (set 12:15, moved +15m: T4 (critical path) needs fix round 2; remaining T4 round 2 + re-check ~20m → T5 40m → T6 25m → T8 35m → T10 35m → T11 15m + sign-off 25m + Phase 5 40m + buffer)
 - fable-policy: auto (user, 11:21)
 - commits: one per task after review + QC pass, push to origin/master (user, 11:21)
 - research: skipped — direction settled in conversation (leader, 11:21)
@@ -49,3 +50,11 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - T7 fix round 3 (11:53): R2-1 major — hard-link fallback unlinks `from` by name (a concurrent save to `from` lost); + QC note: EACCES into read-only dir reported as AlreadyExists. Last round before escalation (fable-policy auto).
 - T7 verdicts (11:57): round 3 review APPROVE (opus; m1 temp-name collision → quick pass 2, m2 → T8 brief), QC_PASS R3; gate ✓
 - T8 brief must include (review T7 m2): startup notice listing leftover '.*.vr-tmp-*' files in the root and expanded folders
+- model: T9 review opus — apply_replace overwrites user files on disk (data-safety high-risk)
+- model: T4 review opus — save overwrites user files (data-safety high-risk)
+- T9 fix round 1 (12:01): 3 major (apply TOCTOU across write+fsync, unbounded whole-file reads, prefilter misses inline-flag patterns) + minors; D45
+- T12 added by leader while away (12:02): recurring race class T7/T9 → shared racing-writer fixture; sonnet; after T4 and T9 are done
+- T4 fix round 1 (12:03): 3 major (save replaces files the user cannot write; changed-on-disk check far from rename + stamp read after dir fsync; watcher drops rescan/errors) + minors; D46
+- T4 fix round 2 (12:14): R1-1 major (stale own-write entry hides a revert → AC-7 reload missed), R1-2 minor (metadata-only change → false ChangedOnDisk); QC R1 pass
+- T9 fix round 2 (12:15): swap-back path can delete the agent's version held in tmp (major) + (?x) whole-word wrap minor; QC R1 pass (120 racing runs clean)
+- T4 verdicts (12:18): round 2 review APPROVE (opus), QC_PASS R2; gate ✓. Note for T6: a continuous chmod storm makes every save ChangedOnDisk — save_overwrite is the way out

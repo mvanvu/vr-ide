@@ -53,3 +53,7 @@ Notes end with `## Rule compliance` (rule-packs.md §6: one row per exercised ru
 
 ## Fix briefs (leader rule from 11:51)
 - A fix or quick-pass brief carries the verifier finding, the expected behaviour and the test that must go red then green. Suggestions are the verifier's, never a leader recipe; the developer may pick another fix. On data-safety code (save/overwrite, delete, move, project replace) a quick pass changes behaviour only where the finding says; anything more is a counted round with qc.
+
+## Ledger warning (recurring defect class: T7, T9)
+- Writes to user files: no gap between the freshness check and the replace; a concurrent writer must never be overwritten or deleted — test it with a writer racing the operation (T7/T9 class).
+- QC of any task that writes user files: one concurrent-writer check per write path (a background loop saving the file while the operation runs).
