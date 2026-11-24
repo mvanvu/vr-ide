@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::ThreadId;
 use std::time::Duration;
 
@@ -36,11 +37,49 @@ impl Entry {
 
 /// The modified buffers as of the last publish.
 #[derive(Debug, Default)]
-pub struct RecoveryState(Mutex<Vec<Entry>>);
+pub struct RecoveryState {
+    entries: Mutex<Vec<Entry>>,
+    /// The terminal is in the alternate screen: nothing may print over it.
+    tui_active: AtomicBool,
+    /// Panic messages of non-main threads, printed once the terminal is restored.
+    deferred: Mutex<Vec<String>>,
+    /// Messages past [`MAX_DEFERRED`] that were only counted.
+    dropped: AtomicUsize,
+}
 
 impl RecoveryState {
     pub const fn new() -> Self {
-        Self(Mutex::new(Vec::new()))
+        Self {
+            entries: Mutex::new(Vec::new()),
+            tui_active: AtomicBool::new(false),
+            deferred: Mutex::new(Vec::new()),
+            dropped: AtomicUsize::new(0),
+        }
+    }
+
+    /// While active, panics on other threads are kept instead of printed.
+    pub fn set_tui_active(&self, active: bool) {
+        self.tui_active.store(active, Ordering::SeqCst);
+    }
+
+    /// The kept panic messages (each is returned once).
+    pub fn take_deferred(&self) -> Vec<String> {
+        let mut kept =
+            std::mem::take(&mut *self.deferred.lock().unwrap_or_else(|p| p.into_inner()));
+        let dropped = self.dropped.swap(0, Ordering::SeqCst);
+        if dropped > 0 {
+            kept.push(format!("and {dropped} more worker panics"));
+        }
+        kept
+    }
+
+    fn defer(&self, msg: String) {
+        let mut kept = self.deferred.lock().unwrap_or_else(|p| p.into_inner());
+        if kept.len() < MAX_DEFERRED {
+            kept.push(msg);
+        } else {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     /// Records the modified documents (rope clones share nodes, so this is cheap).
@@ -50,14 +89,14 @@ impl RecoveryState {
             .filter(|d| d.is_modified())
             .map(Entry::of)
             .collect();
-        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = entries;
+        *self.entries.lock().unwrap_or_else(|p| p.into_inner()) = entries;
     }
 
     /// The published entries. Never blocks for long: a panic hook may run while another
     /// thread holds the lock for its short store, or on the thread that holds it.
     pub fn snapshot(&self) -> Vec<Entry> {
         for _ in 0..50 {
-            match self.0.try_lock() {
+            match self.entries.try_lock() {
                 Ok(g) => return g.clone(),
                 Err(std::sync::TryLockError::Poisoned(p)) => return p.into_inner().clone(),
                 Err(std::sync::TryLockError::WouldBlock) => {
@@ -68,6 +107,9 @@ impl RecoveryState {
         Vec::new()
     }
 }
+
+/// Most panic messages of other threads kept for the exit; later ones are only counted.
+pub const MAX_DEFERRED: usize = 20;
 
 /// The process-wide state the panic hook reads.
 pub static GLOBAL: RecoveryState = RecoveryState::new();
@@ -212,6 +254,8 @@ pub fn install_hook_for(
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().id() == main {
+            // Worker panics while main unwinds are printed by the previous hook.
+            state.set_tui_active(false);
             restore_terminal();
             for p in write_recovery(state, &dir) {
                 eprintln!("vr-ide: unsaved buffer written to {}", p.display());
@@ -225,13 +269,24 @@ pub fn install_hook_for(
                      beside it (search again to see what is left)"
                 );
             }
+            for m in state.take_deferred() {
+                eprintln!("vr-ide: {m}");
+            }
+        } else if state.tui_active.load(Ordering::SeqCst) {
+            let name = std::thread::current().name().map(str::to_owned);
+            let msg = format!(
+                "panic in thread {}: {info}",
+                name.as_deref().unwrap_or("<unnamed>")
+            );
+            state.defer(msg);
+            return;
         }
         previous(info);
     }));
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -324,21 +379,40 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&written[0]).unwrap(), "kept\n");
     }
 
-    static RESTORED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    fn count_restore() {
-        RESTORED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    /// Tests that replace the process-wide panic hook run one at a time, for their whole body.
+    pub(crate) static HOOK_TEST: Mutex<()> = Mutex::new(());
+
+    fn hook_lock() -> std::sync::MutexGuard<'static, ()> {
+        HOOK_TEST.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn leaked_state() -> &'static RecoveryState {
+        Box::leak(Box::new(RecoveryState::new()))
+    }
+
+    static MAIN_ONLY_RESTORED: AtomicUsize = AtomicUsize::new(0);
+    fn count_main_only_restore() {
+        MAIN_ONLY_RESTORED.fetch_add(1, SeqCst);
     }
 
     #[test]
     fn panic_hook_acts_only_for_the_main_thread() {
+        let _g = hook_lock();
         let state = tempfile::tempdir().unwrap();
         let dir = state.path().join("r");
-        let rs: &'static RecoveryState = Box::leak(Box::new(RecoveryState::new()));
+        let rs = leaked_state();
         rs.publish(&[modified(None, "x\n")]);
-        install_hook_for(rs, dir.clone(), count_restore, std::thread::current().id());
+        install_hook_for(
+            rs,
+            dir.clone(),
+            count_main_only_restore,
+            std::thread::current().id(),
+        );
         let worker = std::thread::spawn(|| panic!("worker thread panic (expected by the test)"));
         assert!(worker.join().is_err());
-        let after_worker = RESTORED.load(std::sync::atomic::Ordering::SeqCst);
+        let after_worker = MAIN_ONLY_RESTORED.load(SeqCst);
         let files_after_worker = std::fs::read_dir(&dir).map_or(0, |d| d.count());
         let main = std::panic::catch_unwind(|| panic!("main thread panic (expected by the test)"));
         let _ = std::panic::take_hook();
@@ -348,8 +422,76 @@ mod tests {
             (0, 0),
             "worker panic acted"
         );
-        assert_eq!(RESTORED.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(MAIN_ONLY_RESTORED.load(SeqCst), 1);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    static PREVIOUS_CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn no_restore() {}
+
+    /// Installs a counting "previous" hook and then ours; returns the state.
+    fn counted_hook(dir: &Path) -> &'static RecoveryState {
+        let rs = leaked_state();
+        PREVIOUS_CALLS.store(0, SeqCst);
+        std::panic::set_hook(Box::new(|_| {
+            PREVIOUS_CALLS.fetch_add(1, SeqCst);
+        }));
+        install_hook_for(rs, dir.join("r"), no_restore, std::thread::current().id());
+        rs
+    }
+
+    #[test]
+    fn worker_panic_while_the_tui_is_active_is_kept_not_printed() {
+        let _g = hook_lock();
+        let state = tempfile::tempdir().unwrap();
+        let rs = counted_hook(state.path());
+        // Without the TUI (before it starts, after it is restored) the previous hook prints.
+        let _ = std::thread::spawn(|| panic!("early worker")).join();
+        assert_eq!(PREVIOUS_CALLS.load(SeqCst), 1);
+        assert!(rs.take_deferred().is_empty());
+        rs.set_tui_active(true);
+        let _ = std::thread::spawn(|| panic!("highlighter exploded")).join();
+        let _ = std::panic::take_hook();
+        assert_eq!(PREVIOUS_CALLS.load(SeqCst), 1, "printed over the TUI");
+        let kept = rs.take_deferred();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(kept[0].contains("highlighter exploded"), "{kept:?}");
+        assert!(rs.take_deferred().is_empty(), "taken once");
+    }
+
+    #[test]
+    fn deferred_panics_are_bounded_and_the_rest_counted() {
+        let _g = hook_lock();
+        let state = tempfile::tempdir().unwrap();
+        let rs = counted_hook(state.path());
+        rs.set_tui_active(true);
+        for i in 0..MAX_DEFERRED + 5 {
+            let _ = std::thread::spawn(move || panic!("again {i}")).join();
+        }
+        let _ = std::panic::take_hook();
+        let kept = rs.take_deferred();
+        assert_eq!(kept.len(), MAX_DEFERRED + 1, "{kept:?}");
+        assert!(kept[0].contains("again 0"));
+        assert!(
+            kept.last().unwrap().contains("and 5 more"),
+            "{:?}",
+            kept.last()
+        );
+    }
+
+    #[test]
+    fn worker_panic_while_main_unwinds_is_printed_not_kept() {
+        let _g = hook_lock();
+        let state = tempfile::tempdir().unwrap();
+        let rs = counted_hook(state.path());
+        rs.set_tui_active(true);
+        let main = std::panic::catch_unwind(|| panic!("main (expected by the test)"));
+        assert!(main.is_err());
+        let before = PREVIOUS_CALLS.load(SeqCst);
+        let _ = std::thread::spawn(|| panic!("late worker")).join();
+        let _ = std::panic::take_hook();
+        assert_eq!(PREVIOUS_CALLS.load(SeqCst), before + 1, "late panic lost");
+        assert!(rs.take_deferred().is_empty());
     }
 
     #[test]

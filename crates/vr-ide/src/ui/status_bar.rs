@@ -8,18 +8,30 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use vr_core::{DiskState, LineEnding};
 
-use crate::app::{App, NoticeLevel, encoding_name};
+use crate::app::{App, Focus, NoticeLevel, encoding_name};
 use crate::theme::Theme;
 
 const MAX_NOTICE_ROWS: u16 = 3;
+
+/// Esc dismisses the oldest notice only when nothing else takes the key first: a dialog,
+/// the palette, the find bar and the search panel use it themselves, and in edit mode the
+/// first Esc leaves for read mode (D151). The on-screen hint must hold in every state.
+fn esc_dismisses(app: &App) -> bool {
+    app.dialog.is_none()
+        && app.palette.is_none()
+        && matches!(app.focus, Focus::Editor | Focus::Explorer)
+        && !(app.focus == Focus::Editor && app.edit_mode())
+}
 
 /// Text of the oldest notice with a hint about the rest.
 pub fn notice_text(app: &App) -> Option<String> {
     let n = app.notices.front()?;
     let more = app.notices.len() - 1;
+    let esc = esc_dismisses(app);
     let suffix = if more > 0 {
-        format!("  (+{more} more · Esc)")
-    } else if n.level == NoticeLevel::Info {
+        let key = if esc { " · Esc" } else { "" };
+        format!("  (+{more} more{key})")
+    } else if n.level == NoticeLevel::Info || !esc {
         String::new()
     } else {
         "  (Esc)".to_string()

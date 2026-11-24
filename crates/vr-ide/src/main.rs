@@ -61,6 +61,7 @@ fn main() -> Result<()> {
         restore_terminal();
         return Err(e.into());
     }
+    recovery::GLOBAL.set_tui_active(true);
     app.report_config(warnings);
     app.start_watcher();
     if let Some(file) = &launch.open_file

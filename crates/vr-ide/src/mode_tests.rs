@@ -10,7 +10,7 @@ use crate::app::{App, Focus, View};
 use crate::app_tests::test_app;
 use crate::clipboard::{Clipboard, MemoryClipboard};
 
-const HINT: &str = "Read mode — ctrl+i to edit";
+const HINT: &str = "Read mode: ctrl+i to edit";
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -553,4 +553,75 @@ fn quit_from_edit_mode_still_asks_about_unsaved_changes() {
     typ(&mut app, "x");
     app.handle_key(ctrl('q'));
     assert!(!app.quit && app.dialog.is_some(), "quit guard");
+}
+
+// ---- read-only documents never enter edit mode (FR-11) ---------------------------------
+
+fn read_only_app() -> (tempfile::TempDir, App) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("latin1.txt");
+    std::fs::write(&path, b"caf\xe9\n").unwrap();
+    let (mut app, _) = test_app(dir.path());
+    app.open_path(&path).unwrap();
+    assert!(app.active_doc().unwrap().read_only);
+    (dir, app)
+}
+
+const RO_WARNING: &str = "latin1.txt: read-only (not valid UTF-8)";
+
+fn has_notice(app: &App, text: &str) -> bool {
+    app.notices.iter().any(|n| n.text == text)
+}
+
+#[test]
+fn read_only_file_stays_in_read_mode_on_ctrl_i_tab_and_palette() {
+    let (_d, mut app) = read_only_app();
+    app.handle_key(ctrl_i());
+    assert!(!app.edit_mode(), "ctrl+i");
+    assert!(!app.wants_bar_cursor(), "block cursor stays");
+    assert!(has_notice(&app, RO_WARNING), "{:?}", app.notices);
+    app.notices.clear();
+    app.handle_key(key(KeyCode::Tab));
+    assert!(!app.edit_mode(), "Tab");
+    assert!(has_notice(&app, RO_WARNING), "{:?}", app.notices);
+    app.notices.clear();
+    app.run_command("app.palette", crate::commands::CmdArgs::None);
+    typ(&mut app, "edit mode");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(!app.edit_mode(), "palette");
+    assert!(has_notice(&app, RO_WARNING), "{:?}", app.notices);
+}
+
+#[test]
+fn notice_esc_hint_is_only_shown_when_esc_dismisses_it() {
+    use crate::ui::status_bar::notice_text;
+    let (_d, _p, mut app, _) = one("abc\n");
+    app.warn("careful");
+    assert_eq!(notice_text(&app).unwrap(), "careful  (Esc)");
+    // In edit mode the first Esc leaves it (D151): no hint that promises a dismissal.
+    app.handle_key(ctrl_i());
+    assert_eq!(notice_text(&app).unwrap(), "careful");
+    app.warn("second");
+    assert_eq!(notice_text(&app).unwrap(), "careful  (+1 more)");
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(notice_text(&app).unwrap(), "careful  (+1 more · Esc)");
+    // The find bar closes on Esc before anything else.
+    app.run_command("find.open", crate::commands::CmdArgs::None);
+    assert_eq!(app.focus, Focus::FindBar);
+    assert_eq!(notice_text(&app).unwrap(), "careful  (+1 more)");
+}
+
+#[test]
+fn read_only_warning_names_the_real_encoding() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wide.txt");
+    std::fs::write(&path, b"\xff\xfea\0b\0\n\0").unwrap();
+    let (mut app, _) = test_app(dir.path());
+    app.open_path(&path).unwrap();
+    assert!(app.active_doc().unwrap().read_only);
+    app.notices.clear();
+    app.handle_key(ctrl_i());
+    assert!(!app.edit_mode());
+    let n = &app.notices.front().expect("a warning").text;
+    assert_eq!(n, "wide.txt: read-only (UTF-16LE, not UTF-8)");
 }

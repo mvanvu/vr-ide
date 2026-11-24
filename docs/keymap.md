@@ -34,7 +34,7 @@ vr-ide ships VS Code's default Linux keybindings. The list below comes from
 A file opens in **read mode**: everything that does not change the text works (move, select, copy,
 find, save, go to line, palette); typing and every text-changing key or command (enter, backspace,
 delete, paste, cut, undo, redo, indent, line operations, replace in the file) does nothing and shows
-the hint "Read mode — ctrl+i to edit". `ctrl+i` switches the tab to **edit mode**; `esc` returns to
+the hint "Read mode: ctrl+i to edit". `ctrl+i` switches the tab to **edit mode**; `esc` returns to
 read mode. A tab is back in read mode whenever the editor gets the keys on it again (tab switch,
 back from the explorer, search panel, a dialog, or a palette closed without running a command).
 The status bar shows `READ` or `EDIT`. Project replace and reloads from disk still update open

@@ -217,7 +217,7 @@ fn scenes() -> Vec<Scene> {
             }),
         ),
         (
-            "Edit mode (EDIT badge; the others show READ)",
+            "Edit mode (EDIT badge; the syntax highlighting scenes show EDIT too, the rest READ)",
             Box::new(|| {
                 let (d, _p, mut app, _) = app_with_file("fn main() {\n    let x = 1;\n}\n");
                 app.focus = Focus::Editor;
@@ -272,6 +272,16 @@ fn scenes() -> Vec<Scene> {
             Box::new(|| highlighted("main.rs", RUST_SAMPLE, Some("name"))),
         ),
         (
+            "Combined (READ): explorer, find bar, warning notice, highlighted Rust file",
+            Box::new(|| {
+                let (keep, mut app) = highlighted("main.rs", RUST_SAMPLE, Some("name"));
+                app.explorer.visible = true;
+                app.enter_read_mode();
+                app.warn("settings: example warning notice");
+                (keep, app)
+            }),
+        ),
+        (
             "Syntax highlighting: Vue single-file component (template, script, style)",
             Box::new(|| highlighted("Card.vue", VUE_SAMPLE, None)),
         ),
@@ -279,10 +289,10 @@ fn scenes() -> Vec<Scene> {
             "Confirm dialog",
             Box::new(|| {
                 let (d, _p, mut app, _) = app_with_file("one\n");
+                key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
                 key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
                 std::fs::write(d.path().join("second.rs"), "fn a() {}\n").unwrap();
                 app.open_path(std::path::Path::new("second.rs")).unwrap();
-                key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
                 app.run_command("app.quit", crate::commands::CmdArgs::None);
                 (vec![d], app)
             }),
@@ -299,7 +309,7 @@ h2{{font-size:15px;margin:24px 0 4px}}\
 .g span{{white-space:pre}}</style><h1>vr-ide theme: {title}</h1>"
     );
     for (name, build) in scenes() {
-        for (w, h) in [(120u16, 40u16), (80, 24)] {
+        for (w, h) in [(120u16, 40u16), (80, 24), (40, 12)] {
             let (_keep, mut app) = build();
             let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
             t.draw(|f| render_with(f, &mut app, theme)).unwrap();

@@ -142,7 +142,12 @@ pub fn exit(
     // Nothing may wait before these two: a worker blocked in I/O would leave the terminal
     // in the alternate screen and the unsaved buffers unwritten.
     restore_terminal();
+    crate::recovery::GLOBAL.set_tui_active(false);
     let result = finish(result, app, dir);
+    // After the recovery write: printing can block on a full stderr.
+    for m in crate::recovery::GLOBAL.take_deferred() {
+        eprintln!("vr-ide: {m}");
+    }
     if crate::commands::search::replacing(app) {
         eprintln!(
             "vr-ide: stopping the project replace (waiting up to {} s)…",
@@ -227,6 +232,9 @@ mod tests {
 
     #[test]
     fn edits_are_published_before_a_frame_is_drawn() {
+        let _g = recovery::tests::HOOK_TEST
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let (_d, _p, mut app, _) = crate::app_tests::app_with_file("a\n");
         app.handle_key(KeyEvent::new(K::Char('x'), KeyModifiers::NONE));
         let state = recovery::RecoveryState::new();

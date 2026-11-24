@@ -129,7 +129,7 @@ Files open in read mode, so a stray key never changes them. `ctrl+i` switches th
 and `esc` back to read mode (it also clears the selection). The tab returns to read mode whenever
 the editor gets the keys on it again: switching tabs, coming back from the explorer, the search
 panel or a dialog, or closing the palette without running a command. In read mode, typing and the
-editing keys below show the hint "Read mode — ctrl+i to edit"; moving, selecting, copying, find,
+editing keys below show the hint "Read mode: ctrl+i to edit"; moving, selecting, copying, find,
 Go to Line and save work as usual. The status bar shows `READ` or `EDIT`, and where the terminal
 supports it the cursor is a block in read mode and a bar in edit mode. Project replace and reloads
 from disk still update open files in either mode.
@@ -318,7 +318,7 @@ Environment overrides:
 - **`ctrl+shift+e` hides the explorer instead of focusing it.** Without the kitty keyboard
   protocol the terminal sends `ctrl+shift+e` as `ctrl+e`, which toggles the explorer (shows and
   focuses it when hidden, hides it when shown). Use `ctrl+e` or `F6` to reach the tree there.
-- **Typing does nothing and "Read mode — ctrl+i to edit" appears.** The tab is in read mode;
+- **Typing does nothing and "Read mode: ctrl+i to edit" appears.** The tab is in read mode;
   press `ctrl+i` (or `tab`, which is what `ctrl+i` arrives as in a terminal without the kitty
   keyboard protocol) to edit.
 - **`ctrl+[` does not outdent.** Terminals send it as `Esc`; use `shift+tab`.

@@ -421,14 +421,9 @@ impl App {
             }
         }
         if doc.read_only {
-            let enc = encoding_name(&doc);
-            let what = if enc == "non-UTF-8" {
-                "is not valid UTF-8".to_string()
-            } else {
-                format!("is {enc}, not UTF-8")
-            };
+            let what = not_utf8_reason(&doc);
             self.warn(format!(
-                "{} {what}; opened read-only",
+                "{} is {what}; opened read-only",
                 self.display_path(&path)
             ));
         }
@@ -587,7 +582,7 @@ impl App {
     pub fn editable_doc(&mut self) -> Option<&mut Document> {
         let read_only = self.active_doc()?.read_only;
         if read_only {
-            self.warn("file is read-only (not UTF-8)");
+            self.read_only_warning();
             return None;
         }
         self.sync_mode();
@@ -637,8 +632,26 @@ impl App {
         self.dirty = true;
     }
 
-    /// Edit mode on the active tab (ctrl+i).
+    /// Warning for an edit attempt on a document that is open read-only (not UTF-8).
+    fn read_only_warning(&mut self) {
+        let Some(doc) = self.active_doc() else {
+            return;
+        };
+        let what = not_utf8_reason(doc);
+        let name = doc
+            .path
+            .clone()
+            .map(|p| self.display_path(&p))
+            .unwrap_or_else(|| "file".to_string());
+        self.warn(format!("{name}: read-only ({what})"));
+    }
+
+    /// Edit mode on the active tab (ctrl+i); a read-only document stays in read mode.
     pub fn enter_edit_mode(&mut self) {
+        if self.active_doc().is_some_and(|d| d.read_only) {
+            self.read_only_warning();
+            return;
+        }
         self.sync_mode();
         if let Some(v) = self.views.get_mut(self.active) {
             v.edit = true;
@@ -662,7 +675,7 @@ impl App {
     /// The short non-modal hint for an edit attempt in read mode: one notice per burst of
     /// attempts (a repeat only extends its time).
     fn read_mode_hint(&mut self) {
-        let text = format!("Read mode — {} to edit", self.key_hint("editor.edit_mode"));
+        let text = format!("Read mode: {} to edit", self.key_hint("editor.edit_mode"));
         let expires = Some(Instant::now() + INFO_NOTICE_TTL);
         if let Some(n) = self.notices.iter_mut().find(|n| n.text == text) {
             n.expires = expires;
@@ -1245,6 +1258,16 @@ impl App {
         commands::explorer::flush(self);
         self.sync_explorer_watches();
         self.sync_mode();
+    }
+}
+
+/// Why a document is open read-only: "not valid UTF-8" or "<encoding>, not UTF-8".
+fn not_utf8_reason(doc: &Document) -> String {
+    let enc = encoding_name(doc);
+    if enc == "non-UTF-8" {
+        "not valid UTF-8".to_string()
+    } else {
+        format!("{enc}, not UTF-8")
     }
 }
 
