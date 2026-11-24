@@ -244,6 +244,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let buf = frame.buffer_mut();
     let x0 = area.x + gutter;
     let selected = |abs: usize| ranges.iter().any(|&(f, t)| abs >= f && abs < t);
+    // Find bar matches (sorted, non-overlapping): a binary search per drawn cell.
+    let matches: &[(usize, usize)] = if app.find.open {
+        &app.find.matches
+    } else {
+        &[]
+    };
+    let in_match = |abs: usize| {
+        let i = matches.partition_point(|&(_, e)| e <= abs);
+        matches.get(i).is_some_and(|&(s, _)| s <= abs)
+    };
     for row in 0..rows {
         let ln = top + row;
         if ln > last_line {
@@ -279,6 +289,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             }
             let style = if selected(line_start + c.start) {
                 theme.selection
+            } else if in_match(line_start + c.start) {
+                theme.text.patch(theme.find_match)
             } else {
                 theme.text
             };

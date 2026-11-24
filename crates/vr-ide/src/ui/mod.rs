@@ -3,8 +3,10 @@
 pub mod dialog;
 pub mod editor_view;
 pub mod explorer;
+pub mod find_bar;
 pub mod layout;
 pub mod palette;
+pub mod search_panel;
 pub mod status_bar;
 pub mod tabs;
 
@@ -17,16 +19,20 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let theme = Theme::from_name(&app.settings.theme);
     let area = frame.area();
     let notice_rows = status_bar::notice_rows(app, area.width);
-    let explorer_cols = if app.explorer.visible {
+    let side = if app.search.visible {
+        layout::Side::Search
+    } else if app.explorer.visible {
         crate::commands::explorer::ensure_loaded(app);
-        layout::explorer_width(area.width)
+        layout::Side::Explorer
     } else {
-        0
+        layout::Side::None
     };
-    let layout = layout::compute(area, notice_rows, explorer_cols);
+    let layout = layout::compute(area, notice_rows, side, find_bar::rows(app));
     app.layout = layout;
     explorer::render(frame.buffer_mut(), layout.explorer, app, &theme);
+    search_panel::render(frame, layout.search, app, &theme);
     tabs::render(frame.buffer_mut(), layout.tabs, app, &theme);
+    find_bar::render(frame, layout.find_bar, app, &theme);
     editor_view::render(frame, layout.editor, app, &theme);
     status_bar::render_notice(frame.buffer_mut(), layout.notice, app, &theme);
     status_bar::render(frame.buffer_mut(), layout.status, app, &theme);
@@ -150,6 +156,83 @@ mod tests {
     }
 
     #[test]
+    fn render_find_bar() {
+        let (_d, _p, mut app, _) =
+            app_with_file("fn alpha() {}\nfn beta() {}\n// alpha again: alpha\nfn gamma() {}\n");
+        app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        for c in "alpha".chars() {
+            key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('w'), KeyModifiers::ALT);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        for c in "omega".chars() {
+            key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        snap("render_find_bar", &mut app);
+    }
+
+    /// A project with matches in two files, searched through the panel.
+    fn searched_app(replace: bool) -> (tempfile::TempDir, App) {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path().join("shop");
+        std::fs::create_dir_all(r.join("src/Entity")).unwrap();
+        std::fs::write(
+            r.join("src/Entity/Order.php"),
+            "<?php\nclass Order\n{\n    private int $total = 0; // total\n}\n",
+        )
+        .unwrap();
+        std::fs::write(r.join("README.md"), "# shop\nOrder total in cents.\n").unwrap();
+        let (mut app, _) = test_app(&r);
+        app.explorer.visible = true;
+        app.open_path(std::path::Path::new("README.md")).unwrap();
+        let chord = if replace { 'H' } else { 'F' };
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char(chord),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        for c in "total".chars() {
+            key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        if replace {
+            key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+            for c in "sum".chars() {
+                key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+            }
+        }
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while app.search.running() || app.search.busy() {
+            assert!(Instant::now() < deadline, "search did not finish");
+            std::thread::sleep(Duration::from_millis(2));
+            app.drain_search();
+        }
+        // Files arrive in walk order; the snapshot needs one order.
+        app.search.groups.sort_by(|a, b| a.path.cmp(&b.path));
+        if let Some(p) = &mut app.search.preview {
+            p.files.sort_by(|a, b| a.path.cmp(&b.path));
+        }
+        app.notices.clear();
+        (d, app)
+    }
+
+    #[test]
+    fn render_search_panel() {
+        let (_d, mut app) = searched_app(false);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        snap("render_search_panel", &mut app);
+    }
+
+    #[test]
+    fn render_replace_preview() {
+        let (_d, mut app) = searched_app(true);
+        assert!(app.search.preview.is_some());
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        snap("render_replace_preview", &mut app);
+    }
+
+    #[test]
     fn render_palette() {
         let (_d, _p, mut app, _) = app_with_file("fn main() {}\n");
         app.run_command("app.palette", crate::commands::CmdArgs::None);
@@ -163,6 +246,22 @@ mod tests {
         let pos = t.get_cursor_position().unwrap();
         let input = app.palette.as_ref().unwrap().area;
         assert_eq!(pos.y, input.y + 1, "{pos:?} {input:?}");
+    }
+
+    /// D122: the palette never covers the status row, however small the screen.
+    #[test]
+    fn palette_leaves_the_status_row_visible() {
+        let (_d, _p, mut app, _) = app_with_file("fn main() {}\n");
+        app.run_command("app.palette", crate::commands::CmdArgs::None);
+        for h in 4..=14 {
+            let t = draw(&mut app, 40, h);
+            let buf = t.backend().buffer();
+            let last: String = (0..40).map(|x| buf[(x, h - 1)].symbol()).collect();
+            assert!(
+                !last.contains('└') && !last.contains('│'),
+                "height {h}: {last:?}"
+            );
+        }
     }
 
     #[test]

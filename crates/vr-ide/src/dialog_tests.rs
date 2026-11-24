@@ -60,14 +60,17 @@ fn palette_filters_by_fuzzy_name_and_shows_keys() {
     p.input.set("nav.goto");
     crate::commands::palette::refilter(&mut app);
     assert_eq!(app.palette.as_ref().unwrap().items[0].name, "nav.goto_line");
-    // Pending commands of later tasks are not listed.
+    // The search commands are listed by their names.
     app.palette
         .as_mut()
         .unwrap()
         .input
         .set("search.replace_project");
     crate::commands::palette::refilter(&mut app);
-    assert!(app.palette.as_ref().unwrap().items.is_empty());
+    assert_eq!(
+        app.palette.as_ref().unwrap().items[0].name,
+        "search.replace_project"
+    );
 }
 
 #[test]

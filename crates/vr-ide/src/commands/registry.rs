@@ -33,6 +33,8 @@ const GROUPS: &[&[CommandSpec]] = &[
     super::tab::COMMANDS,
     super::nav::COMMANDS,
     super::explorer::COMMANDS,
+    super::find::COMMANDS,
+    super::search::COMMANDS,
     PENDING,
 ];
 
@@ -55,35 +57,9 @@ pub fn is_pending(name: &str) -> bool {
     PENDING.iter().any(|c| c.name == name)
 }
 
-/// Message of the error a pending command returns.
-pub const NOT_AVAILABLE: &str = "not available yet";
-
-fn not_available(_: &mut App, _: CmdArgs) -> CmdResult {
-    anyhow::bail!(NOT_AVAILABLE)
-}
-
-const fn pending(name: &'static str, title: &'static str) -> CommandSpec {
-    CommandSpec {
-        name,
-        title,
-        run: not_available,
-    }
-}
-
-/// Plan commands built by a later task (T10). Registered now so the default keymap
-/// validates cleanly and the keys report "not available yet" instead of doing nothing.
-const PENDING: &[CommandSpec] = &[
-    pending("find.open", "Find"),
-    pending("find.next", "Find Next"),
-    pending("find.prev", "Find Previous"),
-    pending("find.replace_open", "Replace"),
-    pending("find.replace_one", "Replace One"),
-    pending("find.replace_all", "Replace All"),
-    pending("search.project", "Search in Project"),
-    pending("search.next_result", "Search: Next Result"),
-    pending("search.prev_result", "Search: Previous Result"),
-    pending("search.replace_project", "Replace in Project"),
-];
+/// Placeholders of commands a later task builds: registered early so the default keymap
+/// validates cleanly, hidden from the palette. Every plan command is registered, so it is empty.
+const PENDING: &[CommandSpec] = &[];
 
 #[cfg(test)]
 mod tests {

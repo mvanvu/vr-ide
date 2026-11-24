@@ -1,0 +1,17 @@
+---
+source: crates/vr-ide/src/ui/mod.rs
+assertion_line: 73
+expression: t.backend()
+---
+"REPLACE       Aa .* ab │ README.md      "
+"> total                │  1 # shop      "
+"R sum                  │  2 Order total "
+"Space toggles, Enter re│  3             "
+"[x] README.md         1│                "
+"  -2 Order total in cen│                "
+"  +2 Order sum in cents│                "
+"[x] Order.php src/Ent 2│                "
+"  -4 private int $total│                "
+"  +4 private int $sum =│                "
+"                       │                "
+" README.md · Ln 1, Col 1 · LF · UTF-8   "

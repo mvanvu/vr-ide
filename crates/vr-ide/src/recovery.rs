@@ -216,6 +216,15 @@ pub fn install_hook_for(
             for p in write_recovery(state, &dir) {
                 eprintln!("vr-ide: unsaved buffer written to {}", p.display());
             }
+            // The worker is not joined here (it may be blocked in I/O, and the panic left
+            // the app's state unknown), so only the fact is reported.
+            if crate::commands::search::REPLACE_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+                eprintln!(
+                    "vr-ide: a project replace was interrupted; files it had not reached were \
+                     not replaced, and the file it was writing may have a .vr-ide-save-*.tmp \
+                     beside it (search again to see what is left)"
+                );
+            }
         }
         previous(info);
     }));

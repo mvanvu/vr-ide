@@ -1,15 +1,28 @@
-//! Screen split: explorer on the left (when shown), tab bar and editor on the right, notice
-//! lines (only while a notice is shown) and the status bar across the whole width.
+//! Screen split: a side panel on the left (the explorer or the search panel, when shown),
+//! tab bar, find bar (while open) and editor on the right, notice lines (only while a notice
+//! is shown) and the status bar across the whole width.
 
 use ratatui::layout::Rect;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AppLayout {
     pub explorer: Rect,
+    /// The project search panel; it takes the side column instead of the explorer.
+    pub search: Rect,
     pub tabs: Rect,
+    /// The find / replace bar, between the tab bar and the editor.
+    pub find_bar: Rect,
     pub editor: Rect,
     pub notice: Rect,
     pub status: Rect,
+}
+
+/// What the side column shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    None,
+    Explorer,
+    Search,
 }
 
 /// Narrowest screen that still gets an explorer next to the editor.
@@ -23,9 +36,21 @@ pub fn explorer_width(width: u16) -> u16 {
     (width / 4).clamp(16, 40).min(width / 2)
 }
 
-/// `notice_rows` is capped so the editor keeps at least a third of the screen;
-/// `explorer_cols` (see [`explorer_width`]) is taken from the left of the tab bar and editor.
-pub fn compute(area: Rect, notice_rows: u16, explorer_cols: u16) -> AppLayout {
+/// Below this screen width the search panel takes the whole width (results need room).
+pub const SEARCH_MIN_SCREEN: u16 = 40;
+
+/// Search panel width: wider than the explorer because result lines need room.
+pub fn search_width(width: u16) -> u16 {
+    if width < SEARCH_MIN_SCREEN {
+        return width;
+    }
+    (width * 2 / 5).clamp(24, 60).min(width * 3 / 5)
+}
+
+/// `notice_rows` is capped so the editor keeps at least a third of the screen; the side
+/// column ([`explorer_width`] / [`search_width`]) is taken from the left of the tab bar and
+/// editor; `find_rows` (0 when the bar is closed) from the top of the editor.
+pub fn compute(area: Rect, notice_rows: u16, side: Side, find_rows: u16) -> AppLayout {
     let row = |y: u16, h: u16| Rect::new(area.x, y, area.width, h);
     if area.height < 3 {
         return AppLayout {
@@ -36,14 +61,28 @@ pub fn compute(area: Rect, notice_rows: u16, explorer_cols: u16) -> AppLayout {
     let notice_rows = notice_rows.min((area.height - 2) / 3);
     let status = row(area.y + area.height - 1, 1);
     let notice = row(status.y - notice_rows, notice_rows);
-    let ew = explorer_cols.min(area.width / 2);
-    let explorer = Rect::new(area.x, area.y, ew, notice.y - area.y);
-    let right = |y: u16, h: u16| Rect::new(area.x + ew, y, area.width - ew, h);
+    let sw = match side {
+        Side::None => 0,
+        Side::Explorer => explorer_width(area.width).min(area.width / 2),
+        Side::Search => search_width(area.width),
+    };
+    let column = Rect::new(area.x, area.y, sw, notice.y - area.y);
+    let (explorer, search) = match side {
+        Side::Search => (Rect::default(), column),
+        _ => (column, Rect::default()),
+    };
+    let right = |y: u16, h: u16| Rect::new(area.x + sw, y, area.width - sw, h);
     let tabs = right(area.y, 1);
-    let editor = right(area.y + 1, notice.y - (area.y + 1));
+    let body = notice.y - (area.y + 1);
+    // The bar never takes the last editor row.
+    let find_rows = find_rows.min(body.saturating_sub(1));
+    let find_bar = right(area.y + 1, find_rows);
+    let editor = right(area.y + 1 + find_rows, body - find_rows);
     AppLayout {
         explorer,
+        search,
         tabs,
+        find_bar,
         editor,
         notice,
         status,

@@ -3,6 +3,7 @@
 use super::dialog::DialogAction;
 use super::file::{CANCEL, SaveOutcome, save_doc};
 use super::registry::{CmdArgs, CmdResult, CommandSpec};
+use super::search::QuitBlock;
 use crate::app::App;
 use crate::ui::dialog::{ConfirmDialog, DialogWidget};
 
@@ -20,7 +21,13 @@ pub const COMMANDS: &[CommandSpec] = &[
 ];
 
 /// With unsaved changes, asks: Save all / Discard / Cancel (the answer is in [`answer_quit`]).
+/// Refused while a project replace writes files: exiting would stop it with some files
+/// replaced and nothing reported. A cancelled replace that has not stopped after
+/// `CANCEL_WAIT` (a worker blocked in I/O) asks first, naming the file.
 fn quit(app: &mut App, _: CmdArgs) -> CmdResult {
+    if !quit_unblocked(app) {
+        return Ok(());
+    }
     let unsaved: Vec<String> = app
         .docs
         .iter()
@@ -58,6 +65,9 @@ pub const DISCARD: &str = "Discard";
 /// Discard: quits once the buffers are in the recovery folder (D57), and prints where after
 /// the terminal is restored; when that write fails nothing is discarded.
 pub fn answer_quit(app: &mut App, button: usize) {
+    if !quit_unblocked(app) {
+        return;
+    }
     match button {
         0 => {
             for i in 0..app.docs.len() {
@@ -86,6 +96,27 @@ pub fn answer_quit(app: &mut App, button: usize) {
         }
         _ => {}
     }
+}
+
+/// True when no project replace is in the way of quitting; otherwise says why (or asks).
+fn quit_unblocked(app: &mut App) -> bool {
+    match super::search::quit_block(app) {
+        None => true,
+        Some(QuitBlock::Replacing) => {
+            app.warn("Quit: a replace is running; Esc in the search panel cancels it");
+            false
+        }
+        Some(QuitBlock::Stuck(file)) => {
+            super::search::ask_quit_stuck(app, file.as_deref());
+            false
+        }
+    }
+}
+
+/// "Quit anyway" on a replace that does not stop: quit goes on (unsaved files still ask).
+pub fn answer_quit_stuck(app: &mut App) {
+    super::search::allow_quit(app);
+    let _ = quit(app, CmdArgs::None);
 }
 
 fn palette(app: &mut App, _: CmdArgs) -> CmdResult {

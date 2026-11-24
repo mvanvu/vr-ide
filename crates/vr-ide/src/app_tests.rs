@@ -330,19 +330,55 @@ fn bracketed_paste_is_one_undo_step() {
 }
 
 #[test]
-fn pending_commands_show_a_notice() {
+fn find_without_a_file_shows_a_notice() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = test_app(dir.path());
     app.handle_key(ctrl('f'));
-    assert!(
-        notices(&app)
-            .iter()
-            .any(|n| n.contains("not available yet"))
-    );
+    assert!(!app.find.open);
+    assert!(notices(&app).iter().any(|n| n.contains("no file is open")));
     // Escape dismisses the oldest notice.
     let n = app.notices.len();
     app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.notices.len(), n - 1);
+}
+
+/// The go-to-file index is rebuilt on every ctrl+p (D115): the "first N files" notice of a
+/// project above the cap is shown once per session, not on every open.
+#[test]
+fn index_cap_notice_once_per_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = test_app(dir.path());
+    app.note_index_cap(200_000);
+    app.note_index_cap(200_000);
+    let shown = notices(&app)
+        .iter()
+        .filter(|n| n.contains("first 200000 files"))
+        .count();
+    assert_eq!(shown, 1, "{:?}", notices(&app));
+}
+
+/// Every plan command is registered and offered in the palette.
+#[test]
+fn find_and_search_commands_are_in_the_palette() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = test_app(dir.path());
+    app.run_command("app.palette", CmdArgs::None);
+    let names: Vec<&str> = app
+        .palette
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.name)
+        .collect();
+    for want in [
+        "find.open",
+        "find.replace_all",
+        "search.project",
+        "search.replace_project",
+    ] {
+        assert!(names.contains(&want), "{want} missing");
+    }
 }
 
 #[test]

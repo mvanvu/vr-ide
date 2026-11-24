@@ -130,6 +130,32 @@ pub fn finish(result: anyhow::Result<()>, app: &App, dir: &std::path::Path) -> a
     Err(e.context(format!("unsaved buffers written to {}", list.join(", "))))
 }
 
+/// The exit sequence after [`run`]: `restore_terminal`, [`finish`] (recovery), then the
+/// project replace's bounded wait (`wait`), then the exit messages on stderr.
+pub fn exit(
+    result: anyhow::Result<()>,
+    app: &mut App,
+    dir: &std::path::Path,
+    restore_terminal: &mut dyn FnMut(),
+    wait: Duration,
+) -> anyhow::Result<()> {
+    // Nothing may wait before these two: a worker blocked in I/O would leave the terminal
+    // in the alternate screen and the unsaved buffers unwritten.
+    restore_terminal();
+    let result = finish(result, app, dir);
+    if crate::commands::search::replacing(app) {
+        eprintln!(
+            "vr-ide: stopping the project replace (waiting up to {} s)…",
+            wait.as_secs_f32()
+        );
+    }
+    crate::commands::search::shutdown_within(app, wait);
+    for m in &app.exit_messages {
+        eprintln!("vr-ide: {m}");
+    }
+    result
+}
+
 /// Runs until a command sets `app.quit`. Draws only when something changed.
 pub fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Result<()>
 where
@@ -138,6 +164,7 @@ where
     loop {
         app.drain_fs_events();
         app.drain_index();
+        app.drain_search();
         app.tick(Instant::now());
         if app.dirty {
             draw_frame(terminal, app, &recovery::GLOBAL, ui::render)?;
@@ -208,6 +235,50 @@ mod tests {
             "{msg}"
         );
         assert!(finish(Ok(()), &app, &dir).is_ok());
+    }
+
+    /// A replace worker blocked in I/O at exit: the terminal is restored and the unsaved
+    /// buffers are in recovery before the bounded wait starts, and the exit still ends.
+    #[test]
+    fn exit_restores_and_writes_recovery_before_waiting_for_a_replace() {
+        use crate::commands::search::{JobKind, tests::stuck_job};
+        use std::time::SystemTime;
+        let (_d, _p, mut app, _) = crate::app_tests::app_with_file("a\n");
+        app.handle_key(KeyEvent::new(K::Char('x'), KeyModifiers::NONE));
+        stuck_job(&mut app, JobKind::Apply);
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path().join("recovery");
+        let (t0, wall0) = (Instant::now(), SystemTime::now());
+        let mut restored = None;
+        let wait = Duration::from_millis(500);
+        let r = exit(
+            Err(anyhow::anyhow!("write to terminal: EIO")),
+            &mut app,
+            &dir,
+            &mut || restored = Some(t0.elapsed()),
+            wait,
+        );
+        let took = t0.elapsed();
+        assert!(took >= wait && took < Duration::from_secs(2), "{took:?}");
+        let restored = restored.expect("terminal restored");
+        assert!(
+            restored < Duration::from_millis(200),
+            "restored at {restored:?}"
+        );
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        let written = std::fs::metadata(&files[0]).unwrap().modified().unwrap();
+        let after = written.duration_since(wall0).unwrap_or_default();
+        assert!(
+            after < Duration::from_millis(200),
+            "recovery written {after:?} after the start"
+        );
+        assert!(format!("{:#}", r.unwrap_err()).contains("unsaved buffers written"));
+        let msgs = app.exit_messages.join(" | ");
+        assert!(msgs.contains("still writing b"), "{msgs}");
     }
 
     #[test]

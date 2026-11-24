@@ -106,14 +106,41 @@ impl Default for Limits {
 /// Reads `path` whole if it holds at most `max` bytes; `None` when it is larger. Never
 /// allocates more than `max + 1` bytes, even if the file grows while being read.
 pub(crate) fn read_capped(path: &Path, max: u64) -> io::Result<Option<Vec<u8>>> {
-    let file = fs::File::open(path)?;
-    let hint = file.metadata().map_or(0, |m| m.len());
+    let (file, hint) = open_regular(path)?;
     if hint > max {
         return Ok(None);
     }
     let mut buf = Vec::with_capacity(usize::try_from(hint).unwrap_or(0));
     file.take(max + 1).read_to_end(&mut buf)?;
     Ok((buf.len() as u64 <= max).then_some(buf))
+}
+
+/// Opens `path` for reading only if it is a regular file, and returns it with its length.
+/// A FIFO or device (put in place of a result file after the search) would block the open
+/// or the read forever, so it is refused before the open, the open does not wait
+/// (O_NONBLOCK), and the opened handle is checked again in case the path was swapped in
+/// between. Mirrors vr-core's private `hash_file` guard (D89).
+pub(crate) fn open_regular(path: &Path) -> io::Result<(fs::File, u64)> {
+    if !fs::metadata(path)?.is_file() {
+        return Err(not_regular());
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+    }
+    let file = opts.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(not_regular());
+    }
+    Ok((file, meta.len()))
+}
+
+fn not_regular() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "not a regular file")
 }
 
 /// "32 MB" / "100 bytes" for messages.
