@@ -1,4 +1,5 @@
-//! Command palette overlay: input row and the matching commands with their keys (AC-6).
+//! Palette overlay: input row and the matching commands with their keys (AC-6), or the
+//! matching files for go to file.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -6,6 +7,7 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, Clear, Widget};
 
 use crate::app::App;
+use crate::commands::palette::PaletteMode;
 use crate::theme::Theme;
 
 /// Widest the palette gets.
@@ -34,7 +36,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let buf = frame.buffer_mut();
     Clear.render(rect, buf);
     Block::bordered()
-        .title(" Command Palette ")
+        .title(match p.mode {
+            PaletteMode::Commands => " Command Palette ",
+            PaletteMode::Files => " Go to File ",
+        })
         .style(theme.popup)
         .border_style(theme.popup_border)
         .render(rect, buf);
@@ -71,7 +76,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         buf.set_stringn(
             x0 + 1,
             list.y,
-            "No matching commands",
+            p.empty_text(),
             width,
             theme.popup.patch(theme.dim),
         );
@@ -91,9 +96,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             theme.popup
         };
         buf.set_style(Rect::new(x0, y, inner_w, 1), base);
-        let title_w = Span::raw(item.title).width();
+        let title_w = Span::raw(item.title.as_str()).width();
         let keys_w = Span::raw(item.keys.as_str()).width();
-        let name_w = Span::raw(item.name).width();
+        let name_w = Span::raw(item.detail.as_str()).width();
         // Title first, then the keys (AC-6), then the command name when there is room.
         let show_keys = !item.keys.is_empty() && title_w + 2 + keys_w <= width;
         let used = title_w + if show_keys { keys_w + 2 } else { 0 };
@@ -115,7 +120,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             x += cw;
         }
         if show_name {
-            buf.set_string(x + 2, y, item.name, base.patch(theme.dim));
+            buf.set_string(x + 2, y, &item.detail, base.patch(theme.dim));
         }
         if show_keys {
             let kx = end - keys_w as u16;

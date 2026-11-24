@@ -47,6 +47,7 @@ const KNOWN: &[&str] = &[
     "explorer.new_folder",
     "explorer.rename",
     "explorer.copy",
+    "explorer.cut",
     "explorer.paste",
     "explorer.move",
     "explorer.delete",
@@ -232,6 +233,12 @@ fn defaults_load_without_user_file() {
         Some("explorer.copy")
     );
     assert_eq!(km.command_for(&chord("ctrl+c")), Some("edit.copy"));
+    // D108: VS Code's explorer cut; the editor keeps edit.cut.
+    assert_eq!(
+        km.command_for_in(Context::Explorer, &chord("ctrl+x")),
+        Some("explorer.cut")
+    );
+    assert_eq!(km.command_for(&chord("ctrl+x")), Some("edit.cut"));
     assert_eq!(
         km.command_for_in(Context::Explorer, &chord("ctrl+s")),
         Some("file.save")

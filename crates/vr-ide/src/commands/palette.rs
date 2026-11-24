@@ -1,4 +1,5 @@
-//! Command palette state and input (AC-6). Rendering is in `ui::palette`.
+//! Command palette state and input (AC-6), also used for go to file. Rendering is in
+//! `ui::palette`.
 //!
 //! Built-in keys (keymap.toml `[palette]` says so): typing and line editing, Up/Down,
 //! PageUp/PageDown, Enter runs the selected command, Esc closes.
@@ -13,19 +14,36 @@ use super::registry::{CmdArgs, CommandSpec, all_commands, is_pending};
 use crate::app::{App, Focus};
 use crate::ui::dialog::LineInput;
 
-/// One listed command.
+/// One listed command or (go to file) file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteItem {
+    /// Command name ("" for a file).
     pub name: &'static str,
-    pub title: &'static str,
+    /// Command title, or the file name.
+    pub title: String,
+    /// Go to file: the root-relative path.
+    pub path: Option<PathBuf>,
+    /// Shown dimmed after the title: the command name, or the file's folder.
+    pub detail: String,
     /// Bound keys from the keymap ("ctrl+s"), "" when unbound.
     pub keys: String,
     /// Char indices of the title that matched the query (highlighted).
     pub hits: Vec<usize>,
 }
 
+/// What the palette lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteMode {
+    Commands,
+    /// Go to file (`file.goto`): project files from the background `FileIndex`.
+    Files,
+}
+
 #[derive(Debug, Clone)]
 pub struct Palette {
+    pub mode: PaletteMode,
+    /// Files mode: the index is still being built.
+    pub indexing: bool,
     pub input: LineInput,
     pub items: Vec<PaletteItem>,
     pub selected: usize,
@@ -55,6 +73,8 @@ pub fn open(app: &mut App) {
         None => app.focus,
     };
     app.palette = Some(Palette {
+        mode: PaletteMode::Commands,
+        indexing: false,
         input: LineInput::default(),
         items: Vec::new(),
         selected: 0,
@@ -78,17 +98,55 @@ pub fn close(app: &mut App) {
 
 /// Recomputes the list for the current input; the selection goes back to the top.
 pub fn refilter(app: &mut App) {
-    let Some(query) = app.palette.as_ref().map(|p| p.input.text().to_string()) else {
+    relist(app, false);
+}
+
+/// Recomputes the list after the file index changed under the user (same input): the
+/// highlighted file stays highlighted when it is still listed, so Enter opens what is shown.
+pub fn refresh_keeping_selection(app: &mut App) {
+    relist(app, true);
+}
+
+fn relist(app: &mut App, keep: bool) {
+    let Some((query, mode, was)) = app.palette.as_ref().map(|p| {
+        let was = p.items.get(p.selected).map(|i| (i.name, i.path.clone()));
+        (p.input.text().to_string(), p.mode, was)
+    }) else {
         return;
     };
+    let indexing = app.index_rx.is_some();
+    let items = match mode {
+        PaletteMode::Commands => command_items(app, &query),
+        PaletteMode::Files => file_items(app, &query),
+    };
+    if let Some(p) = &mut app.palette {
+        let selected = was
+            .filter(|_| keep)
+            .and_then(|(name, path)| items.iter().position(|i| i.name == name && i.path == path))
+            .unwrap_or(0);
+        p.items = items;
+        p.selected = selected;
+        p.top = if selected == 0 {
+            0
+        } else {
+            p.top.min(selected)
+        };
+        p.indexing = indexing;
+    }
+    app.dirty = true;
+}
+
+fn command_items(app: &App, query: &str) -> Vec<PaletteItem> {
     let cmds = candidates();
-    let items: Vec<PaletteItem> = rank(&query, &cmds)
+    rank(query, &cmds)
         .into_iter()
         .map(|(i, hits)| {
             let c = cmds[i];
             PaletteItem {
                 name: c.name,
-                title: c.title,
+                title: c.title.to_string(),
+                path: None,
+                detail: c.name.to_string(),
                 keys: app
                     .keymap
                     .keys_for(c.name)
@@ -99,27 +157,30 @@ pub fn refilter(app: &mut App) {
                 hits,
             }
         })
-        .collect();
-    if let Some(p) = &mut app.palette {
-        p.items = items;
-        p.selected = 0;
-        p.top = 0;
-    }
-    app.dirty = true;
+        .collect()
 }
 
-/// Runs the selected command after closing the palette (a command may open a dialog).
+/// Runs the selected command (a command may open a dialog) or opens the selected file,
+/// after closing the palette.
 pub fn accept(app: &mut App) {
-    let Some(name) = app
+    let Some(item) = app
         .palette
         .as_ref()
         .and_then(|p| p.items.get(p.selected))
-        .map(|i| i.name)
+        .cloned()
     else {
         return;
     };
     close(app);
-    app.run_command(name, CmdArgs::None);
+    match item.path {
+        Some(rel) => match app.open_path(&rel) {
+            Ok(()) => app.focus = Focus::Editor,
+            Err(e) => app.error(e.to_string()),
+        },
+        None => {
+            app.run_command(item.name, CmdArgs::None);
+        }
+    }
 }
 
 fn move_selection(app: &mut App, delta: isize) {
@@ -234,4 +295,59 @@ pub fn rank(query: &str, cmds: &[&CommandSpec]) -> Vec<(usize, Vec<usize>)> {
             .then_with(|| cmds[a.0].title.cmp(cmds[b.0].title))
     });
     out.into_iter().map(|(i, _, h)| (i, h)).collect()
+}
+
+impl Palette {
+    /// Shown instead of an empty list.
+    pub fn empty_text(&self) -> &'static str {
+        match self.mode {
+            PaletteMode::Commands => "No matching commands",
+            PaletteMode::Files if self.indexing => "Indexing files…",
+            PaletteMode::Files => "No matching files",
+        }
+    }
+}
+
+/// Files listed at most (the best matches).
+const FILE_LIMIT: usize = 200;
+
+/// Opens the palette as go to file. The index is rebuilt in the background on each open:
+/// only shown folders are watched (D110), so changes deeper in the tree are never reported.
+/// The previous index lists meanwhile; the highlighted file stays when the new one arrives.
+pub fn open_files(app: &mut App) {
+    app.start_index();
+    open(app);
+    if let Some(p) = &mut app.palette {
+        p.mode = PaletteMode::Files;
+    }
+    refilter(app);
+}
+
+/// Go-to-file rows: file name (with its matched chars) and the folder, dimmed.
+fn file_items(app: &App, query: &str) -> Vec<PaletteItem> {
+    let Some(index) = &app.file_index else {
+        return Vec::new();
+    };
+    index
+        .query(query, FILE_LIMIT)
+        .into_iter()
+        .map(|(rel, _, hits)| {
+            let text = rel.to_string_lossy().into_owned();
+            let base_start = text.rfind('/').map_or(0, |b| b + 1);
+            let offset = text[..base_start].chars().count();
+            PaletteItem {
+                name: "",
+                title: text[base_start..].to_string(),
+                detail: text[..base_start].trim_end_matches('/').to_string(),
+                path: Some(rel),
+                keys: String::new(),
+                hits: hits
+                    .into_iter()
+                    .map(|h| h as usize)
+                    .filter(|&h| h >= offset)
+                    .map(|h| h - offset)
+                    .collect(),
+            }
+        })
+        .collect()
 }

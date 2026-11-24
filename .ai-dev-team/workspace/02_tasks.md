@@ -9,9 +9,9 @@
 | T5 | App shell: event loop, editor view, commands, tabs, status, clipboard, recovery | fe | T1, T2, T3, T4 | ui | AC-1, AC-3, AC-4, AC-5, AC-7, AC-18 | crates/vr-ide/src/{main,app,event_loop,clipboard,recovery,theme}.rs, commands/{registry,app,file,edit,tab}.rs, ui/{layout,editor_view,tabs,status_bar}.rs, ui/snapshots/ | `cargo test -p vr-ide` | done | 1 |
 | T6 | Palette, dialogs, go-to-line, external-change prompt, quit guard | fe | T5 | ui | AC-6, AC-7 | crates/vr-ide/src/ui/{palette,dialog}.rs, commands/{nav,palette}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | done | 2 |
 | T7 | vr-fs tree, file ops (trash), fuzzy file index | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-fs/Cargo.toml, crates/vr-fs/src/lib.rs until T1 committed) | - | AC-8, AC-9 | crates/vr-fs/** | `cargo test -p vr-fs` | done | 3 |
-| T8 | Explorer panel + go-to-file | fe | T6, T7 | ui | AC-1, AC-8, AC-9 | crates/vr-ide/src/ui/{explorer,layout,palette}.rs, commands/explorer.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | fix | 1 |
+| T8 | Explorer panel + go-to-file | fe | T6, T7 | ui | AC-1, AC-8, AC-9 | crates/vr-ide/src/ui/{explorer,layout,palette}.rs, commands/explorer.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | done | 1 |
 | T9 | vr-search engine: find/replace, project search, project replace | be | T2 | - | AC-9, AC-10, AC-11, AC-12 | crates/vr-search/** | `cargo test -p vr-search` | done | 2 |
-| T10 | Find/replace bar + project search panel | fe | T8, T9 | ui | AC-10, AC-11, AC-12 | crates/vr-ide/src/ui/{find_bar,search_panel,layout}.rs, commands/{find,search}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
+| T10 | Find/replace bar + project search panel | fe | T8, T9 | ui | AC-10, AC-11, AC-12 | crates/vr-ide/src/ui/{find_bar,search_panel,layout}.rs, commands/{find,search}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | in-progress | 0 |
 | T11 | Bench run, README, docs/keymap.md | be | T10 | - | AC-1 | README.md, scripts/bench-startup.sh, docs/keymap.md | bench script | todo | 0 |
 | T12 | Shared racing-writer test helper (vr-core test utils) + use it in T4/T7/T9 write-path tests | be | T4, T9 | - | AC-3, AC-8, AC-12 | crates/vr-core/src/testutil.rs (cfg test feature), tests in vr-core, vr-fs, vr-search | `cargo test -p vr-core -p vr-fs -p vr-search` | done | 0 |
 | FR-1 | Racing writer records what each write replaced (exact oracle, drop the one exception) | be | T4 | - | AC-3 | crates/vr-core/src/testutil.rs | `cargo test -p vr-core -p vr-search` | done | 0 |
@@ -93,3 +93,5 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - T8 review (15:10): 2 major (recursive watch_root blocks UI + eats inotify quota; explorer wheel scroll pinned) + minors; FR-4 (worktree .worktrees/FR4) for the vr-core watch API; T8 round 1 after QC verdict
 - T8 fix round 1 (15:12): review 2 major + minors; QC_FAIL paste of a folder into its own parent; QC note: ignored rows flagged by colour only. Fresh developer (first at ~320k tokens); major 1 wiring waits for FR-4
 - FR-4 verdict (15:19): review APPROVE + QP1 re-check APPROVE; QC n-a (library API, covered by tests and by T8's QC after wiring); merged
+- T10 brief must include (T8 R1 minor): the >200k-files go-to-file notice shows once per session, not on every ctrl+p
+- T8 verdicts (15:49): R1 review APPROVE (opus), QC_PASS R1. Side observation: inherited T6 flow R1-replace-race-late gave 1 'no prompt' in 30 → replay by T6's QC

@@ -10,7 +10,7 @@ expression: t.backend()
 "  │ Save As             ctrl+shift+s │  "
 "  │ Select All                ctrl+a │  "
 "  │ Previous Tab         ctrl+pageup │  "
+"  │ Focus Next Part  focus.cycle  f6 │  "
 "  └──────────────────────────────────┘  "
-"                                        "
 "                                        "
 " a.txt · Ln 1, Col 1 · LF · UTF-8       "

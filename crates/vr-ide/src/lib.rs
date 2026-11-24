@@ -16,3 +16,5 @@ pub mod ui;
 mod app_tests;
 #[cfg(test)]
 mod dialog_tests;
+#[cfg(test)]
+mod explorer_tests;

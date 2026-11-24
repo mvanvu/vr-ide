@@ -85,6 +85,10 @@ fn run(app: &mut App) -> Result<()> {
     if std::env::var_os("VR_IDE_EXIT_AFTER_FIRST_FRAME").is_some() {
         return Ok(());
     }
+    // After the first frame: the index walks the project tree in the background; the folder
+    // watches are one per shown folder.
+    app.watch_root();
+    app.start_index();
     // Without the kitty protocol, ctrl+shift+<letter>, ctrl+/ and similar chords cannot be
     // told apart; the startup notice lists the affected keys.
     let enhanced = matches!(supports_keyboard_enhancement(), Ok(true))

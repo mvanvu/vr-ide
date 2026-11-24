@@ -37,8 +37,8 @@ impl DocRef {
     }
 }
 
-/// The action behind an open dialog. T8/T10 add their own variants (rename, new file,
-/// go to file, delete confirmation) and a match arm in [`answer`].
+/// The action behind an open dialog. T10 adds its own variants and a match arm in
+/// [`answer`].
 #[derive(Debug, Clone)]
 pub enum DialogAction {
     /// Unsaved files on quit: Save all / Discard / Cancel.
@@ -69,6 +69,14 @@ pub enum DialogAction {
     },
     /// The file was deleted on disk while the buffer has unsaved changes.
     Deleted(DocRef),
+    /// Explorer: name of a new file or folder in `dir`.
+    NewEntry { dir: PathBuf, folder: bool },
+    /// Explorer: new name for `path`.
+    Rename(PathBuf),
+    /// Explorer: folder to move `paths` into.
+    MoveTo(Vec<PathBuf>),
+    /// Explorer: Move to Trash / Cancel for `paths` (D9).
+    Trash(Vec<PathBuf>),
 }
 
 pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
@@ -98,6 +106,18 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
         }
         (DialogAction::Deleted(doc), Outcome::Chosen(b)) => {
             super::file::answer_deleted(app, &doc, b)
+        }
+        (DialogAction::NewEntry { dir, folder }, Outcome::Submitted(text)) => {
+            super::explorer::answer_new(app, widget, dir, folder, &text);
+        }
+        (DialogAction::Rename(path), Outcome::Submitted(text)) => {
+            super::explorer::answer_rename(app, widget, path, &text);
+        }
+        (DialogAction::MoveTo(paths), Outcome::Submitted(text)) => {
+            super::explorer::answer_move(app, widget, paths, &text);
+        }
+        (DialogAction::Trash(paths), Outcome::Chosen(0)) => {
+            super::explorer::answer_trash(app, &paths);
         }
         _ => {}
     }

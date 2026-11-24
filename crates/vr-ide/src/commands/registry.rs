@@ -32,6 +32,7 @@ const GROUPS: &[&[CommandSpec]] = &[
     super::edit::COMMANDS,
     super::tab::COMMANDS,
     super::nav::COMMANDS,
+    super::explorer::COMMANDS,
     PENDING,
 ];
 
@@ -69,23 +70,9 @@ const fn pending(name: &'static str, title: &'static str) -> CommandSpec {
     }
 }
 
-/// Plan commands built by later tasks (T8, T10). Registered now so the default keymap
+/// Plan commands built by a later task (T10). Registered now so the default keymap
 /// validates cleanly and the keys report "not available yet" instead of doing nothing.
 const PENDING: &[CommandSpec] = &[
-    pending("file.goto", "Go to File"),
-    pending("focus.cycle", "Focus Next Part"),
-    pending("explorer.toggle", "Explorer: Toggle"),
-    pending("explorer.focus", "Explorer: Focus"),
-    pending("explorer.reveal", "Explorer: Reveal Active File"),
-    pending("explorer.new_file", "Explorer: New File"),
-    pending("explorer.new_folder", "Explorer: New Folder"),
-    pending("explorer.rename", "Explorer: Rename"),
-    pending("explorer.copy", "Explorer: Copy"),
-    pending("explorer.paste", "Explorer: Paste"),
-    pending("explorer.move", "Explorer: Move"),
-    pending("explorer.delete", "Explorer: Delete"),
-    pending("explorer.toggle_ignored", "Explorer: Toggle Ignored Files"),
-    pending("explorer.toggle_hidden", "Explorer: Toggle Hidden Files"),
     pending("find.open", "Find"),
     pending("find.next", "Find Next"),
     pending("find.prev", "Find Previous"),

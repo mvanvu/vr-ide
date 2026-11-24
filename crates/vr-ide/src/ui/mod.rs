@@ -2,6 +2,7 @@
 
 pub mod dialog;
 pub mod editor_view;
+pub mod explorer;
 pub mod layout;
 pub mod palette;
 pub mod status_bar;
@@ -16,8 +17,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let theme = Theme::from_name(&app.settings.theme);
     let area = frame.area();
     let notice_rows = status_bar::notice_rows(app, area.width);
-    let layout = layout::compute(area, notice_rows);
+    let explorer_cols = if app.explorer.visible {
+        crate::commands::explorer::ensure_loaded(app);
+        layout::explorer_width(area.width)
+    } else {
+        0
+    };
+    let layout = layout::compute(area, notice_rows, explorer_cols);
     app.layout = layout;
+    explorer::render(frame.buffer_mut(), layout.explorer, app, &theme);
     tabs::render(frame.buffer_mut(), layout.tabs, app, &theme);
     editor_view::render(frame, layout.editor, app, &theme);
     status_bar::render_notice(frame.buffer_mut(), layout.notice, app, &theme);
@@ -208,6 +216,65 @@ mod tests {
         app.handle_mouse(click(save_all.x + 1, save_all.y));
         assert!(app.quit);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "xyone\n");
+    }
+
+    /// A project folder named "shop" with the explorer shown and focused on the open file.
+    fn explorer_app() -> (tempfile::TempDir, App) {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path().join("shop");
+        for dir in ["src/Controller", "src/Entity", "tests", "vendor"] {
+            std::fs::create_dir_all(r.join(dir)).unwrap();
+        }
+        let files = [
+            (
+                "src/Controller/OrderController.php",
+                "<?php\n\nclass OrderController\n{\n}\n",
+            ),
+            ("src/Controller/UserController.php", "<?php\n"),
+            ("src/Entity/Order.php", "<?php\n"),
+            ("composer.json", "{}\n"),
+            ("README.md", "# shop\n"),
+            (".gitignore", "vendor/\n"),
+        ];
+        for (f, body) in files {
+            std::fs::write(r.join(f), body).unwrap();
+        }
+        let (mut app, _) = test_app(&r);
+        app.explorer.visible = true;
+        app.open_path(std::path::Path::new("src/Controller/OrderController.php"))
+            .unwrap();
+        app.run_command("explorer.reveal", crate::commands::CmdArgs::None);
+        app.notices.clear();
+        (d, app)
+    }
+
+    #[test]
+    fn render_explorer() {
+        let (_d, mut app) = explorer_app();
+        let mut t = draw(&mut app, 80, 24);
+        insta::assert_snapshot!("render_explorer_80x24", t.backend());
+        // The panel is a left column; the editor starts right of it.
+        assert_eq!(app.layout.explorer.width, layout::explorer_width(80));
+        assert_eq!(app.layout.editor.x, app.layout.explorer.width);
+        // Focus in the explorer: the cursor row is highlighted, the editor shows no cursor.
+        let theme = Theme::dark();
+        let row = app.layout.explorer.y + app.explorer.cursor as u16;
+        assert_eq!(
+            t.backend().buffer()[(0, row)].bg,
+            theme.list_selected.bg.unwrap()
+        );
+        assert!(t.get_cursor_position().is_err() || app.focus != crate::app::Focus::Editor);
+    }
+
+    #[test]
+    fn render_explorer_narrow() {
+        let (_d, mut app) = explorer_app();
+        let t = draw(&mut app, 40, 12);
+        insta::assert_snapshot!("render_explorer_narrow", t.backend());
+        // Too narrow for a panel: the editor gets the whole width.
+        draw(&mut app, 24, 12);
+        assert_eq!(app.layout.explorer.width, 0);
+        assert_eq!(app.layout.editor.width, 24);
     }
 
     #[test]

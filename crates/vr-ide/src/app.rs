@@ -14,17 +14,19 @@ use vr_core::{BufferOptions, DiskState, Document, FsEvent, Selection, Watcher};
 
 use crate::clipboard::Clipboard;
 use crate::commands::dialog::DialogAction;
+use crate::commands::explorer::Explorer;
 use crate::commands::palette::Palette;
 use crate::commands::{self, CmdArgs};
 use crate::event_loop::{chord_from_key, legacy_unreachable};
 use crate::ui::dialog::{DialogWidget, Outcome};
 use crate::ui::layout::AppLayout;
 
-/// Which part of the screen receives keys. T8/T10 add explorer, find bar. A dialog is modal
+/// Which part of the screen receives keys. T10 adds the find bar. A dialog is modal
 /// and takes every key while open, whatever the focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Editor,
+    Explorer,
     Palette,
 }
 
@@ -32,6 +34,7 @@ impl Focus {
     pub fn context(self) -> Context {
         match self {
             Focus::Editor => Context::Editor,
+            Focus::Explorer => Context::Explorer,
             Focus::Palette => Context::Palette,
         }
     }
@@ -132,6 +135,13 @@ pub struct App {
     last_enter: Option<Instant>,
     /// Time of the key event being handled (injectable clock for tests).
     event_time: Option<Instant>,
+    /// The project tree panel (AC-1, AC-8).
+    pub explorer: Explorer,
+    /// Where `explorer.delete` sends paths (D9); tests swap in `vr_fs::FakeTrash`.
+    pub trash: Box<dyn vr_fs::Trash>,
+    /// Go-to-file index (built in the background) and its build in progress.
+    pub file_index: Option<vr_fs::FileIndex>,
+    pub(crate) index_rx: Option<Receiver<vr_fs::IndexMsg>>,
 }
 
 impl App {
@@ -141,6 +151,7 @@ impl App {
         settings: Settings,
         clipboard: Box<dyn Clipboard>,
     ) -> App {
+        let explorer = Explorer::new(&root, settings.show_hidden, settings.show_ignored);
         App {
             root,
             docs: Vec::new(),
@@ -167,6 +178,10 @@ impl App {
             modal_since: None,
             last_enter: None,
             event_time: None,
+            explorer,
+            trash: Box::new(vr_fs::SystemTrash),
+            file_index: None,
+            index_rx: None,
         }
     }
 
@@ -272,6 +287,60 @@ impl App {
             Err(e) => self.warn(format!(
                 "file watching is off ({e}); external changes are not detected"
             )),
+        }
+    }
+
+    /// Starts the explorer's folder watches (D110): the project root plus each expanded
+    /// folder, one non-recursive watch each, so the cost follows what is shown and not the
+    /// size of the tree (node_modules, target). Later expands and collapses keep them in step
+    /// through [`App::sync_explorer_watches`].
+    pub fn watch_root(&mut self) {
+        self.explorer.watching = true;
+        self.sync_explorer_watches();
+    }
+
+    /// Watches folders that became shown and ends the watches of folders no longer shown.
+    /// A folder that cannot be watched is named once and counted as done, so it is not
+    /// retried on every event (it still refreshes after our own operations).
+    pub(crate) fn sync_explorer_watches(&mut self) {
+        let ex = &self.explorer;
+        if !ex.watching {
+            return;
+        }
+        let root = self.root.clone();
+        let shown = |p: &PathBuf| *p == root || ex.expanded.contains(p);
+        let gone: Vec<PathBuf> = ex.watched.iter().filter(|p| !shown(p)).cloned().collect();
+        let mut new: Vec<PathBuf> = ex
+            .expanded
+            .iter()
+            .filter(|p| !ex.watched.contains(*p))
+            .cloned()
+            .collect();
+        if !ex.watched.contains(&root) && !ex.expanded.contains(&root) {
+            new.push(root);
+        }
+        if gone.is_empty() && new.is_empty() {
+            return;
+        }
+        let mut failed = Vec::new();
+        if let Some(w) = &mut self.watcher {
+            for p in &gone {
+                w.unwatch_dir(p);
+            }
+            for p in &new {
+                if let Err(e) = w.watch_dir(p) {
+                    failed.push(e.to_string());
+                }
+            }
+        }
+        for p in &gone {
+            self.explorer.watched.remove(p);
+        }
+        self.explorer.watched.extend(new);
+        for e in failed {
+            self.warn(format!(
+                "explorer: {e}; that folder refreshes only after your own actions"
+            ));
         }
     }
 
@@ -565,6 +634,7 @@ impl App {
         if let Err(e) = (spec.run)(self, args) {
             self.error(format!("{}: {e}", spec.title));
         }
+        self.sync_explorer_watches();
         self.dirty = true;
         true
     }
@@ -580,6 +650,7 @@ impl App {
         self.event_time = Some(now);
         self.route_key(key, now);
         self.event_time = None;
+        self.sync_explorer_watches();
     }
 
     fn route_key(&mut self, key: KeyEvent, now: Instant) {
@@ -606,6 +677,15 @@ impl App {
         if key.code == DISMISS_KEY && key.modifiers.is_empty() && !self.notices.is_empty() {
             self.notices.pop_front();
             return;
+        }
+        // The explorer's navigation keys are built in like the editor's cursor keys, but a
+        // chord the keymap binds for the explorer is the user's (USER-1) and goes to it.
+        if self.focus == Focus::Explorer {
+            let bound = chord_from_key(&key, self.keyboard_enhanced)
+                .is_some_and(|c| self.keymap.command_for_in(Context::Explorer, &c).is_some());
+            if !bound && commands::explorer::handle_builtin_key(self, &key) {
+                return;
+            }
         }
         // Built-in cursor and typing keys come first: the plan keeps them out of the keymap.
         if self.focus == Focus::Editor && commands::edit::handle_builtin_key(self, &key) {
@@ -648,6 +728,8 @@ impl App {
         }
         match self.focus {
             Focus::Palette => commands::palette::paste(self, text),
+            // Nothing in the explorer takes text.
+            Focus::Explorer => {}
             Focus::Editor => commands::edit::insert_pasted(self, text),
         }
     }
@@ -655,6 +737,11 @@ impl App {
     /// Click places the cursor (shift+click extends), drag selects, the wheel scrolls the
     /// view without moving the cursor, a click on a tab activates it.
     pub fn handle_mouse(&mut self, ev: MouseEvent) {
+        self.route_mouse(ev);
+        self.sync_explorer_watches();
+    }
+
+    fn route_mouse(&mut self, ev: MouseEvent) {
         let inside = |r: ratatui::layout::Rect| {
             ev.column >= r.x
                 && ev.column < r.x + r.width
@@ -672,6 +759,13 @@ impl App {
             return;
         }
         let l = self.layout;
+        if inside(l.explorer) {
+            commands::explorer::handle_mouse(self, &ev);
+            return;
+        }
+        if matches!(ev.kind, MouseEventKind::Down(_)) && self.focus == Focus::Explorer {
+            self.focus = Focus::Editor;
+        }
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if inside(l.tabs) {
@@ -747,6 +841,14 @@ impl App {
     /// Applies a watcher event (AC-7): an unmodified document reloads; a modified one keeps
     /// the buffer, its tab is marked and the Reload / Keep mine prompt opens.
     pub fn handle_fs_event(&mut self, ev: FsEvent) {
+        self.apply_fs_event(ev);
+        commands::explorer::flush(self);
+        self.sync_explorer_watches();
+    }
+
+    /// [`App::handle_fs_event`] without re-reading the explorer folders it touched.
+    fn apply_fs_event(&mut self, ev: FsEvent) {
+        commands::explorer::on_fs_event(self, &ev);
         match ev {
             FsEvent::Modified(p) | FsEvent::Created(p) | FsEvent::Removed(p) => self.recheck(&p),
             FsEvent::Renamed(from, to) => {
@@ -822,6 +924,49 @@ impl App {
         self.dirty = true;
     }
 
+    /// Takes the go-to-file index once its background build finished.
+    pub fn drain_index(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let Some(rx) = &self.index_rx else {
+            return;
+        };
+        let done = loop {
+            match rx.try_recv() {
+                Ok(vr_fs::IndexMsg::Progress(_)) => {}
+                Ok(vr_fs::IndexMsg::Ready(index)) => break Ok(index),
+                Ok(vr_fs::IndexMsg::Error(e)) => break Err(e),
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => break Err("the file index stopped".to_string()),
+            }
+        };
+        self.index_rx = None;
+        match done {
+            Ok(index) => {
+                if index.truncated() {
+                    self.info(format!(
+                        "go to file lists the first {} files of this project",
+                        index.len()
+                    ));
+                }
+                self.file_index = Some(index);
+            }
+            Err(e) => self.warn(format!("go to file: {e}")),
+        }
+        commands::palette::refresh_keeping_selection(self);
+    }
+
+    /// Builds the go-to-file index on a background thread; [`App::drain_index`] takes it.
+    /// A build already running is kept.
+    pub fn start_index(&mut self) {
+        if self.index_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        // Detached: the walk ends when it is done or when `index_rx` is dropped.
+        drop(vr_fs::FileIndex::build(self.root.clone(), tx));
+        self.index_rx = Some(rx);
+    }
+
     /// Handles every pending watcher event without blocking.
     pub fn drain_fs_events(&mut self) {
         let events: Vec<FsEvent> = match &self.fs_rx {
@@ -829,8 +974,10 @@ impl App {
             None => return,
         };
         for ev in events {
-            self.handle_fs_event(ev);
+            self.apply_fs_event(ev);
         }
+        commands::explorer::flush(self);
+        self.sync_explorer_watches();
     }
 }
 

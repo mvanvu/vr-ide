@@ -86,6 +86,7 @@
 "f2" = "explorer.rename"
 "delete" = "explorer.delete"
 "ctrl+c" = "explorer.copy"
+"ctrl+x" = "explorer.cut"
 "ctrl+v" = "explorer.paste"
 
 [palette]

@@ -3,6 +3,7 @@
 pub mod app;
 pub mod dialog;
 pub mod edit;
+pub mod explorer;
 pub mod file;
 pub mod nav;
 pub mod palette;

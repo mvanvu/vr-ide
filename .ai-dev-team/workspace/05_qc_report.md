@@ -455,3 +455,17 @@ Evidence: crates/vr-ide/src/commands/explorer.rs `copy_into` (n=0 tries `dest/sr
 | D9 delete confirm, Cancel default | pass | Delete flow |
 | D76 leftovers kept, noticed | pass | Leftovers flow |
 | Folder paste in place (copy naming) | fail | defect above |
+
+## QC T8 re-check (round 1)
+Build: HEAD 467e2c5 + dirty tree (26 changed/untracked paths), release binary rebuilt via run-heavy.sh before the run. Scripts: `qa-artifacts/T8/fix1_flows.py` (developer-fixed folder-copy check) via `qa-artifacts/T8/r1_flows.py` (adds the R1-* flows). Temp dirs removed.
+| Item | Status | Evidence |
+|---|---|---|
+| All T8 flows (AC-1+AC-9, create, rename file/folder, copy-paste, move, delete, delete-unsaved, safety, nested trash, leftovers, external, go-to, 40x12) | pass | every `FLOW` line PASS |
+| Folder paste in own parent | pass | R1-folder-paste: dirs ['src','src copy','src copy 2'], each holds m.rs, original intact |
+| Wheel scroll 200 entries, then click | pass | wheel down: first row f000 -> f035; wheel up -> f026; click on screen row 6 (text f032.txt) opened f032.txt |
+| ctrl+x then ctrl+v moves | pass | b.txt -> zdir/b.txt, gone from root; a cut onto an existing name did not overwrite |
+| Big tree watches | pass | 55 019 files: 1 watch at start; expand src, mod1, mod0 = 4; collapse mod0 = 3; first frame 10 ms, keys 61 ms, RSS 7.1-7.4 MB, no inotify warning |
+| Symlinked folder outside project | pass | rename answered `g.txt` and delete confirmed: both refused ("... is in a linked folder outside the project (...); rename, move and delete are refused there"), outside file intact, nothing trashed; new file created in the outside folder. The prompts open first and the refusal comes on answering. The scripted rename check in r1_flows.py reports False because the message wraps across the dialog border; checked by hand with a screen dump (outside dir stayed ['f.txt']) |
+| Ignored rows marker | pass | '▸ node_modules ·', '▸ vendor ·', 'z.log ·'; a.txt has none |
+| Concurrent writer vs rename, 10 runs | pass | ok 10, violation 0, torn 0 |
+Note: the harness also ran inherited T6 flows; `R1-replace-race-late` (Save As/Replace, T6, not the explorer) reported 28/30 with 1 "no prompt" and 1 "replaced before any writer write" - outside T8, not re-investigated.

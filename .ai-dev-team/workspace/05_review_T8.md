@@ -82,3 +82,49 @@ Fix: when refilter is triggered by drain_index, keep the selection by `path` (fa
 | AC-1 | pass | explorer_shows_root_tree, render_explorer_* |
 | AC-8 | pass | create/rename/copy/move/delete tests, tabs follow, racing tests green |
 | AC-9 | pass | explorer_toggle_ignored; goto_file_opens_selected excludes the ignored file |
+
+## Round 1 re-check
+
+Verdict: **APPROVE T8 R1** (no blocker or major left; 1 new minor, optional)
+
+Scope: `git diff HEAD -- crates/vr-ide crates/vr-config` (HEAD 467e2c5 with FR-4) plus the untracked explorer files, and the notes under `## Fix round 1` / D108–D115. I ran `cargo test -p vr-ide -p vr-config` once: vr-config 3 + 16 passed, vr-ide 110 passed, 0 failed, 2 ignored.
+
+### Earlier findings
+| Finding | Status | Evidence |
+|---|---|---|
+| M1 recursive root watch on the UI thread | fixed | app.rs `watch_root` → `sync_explorer_watches`: `watch_dir` for the root and each expanded folder, `unwatch_dir` on collapse or vanish. It runs after keys, mouse, commands and fs-event flushes and costs O(expanded) when nothing changed. No `w.watch(root)` is left (the remaining `watch` calls are per open file). `watch_dir` (FR-4) is one canonicalize plus one notify request, with no walk and no cache on Linux. `notify_roots` merges a file's parent watch with a flat dir watch under the same key and mode, so an unwatch of the folder keeps the open file's parent watch. Test `explorer_watches_only_shown_folders`; pty Big: 1 watch (563 before) |
+| M2 wheel pinned / click after scroll | fixed | `follow_cursor` (the wheel clears it; keys, clicks and `select_path` set it) is honoured by render. Clicks use `drawn_top` from the last frame. The wheel clamps to rows−height. Test `explorer_wheel_scrolls_freely_and_clicks_hit_drawn_rows` |
+| Plain keys shadow [explorer] bindings | fixed | route_key runs the built-ins only when `command_for_in(Explorer, chord)` is None. No default global or explorer binding uses a built-in key (checked keymap.toml) |
+| explorer.cut / ctrl+x (D108) | fixed | `explorer.cut`; a cut is pasted once through `move_paths` (shared with explorer.move: `below_root`, no-replace `move_to`, retarget, per-path errors, same-folder no-op). keymap.toml `[explorer] "ctrl+x" = "explorer.cut"`; config.rs asserts the explorer binding and that the editor keeps `edit.cut`; KNOWN list updated. Racing test `explorer_cut_paste_never_loses_a_concurrent_write` |
+| drain_index resets the selection | fixed | `refresh_keeping_selection` matches by (name, path); typing still resets. Test `goto_file_keeps_selection_when_index_arrives` |
+| Dead statements | fixed | removed |
+| Default-layout coverage | fixed | `default_layout_with_explorer_clicks_editor_and_tabs` (red by mutation of `area.x`) |
+| drop_nested O(n²) | fixed | sort by path (component order, so a folder's descendants follow it directly) plus one pass against the last kept path, then an order-keeping HashSet filter: O(n log n). Duplicates are kept once. It is called once, in `targets`; trash and move paths all come from `targets` |
+| BASE-3 | noted | this round's tests each have a red line; two stated exceptions (layout test red by mutation, cut racing test written after) |
+| D109 symlinked folder outside the root | fixed | `below_root` refuses rename, move, cut-paste and trash when the canonical parent is outside the canonical root. Trashing the link row itself and new/paste into it stay allowed. Test `linked_folder_outside_the_project_refuses_destructive_ops` |
+| QC: folder paste into its own parent | fixed | `copy_into` skips the candidate equal to the source; every try is still O_EXCL / mkdir, so nothing is replaced. Test `paste_into_own_parent_makes_a_copy_name` |
+| QC: ignored rows shown by colour only | fixed | trailing " ·" kept when the name is cut, toggle notice says "(marked ·)". Test `ignored_rows_carry_a_text_marker` |
+
+### D109 remaining window (judged)
+`below_root` canonicalizes the parent, then `vr_fs::ops` acts on the path. For the op to land outside the project, a process writing in the project would have to replace an in-project directory component with a symlink to an outside folder within those microseconds. Even then, rename and move stay no-replace and the trash is recoverable, so nothing is overwritten or permanently deleted. The anchor's racing-writer clause does not apply. It is the same lexical class as D70 / `ensure_within`. Closing it fully needs dirfd-relative `renameat` with `O_NOFOLLOW` per component inside vr-fs. Accepted as **low**; no change needed for M2.
+
+### New
+[minor] crates/vr-ide/src/app.rs (drain_index) — since D115 the index rebuilds on every go-to-file open, so in a project above the 200,000-file cap every ctrl+p adds the info notice "go to file lists the first N files…". Fix: show it once per session (a flag on App).
+
+### Files read (round 1)
+app.rs, main.rs, commands/explorer.rs (changed regions: keys, mouse, fs events, below_root, cut/paste/copy_into, move_paths, drop_nested, targets), commands/palette.rs (relist / open_files), ui/explorer.rs (render), explorer_tests.rs (new tests: watches, D109, wheel, list), vr-config keymap.toml + tests/config.rs diff, vr-core watch.rs (watch_dir / unwatch_dir / notify_roots, as a callee). Snapshots: unchanged this round.
+
+### Rule check T8 R1
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-1 | pass | crates/vr-ide/src/** plus the leader-approved vr-config line and test (D108) |
+| BASE-2 | pass | additive only (`explorer.cut`, Explorer fields, `sync_explorer_watches`, `refresh_keeping_selection`); `index_stale` removed (crate-private) |
+| BASE-3 | pass | red line per new test; exceptions stated |
+| BASE-4 | pass | notes plus my run: 110 + 16 + 3 passed |
+| BASE-6 | pass | why-comments (wheel vs cursor, D109 lexical check, D110 cost) |
+| BASE-16 | pass | move_paths shared by move and cut; FR-4 `watch_dir` reused |
+| BASE-25 | pass | notes: fmt rc=0, workspace clippy clean |
+| BASE-32 D9, D15–D18, D24, D25, D32, D76.4, D79–D107 | pass | unchanged behaviour plus D107 amended by D115 |
+| BASE-32 D108–D115 | pass | each applied as recorded |
+| BASE-32 USER-1 | pass | ctrl+x cut in the explorer; keymap bindings win over built-ins |
+| AC-1 / AC-8 / AC-9 | pass | tests above; pty flows PASS in notes |
