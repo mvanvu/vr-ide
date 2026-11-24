@@ -1,7 +1,7 @@
 //! Key chord -> command name, per focus context. Built-in `defaults/keymap.toml` (VS Code Linux
 //! defaults, D10) overridden per key by the user's `keymap.toml`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::Path;
 
@@ -9,6 +9,9 @@ use crate::{ConfigWarning, KeyChord, read_user_file, toml_error_message};
 
 const DEFAULT_KEYMAP: &str = include_str!("../defaults/keymap.toml");
 const BUILT_IN: &str = "<built-in keymap>";
+
+/// Keys already bound by the file being applied, by (context, chord), with the key text as written.
+type Seen = HashMap<(Context, KeyChord), String>;
 
 /// Command names bound by the defaults before the command exists (D8 `focus.editor`, M5);
 /// [`Keymap::validate`] accepts them so the startup notice stays quiet.
@@ -135,14 +138,17 @@ impl Keymap {
     }
 
     fn apply(&mut self, table: toml::Table, file: &Path, w: &mut Vec<ConfigWarning>) {
+        let mut seen = Seen::new();
         for (key, value) in table {
             match value {
-                toml::Value::String(cmd) => self.bind(Context::Global, &key, cmd, file, w),
+                toml::Value::String(cmd) => {
+                    self.bind(Context::Global, &key, cmd, file, w, &mut seen)
+                }
                 toml::Value::Table(t) => {
                     if let Some(ctx) = Context::from_name(&key) {
-                        self.apply_context(ctx, t, file, w);
+                        self.apply_context(ctx, t, file, w, &mut seen);
                     } else if t.contains_key("command") {
-                        self.apply_when_form(&key, t, file, w);
+                        self.apply_when_form(&key, t, file, w, &mut seen);
                     } else {
                         w.push(ConfigWarning::UnknownContext {
                             file: file.to_owned(),
@@ -161,10 +167,11 @@ impl Keymap {
         table: toml::Table,
         file: &Path,
         w: &mut Vec<ConfigWarning>,
+        seen: &mut Seen,
     ) {
         for (key, value) in table {
             match value {
-                toml::Value::String(cmd) => self.bind(ctx, &key, cmd, file, w),
+                toml::Value::String(cmd) => self.bind(ctx, &key, cmd, file, w, seen),
                 _ => w.push(invalid_value(file, &key, "expected a command name string")),
             }
         }
@@ -177,6 +184,7 @@ impl Keymap {
         t: toml::Table,
         file: &Path,
         w: &mut Vec<ConfigWarning>,
+        seen: &mut Seen,
     ) {
         if let Some(extra) = t.keys().find(|k| *k != "command" && *k != "when") {
             w.push(invalid_value(
@@ -207,7 +215,7 @@ impl Keymap {
                 return;
             }
         };
-        self.bind(ctx, key, cmd.clone(), file, w);
+        self.bind(ctx, key, cmd.clone(), file, w, seen);
     }
 
     fn bind(
@@ -217,6 +225,7 @@ impl Keymap {
         cmd: String,
         file: &Path,
         w: &mut Vec<ConfigWarning>,
+        seen: &mut Seen,
     ) {
         let chord = match key.parse::<KeyChord>() {
             Ok(c) => c,
@@ -229,6 +238,17 @@ impl Keymap {
                 return;
             }
         };
+        // "ctrl+s" and "ctrl+S" in one file land on the same chord; keep the first and say so.
+        if let Some(first) = seen.get(&(ctx, chord.clone())) {
+            w.push(ConfigWarning::DuplicateKey {
+                file: file.to_owned(),
+                context: ctx,
+                first: first.clone(),
+                second: key.to_owned(),
+            });
+            return;
+        }
+        seen.insert((ctx, chord.clone()), key.to_owned());
         let cmd = cmd.trim();
         if cmd.is_empty() {
             self.bindings.remove(&(ctx, chord));
@@ -247,8 +267,8 @@ fn invalid_value(file: &Path, key: &str, message: &str) -> ConfigWarning {
 }
 
 /// Lets users write `ctrl+s = "file.save"` (as in AC-5) although TOML needs `"ctrl+s"`: a line whose
-/// key holds characters a bare TOML key cannot have gets that key quoted. The separator is the last
-/// `=` before the value, so `ctrl+= = "x"` works too. Headers, comments and quoted keys pass through.
+/// key holds characters a bare TOML key cannot have gets that key quoted. Headers, comments and
+/// quoted keys pass through.
 fn quote_bare_keys(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 16);
     for line in text.split_inclusive('\n') {
@@ -262,8 +282,14 @@ fn quote_line(line: &str) -> Option<String> {
     if trimmed.is_empty() || trimmed.starts_with(['#', '[', '"', '\'']) {
         return None;
     }
-    let value_at = line.find(['"', '\'', '{'])?;
-    let eq = line[..value_at].rfind('=')?;
+    // The separator is the first `=` whose next non-space character opens a value (quote or brace):
+    // the key may itself hold `=`, `'`, `"` or `{` (`ctrl+= = "x"`, `ctrl+' = "x"`), and an inline
+    // table value holds later `= "` pairs of its own.
+    let (eq, value_at) = line.match_indices('=').find_map(|(i, _)| {
+        let rest = &line[i + 1..];
+        let v = i + 1 + (rest.len() - rest.trim_start().len());
+        line[v..].starts_with(['"', '\'', '{']).then_some((i, v))
+    })?;
     let key = line[..eq].trim();
     let bare = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
     if key.is_empty() || key.chars().all(bare) {

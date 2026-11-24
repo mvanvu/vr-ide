@@ -440,3 +440,45 @@ fn settings_defaults_and_override() {
             .any(|w| matches!(w, ConfigWarning::InvalidValue { key, .. } if key == "theme"))
     );
 }
+
+#[test]
+fn unquoted_keys_with_quote_or_brace_parse() {
+    let (_d, path) = write_user(
+        "ctrl+' = \"edit.indent\"\nctrl+{ = \"edit.outdent\"\nctrl+\" = { command = \"explorer.reveal\", when = \"explorer\" }\nctrl+s = \"file.save_as\"\n",
+    );
+    let (km, warnings) = Keymap::load(Some(&path));
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(km.command_for(&chord("ctrl+'")), Some("edit.indent"));
+    assert_eq!(km.command_for(&chord("ctrl+{")), Some("edit.outdent"));
+    assert_eq!(
+        km.command_for_in(Context::Explorer, &chord("ctrl+\"")),
+        Some("explorer.reveal")
+    );
+    assert_eq!(km.command_for(&chord("ctrl+s")), Some("file.save_as"));
+}
+
+#[test]
+fn same_chord_twice_in_one_context_is_reported() {
+    let (_d, path) = write_user(
+        "\"ctrl+s\" = \"file.save\"\n\"ctrl+S\" = \"file.save_as\"\n[explorer]\n\"f2\" = \"explorer.rename\"\n\"F2\" = \"explorer.move\"\n[editor]\n\"ctrl+s\" = \"file.save\"\n",
+    );
+    let (km, warnings) = Keymap::load(Some(&path));
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    let texts: Vec<String> = warnings.iter().map(ToString::to_string).collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("\"ctrl+s\"") && t.contains("\"ctrl+S\"") && t.contains("global")),
+        "{texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("\"f2\"") && t.contains("\"F2\"") && t.contains("explorer")),
+        "{texts:?}"
+    );
+    // One of the two bindings is kept; the editor binding of ctrl+s is a different context.
+    let global = km.command_for_in(Context::Global, &chord("ctrl+s"));
+    assert!(matches!(global, Some("file.save") | Some("file.save_as")));
+    assert_eq!(km.command_for(&chord("ctrl+s")), Some("file.save"));
+}

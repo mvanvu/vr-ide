@@ -34,3 +34,9 @@ crates/vr-config/src/lib.rs (diff), keys.rs, keymap.rs, settings.rs, paths.rs, d
 | BASE-32 | pass | D8, D10, D19-D23 honoured |
 | AC-5 | pass | binding resolves, unknown command -> warning, malformed TOML -> warning + defaults |
 | USER-1 | pass | see above |
+
+## Quick pass 1 re-check
+Verdict: APPROVE T3 QP1.
+- Quote/brace key: separator is now the first `=` whose next non-space char is a quote or brace. Traced: `ctrl+' = "x"` ok; `ctrl+= = "x"` (first `=` followed by `=`, skipped) ok; inline `f2 = { command = "x", when = "y" }` (first `=` before `{`, key bare, passes) ok. First-`=` choice holds; the last-`=` variant would split inside inline tables.
+- Duplicate chord: `DuplicateKey` warning, first key kept, tracked per applied file/context so user keys still override built-ins silently. Correct.
+- Tests: red lines recorded before code (BASE-3 pass for this pass); `cargo test -p vr-config` rerun green. No new findings.

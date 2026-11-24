@@ -38,6 +38,13 @@ pub enum ConfigWarning {
     },
     #[error("{}: unknown setting {key:?}", file.display())]
     UnknownSetting { file: PathBuf, key: String },
+    #[error("{}: {first:?} and {second:?} are the same key ({context}); {second:?} ignored", file.display())]
+    DuplicateKey {
+        file: PathBuf,
+        context: Context,
+        first: String,
+        second: String,
+    },
     #[error("keymap: {key} is bound to unknown command {command:?} ({context})")]
     UnknownCommand {
         context: Context,
