@@ -50,6 +50,9 @@ markdown = ["dep:tree-sitter-md"]
 
 [dependencies]
 tree-sitter.workspace = true
+ropey.workspace = true
+regex.workspace = true
+vr-config.workspace = true
 tree-sitter-language.workspace = true
 tree-sitter-php = { workspace = true, optional = true }
 tree-sitter-javascript = { workspace = true, optional = true }
@@ -69,6 +72,7 @@ tree-sitter-md = { workspace = true, optional = true }
 # The highlight engine (M4-2) moves this to [dependencies]; here only the tests build configurations.
 [dev-dependencies]
 tree-sitter-highlight.workspace = true
+tempfile.workspace = true
 
 [build-dependencies]
 cc.workspace = true

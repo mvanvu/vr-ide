@@ -2667,6 +2667,9 @@ name = "vr-syntax"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "regex",
+ "ropey",
+ "tempfile",
  "tree-sitter",
  "tree-sitter-css",
  "tree-sitter-dart",
@@ -2684,6 +2687,7 @@ dependencies = [
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
  "tree-sitter-yaml",
+ "vr-config",
 ]
 
 [[package]]

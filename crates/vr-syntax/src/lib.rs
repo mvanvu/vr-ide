@@ -5,6 +5,17 @@
 //! Nothing here is loaded eagerly: `Grammar::language` and the query getters are cheap calls the
 //! registry (M4-2) makes on first use of a language.
 
+mod capture;
+mod edit;
+mod highlighter;
+mod query;
+mod registry;
+
+pub use capture::Capture;
+pub use edit::{Edit, Point};
+pub use highlighter::{Disabled, HighlightOptions, HighlightStatus, Highlighter, Notify};
+pub use registry::{LanguageRegistry, RegistryWarning};
+
 use tree_sitter::Language;
 
 /// Every D7 language id, in the order the inventory reports them.
@@ -42,12 +53,37 @@ pub struct Source {
     pub queries: &'static str,
 }
 
+/// Among patterns of one query part capturing the same node, which one wins. Declared per
+/// grammar because the shipped queries disagree: most put the generic patterns first and expect
+/// the last match to win (tree-sitter-highlight 0.27, nvim); the Go and JSON crate queries are
+/// written the other way round (Go: `(identifier) @variable` after the function patterns).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Precedence {
+    First,
+    Last,
+}
+
+/// How a changed region of this grammar is reparsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Only the grammar table constructs these; `Full` only for Markdown's inline grammar.
+#[cfg_attr(not(feature = "markdown"), allow(dead_code))]
+pub(crate) enum Reparse {
+    /// tree-sitter's incremental reparse, from the edited old tree.
+    Incremental,
+    /// From scratch: the grammar's incremental reparse does not always give the tree a fresh
+    /// parse gives (tree-sitter-md 0.5.4's inline scanner: emphasis and code spans differ after
+    /// some edits). Only used for grammars whose layers are small (Markdown paragraphs).
+    Full,
+}
+
 /// A compiled-in grammar.
 #[derive(Debug)]
 pub struct Grammar {
     pub id: &'static str,
     /// The cargo feature that compiles it in.
     pub feature: &'static str,
+    precedence: Precedence,
+    reparse: Reparse,
     language: fn() -> Language,
     highlights: &'static [&'static str],
     injections: &'static [&'static str],
@@ -75,6 +111,23 @@ impl Grammar {
         strip_spell_captures(&self.highlights.join("\n"))
     }
 
+    /// The layered parts of the highlights query, base first, spell captures stripped.
+    pub(crate) fn highlight_parts(&self) -> Vec<String> {
+        self.highlights
+            .iter()
+            .map(|q| strip_spell_captures(q))
+            .collect()
+    }
+
+    /// Which of the patterns of one query part capturing the same node wins.
+    pub fn precedence(&self) -> Precedence {
+        self.precedence
+    }
+
+    pub(crate) fn reparse(&self) -> Reparse {
+        self.reparse
+    }
+
     pub fn injections_query(&self) -> String {
         self.injections.join("\n")
     }
@@ -84,26 +137,57 @@ impl Grammar {
     }
 }
 
-/// Removes the `@spell` / `@nospell` captures, leaving the rest of each pattern as is.
+/// Removes the `@spell` / `@nospell` captures, leaving the rest of each pattern as is. String
+/// literals (predicate arguments) and `;` comments are copied untouched.
 fn strip_spell_captures(query: &str) -> String {
     let mut out = String::with_capacity(query.len());
-    let mut rest = query;
-    while let Some(at) = rest.find('@') {
-        let (before, from_at) = rest.split_at(at);
-        let name_len = from_at[1..]
-            .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '-')))
-            .unwrap_or(from_at.len() - 1);
-        let name = &from_at[1..1 + name_len];
-        if matches!(name, "spell" | "nospell") {
-            out.push_str(before.trim_end_matches([' ', '\t']));
-        } else {
-            out.push_str(before);
-            out.push('@');
-            out.push_str(name);
+    let mut chars = query.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => {
+                out.push(c);
+                while let Some((_, s)) = chars.next() {
+                    out.push(s);
+                    match s {
+                        '\\' => {
+                            if let Some((_, e)) = chars.next() {
+                                out.push(e);
+                            }
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            ';' => {
+                out.push(c);
+                while let Some(&(_, s)) = chars.peek() {
+                    if s == '\n' {
+                        break;
+                    }
+                    out.push(s);
+                    chars.next();
+                }
+            }
+            '@' => {
+                let rest = &query[i + 1..];
+                let len = rest
+                    .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '-')))
+                    .unwrap_or(rest.len());
+                let name = &rest[..len];
+                if matches!(name, "spell" | "nospell") {
+                    out.truncate(out.trim_end_matches([' ', '\t']).len());
+                } else {
+                    out.push('@');
+                    out.push_str(name);
+                }
+                for _ in 0..name.chars().count() {
+                    chars.next();
+                }
+            }
+            _ => out.push(c),
         }
-        rest = &from_at[1 + name_len..];
     }
-    out.push_str(rest);
     out
 }
 
@@ -245,10 +329,12 @@ fn source_of(id: &str) -> Source {
 // Unused only in a build with every grammar feature off.
 #[allow(unused_macros)]
 macro_rules! grammar {
-    ($id:literal, $feature:literal, $lang:expr, [$($h:expr),*], [$($i:expr),*], [$($l:expr),*]) => {
+    ($id:literal, $feature:literal, $precedence:ident, $reparse:ident, $lang:expr, [$($h:expr),*], [$($i:expr),*], [$($l:expr),*]) => {
         Grammar {
             id: $id,
             feature: $feature,
+            precedence: Precedence::$precedence,
+            reparse: Reparse::$reparse,
             language: || $lang,
             highlights: &[$($h),*],
             injections: &[$($i),*],
@@ -257,20 +343,29 @@ macro_rules! grammar {
     };
 }
 
+/// tree-sitter-php's `queries/injections-text.scm`, which the crate does not export: the HTML
+/// around `<?php ?>` blocks is parsed as one combined HTML layer.
+#[cfg(feature = "php")]
+const PHP_TEXT_INJECTIONS: &str = "((text) @injection.content\n (#set! injection.language \"html\")\n (#set! injection.combined))\n";
+
 static GRAMMARS: &[Grammar] = &[
     #[cfg(feature = "php")]
     grammar!(
         "php",
         "php",
+        Last,
+        Incremental,
         tree_sitter_php::LANGUAGE_PHP.into(),
         [tree_sitter_php::HIGHLIGHTS_QUERY],
-        [tree_sitter_php::INJECTIONS_QUERY],
+        [tree_sitter_php::INJECTIONS_QUERY, PHP_TEXT_INJECTIONS],
         []
     ),
     #[cfg(feature = "php")]
     grammar!(
         "php_only",
         "php",
+        Last,
+        Incremental,
         tree_sitter_php::LANGUAGE_PHP_ONLY.into(),
         [tree_sitter_php::HIGHLIGHTS_QUERY],
         [tree_sitter_php::INJECTIONS_QUERY],
@@ -281,6 +376,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "blade",
         "blade",
+        Last,
+        Incremental,
         // SAFETY: the symbol is the generated parser's entry point compiled by build.rs.
         unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_blade) }.into(),
         [
@@ -297,6 +394,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "twig",
         "twig",
+        Last,
+        Incremental,
         // SAFETY: as above.
         unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_twig) }.into(),
         [vendored_query!("twig", "highlights.scm")],
@@ -307,6 +406,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "javascript",
         "javascript",
+        Last,
+        Incremental,
         tree_sitter_javascript::LANGUAGE.into(),
         [
             tree_sitter_javascript::HIGHLIGHT_QUERY,
@@ -320,6 +421,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "typescript",
         "typescript",
+        Last,
+        Incremental,
         tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         [
             tree_sitter_javascript::HIGHLIGHT_QUERY,
@@ -335,6 +438,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "tsx",
         "typescript",
+        Last,
+        Incremental,
         tree_sitter_typescript::LANGUAGE_TSX.into(),
         [
             tree_sitter_javascript::HIGHLIGHT_QUERY,
@@ -352,6 +457,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "vue",
         "vue",
+        Last,
+        Incremental,
         // SAFETY: as above.
         unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_vue) }.into(),
         [
@@ -368,6 +475,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "html",
         "html",
+        Last,
+        Incremental,
         tree_sitter_html::LANGUAGE.into(),
         [tree_sitter_html::HIGHLIGHTS_QUERY],
         [tree_sitter_html::INJECTIONS_QUERY],
@@ -377,6 +486,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "css",
         "css",
+        Last,
+        Incremental,
         tree_sitter_css::LANGUAGE.into(),
         [tree_sitter_css::HIGHLIGHTS_QUERY],
         [],
@@ -387,6 +498,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "scss",
         "scss",
+        Last,
+        Incremental,
         tree_sitter_scss::language(),
         [
             tree_sitter_css::HIGHLIGHTS_QUERY,
@@ -399,6 +512,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "dart",
         "dart",
+        Last,
+        Incremental,
         tree_sitter_dart::LANGUAGE.into(),
         [tree_sitter_dart::HIGHLIGHTS_QUERY],
         [],
@@ -408,6 +523,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "go",
         "go",
+        First,
+        Incremental,
         tree_sitter_go::LANGUAGE.into(),
         [tree_sitter_go::HIGHLIGHTS_QUERY],
         [],
@@ -417,6 +534,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "python",
         "python",
+        Last,
+        Incremental,
         tree_sitter_python::LANGUAGE.into(),
         [tree_sitter_python::HIGHLIGHTS_QUERY],
         [],
@@ -426,6 +545,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "rust",
         "rust",
+        Last,
+        Incremental,
         tree_sitter_rust::LANGUAGE.into(),
         [tree_sitter_rust::HIGHLIGHTS_QUERY],
         [tree_sitter_rust::INJECTIONS_QUERY],
@@ -435,6 +556,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "json",
         "json",
+        First,
+        Incremental,
         tree_sitter_json::LANGUAGE.into(),
         [tree_sitter_json::HIGHLIGHTS_QUERY],
         [],
@@ -444,6 +567,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "yaml",
         "yaml",
+        Last,
+        Incremental,
         tree_sitter_yaml::LANGUAGE.into(),
         [tree_sitter_yaml::HIGHLIGHTS_QUERY],
         [],
@@ -453,6 +578,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "toml",
         "toml",
+        Last,
+        Incremental,
         tree_sitter_toml_ng::LANGUAGE.into(),
         [tree_sitter_toml_ng::HIGHLIGHTS_QUERY],
         [],
@@ -463,6 +590,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "markdown",
         "markdown",
+        Last,
+        Incremental,
         tree_sitter_md::LANGUAGE.into(),
         [tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
         [tree_sitter_md::INJECTION_QUERY_BLOCK],
@@ -472,6 +601,8 @@ static GRAMMARS: &[Grammar] = &[
     grammar!(
         "markdown_inline",
         "markdown",
+        Last,
+        Full,
         tree_sitter_md::INLINE_LANGUAGE.into(),
         [tree_sitter_md::HIGHLIGHT_QUERY_INLINE],
         [tree_sitter_md::INJECTION_QUERY_INLINE],
@@ -519,6 +650,16 @@ mod tests {
         assert_eq!(
             strip_spell_captures(q),
             "(comment) @comment\n(tag_name) @tag\n(text) @spelling\n(x) @_spell"
+        );
+    }
+
+    #[test]
+    fn at_signs_inside_string_literals_are_kept() {
+        let q = "((x) @a (#eq? @a \"@spell\") (#match? @a \"\\\"@nospell\"))";
+        assert_eq!(strip_spell_captures(q), q);
+        assert_eq!(
+            strip_spell_captures("((x) @a @spell (#eq? @a \"@spell\"))"),
+            "((x) @a (#eq? @a \"@spell\"))"
         );
     }
 

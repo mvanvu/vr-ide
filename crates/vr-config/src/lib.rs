@@ -5,6 +5,7 @@
 
 mod keymap;
 mod keys;
+mod languages;
 mod paths;
 mod settings;
 
@@ -12,6 +13,7 @@ use std::path::PathBuf;
 
 pub use keymap::{Context, Keymap, RESERVED_COMMANDS};
 pub use keys::{KeyChord, KeyCode, KeyParseError, Mods};
+pub use languages::{LANGUAGES_FILE, LanguageDef, Languages};
 pub use paths::{config_dir, state_dir};
 pub use settings::{AiPreset, Settings};
 
