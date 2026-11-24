@@ -14,7 +14,7 @@
 | T10 | Find/replace bar + project search panel | fe | T8, T9 | ui | AC-10, AC-11, AC-12 | crates/vr-ide/src/ui/{find_bar,search_panel,layout}.rs, commands/{find,search}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T11 | Bench run, README, docs/keymap.md | be | T10 | - | AC-1 | README.md, scripts/bench-startup.sh, docs/keymap.md | bench script | todo | 0 |
 | T12 | Shared racing-writer test helper (vr-core test utils) + use it in T4/T7/T9 write-path tests | be | T4, T9 | - | AC-3, AC-8, AC-12 | crates/vr-core/src/testutil.rs (cfg test feature), tests in vr-core, vr-fs, vr-search | `cargo test -p vr-core -p vr-fs -p vr-search` | done | 0 |
-| FR-1 | Racing writer records what each write replaced (exact oracle, drop the one exception) | be | T4 | - | AC-3 | crates/vr-core/src/testutil.rs | `cargo test -p vr-core -p vr-search` | todo | 0 |
+| FR-1 | Racing writer records what each write replaced (exact oracle, drop the one exception) | be | T4 | - | AC-3 | crates/vr-core/src/testutil.rs | `cargo test -p vr-core -p vr-search` | done | 0 |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
@@ -73,3 +73,6 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - T4 merge route: commit worktree state on t4-round3, merge master INTO the worktree (it predates T5), rerun T4 tests + vr-ide save tests there, then merge --no-ff t4-round3 on master
 - T6 DONE (13:19); D64 adapter interim → swapped to vr-core save_overwrite_seen right after T4 merges; QC waits for the swap
 - T4 verdicts (13:20): escalation review APPROVE (opus) after follow-up 2, QC_PASS ESC; merged t4-round3 --no-ff into master; fable used: T4 escalation (case 1). FR-1 added (test-only oracle gap)
+- T6 review stopped (13:21) because the D64 swap edits crates/vr-ide under it; review restarts on the full diff after the swap (option b, rule bd0b4e4)
+- T6 D64 wiring done (13:22); review (opus) + QC restarted on the full diff; T6 developer at ~290k tokens → any fix round goes to a fresh developer
+- FR-1 verdict (13:23): review APPROVE (2 oracle minors → quick pass after T6 verdicts, to avoid editing testutil under T6's running test builds)

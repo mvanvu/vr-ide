@@ -6,7 +6,7 @@
 //! call `assert_no_lost_write` (one path) or `assert_versions_survive` (a move).
 
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,6 +36,11 @@ pub struct WriterVersion {
     /// What the path held just before this write (None if unreadable): lets the assertion see
     /// that an operation's bytes replaced the previous version even when this one wins later.
     pub saw_before: Option<Vec<u8>>,
+    /// Exactly what this write replaced: the bytes of the file it overwrote (read through the
+    /// handle for an in-place write, taken out by an exchange for a rename write). None when
+    /// the writer could not tell. A later version whose `replaced` equals this one's bytes
+    /// proves the writer itself overwrote it.
+    pub replaced: Option<Vec<u8>>,
 }
 
 /// Unique, recognisable, sequence-numbered content; no two versions are equal.
@@ -90,11 +95,16 @@ impl RacingWriter {
                 let bytes = version_bytes(seq);
                 let begun = Instant::now();
                 match write_once(&path, mode, seq, &bytes, || {}) {
-                    Ok((visible, saw_before)) => versions.push(WriterVersion {
+                    Ok(Landed {
+                        visible,
+                        saw_before,
+                        replaced,
+                    }) => versions.push(WriterVersion {
                         bytes,
                         begun,
                         visible,
                         saw_before,
+                        replaced,
                     }),
                     Err(e) if e.kind() == io::ErrorKind::NotFound => break,
                     Err(e) => panic!("racing writer failed: {e}"),
@@ -113,6 +123,13 @@ impl RacingWriter {
     }
 }
 
+/// What a write learned about itself.
+struct Landed {
+    visible: bool,
+    saw_before: Option<Vec<u8>>,
+    replaced: Option<Vec<u8>>,
+}
+
 /// Returns (visible, what the path held before). `between` runs after the file is opened /
 /// staged and before the bytes land: a seam for tests of the writer itself.
 fn write_once(
@@ -121,29 +138,55 @@ fn write_once(
     seq: usize,
     bytes: &[u8],
     between: impl FnOnce(),
-) -> io::Result<(bool, Option<Vec<u8>>)> {
+) -> io::Result<Landed> {
     let saw_before = fs::read(path).ok();
     match mode {
         WriterMode::InPlace => {
-            let mut f = OpenOptions::new().write(true).truncate(true).open(path)?;
+            // Opened without truncating so the old bytes can be read through the handle: that is
+            // exactly the file this write replaces, wherever the path points by then.
+            let mut f = OpenOptions::new().read(true).write(true).open(path)?;
+            let mut replaced = Vec::new();
+            f.read_to_end(&mut replaced)?;
             // Visible means this handle was the file at the path when the write began; a later
             // replace of the path must not hide the write from the assertion.
             let here = fs::metadata(path).map(|m| m.ino()).ok();
             let opened = f.metadata()?.ino();
             between();
+            f.set_len(0)?;
+            f.rewind()?;
             f.write_all(bytes)?;
             // A write that went into a file replaced meanwhile can never be read at the path.
             let after = fs::metadata(path).map(|m| m.ino()).ok();
             let visible = here == Some(opened) && after == Some(opened);
-            Ok((visible, saw_before))
+            Ok(Landed {
+                visible,
+                replaced: Some(replaced),
+                saw_before,
+            })
         }
         WriterMode::TempRename => {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             let tmp: PathBuf = path.with_file_name(format!(".{name}.racing-{seq}"));
             fs::write(&tmp, bytes)?;
             between();
-            fs::rename(&tmp, path)?;
-            Ok((true, saw_before))
+            // Exchange, then read what came out: exactly the file this write replaced. Without
+            // exchange support, or when the path is gone, a plain rename creates the path.
+            let replaced = match crate::safe_replace::exchange_files(&tmp, path) {
+                Ok(()) => {
+                    let old = fs::read(&tmp).ok();
+                    fs::remove_file(&tmp)?;
+                    old
+                }
+                Err(_) => {
+                    fs::rename(&tmp, path)?;
+                    None
+                }
+            };
+            Ok(Landed {
+                visible: true,
+                replaced,
+                saw_before,
+            })
         }
     }
 }
@@ -255,7 +298,10 @@ fn no_lost_write(
 }
 
 /// A refused run that had `ours` at the path for a moment: the writer's sight of `ours` no
-/// longer shows a loss by itself, so each version is traced instead.
+/// longer shows a loss by itself, so each version is traced instead. A version is accounted
+/// for only when it is the final content, in a conflict copy, or exactly what a later write
+/// replaced (`replaced`): the writer overwriting it itself is proven, never inferred.
+/// Writers that could not read what they replaced (`replaced: None`) prove nothing.
 fn assert_versions_accounted_for(
     final_bytes: &[u8],
     ours: &[u8],
@@ -272,13 +318,9 @@ fn assert_versions_accounted_for(
             || kept.contains(&v.bytes)
             || later
                 .iter()
-                .any(|w| w.saw_before.as_deref() == Some(&v.bytes[..]));
-        // The next write began while `ours` stood in for this version; the version went back
-        // to the path afterwards and that write, not the operation, replaced it there. A
-        // version whose own writer saw `ours` was written over `ours` and has no such excuse.
-        let replaced_by_next_write = !saw_ours(v) && later.first().is_some_and(saw_ours);
+                .any(|w| w.replaced.as_deref() == Some(&v.bytes[..]));
         assert!(
-            survives || replaced_by_next_write,
+            survives,
             "lost write: writer version {} of {} is in no file after a run that reported an \
              error, and the writer did not overwrite it",
             i + 1,
@@ -374,6 +416,7 @@ mod tests {
             begun: Instant::now(),
             visible: true,
             saw_before: None,
+            replaced: None,
         }
     }
 
@@ -414,8 +457,11 @@ mod tests {
         fs::write(&other, "ours").unwrap();
         let begun = Instant::now();
         // The write lands at the path; the operation replaces the path afterwards.
-        let (visible, saw_before) =
-            write_once(&p, WriterMode::InPlace, 1, &version_bytes(1), || {}).unwrap();
+        let Landed {
+            visible,
+            saw_before,
+            replaced,
+        } = write_once(&p, WriterMode::InPlace, 1, &version_bytes(1), || {}).unwrap();
         assert!(visible);
         fs::rename(&other, &p).unwrap();
         let version = WriterVersion {
@@ -423,6 +469,7 @@ mod tests {
             begun,
             visible,
             saw_before,
+            replaced,
         };
         assert_no_lost_write(b"init", b"ours", b"ours", &[version], run(true));
     }
@@ -437,16 +484,20 @@ mod tests {
         let begun = Instant::now();
         // A correct operation replaces the path after the writer opened it; the writer's bytes
         // then land in the unlinked file and nobody can read them.
-        let (visible, saw_before) =
-            write_once(&p, WriterMode::InPlace, 1, &version_bytes(1), || {
-                fs::rename(&other, &p).unwrap()
-            })
-            .unwrap();
+        let Landed {
+            visible,
+            saw_before,
+            replaced,
+        } = write_once(&p, WriterMode::InPlace, 1, &version_bytes(1), || {
+            fs::rename(&other, &p).unwrap()
+        })
+        .unwrap();
         let version = WriterVersion {
             bytes: version_bytes(1),
             begun,
             visible,
             saw_before,
+            replaced,
         };
         assert_no_lost_write(b"init", b"ours", b"ours", &[version], run(true));
     }
@@ -464,6 +515,7 @@ mod tests {
     fn swapping_rule_allows_sight_of_ours_only_on_a_refused_run() {
         let (v1, mut v2) = (v(1), v(2));
         v2.saw_before = Some(b"ours".to_vec());
+        v2.replaced = Some(v1.bytes.clone());
         let last = v2.bytes.clone();
         let versions = [v1, v2];
         assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[]);
@@ -479,10 +531,16 @@ mod tests {
 
     /// v1 lands before the exchange; `second` is the writer's next version, `third` the one
     /// after it, which found `third_saw` at the path.
-    fn refused_run(second_saw: &[u8], third_saw: usize) -> Vec<WriterVersion> {
+    fn refused_run(
+        second_saw: &[u8],
+        second_replaced: &[u8],
+        third_replaced: usize,
+    ) -> Vec<WriterVersion> {
         let (v1, mut v2, mut v3) = (v(1), v(2), v(3));
         v2.saw_before = Some(second_saw.to_vec());
-        v3.saw_before = Some(version_bytes(third_saw));
+        v2.replaced = Some(second_replaced.to_vec());
+        v3.saw_before = Some(version_bytes(third_replaced));
+        v3.replaced = Some(version_bytes(third_replaced));
         vec![v1, v2, v3]
     }
 
@@ -491,7 +549,7 @@ mod tests {
     fn swapping_rule_flags_version_written_into_our_file_and_deleted() {
         // The writer saw our bytes at the path, wrote its second version into our file, and
         // the refused run deleted that file: the third version found the first one again.
-        let versions = refused_run(b"ours", 1);
+        let versions = refused_run(b"ours", b"ours", 1);
         let last = versions[2].bytes.clone();
         assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[]);
     }
@@ -500,7 +558,17 @@ mod tests {
     #[should_panic(expected = "lost write")]
     fn swapping_rule_flags_deleted_version_that_never_saw_ours() {
         // Same loss, but the writer had read the path before our bytes were there.
-        let versions = refused_run(&version_bytes(1), 1);
+        let versions = refused_run(&version_bytes(1), &version_bytes(1), 1);
+        let last = versions[2].bytes.clone();
+        assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lost write")]
+    fn swapping_rule_flags_a_deleted_version_the_writer_did_not_overwrite() {
+        // v1 landed, a regression deleted it and reported a refusal; ours stood at the path
+        // until v2, which replaced ours (not v1), and v3 replaced v2.
+        let versions = refused_run(b"ours", b"ours", 2);
         let last = versions[2].bytes.clone();
         assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[]);
     }
@@ -508,15 +576,15 @@ mod tests {
     #[test]
     fn swapping_rule_accepts_sight_of_ours_when_the_version_survives() {
         // Overwritten by the writer itself: the third version found the second.
-        let versions = refused_run(b"ours", 2);
+        let versions = refused_run(b"ours", &version_bytes(1), 2);
         let last = versions[2].bytes.clone();
         assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[]);
         // Kept in the conflict copy the error names.
-        let versions = refused_run(b"ours", 1);
+        let versions = refused_run(b"ours", b"ours", 1);
         let (second, last) = (versions[1].bytes.clone(), versions[2].bytes.clone());
         assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[second]);
         // Still in the file at the end.
-        let versions = &refused_run(b"ours", 1)[..2];
+        let versions = &refused_run(b"ours", &version_bytes(1), 1)[..2];
         let last = versions[1].bytes.clone();
         assert_no_lost_write_swapping(b"init", &last, b"ours", versions, run(false), &[]);
     }
