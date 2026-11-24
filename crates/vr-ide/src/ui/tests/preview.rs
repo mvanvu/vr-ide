@@ -101,6 +101,9 @@ fn grid_html(buf: &Buffer) -> String {
             if cell.modifier.contains(Modifier::BOLD) {
                 style.push_str("font-weight:700;");
             }
+            if cell.modifier.contains(Modifier::ITALIC) {
+                style.push_str("font-style:italic;");
+            }
             if cell.modifier.contains(Modifier::UNDERLINED) {
                 style.push_str("text-decoration:underline;");
             }
@@ -125,6 +128,82 @@ fn grid_html(buf: &Buffer) -> String {
 }
 
 type Scene = (&'static str, Box<dyn Fn() -> (Vec<tempfile::TempDir>, App)>);
+
+const RUST_SAMPLE: &str = "\
+//! Order totals.
+use std::collections::HashMap;
+
+/// A line of an order.
+#[derive(Debug, Clone)]
+pub struct Line {
+    pub name: String,
+    pub cents: u64,
+}
+
+pub fn total(lines: &[Line]) -> u64 {
+    let mut sum = 0;
+    for line in lines {
+        sum += line.cents; // already in cents
+    }
+    println!(\"total of {} lines: {sum}\\n\", lines.len());
+    sum
+}
+
+const LIMIT: u32 = 0x10_000;
+";
+
+const VUE_SAMPLE: &str = "\
+<template>
+  <article class=\"card\" :data-id=\"item.id\">
+    <h2>{{ item.title }}</h2>
+    <button @click=\"select(item)\">Pick</button>
+  </article>
+</template>
+
+<script setup lang=\"ts\">
+import { ref } from 'vue'
+const props = defineProps<{ item: { id: number; title: string } }>()
+const picked = ref(false) // set on click
+function select(item: { id: number }) {
+  picked.value = item.id > 0
+}
+</script>
+
+<style scoped>
+.card { padding: 8px; color: #ff2e97; }
+</style>
+";
+
+/// A file opened in edit mode with its parse landed; `find` opens the find bar on a word, and
+/// line 5 (as numbered in the gutter) is selected.
+fn highlighted(name: &str, body: &str, find: Option<&str>) -> (Vec<tempfile::TempDir>, App) {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join(name);
+    std::fs::write(&p, body).unwrap();
+    let (mut app, _) = test_app(d.path());
+    app.open_path(&p).unwrap();
+    app.focus = Focus::Editor;
+    app.enter_edit_mode();
+    if let Some(word) = find {
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        for c in word.chars() {
+            key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.focus = Focus::Editor;
+        let rope = app.active_doc().unwrap().buffer.text().clone();
+        let (from, to) = (rope.line_to_char(4), rope.line_to_char(5) - 1);
+        app.active_doc_mut()
+            .unwrap()
+            .buffer
+            .set_selection(Selection::single(from, to));
+    }
+    assert!(
+        app.syntax.wait(0, Duration::from_secs(30)),
+        "parse of {name}"
+    );
+    app.notices.clear();
+    (vec![d], app)
+}
 
 fn scenes() -> Vec<Scene> {
     vec![
@@ -187,6 +266,14 @@ fn scenes() -> Vec<Scene> {
                 key(&mut app, KeyCode::Down, KeyModifiers::NONE);
                 (vec![d], app)
             }),
+        ),
+        (
+            "Syntax highlighting: Rust (selection on line 5, find match \"name\")",
+            Box::new(|| highlighted("main.rs", RUST_SAMPLE, Some("name"))),
+        ),
+        (
+            "Syntax highlighting: Vue single-file component (template, script, style)",
+            Box::new(|| highlighted("Card.vue", VUE_SAMPLE, None)),
         ),
         (
             "Confirm dialog",
@@ -253,8 +340,17 @@ fn token_table(theme: &Theme) -> String {
         ("selection bg", theme.selection.bg, None),
         ("list_selected bg", theme.list_selected.bg, None),
     ];
+    let syntax: Vec<(String, Option<Color>)> = vr_syntax::Capture::ALL
+        .into_iter()
+        .filter(|&c| c != vr_syntax::Capture::Other)
+        .map(|c| (format!("syntax {c:?}"), theme.syntax(c).fg))
+        .collect();
     let mut out = String::from("<table>");
-    for (role, c, _) in rows {
+    let rows = rows
+        .iter()
+        .map(|&(r, c, _)| (r.to_string(), c))
+        .chain(syntax);
+    for (role, c) in rows {
         let c = c.unwrap();
         let ratio = crate::theme::contrast(
             crate::theme::to_rgb(c).unwrap(),

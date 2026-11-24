@@ -9,6 +9,7 @@ vr-core.workspace = true
 vr-config.workspace = true
 vr-fs.workspace = true
 vr-search.workspace = true
+vr-syntax.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 arboard.workspace = true

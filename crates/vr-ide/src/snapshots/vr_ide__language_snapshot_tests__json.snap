@@ -1,0 +1,17 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+{
+
+  "name": "vr-ide",
+..pppppp..ssssssss
+  "version": 1,
+..ppppppppp..n
+  "enabled": true,
+..ppppppppp..CCCC
+  "tags": ["editor", "tui"],
+..pppppp...ssssssss..sssss
+  "parent": null
+..pppppppp..CCCC
+}

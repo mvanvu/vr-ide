@@ -1,0 +1,97 @@
+# vr-ide built-in languages. Copy a table to ~/.config/vr-ide/languages.toml to change it; fields
+# you leave out keep these values, and a new [id] table adds a language.
+#
+# [id]            language id (also the name embedded code is matched against)
+# grammar         compiled-in grammar to use (defaults to the id)
+# extensions      file extensions without the dot; the longest match wins ("blade.php" before "php")
+# files           file names or globs (`*`, `?`) matched against the file name; they win over extensions
+# aliases         other names for the language in embedded code (Markdown fences, <script lang=...>)
+# lsp             language server command and arguments (reserved for M8, unused for now)
+
+[php]
+extensions = ["php", "phtml", "php3", "php4", "php5", "php7", "phps"]
+aliases = ["php"]
+lsp = ["intelephense", "--stdio"]
+
+# PHP code without the surrounding HTML (Blade directives, embedded snippets).
+[php_only]
+
+[blade]
+files = ["*.blade.php"]
+
+[twig]
+extensions = ["twig"]
+
+[javascript]
+extensions = ["js", "mjs", "cjs", "jsx"]
+aliases = ["js", "jsx", "node", "javascriptreact"]
+lsp = ["typescript-language-server", "--stdio"]
+
+[typescript]
+extensions = ["ts", "mts", "cts"]
+aliases = ["ts"]
+lsp = ["typescript-language-server", "--stdio"]
+
+[tsx]
+extensions = ["tsx"]
+aliases = ["typescriptreact"]
+lsp = ["typescript-language-server", "--stdio"]
+
+[vue]
+extensions = ["vue"]
+lsp = ["vue-language-server", "--stdio"]
+
+[html]
+extensions = ["html", "htm", "xhtml"]
+lsp = ["vscode-html-language-server", "--stdio"]
+
+[css]
+extensions = ["css"]
+lsp = ["vscode-css-language-server", "--stdio"]
+
+[scss]
+extensions = ["scss"]
+aliases = ["sass", "less", "postcss"]
+lsp = ["vscode-css-language-server", "--stdio"]
+
+[dart]
+extensions = ["dart"]
+lsp = ["dart", "language-server", "--protocol=lsp"]
+
+[go]
+extensions = ["go"]
+aliases = ["golang"]
+lsp = ["gopls"]
+
+[python]
+extensions = ["py", "pyi", "pyw"]
+files = ["SConstruct", "SConscript"]
+aliases = ["py", "python3"]
+lsp = ["pyright-langserver", "--stdio"]
+
+[rust]
+extensions = ["rs"]
+aliases = ["rs"]
+lsp = ["rust-analyzer"]
+
+[json]
+extensions = ["json", "jsonc", "json5", "webmanifest"]
+files = [".prettierrc", ".babelrc", ".eslintrc", "composer.lock", "*.code-workspace"]
+lsp = ["vscode-json-language-server", "--stdio"]
+
+[yaml]
+extensions = ["yaml", "yml"]
+aliases = ["yml"]
+lsp = ["yaml-language-server", "--stdio"]
+
+[toml]
+extensions = ["toml"]
+files = ["Cargo.lock", "Pipfile", "poetry.lock"]
+lsp = ["taplo", "lsp", "stdio"]
+
+[markdown]
+extensions = ["md", "markdown", "mdx"]
+aliases = ["md"]
+
+# Inline Markdown (emphasis, links, code spans) inside Markdown paragraphs.
+[markdown_inline]

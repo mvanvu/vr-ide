@@ -463,9 +463,18 @@ fn replace_all(app: &mut App, _: CmdArgs) -> CmdResult {
     let tx = vr_search::replace_all_tx(doc.buffer.text(), &q, &replacement)?;
     let n = tx.changes.len();
     if n > 0 {
+        // The highlighter gets the match list as edits rather than one edit over all of them.
+        let version = doc.buffer.version();
+        let changes: Vec<(usize, usize, String)> = tx
+            .changes
+            .iter()
+            .map(|c| (c.from, c.to, c.insert.clone()))
+            .collect();
         doc.buffer.break_undo_group();
         doc.buffer.apply(tx);
         doc.buffer.break_undo_group();
+        let active = app.active;
+        app.syntax.expect_changes(active, version, changes);
     }
     refresh_now(app);
     if n == 0 {

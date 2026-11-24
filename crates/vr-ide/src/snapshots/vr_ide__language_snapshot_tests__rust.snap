@@ -1,0 +1,40 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+// Greets the user.
+ccccccccccccccccccc
+use std::fmt;
+kkk....uu...u
+
+
+/// A greeter.
+cccccccccccccc
+pub struct Greeter {
+kkk.kkkkkk.ttttttt.u
+    name: String,
+....ppppu.ttttttu
+}
+u
+
+
+impl fmt::Display for Greeter {
+kkkk....uuttttttt.kkk.ttttttt.u
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+....kk.fffuovvvvu..u.okkk....uutttttttttuo.uu.......uutttttt.u
+        write!(f, "Hello, {}", self.name)
+........ffffffu.u.sssssssssssu.vvvvuppppu
+    }
+....u
+}
+u
+
+
+fn main() {
+kk.ffffuu.u
+    let g = Greeter { name: "vr".to_string() };
+....kkk.....ttttttt.u.ppppu.ssssufffffffffuu.uu
+    println!("{g} {}", 42);
+....ffffffffussssssssu.CCuu
+}
+u

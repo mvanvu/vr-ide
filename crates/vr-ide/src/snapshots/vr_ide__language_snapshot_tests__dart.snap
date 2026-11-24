@@ -1,0 +1,38 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+// A simple greeter.
+cccccccccccccccccccc
+class Greeter {
+kkkkk.ttttttt.u
+  final String name;
+..kkkkk.tttttt.....u
+
+
+  Greeter(this.name);
+..tttttttukkkku....uu
+
+
+  String greet() {
+..tttttt.fffffuu.u
+    if (name.isEmpty) {
+....kk.u....upppppppu.u
+      return 'Hello, world';
+......kkkkkk.ssssssssssssssu
+    }
+....u
+    return "Hello, $name";
+....kkkkkk.ssssssssu....su
+  }
+..u
+}
+u
+
+
+void main() {
+tttt.ffffuu.u
+  print(Greeter('vr').greet());
+..fffffufffffffussssuufffffuuuu
+}
+u

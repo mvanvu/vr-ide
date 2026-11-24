@@ -1,0 +1,18 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+{# Lists the users. #}
+cccccccccccccccccccccc
+<ul>
+uggu
+{% for user in users %}
+uu.kkk......kk.......uu
+    <li>{{ user.name|upper }}</li>
+....ugguuu.....u....offfff.uuuuggu
+{% endfor %}
+uu.kkkkkk.uu
+</ul>
+uuggu
+{% if users is empty %}<p>{{ "No users" }}</p>{% endif %}
+uu.kk.......oo.fffff.uuuguuu.ssssssssss.uuuuguuu.kkkkk.uu

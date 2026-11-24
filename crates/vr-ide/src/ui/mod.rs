@@ -23,6 +23,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 /// `render` with an explicit theme (previews draw every theme from the same state).
 pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     let area = frame.area();
+    // Before the layout: a "highlighting is off" notice needs its row in this frame.
+    app.sync_syntax();
     // Paint the theme background everywhere first; widgets then only patch their own cells.
     frame.buffer_mut().set_style(area, theme.text);
     let notice_rows = status_bar::notice_rows(app, area.width);

@@ -3,6 +3,7 @@
 //! default) and `dracula` paint their own background (`text` carries it and fills the whole frame first).
 
 use ratatui::style::{Color, Modifier, Style};
+use vr_syntax::Capture;
 
 mod synthwave;
 
@@ -46,6 +47,12 @@ pub struct Theme {
     /// Status bar badge of the active tab's mode (D145): READ and EDIT, told apart by colour.
     pub mode_read: Style,
     pub mode_edit: Style,
+    /// Syntax colours stay drawn under the selection and find matches. Off for `dark` / `light`:
+    /// their surfaces sit on the terminal's own background and their syntax colours are the
+    /// user's ANSI palette, so neither can be checked against the other (D179).
+    pub syntax_on_highlight: bool,
+    /// Style of each syntax class, indexed by `Capture as usize`; read through [`Theme::syntax`].
+    captures: [Style; Capture::ALL.len()],
 }
 
 impl Theme {
@@ -65,6 +72,12 @@ impl Theme {
         Self::named(name)
             .or_else(|| Self::named(DEFAULT_THEME))
             .unwrap_or_else(Self::dark)
+    }
+
+    /// Style of a syntax class (M4). Foreground and modifiers only: it is drawn over the text
+    /// background, the selection and find matches, which keep their own background.
+    pub fn syntax(&self, capture: Capture) -> Style {
+        self.captures[capture as usize]
     }
 
     pub fn dark() -> Theme {
@@ -112,6 +125,8 @@ impl Theme {
                 .bg(Color::Green)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
+            syntax_on_highlight: false,
+            captures: dark_syntax(),
         }
     }
 
@@ -160,8 +175,63 @@ impl Theme {
                 .bg(Color::Indexed(28))
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
+            syntax_on_highlight: false,
+            captures: light_syntax(),
         }
     }
+}
+
+/// The capture table from a style per class (`Other` is always plain text).
+pub(crate) fn syntax_table(style: impl Fn(Capture) -> Style) -> [Style; Capture::ALL.len()] {
+    let mut out = [Style::default(); Capture::ALL.len()];
+    for c in Capture::ALL {
+        if c != Capture::Other {
+            out[c as usize] = style(c);
+        }
+    }
+    out
+}
+
+/// A syntax colour with modifiers.
+fn paint(fg: Color, modifier: Modifier) -> Style {
+    Style::default().fg(fg).add_modifier(modifier)
+}
+
+/// dark: the terminal's ANSI colours (the user's terminal theme defines them), bright tones
+/// where the normal one is too dark on a dark background.
+fn dark_syntax() -> [Style; Capture::ALL.len()] {
+    let none = Modifier::empty();
+    syntax_table(|c| match c {
+        Capture::Keyword | Capture::Operator => paint(Color::LightMagenta, none),
+        Capture::String => paint(Color::Green, none),
+        Capture::Comment => paint(Color::DarkGray, Modifier::ITALIC),
+        Capture::Function => paint(Color::Cyan, none),
+        Capture::Type => paint(Color::Yellow, none),
+        Capture::Number | Capture::Constant | Capture::Tag => paint(Color::LightRed, none),
+        Capture::VariableBuiltin => paint(Color::LightMagenta, Modifier::ITALIC),
+        Capture::Property => paint(Color::LightCyan, none),
+        Capture::Attribute => paint(Color::Yellow, Modifier::ITALIC),
+        Capture::Punctuation => paint(Color::Gray, none),
+        Capture::Escape => paint(Color::LightCyan, Modifier::BOLD),
+        Capture::Other => Style::default(),
+    })
+}
+
+/// light: ANSI colours dark enough for a light background (green, cyan, yellow and the grey
+/// are not, with common terminal palettes).
+fn light_syntax() -> [Style; Capture::ALL.len()] {
+    let none = Modifier::empty();
+    syntax_table(|c| match c {
+        Capture::Keyword | Capture::VariableBuiltin => paint(Color::Magenta, none),
+        Capture::String | Capture::Number | Capture::Constant => paint(Color::Red, none),
+        Capture::Comment => paint(Color::Blue, Modifier::ITALIC),
+        Capture::Function => paint(Color::LightBlue, none),
+        Capture::Type | Capture::Tag => paint(Color::Blue, none),
+        Capture::Attribute => paint(Color::Magenta, Modifier::ITALIC),
+        Capture::Property | Capture::Operator | Capture::Punctuation => paint(Color::Black, none),
+        Capture::Escape => paint(Color::Red, Modifier::BOLD),
+        Capture::Other => Style::default(),
+    })
 }
 
 /// How many colours the terminal can show.
@@ -316,6 +386,34 @@ impl Theme {
         // The palette red, tinted lighter so it also reads on the popup.
         let red = fit(0xff7878, &[bg, bar, raised], 4.5);
         let yellow = fit(0xf1fa8c, &[bg, raised, line, picked], 4.5);
+        // Syntax: the published Dracula roles; the comment is the lighter comment tone (the
+        // published one is 3:1 on the background).
+        let code = |rgb| fit_floors(depth, rgb, &syntax_floors(bg, line, found));
+        let (k, s, f, t, n) = (
+            code(0xff79c6),
+            code(0xf1fa8c),
+            code(0x50fa7b),
+            code(0x8be9fd),
+            code(0xbd93f9),
+        );
+        let (fg_code, comment_code, escape) = (code(0xf8f8f2), code(0x9aa8d4), code(0xffb86c));
+        let italic = Modifier::ITALIC;
+        let none = Modifier::empty();
+        let captures = syntax_table(|c| match c {
+            Capture::Keyword | Capture::Operator | Capture::Tag => paint(k, none),
+            Capture::String => paint(s, none),
+            Capture::Comment => paint(comment_code, italic),
+            Capture::Function => paint(f, none),
+            Capture::Attribute => paint(f, italic),
+            Capture::Type => paint(t, italic),
+            Capture::Number | Capture::Constant => paint(n, none),
+            Capture::VariableBuiltin => paint(n, italic),
+            // Property names and object keys: the published cyan, upright.
+            Capture::Property => paint(t, none),
+            Capture::Punctuation => paint(fg_code, none),
+            Capture::Escape => paint(escape, Modifier::BOLD),
+            Capture::Other => Style::default(),
+        });
         Theme {
             text: Style::default().bg(bg).fg(fg),
             gutter: Style::default().fg(comment),
@@ -358,6 +456,8 @@ impl Theme {
                 .bg(green)
                 .fg(bg)
                 .add_modifier(Modifier::BOLD),
+            syntax_on_highlight: true,
+            captures,
         }
     }
 }
@@ -366,17 +466,34 @@ impl Theme {
 /// true colour, otherwise the nearest 256-colour index that does (the best-contrast index when
 /// none does).
 fn fit(depth: ColorDepth, rgb: u32, on: &[Color], min: f64) -> Color {
+    let floors: Vec<(Color, f64)> = on.iter().map(|&c| (c, min)).collect();
+    fit_floors(depth, rgb, &floors)
+}
+
+/// Floors of a syntax colour (M4): 4.5:1 on the editor background, 3:1 under the selection and
+/// on a find match, where it stays drawn.
+pub(crate) fn syntax_floors(bg: Color, selection: Color, found: Color) -> [(Color, f64); 3] {
+    [(bg, 4.5), (selection, 3.0), (found, 3.0)]
+}
+
+/// [`fit`] with a floor per surface. The worst margin (ratio / floor) decides when no index
+/// meets every floor.
+pub(crate) fn fit_floors(depth: ColorDepth, rgb: u32, floors: &[(Color, f64)]) -> Color {
     if depth == ColorDepth::TrueColor {
         return depth.color(rgb);
     }
     let want = ((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
-    let surfaces: Vec<_> = on.iter().filter_map(|&c| to_rgb(c)).collect();
+    let surfaces: Vec<_> = floors
+        .iter()
+        .filter_map(|&(c, min)| to_rgb(c).map(|s| (s, min)))
+        .collect();
     let worst = |i: u8| {
         surfaces
             .iter()
-            .map(|&s| contrast(indexed_rgb(i), s))
+            .map(|&(s, min)| contrast(indexed_rgb(i), s) / min)
             .fold(f64::MAX, f64::min)
     };
+    let min = 1.0;
     let dist = |i: u8| {
         let (r, g, b) = indexed_rgb(i);
         let d = |x: u8, y: u8| (i32::from(x) - i32::from(y)).pow(2);
@@ -709,6 +826,191 @@ mod tests {
                 assert_ne!(badge.bg, t.tab_bar.bg);
             }
         }
+    }
+
+    /// Syntax classes that paint a colour of their own (`Other` keeps the text colour).
+    fn coloured_captures() -> impl Iterator<Item = Capture> {
+        Capture::ALL.into_iter().filter(|&c| c != Capture::Other)
+    }
+
+    fn every_theme() -> Vec<(String, Theme)> {
+        let mut v = vec![
+            ("dark".to_string(), Theme::dark()),
+            ("light".to_string(), Theme::light()),
+        ];
+        for depth in BOTH {
+            v.push((format!("dracula {depth:?}"), Theme::dracula_with(depth)));
+            v.push((format!("synthwave {depth:?}"), Theme::synthwave_with(depth)));
+        }
+        v
+    }
+
+    #[test]
+    fn every_theme_colours_the_main_capture_classes_apart() {
+        for (name, t) in every_theme() {
+            let fg = |c| t.syntax(c).fg;
+            for c in coloured_captures() {
+                assert!(fg(c).is_some(), "{name}: {c:?} has no colour");
+            }
+            assert_ne!(fg(Capture::Keyword), fg(Capture::String), "{name}");
+            assert_ne!(fg(Capture::Keyword), fg(Capture::Comment), "{name}");
+            assert_ne!(fg(Capture::String), fg(Capture::Comment), "{name}");
+            assert_ne!(fg(Capture::Function), fg(Capture::Keyword), "{name}");
+            // None of them is the plain text colour, or the class would not show (Property:
+            // json keys, CSS properties).
+            for c in [
+                Capture::Keyword,
+                Capture::String,
+                Capture::Comment,
+                Capture::Property,
+            ] {
+                assert_ne!(fg(c), t.text.fg, "{name} {c:?}");
+            }
+            // Other keeps the text style: unknown captures stay plain.
+            assert_eq!(t.syntax(Capture::Other), Style::default(), "{name}");
+        }
+    }
+
+    /// Syntax colours read on the editor (4.5:1) and stay readable under the selection and a
+    /// find match (3:1), in both colour depths.
+    #[test]
+    fn syntax_colours_meet_the_floor_on_editor_selection_and_find_match() {
+        for depth in BOTH {
+            for (name, t) in [
+                ("dracula", Theme::dracula_with(depth)),
+                ("synthwave", Theme::synthwave_with(depth)),
+            ] {
+                for c in coloured_captures() {
+                    let fg = t.syntax(c).fg.unwrap();
+                    for (surface, bg, floor) in [
+                        ("editor", t.text.bg.unwrap(), 4.5),
+                        ("selection", t.selection.bg.unwrap(), 3.0),
+                        ("find_match", t.find_match.bg.unwrap(), 3.0),
+                    ] {
+                        assert!(
+                            ratio(fg, bg) >= floor,
+                            "{depth:?} {name} {c:?} on {surface}: {fg:?} on {bg:?} is {:.2}",
+                            ratio(fg, bg)
+                        );
+                    }
+                    if depth == ColorDepth::Indexed256 {
+                        assert!(matches!(fg, Color::Indexed(16..=255)), "{name} {c:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dracula_syntax_uses_the_published_palette() {
+        let t = Theme::dracula_with(ColorDepth::TrueColor);
+        let rgb = |c: u32| Some(Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8));
+        assert_eq!(t.syntax(Capture::Keyword).fg, rgb(0xff79c6));
+        assert_eq!(t.syntax(Capture::String).fg, rgb(0xf1fa8c));
+        assert_eq!(t.syntax(Capture::Function).fg, rgb(0x50fa7b));
+        assert_eq!(t.syntax(Capture::Type).fg, rgb(0x8be9fd));
+        assert_eq!(t.syntax(Capture::Number).fg, rgb(0xbd93f9));
+        assert_eq!(t.syntax(Capture::Constant).fg, rgb(0xbd93f9));
+        assert_eq!(t.syntax(Capture::Tag).fg, rgb(0xff79c6));
+        assert_eq!(t.syntax(Capture::Attribute).fg, rgb(0x50fa7b));
+        // Property names / object keys: the published cyan, upright (types are italic).
+        assert_eq!(t.syntax(Capture::Property).fg, rgb(0x8be9fd));
+        for c in [Capture::Property, Capture::Constant, Capture::Number] {
+            assert!(
+                !t.syntax(c).add_modifier.contains(Modifier::ITALIC),
+                "{c:?}"
+            );
+        }
+        assert!(
+            t.syntax(Capture::Comment)
+                .add_modifier
+                .contains(Modifier::ITALIC)
+        );
+    }
+
+    /// Strings are not the warning / EDIT-badge orange, and comments are a lighter tone of the
+    /// palette's comment purple (not the gutter's). The 256-colour fallback has one light
+    /// orange (215) for both string tones, so the string check is true colour only.
+    #[test]
+    fn synthwave_syntax_stays_apart_from_the_chrome() {
+        for depth in BOTH {
+            let t = Theme::synthwave_with(depth);
+            assert_ne!(t.syntax(Capture::Comment).fg, t.gutter.fg, "{depth:?}");
+        }
+        let t = Theme::synthwave_with(ColorDepth::TrueColor);
+        let string = t.syntax(Capture::String).fg;
+        assert_ne!(string, t.warning.fg);
+        assert_ne!(string, t.mode_edit.bg);
+        assert_eq!(
+            t.syntax(Capture::String).fg,
+            Some(Color::Rgb(0xff, 0xb4, 0x54))
+        );
+        assert_eq!(
+            t.syntax(Capture::Comment).fg,
+            Some(Color::Rgb(0x98, 0x84, 0xc9))
+        );
+    }
+
+    /// dark and light follow the terminal's palette: syntax uses the 16 ANSI colours, which the
+    /// user's terminal theme defines. With xterm's default palette they read on the default
+    /// background (black for dark, white for light).
+    #[test]
+    fn terminal_colour_themes_use_ansi_syntax_colours() {
+        let xterm = |c: Color| -> (u8, u8, u8) {
+            match c {
+                Color::Black => (0, 0, 0),
+                Color::Red => (205, 0, 0),
+                Color::Green => (0, 205, 0),
+                Color::Yellow => (205, 205, 0),
+                Color::Blue => (0, 0, 238),
+                Color::Magenta => (205, 0, 205),
+                Color::Cyan => (0, 205, 205),
+                Color::Gray => (229, 229, 229),
+                Color::DarkGray => (127, 127, 127),
+                Color::LightRed => (255, 0, 0),
+                Color::LightGreen => (0, 255, 0),
+                Color::LightYellow => (255, 255, 0),
+                Color::LightBlue => (92, 92, 255),
+                Color::LightMagenta => (255, 0, 255),
+                Color::LightCyan => (0, 255, 255),
+                Color::White => (255, 255, 255),
+                other => panic!("not an ANSI colour: {other:?}"),
+            }
+        };
+        for (name, t, bg) in [
+            ("dark", Theme::dark(), (0, 0, 0)),
+            ("light", Theme::light(), (255, 255, 255)),
+        ] {
+            for c in coloured_captures() {
+                let fg = xterm(t.syntax(c).fg.unwrap());
+                assert!(
+                    contrast(fg, bg) >= 4.5,
+                    "{name} {c:?}: {:.2}",
+                    contrast(fg, bg)
+                );
+            }
+            // Under the selection and find matches the text is plain (D179), so the ANSI
+            // colours are never drawn on those surfaces.
+            assert!(!t.syntax_on_highlight, "{name}");
+        }
+        for (name, t) in every_theme() {
+            if !name.starts_with("dark") && !name.starts_with("light") {
+                assert!(t.syntax_on_highlight, "{name}");
+            }
+        }
+    }
+
+    /// dark's selection and find-match surfaces sit on the terminal's own background: they
+    /// keep at least the margin they had before M4 against black (239: 2.52, 58: 3.12), so
+    /// they stay visible on dark terminal themes too.
+    #[test]
+    fn dark_highlight_surfaces_stand_out_from_a_black_terminal() {
+        let t = Theme::dark();
+        let black = (0, 0, 0);
+        let selection = contrast(rgb(t.selection.bg.unwrap()), black);
+        let found = contrast(rgb(t.find_match.bg.unwrap()), black);
+        assert!(selection >= 2.5, "selection {selection:.2}");
+        assert!(found >= 3.1, "find match {found:.2}");
     }
 
     #[test]

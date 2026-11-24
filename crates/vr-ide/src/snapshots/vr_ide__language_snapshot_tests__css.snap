@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/language_snapshot_tests.rs
+expression: shot.render()
+---
+/* Page styles. */
+cccccccccccccccccc
+@media screen and (min-width: 600px) {
+kkkkkk........ooo.upppppppppu.nnnttu.u
+  body {
+..gggg.u
+    font-family: "Inter", sans-serif;
+....pppppppppppu.sssssssu...........u
+    margin: 0 auto;
+....ppppppu.n.....u
+  }
+..u
+}
+u
+
+
+.intro > p:hover {
+uppppp.o.guaaaaa.u
+  color: #ff0080;
+..pppppu.ussssssu
+  width: calc(100% - 2rem);
+..pppppu.ffffunnnt.o.ntttuu
+}
+u
