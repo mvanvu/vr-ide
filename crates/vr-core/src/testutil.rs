@@ -27,6 +27,8 @@ pub enum WriterMode {
 #[derive(Clone, Debug)]
 pub struct WriterVersion {
     pub bytes: Vec<u8>,
+    /// How this version was written (named in the report of an unaccounted version).
+    pub mode: WriterMode,
     /// Taken before the write started.
     pub begun: Instant,
     /// False when an in-place write went to a file that had already been replaced or moved
@@ -104,6 +106,7 @@ impl RacingWriter {
                     }) => versions.push(WriterVersion {
                         bytes,
                         begun,
+                        mode,
                         visible,
                         saw_before,
                         replaced,
@@ -350,6 +353,7 @@ fn assert_versions_accounted_for(
     kept: &[Vec<u8>],
 ) {
     let saw_ours = |v: &WriterVersion| v.saw_before.as_deref() == Some(ours);
+    let mut unaccounted = Vec::new();
     for (i, v) in versions.iter().enumerate() {
         if !v.visible && !saw_ours(v) {
             continue;
@@ -381,14 +385,26 @@ fn assert_versions_accounted_for(
             );
             continue;
         }
-        assert!(
-            survives,
-            "lost write: writer version {} of {} is in no file after a run that reported an \
-             error, and the writer did not overwrite it",
-            i + 1,
-            versions.len()
-        );
+        if !survives {
+            unaccounted.push(format!(
+                "version {} of {} [mode={:?} visible={} saw_ours={} replaced_is_ours={}]",
+                i + 1,
+                versions.len(),
+                v.mode,
+                v.visible,
+                saw_ours(v),
+                v.replaced.as_deref() == Some(ours)
+            ));
+        }
     }
+    // Known rare false positive (D75(2)/D76(3)): mode=InPlace, visible=false, saw_ours=true,
+    // replaced_is_ours=true. Anything else is a real loss.
+    assert!(
+        unaccounted.is_empty(),
+        "lost write: writer versions in no file after a run that reported an error, and the \
+         writer did not overwrite them: {}",
+        unaccounted.join("; ")
+    );
 }
 
 /// Whether RENAME_EXCHANGE works in `dir` (probed with two scratch files that are removed).
@@ -511,6 +527,7 @@ mod tests {
         WriterVersion {
             bytes: version_bytes(seq),
             begun: Instant::now(),
+            mode: WriterMode::TempRename,
             visible: true,
             saw_before: None,
             replaced: None,
@@ -564,6 +581,7 @@ mod tests {
         let version = WriterVersion {
             bytes: version_bytes(1),
             begun,
+            mode: WriterMode::InPlace,
             visible,
             saw_before,
             replaced,
@@ -592,6 +610,7 @@ mod tests {
         let version = WriterVersion {
             bytes: version_bytes(1),
             begun,
+            mode: WriterMode::InPlace,
             visible,
             saw_before,
             replaced,
@@ -816,17 +835,54 @@ mod tests {
                 assert_whole_content(initial, last, ours, versions, run)
             }
         };
-        let counts = race_document_save_with(rule, Duration::from_millis(3), 4, STEP, 20);
-        assert_both_outcomes(Target::Own, counts);
+        race_document_save_with(rule, Duration::from_millis(3), 4, STEP, 20);
+        assert_both_outcomes(Target::Own);
     }
 
-    /// A 3 ms writer must meet both a successful and a refused run, so the strict rules for
-    /// both paths are exercised (a fast writer may legitimately refuse every run).
-    fn assert_both_outcomes(target: Target, (ok, refused): (usize, usize)) {
-        assert!(
-            ok > 0 && refused > 0,
-            "{target:?}: the race did not exercise both paths (ok={ok} refused={refused})"
-        );
+    /// Success and refusal of `target` without any timing: the op alone succeeds, and a write
+    /// at `BeforeSwap` (after the last freshness check) makes it refuse. The racing sweeps
+    /// below judge every run with the strict rule but need not hit both outcomes.
+    fn assert_both_outcomes(target: Target) {
+        use crate::{DiskVersion, Document};
+        for refuse in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let own = dir.path().join("doc.txt");
+            fs::write(&own, b"initial\n").unwrap();
+            let mut doc = Document::open(&own, u64::MAX).unwrap();
+            doc.buffer.insert_text("X");
+            let p = match target {
+                Target::Own => own.clone(),
+                Target::Other | Target::Unprompted => {
+                    let p = dir.path().join("other.txt");
+                    fs::write(&p, b"other\n").unwrap();
+                    p
+                }
+                Target::Absent => dir.path().join("new.txt"),
+            };
+            let seen = DiskVersion::of_path(&p).unwrap();
+            if refuse {
+                let at = p.clone();
+                crate::document::hook::set(crate::document::hook::Stage::BeforeSwap, move || {
+                    fs::write(&at, b"theirs\n").unwrap()
+                });
+            }
+            let result = match target {
+                Target::Own => doc.save(),
+                Target::Unprompted => doc.save_as(&p),
+                _ => doc.save_as_seen(&p, &seen),
+            };
+            // Whatever did not fire must not reach the next run of this thread.
+            crate::document::hook::fire(crate::document::hook::Stage::BeforeSwap);
+            let _ = crate::document::hook::take_version_taken();
+            let on_disk = fs::read(&p).unwrap();
+            if refuse {
+                assert!(result.is_err(), "{target:?}: refusal expected");
+                assert_eq!(on_disk, b"theirs\n", "{target:?}: their write survives");
+            } else {
+                result.unwrap_or_else(|e| panic!("{target:?}: success expected: {e}"));
+                assert_eq!(on_disk, b"Xinitial\n", "{target:?}: ours written");
+            }
+        }
     }
 
     fn race_document_save_with(
@@ -862,7 +918,8 @@ mod tests {
         sweep: usize,
     ) -> (usize, usize) {
         use crate::{DiskVersion, Document};
-        let (mut ok_count, mut err_count, mut kept_count, mut partial_takes) = (0, 0, 0, 0);
+        let (mut ok_count, mut err_count, mut kept_count, mut partial_takes, mut no_version) =
+            (0, 0, 0, 0, 0);
         let modes: &[WriterMode] = match target {
             Target::Absent => &[WriterMode::TempRename],
             _ => &[WriterMode::InPlace, WriterMode::TempRename],
@@ -911,18 +968,33 @@ mod tests {
                 if target == Target::Unprompted {
                     // `save_as` may replace the version it took and, with it, the writer's
                     // earlier ones; every version after it must survive (strict rule below).
-                    let took = crate::document::hook::take_version_taken()
-                        .expect("save_as took no version");
-                    let excused = match versions.iter().position(|v| took.holds(&v.bytes)) {
-                        Some(i) => i + 1,
-                        None if took.holds(&initial) => 0,
-                        // Taken while an in-place write had truncated the file: the version in
-                        // flight and the earlier ones are excused (the stated window).
+                    // Drop a hook that did not fire so it cannot leak into this thread's next run.
+                    crate::document::hook::fire(crate::document::hook::Stage::SaveAsVersionTaken);
+                    let excused = match crate::document::hook::take_version_taken() {
+                        // `of_path` gave up under the writer before a version was taken: the
+                        // refusal must be that I/O error and ours must not be on disk; nothing
+                        // is excused, so the rule below checks every version.
                         None => {
-                            let taken = taken.get().expect("save_as took no version");
-                            partial_takes += 1;
-                            versions.iter().take_while(|v| v.begun < taken).count()
+                            assert!(
+                                matches!(&result, Err(crate::DocError::Io(e))
+                                    if e.to_string().contains("keeps changing")),
+                                "save_as took no version but did not fail with the I/O error: {result:?}"
+                            );
+                            assert_ne!(final_bytes, ours, "ours on disk without a version taken");
+                            no_version += 1;
+                            0
                         }
+                        Some(took) => match versions.iter().position(|v| took.holds(&v.bytes)) {
+                            Some(i) => i + 1,
+                            None if took.holds(&initial) => 0,
+                            // Taken while an in-place write had truncated the file: the version
+                            // in flight and the earlier ones are excused (the stated window).
+                            None => {
+                                let taken = taken.get().expect("save_as took no version");
+                                partial_takes += 1;
+                                versions.iter().take_while(|v| v.begun < taken).count()
+                            }
+                        },
                     };
                     let after = versions.split_off(excused);
                     if let Some(v) = versions.iter().find(|v| v.bytes == final_bytes) {
@@ -973,7 +1045,7 @@ mod tests {
             }
         }
         eprintln!(
-            "{target:?}: ok={ok_count} refused={err_count} kept={kept_count} partial_takes={partial_takes}"
+            "{target:?}: ok={ok_count} refused={err_count} kept={kept_count} partial_takes={partial_takes} no_version={no_version}"
         );
         (ok_count, err_count)
     }
@@ -1009,7 +1081,7 @@ mod tests {
     #[test]
     fn save_as_seen_never_loses_a_concurrent_write() {
         for target in [Target::Other, Target::Absent] {
-            let counts = race_with(
+            race_with(
                 target,
                 assert_no_lost_write_swapping,
                 Duration::from_millis(3),
@@ -1017,7 +1089,7 @@ mod tests {
                 STEP,
                 20,
             );
-            assert_both_outcomes(target, counts);
+            assert_both_outcomes(target);
         }
     }
 
@@ -1038,7 +1110,7 @@ mod tests {
     // `file.save_as` with a path argument calls plain `save_as` without any prompt (D89).
     #[test]
     fn unprompted_save_as_never_loses_a_concurrent_write() {
-        let counts = race_with(
+        race_with(
             Target::Unprompted,
             assert_no_lost_write_swapping,
             Duration::from_millis(3),
@@ -1046,7 +1118,7 @@ mod tests {
             STEP,
             20,
         );
-        assert_both_outcomes(Target::Unprompted, counts);
+        assert_both_outcomes(Target::Unprompted);
         race_with(
             Target::Unprompted,
             assert_no_lost_write_swapping,
