@@ -3,12 +3,12 @@
 | ID | Task | Owner | Depends on | Tags | Rules | Files | Verify with | Status | Rounds |
 |----|------|-------|-----------|------|-------|-------|-------------|--------|--------|
 | T1 | Workspace scaffold, CLI root resolution, bench script | be | - | - | TOOL, AC-1, AC-2 | Cargo.toml, Cargo.lock, rust-toolchain.toml, .gitignore, rustfmt.toml, crates/*/Cargo.toml, crates/*/src/lib.rs, crates/vr-ide/src/{main,cli}.rs, scripts/bench-startup.sh, README.md | guard + `cargo test -p vr-ide cli` | done | 0 |
-| T2 | vr-core text, selection, transactions, history, edit ops | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-core/Cargo.toml, crates/vr-core/src/lib.rs until T1 committed) | - | AC-3, AC-10 | crates/vr-core/src/{lib,text,selection,transaction,history,motion,edit_ops}.rs | `cargo test -p vr-core` | in-progress | 0 |
+| T2 | vr-core text, selection, transactions, history, edit ops | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-core/Cargo.toml, crates/vr-core/src/lib.rs until T1 committed) | - | AC-3, AC-10 | crates/vr-core/src/{lib,text,selection,transaction,history,motion,edit_ops}.rs | `cargo test -p vr-core` | done | 0 |
 | T3 | vr-config keymap + settings (D10 defaults) | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-config/Cargo.toml, crates/vr-config/src/lib.rs until T1 committed) | - | AC-5 | crates/vr-config/** | `cargo test -p vr-config` | done | 0 |
 | T4 | vr-core documents (load/save/encoding) + file watching | be | T2 | - | AC-3, AC-7, AC-18 | crates/vr-core/src/{document,watch,lib}.rs | `cargo test -p vr-core` | todo | 0 |
 | T5 | App shell: event loop, editor view, commands, tabs, status, clipboard, recovery | fe | T1, T2, T3, T4 | ui | AC-1, AC-3, AC-4, AC-5, AC-7, AC-18 | crates/vr-ide/src/{main,app,event_loop,clipboard,recovery,theme}.rs, commands/{registry,app,file,edit,tab}.rs, ui/{layout,editor_view,tabs,status_bar}.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T6 | Palette, dialogs, go-to-line, external-change prompt, quit guard | fe | T5 | ui | AC-6, AC-7 | crates/vr-ide/src/ui/{palette,dialog}.rs, commands/{nav,palette}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
-| T7 | vr-fs tree, file ops (trash), fuzzy file index | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-fs/Cargo.toml, crates/vr-fs/src/lib.rs until T1 committed) | - | AC-8, AC-9 | crates/vr-fs/** | `cargo test -p vr-fs` | review | 0 |
+| T7 | vr-fs tree, file ops (trash), fuzzy file index | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-fs/Cargo.toml, crates/vr-fs/src/lib.rs until T1 committed) | - | AC-8, AC-9 | crates/vr-fs/** | `cargo test -p vr-fs` | fix | 1 |
 | T8 | Explorer panel + go-to-file | fe | T6, T7 | ui | AC-1, AC-8, AC-9 | crates/vr-ide/src/ui/{explorer,layout,palette}.rs, commands/explorer.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T9 | vr-search engine: find/replace, project search, project replace | be | T2 | - | AC-9, AC-10, AC-11, AC-12 | crates/vr-search/** | `cargo test -p vr-search` | todo | 0 |
 | T10 | Find/replace bar + project search panel | fe | T8, T9 | ui | AC-10, AC-11, AC-12 | crates/vr-ide/src/ui/{find_bar,search_panel,layout}.rs, commands/{find,search}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
@@ -36,3 +36,7 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - model: T7 review opus — file deletion/move of user files is high-risk (sonnet reviewer stopped 11:35); T8 review on opus too (explorer decides which path is deleted/overwritten)
 - T5 brief must include: call Keymap::validate(&registry_names) at startup (QC T3 note); enable keyboard enhancement flags; F1 fallback for ctrl+shift+p
 - T3 verdicts (11:37): review APPROVE (2 code minors → quick pass), QC_PASS; gate ✓
+- guard: off — session started in /home/vu-dev/DEV/ai-ide (renamed); restart claude in /home/vu-dev/DEV/vr-ide at the next stop point; leader applies guard rules by hand (named-file staging only)
+- T7 fix round 1 (11:40): 4 major (F1 EXDEV copy+remove_dir_all, F2 overwrite race, F3 trash symlink loop, F4 data-safety tests) + minors; D24, D25
+- T8 brief must include: reject typed names containing '/', '..' or NUL; confine ops to project root (review T7 minor)
+- T2 verdicts (11:43): review CHANGES (3 minor + 1 uncertain, no major → quick pass), QC_PASS 80/80; gate ✓

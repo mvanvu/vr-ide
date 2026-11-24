@@ -74,3 +74,34 @@ Note (not a defect): `Keymap::load` does not itself warn on unknown commands; th
 | BASE-17 | pass | temp config dir removed; `ls /tmp` shows no t3probe leftovers |
 | COST-13 | pass | throwaway probe in qa-artifacts/T3 |
 n-a: no browser/UI/DB in this task
+
+## QC T2 — QC_PASS
+Build: vr-core working tree at QC time (path dep, release). Probe: `qa-artifacts/T2/probe/` (own `[workspace]`, no files added to the crate); output `qa-artifacts/T2/run3.txt` (80 PASS, 0 FAIL). Engines: cargo only (library, no UI). Developer tests not rerun; notes show 26 passed + clippy/guard green.
+| AC | Status | Evidence |
+|---|---|---|
+| AC-3 typing/backspace/delete/undo/redo | pass | PHP function typed char by char: text and cursor equal the prefix at every step; newline+indent paste is one undo step; Vietnamese decomposed cluster (e+U+0323+U+0302) removed whole by backspace and delete_forward, precomposed ệ ok; delete_forward at end and backspace at start are no-ops (revision unchanged); undo of 4 groups walks "hello world!!"→"hello world"→"hello"→"" and redo returns; revision == saved value after undoing back to saved text, == initial after full undo; edit after undo clears redo |
+| AC-10 base (big transaction) | pass | 1 000 replacements across 10 000 lines match String model, 1 undo restores (revision back, no 2nd group), redo reapplies; mixed grow/insert transaction ok; apply ≈ 0.4–0.7 ms |
+| Edit ops | pass | delete/duplicate/move line (first, last, last without trailing newline, single line, CRLF, 2-line selection, no-op move at bounds leaves revision unchanged), indent/outdent (blank lines skipped, tab/2/6-space cases, CRLF), toggle_comment `//` and `#` (relative indent kept, mixed→comment all, no-space uncomment, non-ASCII, blank line untouched, round trip, undo) |
+| Random model | pass | 2 000 seeded xorshift ops (insert/backspace/delete/set_selection/undo/redo, per-op groups) vs String model: text + cursor + undo/redo availability never diverge; 20 more seeds x 2 000 ops with coalescing: same revision ⇒ same text, undo-all == initial (revision 0), redo-all == final; 2 000 malformed (overlapping/out-of-range) transactions: no panic |
+| Timing (release, 100 000 lines) | info | 10 000 inserts at random lines incl. set_selection+line_to_char: 1.2 µs/insert; contiguous typing mid-doc: 0.46 µs; 10 000 separate undo groups: 0.55 µs; undo of 10 000 groups 2.0 ms |
+### Contract checks
+| Contract | Producer | Consumer | Result |
+|---|---|---|---|
+| vr-core public API (Buffer, Transaction, Change, Selection, History, edit_ops) | crates/vr-core/src | probe crate via public paths only | pass |
+### Commands
+`CARGO_TARGET_DIR=$TEAM_WS/qa-artifacts/T2/target $TEAM_BIN/run-heavy.sh cargo run --release --manifest-path $TEAM_WS/qa-artifacts/T2/probe/Cargo.toml`; target dir removed afterwards.
+Note: probe-side mistakes found and fixed in my own test (model cursor after redo, undo count after toggle) — no library defect.
+
+## Rule check T2
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-1 | pass | no crate files added/changed by QC; probe only under qa-artifacts/T2 |
+| BASE-2 | pass | contract types used as in plan; additive helpers listed in notes |
+| BASE-4 | pass | notes hold final test/clippy/guard output |
+| BASE-5 | pass | probe run through run-heavy.sh |
+| BASE-10 | pass | no workspace-wide test run by QC |
+| BASE-14 | pass | run finished in foreground (<2 min) |
+| BASE-15 | pass | no background tasks started |
+| BASE-24 | pass | no git index changes |
+| BASE-30 | pass | probe target dir deleted |
+| COST-13 | pass | throwaways in qa-artifacts/T2 |

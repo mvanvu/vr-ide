@@ -4,6 +4,12 @@ Greenfield: nothing reusable yet. Developers append one line per reusable piece 
 (`` `path` — what it does ``), grouped by crate.
 
 ## vr-core
+- `crates/vr-core/src/text.rs` — `Buffer` (rope + selection + grouped undo, `version`, `revision`, `BufferOptions{tab_width,indent_unit}`), `display_col`, `char_at_display_col`, `char_to_pos`/`pos_to_char` (grapheme cols), `line_content_end`, `line_break_str`, `default_line_break`, `prev/next_grapheme_boundary`, `is_line_break`
+- `crates/vr-core/src/selection.rs` — `Pos`, `Range`, `Selection` (sorted, merged, primary; `map`, `clamp`, `transform`)
+- `crates/vr-core/src/transaction.rs` — `Change`, `Transaction` (`with_selection`), `normalize`, `apply_changes`, `invert_changes`, `map_pos`
+- `crates/vr-core/src/history.rs` — `History` (`can_undo/can_redo/revision/break_group`), `Clock`, `SystemClock`, `ManualClock` (test time injection), `EditKind`, `GROUP_IDLE` = 1 s
+- `crates/vr-core/src/motion.rs` — move_left/right/up/down, word_left/right, line_start (smart home), line_end, doc_start/end (`buf, extend`)
+- `crates/vr-core/src/edit_ops.rs` — delete_line, duplicate_line, move_line_up/down, indent, outdent, toggle_comment(buf, token); each one undo step
 ## vr-config
 - `crates/vr-config/src/keymap.rs` — `Keymap::load(user) -> (Keymap, warnings)`, `command_for` (editor focus), `command_for_in(Context, chord)` (context then global; Terminal no fallback, D8), `keys_for(cmd)`, `bindings()` iterator (docs/palette), `validate(known)`; `RESERVED_COMMANDS`; defaults in `defaults/keymap.toml`
 - `crates/vr-config/src/keys.rs` — `KeyChord{code,mods}` (crossterm-free), `FromStr`/`Display` (`ctrl+shift+alt+<key>`), `KeyChord::new` lowercases letters (use it when converting terminal events)
