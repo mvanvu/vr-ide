@@ -228,3 +228,16 @@ Build: working tree after fix round 2 (API unchanged). Engine: Rust probe (relea
 | Concurrent writer, 2 runs x 50 saves, two start-offset sweeps each (400 us and 2000 us steps) | pass | Ok/ChangedOnDisk: run1 44/6 and 48/2, run2 39/11 and 48/2; plus a 17 MB doc run 48/2. 0 bad contents, 0 leftovers, no case of our bytes replacing a writer version that landed during `save()` (INFO count 0 in every run) |
 | One `chmod` by another thread at a time inside `save()` (17 MB doc, save about 37 ms, chmod offset swept 0 to 19.6 ms in 50 steps) | pass | 50 of 50 saves Ok, none ChangedOnDisk, file holds our bytes, no leftovers (r2_chmod_once.log). Control: one chmod 5 ms before the save: 50 of 50 Ok |
 Note (not a defect against the criterion): a continuous chmod storm (one chmod every 50 us for the whole save) makes every save return ChangedOnDisk (50 of 50): the pre-rename stamp check sees ctime moving. A single chmod, however timed, does not.
+
+## QC T9 re-check (round 2) — QC_PASS T9 R2
+Same probe (release) after round 2.
+
+| Check | Result | Evidence |
+|---|---|---|
+| AC-12 core | pass | Byte-exact `BAR one\r\nbar\r\nBAR two\r\n` and `a BAR\nb BAR`, mode 0750 kept, unconfirmed bom/latin1/bin byte-identical, Latin-1 and binary refused, changed-since-preview file skipped with "file changed on disk since the preview; not written" and keeps new bytes, no stray files. |
+| Concurrent writer, 2 x 30 runs | pass | 200 files, victim rewritten every ~1 ms (in-place and temp+rename writers). 0 dropped or torn victims in 60 runs; 18 runs skipped with an error item, 42 applied Ok (writer's later write then won). Other 199 files clean in all 60 runs. Leftovers: in all 42 runs without an error, no `.vr-ide-save-*` / `.vr-ide-conflict-*` (or any non-fN.txt) file remained; the 18 error runs left none either. Logs `race2_inplace.txt`, `race2_atomic.txt`. |
+| `(?x)foo # c` whole word | pass | text `foo / foobar / xfoo / a foo b`: find_all ranges [(0,3),(18,21)], search_project [(1,1),(4,3)] — only the whole-word occurrences. |
+
+Cleanup done; probe source and race2 logs remain.
+
+QC_PASS T9 R2

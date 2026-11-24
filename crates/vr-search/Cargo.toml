@@ -12,6 +12,7 @@ grep-searcher.workspace = true
 grep-regex.workspace = true
 grep-matcher.workspace = true
 ignore.workspace = true
+rustix.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

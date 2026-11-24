@@ -57,3 +57,6 @@ Notes end with `## Rule compliance` (rule-packs.md §6: one row per exercised ru
 ## Ledger warning (recurring defect class: T7, T9)
 - Writes to user files: no gap between the freshness check and the replace; a concurrent writer must never be overwritten or deleted — test it with a writer racing the operation (T7/T9 class).
 - QC of any task that writes user files: one concurrent-writer check per write path (a background loop saving the file while the operation runs).
+
+## Reporting
+- Your verdict / DONE report goes in your final message only; never also SendMessage it to the leader — it would arrive twice.

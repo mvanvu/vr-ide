@@ -6,14 +6,14 @@
 | T2 | vr-core text, selection, transactions, history, edit ops | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-core/Cargo.toml, crates/vr-core/src/lib.rs until T1 committed) | - | AC-3, AC-10 | crates/vr-core/src/{lib,text,selection,transaction,history,motion,edit_ops}.rs | `cargo test -p vr-core` | done | 0 |
 | T3 | vr-config keymap + settings (D10 defaults) | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-config/Cargo.toml, crates/vr-config/src/lib.rs until T1 committed) | - | AC-5 | crates/vr-config/** | `cargo test -p vr-config` | done | 0 |
 | T4 | vr-core documents (load/save/encoding) + file watching | be | T2 | - | AC-3, AC-7, AC-18 | crates/vr-core/src/{document,watch,lib}.rs | `cargo test -p vr-core` | done | 2 |
-| T5 | App shell: event loop, editor view, commands, tabs, status, clipboard, recovery | fe | T1, T2, T3, T4 | ui | AC-1, AC-3, AC-4, AC-5, AC-7, AC-18 | crates/vr-ide/src/{main,app,event_loop,clipboard,recovery,theme}.rs, commands/{registry,app,file,edit,tab}.rs, ui/{layout,editor_view,tabs,status_bar}.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
+| T5 | App shell: event loop, editor view, commands, tabs, status, clipboard, recovery | fe | T1, T2, T3, T4 | ui | AC-1, AC-3, AC-4, AC-5, AC-7, AC-18 | crates/vr-ide/src/{main,app,event_loop,clipboard,recovery,theme}.rs, commands/{registry,app,file,edit,tab}.rs, ui/{layout,editor_view,tabs,status_bar}.rs, ui/snapshots/ | `cargo test -p vr-ide` | in-progress | 0 |
 | T6 | Palette, dialogs, go-to-line, external-change prompt, quit guard | fe | T5 | ui | AC-6, AC-7 | crates/vr-ide/src/ui/{palette,dialog}.rs, commands/{nav,palette}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T7 | vr-fs tree, file ops (trash), fuzzy file index | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-fs/Cargo.toml, crates/vr-fs/src/lib.rs until T1 committed) | - | AC-8, AC-9 | crates/vr-fs/** | `cargo test -p vr-fs` | done | 3 |
 | T8 | Explorer panel + go-to-file | fe | T6, T7 | ui | AC-1, AC-8, AC-9 | crates/vr-ide/src/ui/{explorer,layout,palette}.rs, commands/explorer.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
-| T9 | vr-search engine: find/replace, project search, project replace | be | T2 | - | AC-9, AC-10, AC-11, AC-12 | crates/vr-search/** | `cargo test -p vr-search` | fix | 2 |
+| T9 | vr-search engine: find/replace, project search, project replace | be | T2 | - | AC-9, AC-10, AC-11, AC-12 | crates/vr-search/** | `cargo test -p vr-search` | done | 2 |
 | T10 | Find/replace bar + project search panel | fe | T8, T9 | ui | AC-10, AC-11, AC-12 | crates/vr-ide/src/ui/{find_bar,search_panel,layout}.rs, commands/{find,search}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T11 | Bench run, README, docs/keymap.md | be | T10 | - | AC-1 | README.md, scripts/bench-startup.sh, docs/keymap.md | bench script | todo | 0 |
-| T12 | Shared racing-writer test helper (vr-core test utils) + use it in T4/T7/T9 write-path tests | be | T4, T9 | - | AC-3, AC-8, AC-12 | crates/vr-core/src/testutil.rs (cfg test feature), tests in vr-core, vr-fs, vr-search | `cargo test -p vr-core -p vr-fs -p vr-search` | todo | 0 |
+| T12 | Shared racing-writer test helper (vr-core test utils) + use it in T4/T7/T9 write-path tests | be | T4, T9, T10 (ordering: edits vr-core, which every running vr-ide task compiles) | - | AC-3, AC-8, AC-12 | crates/vr-core/src/testutil.rs (cfg test feature), tests in vr-core, vr-fs, vr-search | `cargo test -p vr-core -p vr-fs -p vr-search` | todo | 0 |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
@@ -58,3 +58,4 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - T4 fix round 2 (12:14): R1-1 major (stale own-write entry hides a revert → AC-7 reload missed), R1-2 minor (metadata-only change → false ChangedOnDisk); QC R1 pass
 - T9 fix round 2 (12:15): swap-back path can delete the agent's version held in tmp (major) + (?x) whole-word wrap minor; QC R1 pass (120 racing runs clean)
 - T4 verdicts (12:18): round 2 review APPROVE (opus), QC_PASS R2; gate ✓. Note for T6: a continuous chmod storm makes every save ChangedOnDisk — save_overwrite is the way out
+- T9 verdicts (12:20): round 2 review APPROVE (opus), QC_PASS R2; gate ✓
