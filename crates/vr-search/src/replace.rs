@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use vr_core::safe_replace::{self, Checks, Outcome, Step, exchange_files};
+
 use crate::Query;
 use crate::find::{Matcher, line_spans};
 use crate::project::{MAX_FILE_BYTES, read_capped, size_text};
@@ -302,7 +304,14 @@ fn apply_one(p: &FilePreview, seen: &mut HashMap<PathBuf, PathBuf>) -> io::Resul
     };
     let replaced = replace_bytes(&current, spec).map_err(io::Error::other)?;
     let tmp = write_temp(&target, &replaced.bytes)?;
-    commit_replace(&tmp, &target, &current, &mut exchange_files, &mut || {})
+    commit_replace(
+        &tmp,
+        &target,
+        &current,
+        &replaced.bytes,
+        &mut exchange_files,
+        &mut || {},
+    )
 }
 
 /// Prefix and suffix of vr-core's save temps, so the watcher and the explorer treat replace
@@ -350,144 +359,51 @@ fn changed_on_disk() -> io::Error {
 }
 
 /// Puts the fsynced temp file `tmp` in place of `target` only if `target` still holds
-/// `expected`. `swap` is the atomic exchange (`exchange_files`; a seam for tests), and
-/// `before_swap` a seam to simulate a concurrent writer.
-///
-/// With exchange (Linux `renameat2(RENAME_EXCHANGE)`) the files are swapped atomically and
-/// the swapped-out file is compared; if someone wrote it in the meantime it is swapped back.
-/// Remaining window: a writer that still holds the old file open and writes to it between
-/// that comparison and the unlink of the old file, or a second write (e.g. a rename over the
-/// target) landing between our swap and the swap-back. Without exchange support (other
-/// systems, some filesystems) the check runs right before `rename`, and a write landing
-/// between the re-read and the rename is lost.
-///
-/// `tmp` is deleted only when it certainly holds bytes we own (our replacement, or the
-/// verified original). Otherwise it may be someone else's version: it is kept under a
-/// visible `<name>.vr-ide-conflict-…` name and the error ends with "kept at <path>".
+/// `expected`, through vr-core's `safe_replace` (shared with `Document::save`): with
+/// `renameat2(RENAME_EXCHANGE)` the swapped-out file is compared and swapped back on a
+/// mismatch; what then comes out of the path is deleted only if it still is our temp file
+/// holding `ours`, and a version that may be someone else's is kept under a visible
+/// `<name>.vr-ide-conflict-…` name and the error ends with "kept at <path>". `swap` is the
+/// atomic exchange (a seam for tests), `before_swap` a seam to simulate a concurrent writer.
 fn commit_replace(
     tmp: &Path,
     target: &Path,
     expected: &[u8],
+    ours: &[u8],
     swap: &mut dyn FnMut(&Path, &Path) -> io::Result<()>,
     before_swap: &mut dyn FnMut(),
 ) -> io::Result<()> {
-    match commit_inner(tmp, target, expected, swap, before_swap) {
-        (result, TmpHolds::Ours) => {
-            if tmp.exists() {
-                let _ = fs::remove_file(tmp);
+    let outcome = safe_replace::replace_if_unchanged(
+        tmp,
+        target,
+        Checks {
+            target_unchanged: &mut |p| holds(p, expected),
+            holds_expected: &mut |p| holds(p, expected),
+            holds_ours: &mut |p| holds(p, ours),
+        },
+        swap,
+        &mut |step| {
+            if step == Step::BeforeSwap {
+                before_swap()
             }
-            if result.is_ok() {
-                sync_dir(target);
-            }
-            result
-        }
-        (Err(cause), TmpHolds::Unknown(what)) => {
-            let kept = keep_conflict(tmp, target);
+        },
+    );
+    match outcome {
+        Ok(Outcome::Replaced) => {
             sync_dir(target);
-            Err(io::Error::new(
-                cause.kind(),
-                format!(
-                    "{what} ({cause}); the other version was kept at {}",
-                    kept.display()
-                ),
-            ))
+            Ok(())
         }
-        (Ok(()), TmpHolds::Unknown(_)) => Ok(()),
-    }
-}
-
-/// What the path `tmp` holds after `commit_inner`.
-enum TmpHolds {
-    /// Our replacement or the verified original (or nothing): safe to delete.
-    Ours,
-    /// Possibly another writer's version, with a description of what happened.
-    Unknown(&'static str),
-}
-
-fn commit_inner(
-    tmp: &Path,
-    target: &Path,
-    expected: &[u8],
-    swap: &mut dyn FnMut(&Path, &Path) -> io::Result<()>,
-    before_swap: &mut dyn FnMut(),
-) -> (io::Result<()>, TmpHolds) {
-    match holds(target, expected) {
-        Ok(true) => {}
-        Ok(false) => return (Err(changed_on_disk()), TmpHolds::Ours),
-        Err(e) => return (Err(e), TmpHolds::Ours),
-    }
-    before_swap();
-    match swap(tmp, target) {
-        Ok(()) => {
-            // `tmp` now names whatever was at `target` at the instant of the swap.
-            match holds(tmp, expected) {
-                Ok(true) => (Ok(()), TmpHolds::Ours),
-                Ok(false) => match swap(tmp, target) {
-                    Ok(()) => (Err(changed_on_disk()), TmpHolds::Ours),
-                    Err(e) => (
-                        Err(e),
-                        TmpHolds::Unknown(
-                            "file changed on disk during replace and could not be restored",
-                        ),
-                    ),
-                },
-                Err(e) => (
-                    Err(e),
-                    TmpHolds::Unknown(
-                        "the file was replaced but its previous version could not be verified",
-                    ),
-                ),
-            }
+        Ok(Outcome::Changed) => Err(changed_on_disk()),
+        Ok(Outcome::Kept { at, what, cause }) => {
+            sync_dir(target);
+            Err(safe_replace::kept_error(&at, what, &cause))
         }
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported
-            ) =>
-        {
-            match holds(target, expected) {
-                Ok(true) => (fs::rename(tmp, target), TmpHolds::Ours),
-                Ok(false) => (Err(changed_on_disk()), TmpHolds::Ours),
-                Err(e) => (Err(e), TmpHolds::Ours),
-            }
-        }
-        Err(e) => (Err(e), TmpHolds::Ours),
-    }
-}
-
-/// Moves `tmp` to a visible `<name>.vr-ide-conflict-PID-N` next to `target` without ever
-/// replacing an existing file (hard link + unlink), and returns where it now is. If that
-/// fails, `tmp` stays where it is and its own path is returned.
-fn keep_conflict(tmp: &Path, target: &Path) -> PathBuf {
-    let Some(dir) = target.parent() else {
-        return tmp.to_path_buf();
-    };
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    // Keep the name under NAME_MAX (255 bytes) with room for the suffix.
-    let mut cut = name.len().min(200);
-    while !name.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    for _ in 0..100 {
-        let kept = dir.join(format!(
-            "{}.vr-ide-conflict-{}-{}",
-            &name[..cut],
-            std::process::id(),
-            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
-        match fs::hard_link(tmp, &kept) {
-            Ok(()) => {
-                let _ = fs::remove_file(tmp);
-                return kept;
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(_) => break,
+        Err(e) => {
+            // `tmp` was never at the target: it still holds only our replacement.
+            let _ = fs::remove_file(tmp);
+            Err(e)
         }
     }
-    tmp.to_path_buf()
 }
 
 /// True when the file at `path` holds exactly `expected` (read at most one byte more).
@@ -497,17 +413,6 @@ fn holds(path: &Path, expected: &[u8]) -> io::Result<bool> {
         .take(expected.len() as u64 + 1)
         .read_to_end(&mut buf)?;
     Ok(buf == expected)
-}
-
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn exchange_files(a: &Path, b: &Path) -> io::Result<()> {
-    use rustix::fs::{CWD, RenameFlags, renameat_with};
-    renameat_with(CWD, a, CWD, b, RenameFlags::EXCHANGE).map_err(io::Error::from)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn exchange_files(_a: &Path, _b: &Path) -> io::Result<()> {
-    Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
 /// Makes the rename durable; best effort, as some filesystems refuse fsync on directories.
@@ -752,7 +657,7 @@ mod tests {
             let target = dir.path().join("a.txt");
             fs::write(&target, "old\n").unwrap();
             let tmp = write_temp(&target, b"new\n").unwrap();
-            let err = commit_replace(&tmp, &target, b"old\n", &mut swap, &mut || {
+            let err = commit_replace(&tmp, &target, b"old\n", b"new\n", &mut swap, &mut || {
                 fs::write(&target, "agent\n").unwrap()
             })
             .unwrap_err();
@@ -768,7 +673,7 @@ mod tests {
             assert_eq!(names(dir.path()), ["a.txt"], "{exchange}");
             // Without interference the same steps replace the file.
             let tmp = write_temp(&target, b"new\n").unwrap();
-            commit_replace(&tmp, &target, b"agent\n", &mut swap, &mut || {}).unwrap();
+            commit_replace(&tmp, &target, b"agent\n", b"new\n", &mut swap, &mut || {}).unwrap();
             assert_eq!(fs::read_to_string(&target).unwrap(), "new\n", "{exchange}");
             assert_eq!(names(dir.path()), ["a.txt"], "{exchange}");
         }
@@ -896,7 +801,7 @@ mod tests {
                 Err(io::Error::other("injected swap-back failure"))
             }
         };
-        let err = commit_replace(&tmp, &target, b"old\n", &mut swap, &mut || {
+        let err = commit_replace(&tmp, &target, b"old\n", b"new\n", &mut swap, &mut || {
             fs::write(&target, "agent\n").unwrap()
         })
         .unwrap_err();
@@ -915,6 +820,37 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
+    fn commit_keeps_in_place_write_made_between_swap_and_swap_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("a.txt");
+        fs::write(&target, "old\n").unwrap();
+        let tmp = write_temp(&target, b"new\n").unwrap();
+        let mut calls = 0;
+        let mut swap = |a: &Path, b: &Path| {
+            calls += 1;
+            if calls == 2 {
+                // The writer's next version is written by path while our file sits there.
+                fs::write(&target, "agent2\n").unwrap();
+            }
+            exchange_files(a, b)
+        };
+        let err = commit_replace(&tmp, &target, b"old\n", b"new\n", &mut swap, &mut || {
+            fs::write(&target, "agent1\n").unwrap()
+        })
+        .unwrap_err();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "agent1\n", "{err}");
+        assert!(
+            err.to_string().contains(" kept at "),
+            "{err}; dir {:?}",
+            names(dir.path())
+        );
+        let kept = kept_path(&err);
+        assert_eq!(fs::read_to_string(&kept).unwrap(), "agent2\n", "{err}");
+        assert_eq!(names(dir.path()).len(), 2);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
     fn commit_keeps_other_version_when_verify_fails() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -926,7 +862,7 @@ mod tests {
             // The swapped-out file cannot be read back (stands in for EMFILE or EIO).
             fs::set_permissions(a, fs::Permissions::from_mode(0o000))
         };
-        let result = commit_replace(&tmp, &target, b"agent\n", &mut swap, &mut || {});
+        let result = commit_replace(&tmp, &target, b"agent\n", b"new\n", &mut swap, &mut || {});
         if fs::File::open(&target).is_ok() && result.is_ok() {
             // Running as root: permissions do not stop the read, nothing to assert.
             return;

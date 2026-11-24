@@ -10,6 +10,7 @@ unicode-segmentation.workspace = true
 unicode-width.workspace = true
 notify.workspace = true
 notify-debouncer-full.workspace = true
+rustix.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

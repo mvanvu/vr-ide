@@ -7,6 +7,7 @@ pub mod document;
 pub mod edit_ops;
 pub mod history;
 pub mod motion;
+pub mod safe_replace;
 pub mod selection;
 #[cfg(any(test, feature = "test-util"))]
 pub mod testutil;
@@ -15,8 +16,8 @@ pub mod transaction;
 pub mod watch;
 
 pub use document::{
-    BINARY_SNIFF_LEN, DiskStamp, DiskState, DocError, Document, Encoding, LineEnding, OwnWrites,
-    Saved, is_save_temp,
+    BINARY_SNIFF_LEN, DiskStamp, DiskState, DiskVersion, DocError, Document, Encoding, LineEnding,
+    OwnWrites, Saved, is_save_temp,
 };
 pub use history::{Clock, EditKind, History, ManualClock, SystemClock};
 pub use ropey;
