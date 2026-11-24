@@ -226,3 +226,4 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - FR-11 DONE (02:26): 5 minors fixed; vr-ide 273/0; D181–D183. Review opus (touches the panic hook in recovery.rs, which writes recovery files).
 - FR-11 review (02:30): CHANGES (opus) — major: new panic-hook test races the existing one (40/40 fail together); BASE-25 guard output missing; 4 minors (deferred print before finish(), tui_active on main panic, bound deferred list, read-only reason from encoding) + new-states section. Design QA pass. Round 1 to the same developer.
 - FR-11 r1 re-check APPROVE (02:33); race 0/40; committed + pushed; vr-ide reinstalled. All tasks done. Phase 6 report next.
+- Run end (02:34): all rows done (T13–T15, FR-9…FR-11, M4-1…M4-4); master = origin/master 5e91793; vr-ide reinstalled; no worktrees, no agents.
