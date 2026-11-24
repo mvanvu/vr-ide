@@ -410,11 +410,20 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// A hidden name next to `p` that only this process uses.
+/// A hidden name next to `p` meant for this process only. The clock part keeps
+/// a later process with a reused pid off an earlier crash's leftovers; callers
+/// still never overwrite an existing name.
 fn temp_sibling(p: &Path) -> PathBuf {
     let name = p.file_name().unwrap_or_default().to_string_lossy();
     let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    p.with_file_name(format!(".{name}.vr-tmp-{}-{seq}", std::process::id()))
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    p.with_file_name(format!(
+        ".{name}.vr-tmp-{}-{nanos}-{seq}",
+        std::process::id()
+    ))
 }
 
 /// `a.txt` → `.a.txt.vr-tmp-…` → `A.txt`; on failure of the second step the
@@ -482,6 +491,8 @@ struct LinkOps<'a> {
     rename: &'a (dyn Fn(&Path, &Path) -> io::Result<()> + 'a),
     link: &'a (dyn Fn(&Path, &Path) -> io::Result<()> + 'a),
     remove: &'a (dyn Fn(&Path) -> io::Result<()> + 'a),
+    /// Candidate temp name for a path; called again for each further attempt.
+    temp_candidate: &'a (dyn Fn(&Path) -> PathBuf + 'a),
 }
 
 fn sys_rename(a: &Path, b: &Path) -> io::Result<()> {
@@ -501,8 +512,28 @@ impl LinkOps<'static> {
         rename: &sys_rename,
         link: &sys_link,
         remove: &sys_remove,
+        temp_candidate: &temp_sibling,
     };
 }
+
+/// First candidate temp name that does not exist. Step 1 of `link_move` is a
+/// plain rename (no NOREPLACE here), so it must not land on a leftover of a
+/// crashed process: such a file may be the only copy of someone's data. The
+/// check races only with other writers of this private name.
+fn free_temp_name(from: &Path, ops: &LinkOps) -> Result<PathBuf, FsOpError> {
+    for _ in 0..TEMP_ATTEMPTS {
+        let tmp = (ops.temp_candidate)(from);
+        if !exists(&tmp) {
+            return Ok(tmp);
+        }
+    }
+    Err(FsOpError::Io {
+        path: from.to_path_buf(),
+        source: io::Error::new(io::ErrorKind::AlreadyExists, "no free temporary name"),
+    })
+}
+
+const TEMP_ATTEMPTS: u32 = 64;
 
 /// Moves a file or symlink where `RENAME_NOREPLACE` is missing, without ever
 /// unlinking or replacing a name someone else can write to:
@@ -514,9 +545,7 @@ impl LinkOps<'static> {
 /// On failure the file goes back to `from` (again by link, no replace); if
 /// that name has been taken meanwhile, `LeftAt` says where the file is.
 fn link_move(from: &Path, to: &Path, ops: &LinkOps) -> Result<(), FsOpError> {
-    let tmp = temp_sibling(from);
-    // The temp name is unique to this process and call, so a plain rename
-    // cannot replace anyone's file.
+    let tmp = free_temp_name(from, ops)?;
     (ops.rename)(from, &tmp).map_err(|e| move_err(from, to, e))?;
     match (ops.link)(&tmp, to) {
         Ok(()) => (ops.remove)(&tmp).map_err(|e| FsOpError::BothNamesLeft {
@@ -1157,6 +1186,35 @@ mod tests {
     }
 
     #[test]
+    fn link_move_never_replaces_an_existing_temp_name() {
+        // A leftover from a crashed process that had the same pid can sit on the
+        // first temp name; it may be the only copy of a file.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (from, to) = (root.join("a.txt"), root.join("b.txt"));
+        write(&from, "a");
+        let leftover = root.join(".a.txt.vr-tmp-1-0");
+        write(&leftover, "only copy");
+        let next = std::cell::Cell::new(0);
+        let candidate = move |p: &Path| {
+            let n = next.get();
+            next.set(n + 1);
+            p.with_file_name(format!(".a.txt.vr-tmp-1-{n}"))
+        };
+        let remove = |p: &Path| fs::remove_file(p);
+        let ops = LinkOps {
+            rename: &sys_rename,
+            link: &sys_link,
+            remove: &remove,
+            temp_candidate: &candidate,
+        };
+        link_move(&from, &to, &ops).unwrap();
+        assert_eq!(read(&leftover), "only copy");
+        assert_eq!(read(&to), "a");
+        assert_eq!(dir_names(root), [".a.txt.vr-tmp-1-0", "b.txt"]);
+    }
+
+    #[test]
     fn link_move_only_removes_its_own_temp_name() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -1168,6 +1226,7 @@ mod tests {
             rename: &sys_rename,
             link: &sys_link,
             remove: &remove,
+            temp_candidate: &temp_sibling,
         };
         link_move(&from, &to, &ops).unwrap();
         assert_eq!(read(&to), "a");
@@ -1202,6 +1261,7 @@ mod tests {
             rename: &rename,
             link: &saving_link,
             remove: &remove,
+            temp_candidate: &temp_sibling,
         };
         link_move(&from, &to, &ops).unwrap();
         assert_eq!(read(&to), "old");
@@ -1222,6 +1282,7 @@ mod tests {
             rename: &sys_rename,
             link: &sys_link,
             remove: &remove,
+            temp_candidate: &temp_sibling,
         };
         let err = link_move(&from, &to, &ops).unwrap_err();
         assert!(
@@ -1252,6 +1313,7 @@ mod tests {
             rename: &sys_rename,
             link: &sys_link,
             remove: &remove,
+            temp_candidate: &temp_sibling,
         };
         let err = link_move(&from, &to, &ops).unwrap_err();
         match &err {
@@ -1288,6 +1350,7 @@ mod tests {
             rename: &rename,
             link: &saving_link,
             remove: &remove,
+            temp_candidate: &temp_sibling,
         };
         let err = link_move(&from, &to, &ops).unwrap_err();
         match &err {

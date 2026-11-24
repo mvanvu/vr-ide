@@ -278,3 +278,25 @@ Note: `links_unsupported` also treats EPERM/EACCES from `link(2)` as "no hard li
 | BASE-32 | pass | D25 no-loss holds (only the private temp name is unlinked); D24, D32, D9 honoured |
 | AC-8 | pass (vr-fs part) | 42 green, including the save-during-move test |
 | D9 | pass | trash path unchanged, no permanent delete |
+
+## Quick pass 2 re-check
+
+Verdict: **APPROVE T7 QP2**
+
+Read: `git diff HEAD -- crates/vr-fs/src/ops.rs` (base 0e85a06): `temp_sibling`, `LinkOps.temp_candidate`, `free_temp_name`, `link_move`, the new test and the seam additions to the existing tests. Notes `## Quick pass 2`. Reviewer run: `cargo test -p vr-fs` → 43 passed, 1 ignored.
+
+- m1 is fixed. `free_temp_name` skips any candidate that already exists (`symlink_metadata`, so a dangling link counts too) before the plain step-1 rename. The name now carries pid + nanos + seq, so a reused pid does not start on an earlier crash's names. After 64 occupied candidates it returns an `Io` error naming `from`, before anything has moved.
+- What remains is a check-then-rename window on a private, freshly made name. Only another writer of that exact `.…vr-tmp-<pid>-<nanos>-<seq>` name could hit it. Not reachable; not filed.
+- `link_move_never_replaces_an_existing_temp_name` pre-creates the first candidate. Its red run on the old code shows the leftover replaced, and it now asserts that the leftover keeps "only copy", the move completes, and no extra names are left. A broken implementation that reuses the first candidate fails it.
+- The case-only path still goes through the no-replace `move_with`, unchanged.
+- m2 (leftovers hidden after a crash) stays a T8/T10 suggestion, as noted in R3.
+
+### Rule check T7 QP2
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-1 | pass | ops.rs only |
+| BASE-2 | pass | private seam field only; no public signature change |
+| BASE-4 | pass | red/green lines in notes; reproduced 43 passed |
+| BASE-6 | pass | accurate why-comments on `free_temp_name` / `temp_sibling` |
+| BASE-32 | pass | D25 no-loss: step 1 never lands on an existing name; D24/D32/D9 unchanged |
+| AC-8 | pass (vr-fs part) | 43 green |

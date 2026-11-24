@@ -282,3 +282,44 @@ rustfmt --edition 2024 --check crates/vr-fs/src/ops.rs -> exit 0
 | COST | pass | related tests only |
 | AC-8 | pass | 42 green |
 n-a: BASE-7, BASE-9, BASE-12, BASE-13, BASE-20…BASE-23, BASE-26…BASE-31, BASE-33…BASE-37, AC-9 (untouched)
+
+## Quick pass 2
+Base: T7 committed as 0e85a06; only crates/vr-fs/src/ops.rs and these notes changed. No git commands.
+- Progress: read `## Round 3 re-check` m1.
+- Pass A: added the seam `LinkOps.temp_candidate` (real: `temp_sibling`). `link_move` still used the first candidate with a plain rename. New test `link_move_never_replaces_an_existing_temp_name` pre-creates `.a.txt.vr-tmp-1-0` ("only copy"), the first name the seam yields. Red run `cargo test -p vr-fs link_move` → 6 passed; 1 failed: `called Result::unwrap() on an Err value: Os { code: 2, kind: NotFound }` at `read(&leftover)` (the leftover had been replaced by the source, then unlinked as the temp).
+- Fix:
+  - `free_temp_name` takes the first candidate that does not exist (up to 64 attempts, else `Io { path: from, AlreadyExists "no free temporary name" }`) before the step-1 rename. That check races only with writers of a private name.
+  - `temp_sibling` adds a clock part (`.{name}.vr-tmp-<pid>-<nanos>-<seq>`), so a process with a reused pid does not start on an earlier crash's names.
+  - Behaviour is otherwise unchanged. The case-only path keeps going through the no-replace `move_with`, as before.
+
+| Item | Reply | Where |
+|---|---|---|
+| m1 temp-name collision | fixed | ops.rs `free_temp_name`, `temp_sibling`, `link_move` |
+| required test | added; red, then green | `link_move_never_replaces_an_existing_temp_name` (leftover still holds "only copy"; the move completed; no other names left) |
+
+```
+cargo test -p vr-fs
+test result: ok. 43 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.07s
+cargo clippy -p vr-fs --all-targets -- -D warnings -> Finished (exit 0)
+rustfmt --edition 2024 --check crates/vr-fs/src/ops.rs -> exit 0
+```
+
+### Rule compliance (quick pass 2)
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-1 | pass | ops.rs + notes only |
+| BASE-2 | pass | no public signature change |
+| BASE-3 | pass | red line above |
+| BASE-4 | pass | output above |
+| BASE-5, BASE-14, BASE-15 | pass | foreground crate commands; nothing running |
+| BASE-6 | pass | why-comments on `free_temp_name` / `temp_sibling` |
+| BASE-8 | pass | no manifest change |
+| BASE-10 | pass | `cargo test -p vr-fs` |
+| BASE-11, BASE-24 | pass | no git commands |
+| BASE-16, BASE-17, BASE-18, BASE-19 | pass | private helpers; no installs; no sub-agents; progress lines |
+| BASE-25 | pass (crate) | clippy + rustfmt check exit 0 |
+| BASE-32 | pass | D25 no-loss now also holds for temp names |
+| BASE-38 | pass | rustfmt on ops.rs only |
+| COST | pass | related tests only |
+| AC-8 | pass | 43 green |
+n-a: BASE-7, BASE-9, BASE-12, BASE-13, BASE-20…BASE-23, BASE-26…BASE-31, BASE-33…BASE-37, AC-9 (untouched)
