@@ -643,6 +643,13 @@ impl App {
         }
     }
 
+    /// The editor gets the keys again as if freshly focused, so the tab is in read mode even
+    /// when it was already the active one (Go to File on the open tab, D145 (1)).
+    pub(crate) fn refocus_editor_in_read_mode(&mut self) {
+        self.focus = Focus::Editor;
+        self.editor_seen = None;
+    }
+
     /// The terminal cursor should be a bar (typing goes into text) rather than a block (the
     /// editor in read mode).
     pub fn wants_bar_cursor(&self) -> bool {

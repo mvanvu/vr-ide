@@ -174,7 +174,7 @@ pub fn accept(app: &mut App) {
     close(app);
     match item.path {
         Some(rel) => match app.open_path(&rel) {
-            Ok(()) => app.focus = Focus::Editor,
+            Ok(()) => app.refocus_editor_in_read_mode(),
             Err(e) => super::search::report_open_error(app, &e),
         },
         None => {

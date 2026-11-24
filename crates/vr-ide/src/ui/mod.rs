@@ -436,7 +436,9 @@ mod tests {
         app.docs[0].disk_state = vr_core::DiskState::ChangedOnDisk;
         for w in [40u16, 30, 80] {
             let row = status_row(&draw(&mut app, w, 12));
-            assert!(row.contains("handler.rs"), "{w} cols: {row:?}");
+            // At 30 columns the badge keeps its space (D156), which costs the cut mark a cell.
+            let name = if w == 30 { "andler.rs" } else { "handler.rs" };
+            assert!(row.contains(name), "{w} cols: {row:?}");
             assert!(row.contains("Ln 1"), "{w} cols: {row:?}");
         }
         let row = status_row(&draw(&mut app, 80, 12));
