@@ -199,6 +199,46 @@ fn palette_esc_returns_to_read_mode() {
 }
 
 #[test]
+fn palette_click_outside_returns_to_read_mode() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let (_d, _p, mut app, _) = one("a\n");
+    app.handle_key(ctrl_i());
+    app.handle_key(key(KeyCode::F(1)));
+    draw(&mut app, 80, 24);
+    let area = app.palette.as_ref().unwrap().area;
+    assert!(area.y + area.height < 24, "a cell below the palette exists");
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 0,
+        row: 23,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.palette.is_none(), "a click outside closes the palette");
+    assert!(!app.edit_mode(), "and the tab is back in read mode");
+    typ(&mut app, "x");
+    assert_eq!(text(&app), "a\n");
+}
+
+#[test]
+fn palette_go_to_file_on_the_active_tab_lands_in_read_mode() {
+    let (_d, _p, mut app, _) = one("a\n");
+    app.handle_key(ctrl_i());
+    crate::commands::palette::open_files(&mut app);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.index_rx.is_some() {
+        assert!(std::time::Instant::now() < deadline, "index never finished");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.drain_index();
+    }
+    typ(&mut app, "a.txt");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.palette.is_none());
+    assert!(!app.edit_mode(), "picking a file lands in READ (D145 (1))");
+    typ(&mut app, "x");
+    assert_eq!(text(&app), "a\n");
+}
+
+#[test]
 fn edit_mode_runs_from_the_palette() {
     let (_d, _p, mut app, _) = one("a\n");
     app.run_command("app.palette", crate::commands::CmdArgs::None);
@@ -374,6 +414,43 @@ fn external_reload_updates_a_buffer_in_read_mode() {
 }
 
 // ---- status bar ------------------------------------------------------------------------
+
+#[test]
+fn narrow_status_bar_shrinks_the_badge_before_dropping_eol_and_encoding() {
+    for edit in [false, true] {
+        let (_d, _p, mut app, _) = one("abc\n");
+        if edit {
+            app.handle_key(ctrl_i());
+        }
+        let mut dropped = false;
+        for w in (28..=50).rev() {
+            let row = status_row(&mut app, w, 12);
+            let badge = row.trim_start();
+            let lead = row.len() - badge.len();
+            let word = badge.split(' ').next().unwrap();
+            assert!(
+                matches!(word, "READ" | "EDIT" | "R" | "E")
+                    && badge[word.len()..].starts_with(' ')
+                    && !badge[word.len()..].starts_with("  "),
+                "{w}: a space between the badge and the path ({lead}): {row:?}"
+            );
+            let has = row.contains("UTF-8");
+            assert!(!(dropped && has), "{w}: UTF-8 came back: {row:?}");
+            // ' R ' + the long right side + the name and its cut mark need 37 cells.
+            assert!(
+                w < 37 || has,
+                "{w}: encoding dropped while the badge could shrink: {row:?}"
+            );
+            dropped |= !has;
+        }
+        let at40 = status_row(&mut app, 40, 12);
+        assert!(
+            at40.contains("UTF-8"),
+            "40 cols keep the encoding: {at40:?}"
+        );
+        assert!(at40.contains(" a.txt"), "{at40:?}");
+    }
+}
 
 #[test]
 fn status_bar_shows_read_and_edit() {

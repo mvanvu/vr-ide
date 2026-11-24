@@ -117,14 +117,18 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     // shrinks to its initial when the full word would leave no room for the file name with
     // the shortest position.
     let (badges, badge_style) = if app.edit_mode() {
-        ([" EDIT ", " E ", "E"], theme.mode_edit)
+        ([" EDIT ", " E ", "E "], theme.mode_edit)
     } else {
-        ([" READ ", " R ", "R"], theme.mode_read)
+        ([" READ ", " R ", "R "], theme.mode_read)
     };
-    let least = width_of(&rights[2]) + width_of(&short) + need;
-    let badge = badges
-        .into_iter()
-        .find(|b| width_of(b) + least <= width)
+    // The badge shrinks to its initial before EOL and encoding are dropped (D156); the last
+    // tier still keeps a space before the path.
+    let fits = |b: &&str, r: &str| width_of(b) + width_of(r) + width_of(&short) + need <= width;
+    let badge = badges[..2]
+        .iter()
+        .find(|b| fits(b, &rights[0]))
+        .or_else(|| badges.iter().find(|b| fits(b, &rights[2])))
+        .copied()
         .unwrap_or(badges[2]);
     let bw = width_of(badge).min(width);
     buf.set_stringn(area.x, area.y, badge, width, badge_style);

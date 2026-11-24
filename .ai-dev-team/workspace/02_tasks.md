@@ -194,3 +194,4 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - T14 review (00:00): APPROVE (sonnet); 3 minors (status bar 40 cols → D156; Go to File on the active tab keeps EDIT → set read; test gaps: palette click-outside, dark/light badge contrast) → quick pass after QC.
 - M4-1 DONE (00:05): all 20 D7 ids compiled in (Blade/Twig/Vue vendored, MIT); tree-sitter 0.27.2; +14.7 MB binary, +23 MB repo (D159); findings for M4-2 (last-match-wins queries, nvim captures). D157–D158. Gate ✓. Review sonnet (deps, licences, build); QC n-a (library, tests prove it).
 - M4-1 review APPROVE (00:10); 2 minors (Blade-only capture test; @spell inside strings) folded into M4-2 (same crate). Committed on m4-1-vr-syntax; M4-2 continues on that branch/worktree; merge to master after M4-2 so T14's QC build is not disturbed.
+- T14 qp1 re-check APPROVE (00:01); vr-ide 222/0; committed + pushed.

@@ -44,3 +44,10 @@ README.md read; crates/vr-config/defaults/keymap.toml read; crates/vr-config/tes
 | AC-3 | pass | edit/undo/redo/indent in edit mode, tests via ctrl+i |
 | AC-5 | pass | keymap.toml + KNOWN list + default_keymap_validates_cleanly |
 | AC-10 | pass | find works in read mode, replace refused (find.rs 432/460) |
+
+## Quick pass 1 re-check
+Verdict: APPROVED. Read the whole `git diff de2beef -- crates` (app.rs, palette.rs, status_bar.rs, mode_tests.rs, ui/mod.rs, 2 snapshots); tests not rerun (notes: 222 green).
+- Minor 1 (status bar) fixed: tiers ` READ `/` R ` are tried against the long right side first (status_bar.rs:123-131), then the old least-width fallback; last tier `R `/`E ` keeps a space. At 40 cols the row is ` E a.txt · Ln 2, Col 15 · LF · UTF-8`; only the two 40x12 snapshots with edit badge changed, status row only. Test `narrow_status_bar_shrinks_the_badge_before_dropping_eol_and_encoding` sweeps widths 50..28 and checks the order, so it pins the rule.
+- Minor 2 (Go to File on the active tab) fixed: `refocus_editor_in_read_mode` (focus = Editor, editor_seen = None) replaces `focus = Editor` in `palette::accept` for files only; palette-run commands keep the mode (D150). Error path unchanged. Test goes through the real index + Enter.
+- Minor 3 (click outside) covered: `palette_click_outside_returns_to_read_mode` asserts palette closed, `!edit_mode()` and a refused keystroke; it is a pin of existing behaviour (green before), which the notes say.
+- ui/mod.rs 30-column `andler.rs`: accepted. The change is the mandatory space after the badge (which I asked for), 30 columns is below the 40-column floor of the snapshots, the file name is still cut last, and 40 and 80 columns still assert the full `handler.rs`. No new findings.
