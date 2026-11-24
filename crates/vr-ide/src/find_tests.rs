@@ -304,11 +304,17 @@ fn find_debounces_rescans_in_a_large_file() {
 
     // Typing in the editor: the old matches stay until the pause.
     app.focus = Focus::Editor;
-    let t1 = t0 + ms(1000);
-    app.handle_key_at(key(KeyCode::Char('x')), t1);
+    // `draw` is not a key event, so the refresh it schedules reads the real clock (as in
+    // production); the ticks below are anchored to real instants taken around the draw so
+    // the outcome does not depend on how long the test took.
+    app.handle_key_at(key(KeyCode::Char('x')), t0 + ms(1000));
+    let before_draw = Instant::now();
     draw(&mut app, 80, 24);
+    let after_draw = Instant::now();
     assert_eq!(app.find.matches[0], (0, 2), "no rescan per editor key");
-    app.tick(t1 + ms(300));
+    app.tick(before_draw + ms(100));
+    assert_eq!(app.find.matches[0], (0, 2), "the pause has not elapsed yet");
+    app.tick(after_draw + ms(300));
     assert_eq!(app.find.matches[0], (2, 4));
 }
 
