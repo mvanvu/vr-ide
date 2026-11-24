@@ -60,3 +60,6 @@ Notes end with `## Rule compliance` (rule-packs.md §6: one row per exercised ru
 
 ## Reporting
 - Your verdict / DONE report goes in your final message only; never also SendMessage it to the leader — it would arrive twice.
+
+## Severity anchor (reviewers of write paths)
+- A race window in which a concurrent writer's data is overwritten or deleted is a `blocker` however small; "narrow enough" is never accepted without a racing-writer stress test (vr_core::testutil, T12) that loses nothing.
