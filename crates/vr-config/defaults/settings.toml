@@ -1,0 +1,28 @@
+# vr-ide built-in settings. Copy any line to ~/.config/vr-ide/settings.toml to change it;
+# keys you leave out keep these values.
+
+# Columns per tab stop, 1..=16.
+tab_width = 4
+# Tab key inserts spaces instead of a tab character.
+insert_spaces = true
+theme = "dark"
+# Explorer shows dotfiles (.env, .github, ...), like VS Code.
+show_hidden = true
+# Explorer shows paths matched by .gitignore (toggle: explorer.toggle_ignored).
+show_ignored = false
+# Syntax highlighting is switched off for files larger than this (10 MiB).
+max_highlight_bytes = 10485760
+# Terminal scrollback lines (M5).
+scrollback = 10000
+
+# AI agent CLIs opened in a terminal tab in the project root (M6).
+# A user file that sets ai_presets replaces this whole list.
+[[ai_presets]]
+name = "claude"
+command = "claude"
+args = []
+
+[[ai_presets]]
+name = "cursor-agent"
+command = "cursor-agent"
+args = []

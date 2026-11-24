@@ -44,3 +44,6 @@ Notes end with `## Rule compliance` (rule-packs.md §6: one row per exercised ru
 - Edit files with the Edit tool; bulk regex with `perl -pi -e`; never edit through `python3 -` heredocs (`COST-8`).
 - Run formatters and auto-fixers only on the files you changed (`BASE-38`); regenerate goldens/snapshots once, after the code is final (`COST-15`).
 - No questions to the user: take the plan's choice or the safest option and log it in decisions.md.
+
+## Ledger warning (failed in two tasks: T3, T7)
+- BASE-3: write each test, run it and SEE IT FAIL before writing the code it covers — one test at a time, not a batch written together with the implementation. Record the red line per test in the notes.

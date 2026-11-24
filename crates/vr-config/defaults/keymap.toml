@@ -1,0 +1,96 @@
+# vr-ide built-in keymap: VS Code's default Linux keybindings (spec D10).
+#
+# Override any key in ~/.config/vr-ide/keymap.toml; only the keys you list change.
+#
+# Format
+#   "ctrl+s" = "file.save"            # global: works wherever the focused panel does not bind the key
+#   ctrl+s = "file.save"              # same; quotes around the key are optional
+#   "ctrl+q" = ""                     # empty command name removes a built-in binding
+#   [explorer]                        # context tables, like VS Code's `when`:
+#   "f2" = "explorer.rename"          #   editor | explorer | palette | terminal
+#   "f2" = { command = "explorer.rename", when = "explorer" }   # same, as one line at top level
+#
+# Lookup: the focused context's table first, then the global keys. The terminal context is the
+# exception (D8): a focused terminal gets every key except the ones in [terminal].
+#
+# Keys: modifiers ctrl, shift, alt (any order, case-insensitive) joined by "+" with one key:
+#   a letter, digit or symbol ("ctrl+/", "ctrl+]", "ctrl+`"), f1..f24, enter, escape, tab,
+#   backspace, delete, insert, home, end, pageup, pagedown, up, down, left, right, space, plus.
+# Cursor movement and typing (arrows, home/end, pageup/pagedown, shift+ to extend, ctrl+left/right,
+# backspace/delete/enter/tab in the editor) are built in and not listed here.
+# Unknown command names are reported in a startup notice; the rest of the file still applies.
+
+# ---- global ----------------------------------------------------------------
+"ctrl+shift+p" = "app.palette"
+"f1" = "app.palette"
+"ctrl+q" = "app.quit"
+"ctrl+p" = "file.goto"
+"ctrl+e" = "file.goto"
+"ctrl+o" = "file.open"
+"ctrl+s" = "file.save"
+"ctrl+shift+s" = "file.save_as"
+"ctrl+w" = "file.close"
+"ctrl+f4" = "file.close"
+# VS Code's ctrl+n opens an untitled file; vr-ide has no untitled buffers, so it creates one on disk.
+"ctrl+n" = "explorer.new_file"
+"ctrl+pagedown" = "tab.next"
+"ctrl+pageup" = "tab.prev"
+"ctrl+b" = "explorer.toggle"
+"ctrl+shift+e" = "explorer.focus"
+"ctrl+shift+f" = "search.project"
+"ctrl+shift+h" = "search.replace_project"
+"f4" = "search.next_result"
+"shift+f4" = "search.prev_result"
+"f6" = "focus.cycle"
+# No VS Code default key (palette only): file.reload, explorer.reveal, explorer.new_folder,
+# explorer.move, explorer.toggle_ignored, explorer.toggle_hidden.
+
+# ---- M4-M8, bound when those commands exist (names provisional) -------------
+# "ctrl+`" = "terminal.toggle"            # M5
+# "ctrl+shift+`" = "terminal.new"         # M5
+# "ctrl+shift+g" = "git.focus"            # M7
+# "ctrl+shift+i" = "lsp.format"           # M8
+# [editor] "f12" = "lsp.goto_definition"  # M8
+# [editor] "shift+f12" = "lsp.references" # M8
+# [editor] "ctrl+space" = "lsp.complete"  # M8
+# [editor] "ctrl+." = "lsp.code_action"   # M8
+# [editor] "f2" = "lsp.rename"            # M8
+
+[editor]
+"ctrl+z" = "edit.undo"
+"ctrl+shift+z" = "edit.redo"
+"ctrl+y" = "edit.redo"
+"ctrl+c" = "edit.copy"
+"ctrl+x" = "edit.cut"
+"ctrl+v" = "edit.paste"
+"ctrl+a" = "edit.select_all"
+"ctrl+shift+k" = "edit.delete_line"
+"shift+alt+down" = "edit.duplicate_line"
+"shift+alt+up" = "edit.duplicate_line"
+"alt+up" = "edit.move_line_up"
+"alt+down" = "edit.move_line_down"
+"ctrl+]" = "edit.indent"
+"ctrl+[" = "edit.outdent"
+# Most terminals send ctrl+[ as escape; shift+tab is VS Code's other outdent key.
+"shift+tab" = "edit.outdent"
+"ctrl+/" = "edit.toggle_comment"
+"ctrl+g" = "nav.goto_line"
+"ctrl+f" = "find.open"
+"ctrl+h" = "find.replace_open"
+"f3" = "find.next"
+"shift+f3" = "find.prev"
+"ctrl+shift+1" = "find.replace_one"
+"ctrl+alt+enter" = "find.replace_all"
+
+[explorer]
+"f2" = "explorer.rename"
+"delete" = "explorer.delete"
+"ctrl+c" = "explorer.copy"
+"ctrl+v" = "explorer.paste"
+
+[palette]
+# Up/down/enter/escape in the palette are built in.
+
+[terminal]
+# D8: the only key a focused terminal does not receive. Reserved for M5 (not a VS Code key).
+"alt+q" = "focus.editor"
