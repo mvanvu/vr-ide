@@ -260,7 +260,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             break;
         }
         let y = area.y + row as u16;
-        let num_style = if ln == head_line {
+        let num_style = if ln == head_line && app.focus == Focus::Editor && app.dialog.is_none() {
+            theme.gutter_active
+        } else if ln == head_line {
             theme.gutter_current
         } else {
             theme.gutter

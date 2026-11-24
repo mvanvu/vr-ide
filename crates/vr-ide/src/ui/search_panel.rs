@@ -27,8 +27,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let x0 = area.x;
     let bottom = area.y + area.height;
     buf.set_style(Rect::new(x0, area.y, inner, area.height), theme.text);
+    let sep = if focused { theme.focus } else { theme.dim };
     for y in area.y..bottom {
-        buf.set_string(x0 + inner, y, "│", theme.dim);
+        buf.set_string(x0 + inner, y, "│", sep);
     }
     let mut y = area.y;
     let mut cursor = None;

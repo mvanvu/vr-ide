@@ -5,7 +5,8 @@
 tab_width = 4
 # Tab key inserts spaces instead of a tab character.
 insert_spaces = true
-theme = "dark"
+# "dracula" (own colours and background), or "dark" / "light" (the terminal's colours).
+theme = "dracula"
 # Explorer shows dotfiles (.env, .github, ...), like VS Code.
 show_hidden = true
 # Explorer shows paths matched by .gitignore (toggle: explorer.toggle_ignored).
