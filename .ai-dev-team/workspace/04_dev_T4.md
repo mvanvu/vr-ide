@@ -270,3 +270,175 @@ Files changed (worktree): crates/vr-core/Cargo.toml (+rustix), Cargo.lock (rusti
 ## Escalation (worktree .worktrees/T4r3, branch t4-round3)
 Skills called: ai-dev-team:implementation. Tools available: Bash, Read, Edit, Write, Skill, ToolSearch, SubagentHandback (Agent/Artifact not used: BASE-18 / user rule).
 - Progress: read brief-common, notes (all rounds), 05_review_T4.md (R0–R3), QC T4 r3, decisions D25/D32/D45–D49/D63/D64, safe_replace.rs, testutil.rs, document.rs save path, vr-search replace.rs commit path and tests.
+- Progress: red 1 — `safe_replace::tests::in_place_write_between_swap_and_swap_back_is_kept` (reviewer's sequence) on the round-3 code: `expected Kept, got Changed; target Ok("agent1\n"), dir ["a.txt"]` (v2 deleted).
+- Progress: red 2 — vr-search `replace::tests::commit_keeps_in_place_write_made_between_swap_and_swap_back`: `file changed on disk since the preview; not written; dir ["a.txt"]` (v2 deleted, no "kept at").
+- Progress: red 3 — D64 `document::tests::save_overwrite_seen_replaces_only_the_version_shown` against a stub that calls `save_overwrite`: `Ok(Saved { other_hard_links: 0 })` (the newer agent version replaced).
+- Progress: state machine written (below), `safe_replace.rs` rewritten to it, Document and vr-search callers moved to `Checks`/`Step`, D64 API implemented. vr-core 109 / vr-search 35 green.
+- Progress: seam tests per step added; guards that went green together with the implementation were each seen red by mutation (table below); one extra test added because mutant M1 survived (`same_length_write_with_restored_mtime_is_kept`).
+- Progress: racing test now also fails on any file left behind that the error does not name; fast-writer racing test added; loops and guards run (below).
+
+### Root cause
+Rounds 1–3 each proved something about one name at one instant (stamp before rename; content of the file taken out; identity of the file brought back) and then unlinked a name. The protocol never stated which files may be unlinked at all. Once our file `N` has been at the target it is an ordinary user-visible file: any writer may have written into it or replaced it, so "it is our inode" says nothing about whose bytes it holds. The rule that was missing: **a file is unlinked only if it was never at the target, or its content was proven at the moment of unlinking** (expected version by content; ours by identity + unwritten + content). Everything else is kept.
+
+### Commit protocol — state machine
+Names: `T` target (links resolved by the caller), `P` private temp name in the same directory (`.vr-ide-save-PID-N.tmp`, created exclusively), `K` visible `<name>.vr-ide-conflict-PID-N` (created without replacing). Files: `N` ours, `X` the file at `T` at exchange 1, `Y` the file at `T` at exchange 2. An outside writer acts on `T` only: W = write in place by path, R = rename another file over it, U = unlink, C = create. "fd" = a handle it opened earlier.
+
+| # | Our step | State after | Outside action in the gap before this step | What happens to its data |
+|---|---|---|---|---|
+| 0 | create `P` exclusively, write, fsync | `T`=old, `P`=`N` | any | handled by step 1 |
+| 1 | check `T` = expected (stamp, else content) | unchanged | W/R/U/C since load | seen → `P` unlinked (`N` never at `T`), `Changed`; data untouched at `T` |
+| 2 | `EXCHANGE(P,T)` (atomic) | `T`=`N`, `P`=`X` | W/R after step 1 | it is in `X`, now at `P`: step 3 decides. U → ENOENT, `P`=`N` never exposed → unlinked, `Changed`. R of a symlink/dir → `X` is not a regular file → step 5 |
+| 3 | prove `X`: regular file, content = expected, lstat equal before/after the read | — | fd-write into `X` before/during the read | content or lstat differs → step 5 (nothing unlinked) |
+| 4 | unlink `P` (`X` = the verified original) → `Replaced` | `T`=`N` | W/R/U on `T` after step 2 | acts on `N`/after our commit: theirs is at `T` (later write wins), nothing of theirs unlinked |
+| 5 | `EXCHANGE(P,T)` (atomic) | `T`=`X`, `P`=`Y` | W into `N` at `T` | `Y`=`N` with their bytes → step 6 keeps it at `K` |
+|   |   |   | R over `T` | `Y`= their file → step 6 keeps it at `K` (identity) |
+|   |   |   | U of `T` | exchange fails ENOENT: `X` kept at `K`, `Kept` (`T` stays absent) |
+|   |   |   | exchange fails otherwise | `X` kept at `K`, `Kept` (`T` holds `N`) |
+| 6 | prove `Y`: regular, same dev+ino as `N`, same length and mtime as before step 2, content = ours, lstat equal before/after the read | — | open(O_TRUNC) of `N` while at `T`, bytes not yet written | length or mtime changed (mtime also when ours is empty) → `K`; the later bytes land in `K` |
+|   |   |   | any failure of the proof (also an I/O error) | `Y` kept at `K`, `Kept`, error "… kept at <K>" |
+| 7 | unlink `P` (`N`, proven) → `Changed` | `T`=`X` | W/R/U on `T` after step 5 | acts on `X` at `T`; we do not touch `T` again |
+| K | `RENAME_NOREPLACE(P,K)`, else `link(P,K)`+unlink `P`; if both fail `P` stays and is reported | — | — | never replaces an existing file |
+
+Expected-absent target (`create_if_absent`): `RENAME_NOREPLACE(P,T)` (C in any gap → AlreadyExists → `P` unlinked, never exposed) → else `link(P,T)` (atomic no-replace; then only the name `P` is removed) → else check + rename (vfat/exFAT, D32 window).
+
+Unlinks in the whole protocol: `P`=`N` never exposed (steps 1, 2-U, errors before step 2 → caller's guard); `P`=`X` after step 3; `P`=`N` after step 6; the name `P` after a successful hard link. No `Err` can leave `replace_if_unchanged` after step 2, so the callers' "delete the temp on error" can only ever hit the never-exposed `N`.
+
+Not covered, stated in the module doc and proposed for decisions.md:
+1. Fallback without EXCHANGE (EINVAL/ENOTSUP): check right before a plain `rename(2)` — D63's documented window, unchanged (no lossless variant exists without an atomic exchange: a hard-link backup would catch in-place writes but not a rename-over).
+2. A writer that opened `X` or `N` **without truncating** while it was at `T` and writes through that handle after the file left `T` and passed its proof (gap between steps 3→4 or 6→7): the bytes go to an unlinked file. Same for every rename-based save; the reviewer accepted it for `X` in round 3.
+3. On a refused save our bytes are readable at `T` between steps 2 and 5 (µs when the length differs; one read of the file when it has the expected length). The fast-writer racing test observed this 6–8 times in 50 runs × 80 saves; `testutil::assert_no_lost_write` treats such a sighting on a refused run as a failure, so a new `assert_no_lost_write_swapping` is used for that test only (the existing strict tests keep the old rule and passed 50/50, but the old rule can in principle fire there too — leader's call whether vr-search/vr-core strict tests should move to the swapping rule).
+4. Crash between steps 2 and 5: `T` holds ours, the other version sits under the temp name → stale temps must never be auto-deleted (nothing in the workspace does: `grep is_save_temp` → watcher filter only).
+
+### Required behaviour
+| Req | Where |
+|---|---|
+| (a) only proven files are unlinked | `safe_replace::proven` + table above |
+| (b) in doubt → `K` + "kept at" | `safe_replace::keep`, `kept_error`; Document returns `DocError::Io` whose message ends "kept at <path>", vr-search the same per file |
+| (c) public Document API unchanged | `save`, `save_overwrite`, `save_as`, `DocError::ChangedOnDisk` untouched. Changed: `vr_core::safe_replace::replace_if_unchanged` signature (`Checks`, `Step`; D63's helper module, only callers are Document and vr-search) |
+| (d) D64 | additive `Document::disk_version() -> Result<DiskVersion, DocError>` and `Document::save_overwrite_seen(&DiskVersion) -> Result<Saved, DocError>`; `DiskVersion` re-exported from the crate root. T6 flow: `save()` → `ChangedOnDisk` → `let seen = doc.disk_version()?` when the prompt is shown → "keep mine" → `doc.save_overwrite_seen(&seen)` → `ChangedOnDisk` again means a newer version arrived: prompt again with a fresh `disk_version()`. A file absent at the prompt is a version too (a file created since is not replaced). |
+
+### Tests (red evidence)
+| Test | Red |
+|---|---|
+| safe_replace `in_place_write_between_swap_and_swap_back_is_kept` | red 1 above (before the code) |
+| vr-search `commit_keeps_in_place_write_made_between_swap_and_swap_back` | red 2 above (before the code) |
+| document `save_overwrite_seen_replaces_only_the_version_shown` | red 3 above (stub) |
+| document `save_keeps_second_write_made_while_restoring` (BeforeSwap + BeforeSwapBack hooks), `save_overwrite_seen_never_replaces_a_write_racing_it`, `save_overwrite_seen_with_no_file_shown` | need the new hook stage / API; written with the implementation, guarded by the mutants below (M1/M3 change `Kept` to `Changed`) |
+| step 1→2 gap: `write_between_check_and_swap_is_swapped_back` (existing), `version_renamed_in_between_check_and_swap_is_swapped_back`, `file_deleted_between_check_and_swap_stays_deleted` | characterization (round-3 behaviour kept) |
+| step 2 type change: `symlink_put_in_place_before_swap_is_restored` | mutant M4 (regular-file check off): FAILED |
+| step 3 read: `write_during_the_check_of_the_swapped_out_file_restores_it` | mutant M5 (no lstat-stable check): FAILED |
+| steps 2→4: `write_after_our_file_is_in_place_wins` (AfterSwap, BeforeDeleteOld × in-place, rename-over) | characterization |
+| steps 2→5: reviewer's test; `version_put_in_place_during_swap_back_is_kept` (existing); `version_with_our_bytes_renamed_in_during_swap_back_is_kept` | mutant M3 (identity off): FAILED |
+| steps 2→5: `same_length_write_with_restored_mtime_is_kept` | mutant M1 (content proof of ours off): FAILED (the only test that needs the content check: length and mtime are restored) |
+| steps 2→5: `file_opened_for_writing_while_ours_was_in_place_is_kept` (ours empty and non-empty) | mutant M2 (mtime not compared): FAILED; M3: FAILED |
+| steps 2→5: `file_deleted_between_swap_and_swap_back_keeps_the_other_version` | characterization |
+| steps 5→7: `write_after_swap_back_stays_at_the_target` (AfterSwapBack, BeforeDeleteOurs × in-place, rename-over) | characterization |
+| testutil `swapping_rule_allows_sight_of_ours_only_on_a_refused_run` | new assertion's own test |
+Mutants were applied to `safe_replace.rs` one at a time and the file restored from a byte-identical copy (`cmp` → restored).
+
+### Results (worktree, final code)
+```
+$ cargo test -p vr-core -p vr-fs -p vr-search
+vr-core   test result: ok. 112 passed; 0 failed; 1 ignored   (ignored: open_100mb, AC-18 timing)
+vr-fs     test result: ok. 43 passed; 0 failed; 1 ignored  + racing_writer 2 passed
+vr-search test result: ok. 35 passed; 0 failed; 1 ignored  + racing_writer 2 passed
+$ 50 × cargo test -p vr-core --features test-util --lib document_save_never_loses   (2 tests per run:
+  document_save_never_loses_a_concurrent_write + ..._a_write_from_a_fast_writer)
+strict loop (2 tests per run): pass=50 fail=0        log: qa-artifacts/T4esc/strict_loop.log
+$ 30 × (cargo test -p vr-search --test racing_writer && cargo test -p vr-search --lib replace::)
+vr-search loop: pass=30 fail=0                       log: qa-artifacts/T4esc/search_loop.log
+$ cargo clippy -p vr-core -p vr-search --all-targets --features vr-core/test-util -- -D warnings
+    Finished `dev` profile
+$ rustfmt --edition 2024 --check crates/vr-core/src/{testutil,safe_replace,document,lib}.rs crates/vr-search/src/replace.rs → exit 0
+$ ps: no test process left
+```
+Honest limit of the racing evidence: in all loops the racing tests reported `kept=0`, i.e. the random writer never placed a second write inside the exchange→swap-back gap (it is sub-µs for versions of another length). That gap is proven by the deterministic seam tests and mutants above, not by the race.
+
+### Files changed (worktree)
+crates/vr-core/src/safe_replace.rs (protocol, `Checks`, `Step`, `proven`, 15 tests), crates/vr-core/src/document.rs (`DiskVersion`, `disk_version`, `save_overwrite_seen`, commit via `Checks`, hook stage `BeforeSwapBack` and several hooks per save, 4 tests), crates/vr-core/src/lib.rs (re-export `DiskVersion`), crates/vr-core/src/testutil.rs (`assert_no_lost_write_swapping`, leftover-file check in the save race, fast-writer test), crates/vr-search/src/replace.rs (`commit_replace` passes our bytes; 1 test). Main tree: .ai-dev-team/capabilities.md (3 entries), .ai-dev-team/workspace/decisions.md (3 `D?` lines), these notes.
+Incident: one multi-substitution perl run with `|` delimiters put two replacement blocks at wrong offsets in document.rs and vr-search replace.rs; both were removed by exact offset (only inserted text and one restored character), the intended edits re-applied by literal match, and the files compile, pass and are rustfmt-clean. Later edits used a literal-match script (scratchpad) or the Edit tool.
+
+### Out-of-scope issues noticed
+- vr-search `apply_one` re-reads the file (`read_capped`) and then `commit_replace` reads it twice more; the exposure in point 3 for a same-length change is one read of the file. A stamp fast-path would shorten it; not done (behaviour change outside the finding).
+- `Document` does not set `disk_state` when a save ends with a conflict copy; the next `check_disk()` reports `ChangedOnDisk` (asserted in `save_keeps_second_write_made_while_restoring`).
+
+### Reuse
+| Needed | Looked in | Result |
+|---|---|---|
+| expectation of a disk version for D64 | document.rs `Expected`, `still_fresh`, `holds_expected` | reused: `DiskVersion` wraps `Expected`, `save_overwrite_seen` goes through `write_to` like `save` |
+| racing writer | `vr_core::testutil` | reused; one assertion variant and one test added |
+
+## Rule compliance (escalation)
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-1 | pass | files of the board row only (+ lib.rs re-export, capabilities/decisions/notes) |
+| BASE-2 | pass | Document contract unchanged; additive `disk_version`/`save_overwrite_seen`/`DiskVersion`; `safe_replace::replace_if_unchanged` signature change listed for decisions.md |
+| BASE-3 | pass | reds 1–3 before the code; guards added with the code each seen red by mutant (table) |
+| BASE-4 | pass | Results block |
+| BASE-5 | pass | only crate-scoped test runs and loops in the foreground; nothing left running (ps) |
+| BASE-6 | pass | English, why-comments; module doc carries the state machine |
+| BASE-8 | pass | no manifest change |
+| BASE-10 | pass | `-p vr-core -p vr-fs -p vr-search` only |
+| BASE-11 | pass | no git commands at all |
+| BASE-14 | pass | longest foreground loop ≈ 2 min, under the limit; no polling |
+| BASE-15 | pass | no background tasks started |
+| BASE-16 | pass | Reuse table; capabilities.md updated |
+| BASE-17 | pass | no installs |
+| BASE-18 | pass | no sub-agents |
+| BASE-19 | pass | progress lines above |
+| BASE-24 | pass | no git add/commit |
+| BASE-25 | pass | rustfmt --check on the 5 files exit 0; clippy -p vr-core -p vr-search --all-targets -D warnings clean (workspace-wide guard not run from the worktree: other crates are other tasks') |
+| BASE-32 | pass | D25/D49/D63: table above; D64: `save_overwrite_seen`; D32/D63 fallback kept as decided |
+| BASE-38 | pass | rustfmt only on the 5 changed files |
+| COST | pass | related tests only; loops as the brief requires; scratch files in the session scratchpad and qa-artifacts/T4esc |
+| AC-3 | pass | save_* tests green (112) |
+n-a: BASE-7, BASE-9, BASE-12, BASE-13, BASE-20–23, BASE-26–31, BASE-33–37 (not exercised by this fix: no UI, no removals, no external sources, no new names outside neighbours' convention)
+
+### Follow-up (D76 point 2, tests only)
+- Progress: strict racing tests moved to `assert_no_lost_write_swapping`: `race_document_save(true)` in crates/vr-core/src/testutil.rs (`document_save_never_loses_a_concurrent_write`; the fast-writer test already used it) and `apply_replace_never_loses_a_concurrent_write` in crates/vr-search/tests/racing_writer.rs. The no-writer tests keep `assert_no_lost_write`. The swapping rule still fails a refused run whose final content is ours (`swapping_rule_allows_sight_of_ours_only_on_a_refused_run`, third case). No non-test code changed.
+```
+$ 50 × (cargo test -p vr-core --features test-util --lib document_save_never_loses && cargo test -p vr-search --test racing_writer)
+strict loop: pass=50 fail=0          log: qa-artifacts/T4esc/strict_loop_swapping.log
+$ cargo test -p vr-core -p vr-search → vr-core 112 passed / 1 ignored; vr-search 35 passed / 1 ignored + racing_writer 2 passed
+$ clippy -p vr-core -p vr-search --all-targets --features vr-core/test-util -D warnings → Finished; rustfmt --check on the 2 files → exit 0; ps: nothing running
+```
+
+### Escalation follow-up 2 (review `## Escalation re-check`, D77)
+- Progress: read the re-check (1 major test rule, 2 minor) and D77. Tests first, all five seen red in one run before any fix:
+```
+testutil::tests::swapping_rule_flags_version_written_into_our_file_and_deleted - should panic ... FAILED   (note: test did not panic as expected)
+testutil::tests::swapping_rule_flags_deleted_version_that_never_saw_ours - should panic ... FAILED          (note: test did not panic as expected)
+document::tests::disk_version_is_of_one_version_of_the_file          left/right: same hash, stamp mtime …24387477 vs …25233829 (stamp of v1 paired with the hash of v2)
+document::tests::disk_version_of_a_file_that_keeps_changing_is_an_error   Ok(DiskVersion(..)) where Err(Io) is expected
+document::tests::save_keeps_second_write_made_while_restoring        left: InSync  right: ChangedOnDisk   (new assertion on `doc.disk_state` before `check_disk`)
+test result: FAILED. 112 passed; 5 failed; 1 ignored
+```
+- Progress: fixes applied, green; loops and guards below.
+
+| # | Finding | Reply | Fix | Tests |
+|---|---|---|---|---|
+| 1 | major: `_swapping` rule skips `overtaken` on refused runs | fixed | `assert_no_lost_write_swapping(.., kept)`: on a run that reported an error the blanket exemption is gone; `assert_versions_accounted_for` requires every version that was visible at the path **or** whose writer saw our bytes to be the final content, or in a conflict copy the error names, or seen by a later writer version (overwritten by the writer itself). One excuse only, for a version that did not itself see ours: the next write began while our bytes stood in for it (then that write, not the save, replaced it after the swap-back). Sight of ours on a refused run stays allowed. Runs that reported success keep the old rules unchanged. The racing tests (vr-core save ×2, vr-search apply) pass the bytes of the conflict copy named by the error | `swapping_rule_flags_version_written_into_our_file_and_deleted` (R3: v2 saw ours, v3 found v1 again), `swapping_rule_flags_deleted_version_that_never_saw_ours` (same loss when the writer had read the path earlier — wider than the reviewer's rule), `swapping_rule_accepts_sight_of_ours_when_the_version_survives` (overwritten by the writer / kept copy / final), `swapping_rule_allows_sight_of_ours_only_on_a_refused_run` (still green) |
+| 2 | minor: `disk_version()` stamp taken before the read, not re-checked | fixed | stamp → read → stamp again by path; a moved stamp (or a file deleted in between) re-reads, up to `DISK_VERSION_TRIES` = 5, then `DocError::Io("the file keeps changing on disk; try again")`. Rustdoc tells T6 to take it before reading the text the prompt shows | `disk_version_is_of_one_version_of_the_file`, `disk_version_of_a_file_that_keeps_changing_is_an_error` (new test seam `Stage::ReadingDiskVersion`) |
+| 3 | minor: conflict copy leaves `disk_state` InSync | fixed | `Written::Kept(err)` → `write_to` sets `disk_state = ChangedOnDisk`, returns the same `DocError::Io` ("… kept at <path>") | `save_keeps_second_write_made_while_restoring` |
+
+```
+$ cargo test -p vr-core -p vr-fs -p vr-search
+vr-core 117 passed / 1 ignored; vr-fs 43 passed / 1 ignored + racing_writer 2; vr-search 35 passed / 1 ignored + racing_writer 2
+$ 50 × cargo test -p vr-core --features test-util --lib document_save_never_loses   (2 tests per run)
+strict save loop (2 tests per run): pass=50 fail=0     log: qa-artifacts/T4esc/strict_loop_fu2.log
+$ 30 × (cargo test -p vr-search --test racing_writer && cargo test -p vr-search --lib replace::)
+vr-search loop: pass=30 fail=0                         log: qa-artifacts/T4esc/search_loop_fu2.log
+$ cargo clippy -p vr-core -p vr-search --all-targets --features vr-core/test-util -- -D warnings → Finished
+$ rustfmt --edition 2024 --check (testutil, safe_replace, document, lib, vr-search replace.rs, tests/racing_writer.rs) → exit 0;  ps: nothing running
+```
+Limit unchanged: the racing loops again reported `kept=0` in all 100 save runs, so the strict oracle's refused-run branch with a conflict copy is exercised by its self-tests and the seam tests, not by the race.
+Files changed this round (worktree): crates/vr-core/src/testutil.rs, crates/vr-core/src/document.rs, crates/vr-search/tests/racing_writer.rs. No change to safe_replace.rs or vr-search src. Additive API: `DiskVersion: PartialEq + Eq`; `assert_no_lost_write_swapping` gained the `kept` argument (test-util). Main tree: capabilities.md (one entry), decisions.md (one `D?` line), these notes.
+
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-3 | pass | five reds above before the fixes |
+| BASE-4 | pass | block above |
+| BASE-2 | pass | Document contract unchanged; additions listed |
+| BASE-32 | pass | D77 oracle; D64 token consistent |
+| BASE-38 | pass | rustfmt on the changed files only |
+| COST-9 | pass | nothing running |

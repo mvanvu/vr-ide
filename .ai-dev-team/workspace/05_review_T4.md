@@ -180,3 +180,90 @@ Fix: after the swap-back, delete `tmp` only if it is our inode and still holds e
 | BASE-32 | fail | D24/D25/D63 no-overwrite: blocker above |
 | AC-3 | pass | save atomic; save_* green |
 | Review Focus 2 | fail | blocker above (a concurrent writer's latest version deleted) |
+
+## Escalation re-check (worktree .worktrees/T4r3, uncommitted on 1188018)
+
+Verdict: **CHANGES T4 ESC**, with 1 major (test rule) and 2 minor. The production protocol is correct: no blocker remains.
+
+Commands:
+- Strict loop 20× (`cargo test -q -p vr-core --lib document_save_never_loses`, 2 tests per run) → 20/20 pass. Every run reported `kept=0` for both the normal and the fast writer.
+- `cargo test -p vr-core -p vr-fs -p vr-search` → vr-core 112 passed / 1 ignored; vr-fs 43 / 1 ignored + racing_writer 2; vr-search 35 / 1 ignored + racing_writer 2.
+
+Scope note: `git diff master -- crates` also shows vr-ide deletions (≈4 000 lines). These come only from the branch base (1188018) predating master's T5 commit 07061ec. Master has no change under vr-core, vr-fs or vr-search since that base, so the T4 change is the 7 files in `git diff --stat` and merges cleanly. Merge only those, never "the worktree state".
+
+Read: all of safe_replace.rs (non-test code line by line, the test names, the seam tests for the R3 sequence). The full diffs of document.rs, lib.rs, testutil.rs, vr-search replace.rs and racing_writer.rs. No stray or mis-inserted code was found after the reported perl incident: every hunk is intentional, imports are used, and clippy/rustfmt are clean per notes.
+
+### State machine vs code
+| Step | Code | Outside W / R / U / C | Verdict |
+|---|---|---|---|
+| 1 check | `target_unchanged` (stamp short-cut allowed) | seen → `remove_unexposed` (N never at T) | ok |
+| 2 EXCHANGE | `swap`; EINVAL/ENOTSUP → D63 fallback; ENOENT → Changed (atomic failure, N unexposed); other Err → caller deletes the unexposed N | U → ENOENT; C after U → swapped like X; R of symlink/dir → X non-regular | ok |
+| 3 prove X | `proven(tmp, None, holds_expected)`: lstat regular, content (Document: len + hash; vr-search: bytes), lstat equal after the read | a coarse-clock same-tick same-length write passes step 1 but fails the content proof here | ok |
+| 4 unlink X | after `BeforeDeleteOld` | only fd-holders can still write X (D75/D76 accepted class) | ok |
+| 5 swap back | `restore`; Err (U of T → ENOENT, others) → `keep` X at K | W into N / R over N → Y | ok |
+| 6 prove Y | `proven(tmp, Some(ours), holds_ours)`: same dev/ino/len/mtime as `ours` (taken after fsync, before step 1), content = our bytes, lstat stable | in-place write, O_TRUNC, restored mtime (content catches it), rename-in (identity) | ok |
+| 7 unlink N | after `BeforeDeleteOurs` | fd-holders only (accepted) | ok |
+| K | `RENAME_NOREPLACE` → `link`+unlink of the name → else stays at P and P is reported | never replaces | ok |
+
+The unlink rule holds. `remove_unexposed` is called only before exposure (steps 1, 2-ENOENT, 2-fallback refused). `fs::remove_file(tmp)` runs only right after a `proven(..) == Ok(true)`. `Err` cannot leave after step 2, so the callers' delete-on-Err (Document `TempGuard`, vr-search `Err(e)` arm) only ever removes the unexposed N. My R3 sequence is covered by `in_place_write_between_swap_and_swap_back_is_kept`, the vr-search twin and `save_keeps_second_write_made_while_restoring` (v2 kept at K, T = v1). M1/M2/M3 mutants were recorded red.
+
+Symlinks: Document resolves links before the commit. A symlink or directory put at T during the save is never followed or deleted: `proven` is lstat-based, the symlink goes back to T via swap-back (`symlink_put_in_place_before_swap_is_restored`), and `keep_conflict` moves a symlink itself, not its target. Step 1's `still_fresh` follows links, which can only cause a refusal, never a loss.
+
+Conflict naming: `<name≤200 bytes at a char boundary>.vr-ide-conflict-PID-SEQ`. `RENAME_NOREPLACE` comes first. EEXIST → next SEQ, other errors → hard link, hard-link failure → the file stays at P and P is named in the error. Nothing is replaced and nothing is deleted. OK.
+
+D64 API: `disk_version()` (absent = a version) and `save_overwrite_seen()` refuse early via `still_fresh`, then commit through the same `replace_if_unchanged` with `Expected` = the seen version, or `create_if_absent` for absent. The tests cover a newer version arriving before the commit, a newer version arriving at `BeforeSwap`, and a file created where none was shown. `save_overwrite`/`save_as` keep a plain rename, by design (D74). OK.
+
+### Findings
+[major] crates/vr-core/src/testutil.rs:222-226 (`no_lost_write`, `put_back_on_error`): the `_swapping` rule drops the only racing check for the R3 loss class on refused runs
+Scenario: on a refused run the rule skips `overtaken` completely. Under round-3 code, v1 lands before the swap, v2 is written in place into our file while it sits at T, and v2 is deleted with our file. That run is refused and v2 "saw ours". The writer's later versions make the final content a writer version. The leftover check passes because no file is left, so the strict test passes while v2 is in no file. In other words, `document_save_never_loses_a_concurrent_write` and `apply_replace_never_loses_a_concurrent_write` would not detect the regression they are named for. The gap is currently guarded only by the deterministic seam tests, and the race never reached it in any loop (`kept=0` in all 20 runs here and in the developer's 50). D76.2 allows our bytes to be seen on a refused run. It does not require giving up the "nothing lost" check for those runs.
+Fix (keeps D76.2's flake-avoidance): on a refused run, replace the blanket exemption with a survival check. Every version `v` whose `saw_before == ours` must be found in the final content, or in the kept copy the error names (the test already reads it), or be overwritten by the writer itself (a later version with `saw_before == v.bytes`). Red evidence: the round-3 `restore` without `holds_ours` and a seam/racing run that places a write at `BeforeSwapBack`, or a unit test of the rule with that version list.
+
+[minor] crates/vr-core/src/document.rs (`disk_version`): the stamp is taken before the hash read, and stability is not checked
+Scenario: a writer finishes between `metadata()` and the read. `DiskVersion` then pairs the old stamp with the new content's hash. `save_overwrite_seen` → `still_fresh` → the stamp differs, the length is the same, and the hash equals the new content → it replaces a version the prompt may not have shown, since T6 reads the displayed text separately. Fix: re-stat after the read and retry or refuse if the stamp moved. Document for T6 that `disk_version()` must be taken before reading the text it shows, or have `DiskVersion` carry the bytes it hashed.
+
+[minor] crates/vr-core/src/document.rs (`write_atomic`, `Outcome::Kept` arm): `disk_state` is not set to `ChangedOnDisk` when a save ends with a conflict copy. The developer listed this. `check_disk()` corrects it on the next call, but T6 gets `DocError::Io` while the state still reads `InSync`. Fix: set `disk_state = ChangedOnDisk` before returning the kept error.
+
+### Rule check T4 (ESC)
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-1 | pass | 7 T4 files only (vr-ide lines in `diff master` are branch-base lag, not edits) |
+| BASE-2 | pass | Document contract unchanged; additive D64 API; `replace_if_unchanged` signature change logged in D73 |
+| BASE-3 | pass | reds 1–3 before the code; guards seen red by mutants M1–M5 |
+| BASE-4 | pass | reproduced: strict 20/20, 112 / 43+2 / 35+2 passed |
+| BASE-6 | pass | module doc states the protocol; comments explain why |
+| BASE-8 | pass | no manifest change this round |
+| BASE-32 | pass | D63/D73–D76 implemented as decided |
+| AC-3 / Review Focus 2 | pass | production protocol loses nothing in every modeled gap |
+| Review Focus 3 | pass | D64 flow |
+| test rule (D76.2) | fail | major above: the swapping rule is not strict enough |
+
+## Escalation follow-up 2 re-check (worktree 269ce36 + merge 51d3a8c)
+
+Verdict: **APPROVE T4 ESC2**. All three items are fixed. One minor (test-oracle limit) is filed for the record and does not block.
+
+Commands:
+- `cargo test -p vr-core -p vr-fs -p vr-search -p vr-ide` → vr-core 117 passed / 1 ignored; vr-fs 43 / 1 ignored + racing_writer 2; vr-search 35 / 1 ignored + racing_writer 2; vr-ide 54 passed / 2 ignored. T5's vr-ide compiles and passes against the new vr-core.
+- Strict loop 20× (`--lib document_save_never_loses`, 2 tests per run) → 20/20 pass, with `kept=0` in all 40 runs.
+
+Read: testutil.rs `no_lost_write` and `assert_versions_accounted_for` (:160-300), document.rs `disk_version` (:354-384), `write_to` (:520-545), `write_atomic` Kept arm (:865-880), and the vr-search racing_writer kept wiring (:46-57).
+
+| # | Status | Check |
+|---|---|---|
+| 1 oracle | fixed | On a refused run, every version that was visible or saw ours must be the final content, in a named conflict copy, or seen by a later writer version. Traced on the R3 loss (v1 written before the swap, v2 written into our file and deleted, v3 later): v1 survives (v3 saw it). v2 saw ours, so it has no excuse and is in no file → **flagged**. This is pinned by `swapping_rule_flags_version_written_into_our_file_and_deleted` (red before the fix per notes). The rule is also wider than my proposal: `swapping_rule_flags_deleted_version_that_never_saw_ours`. Runs that reported success keep the old rules. |
+| 2 disk_version | fixed | stamp → hash → stamp, by path, retried up to 5×, then `Io("keeps changing")`. ABA is impossible because the stamp includes ino + ctime. Tests `disk_version_is_of_one_version_of_the_file` and `…keeps_changing_is_an_error`. |
+| 3 disk_state | fixed | `Written::Kept` → `write_to` sets `ChangedOnDisk`, returns the "kept at" error; asserted in `save_keeps_second_write_made_while_restoring`. |
+
+### The one exception (`replaced_by_next_write`)
+[minor] crates/vr-core/src/testutil.rs (`assert_versions_accounted_for`, `replaced_by_next_write`): the exception excuses a real loss whenever that loss looks the same as the legitimate case
+Scenario: a protocol regression that deletes the swapped-out X (v1) and does not swap back, but reports a refusal. The path then keeps ours until the writer's next in-place write v2, which saw ours. The oracle sees v1 (did not see ours) followed by v2 (saw ours) → excused, and v2 is the final content. Probe (synthetic versions through the public `assert_no_lost_write_swapping`, `qa-artifacts/T4-review/probe`): `oracle on 'v1 deleted, never restored': PASSES (loss not flagged)`. The same observation also occurs legitimately: the writer reads ours, our swap-back restores v1, and the writer truncates v1. So the oracle cannot tell the two apart with `saw_before` read by path before the write.
+Why it does not block: that regression class (a missing or wrong swap-back) is caught deterministically by the seam tests: `write_between_check_and_swap_is_swapped_back` (asserts the agent's bytes are at T, exchange and fallback), `save_never_replaces_in_place_write_at_swap`, and the vr-search twin. The race never reaches the gap anyway (`kept=0` in all runs).
+Fix (optional, test-only): record what each write actually replaced instead of what the path showed beforehand. For InPlace, open without truncate, read through the handle, then `set_len(0)` and write. For TempRename, `RENAME_EXCHANGE` the writer's temp with the path and read what came out before unlinking it. Then "overwritten by the writer itself" becomes exact, and the exception can be removed.
+
+### Rule check T4 (ESC2)
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-2 | pass | Document contract unchanged; `DiskVersion: PartialEq + Eq`, test-util `kept` argument (D78) |
+| BASE-3 | pass | five reds recorded before the fixes |
+| BASE-4 | pass | reproduced: 117 / 43+2 / 35+2 / 54 passed, strict 20/20 |
+| BASE-32 | pass | D64/D77/D78 |
+| AC-3 / AC-7 / Review Focus 2–3 | pass | — |

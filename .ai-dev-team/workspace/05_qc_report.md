@@ -309,3 +309,16 @@ Build: release `target/release/vr-ide` rebuilt 13:01 from commit 1188018 + dirty
 | 40x12 status bar file name | pass | ` name_of_file.txt · Ln 1, Col 1`, still visible after typing. |
 
 Cleanup: fixtures removed, no processes left, no git index changes.
+
+## QC T4 re-check (escalation) — QC_PASS T4 ESC
+Build: worktree `.worktrees/T4r3` (D73-D76, D64 API), `vr-core` and `vr-search` by path dependency, release probes, own target dirs. Logs: `qa-artifacts/T4/esc/`. Fixtures, target dirs and the 100 MB file removed afterwards.
+| Check | Result | Evidence |
+|---|---|---|
+| AC-3 corpus | pass | 46 PASS, 0 FAIL; byte-exact, mode and symlinks kept, no temp or conflict files. Unwritable 0o444: refused. 0o464: refused PermissionDenied (the single FAIL line is the known probe entry-count bug) |
+| Concurrent writer, 4 x 50 at round-2/3 offsets (400 us, 2000 us steps) | pass | 400 us: Ok/ChangedOnDisk 42/8, 43/7, 43/7, 43/7; 2000 us: 48/2 in all four. Every Err left the writer's content; every Ok left our bytes or later writer bytes; our-bytes-replacing-a-writer-version 0 of 8 loops; 0 bad contents |
+| Revert case | pass | own save no event; external write 100 ms later Modified; revert to C1 bytes: Modified, `check_disk()` ChangedOnDisk, `save()` refused; atomic revert Modified |
+| AC-18 | pass | 104,857,638 bytes: open 150 ms and 116 ms; peak RSS 222,976 kB |
+| vr-search AC-12 core | pass | plan writes nothing; CRLF / no-final-newline byte-exact; unconfirmed BOM, Latin-1, binary untouched; mode 750 kept; stale file refused; no extra files |
+| vr-search racing 2 x 30 | pass | atomic writer: dropped_or_torn 0, 19 Ok, 11 refused; in-place writer: dropped_or_torn 0, 15 Ok, 15 refused; other files clean, 0 extra files. ("unchanged_but_apply_ok" 19 and 15 = writer's own later write of preview-identical content, as in earlier rounds) |
+| D64 `disk_version()` + `save_overwrite_seen` | pass | no external change: Ok, our bytes on disk. External in-place write after `seen`: ChangedOnDisk, newer external content on disk. Same-size external change: ChangedOnDisk. Atomic external replace: ChangedOnDisk, external content kept. Prompt flow (save refused, `seen` taken after the change): Ok. Racing loop, 50 saves with a writer at three offsets: SJ=100 ok 18 / ChangedOnDisk 32; SJ=300 38/12; SJ=1000 46/4; 0 bad: every Err left writer content, every Ok left our bytes or later writer bytes, no Ok after a writer version existed before the call |
+| `.vr-ide-conflict-*` files | pass | 0 appeared in any run (corpus, 8 concurrent loops, D64 loops, both vr-search race runs) |
