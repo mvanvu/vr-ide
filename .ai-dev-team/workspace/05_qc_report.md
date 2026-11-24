@@ -469,3 +469,80 @@ Build: HEAD 467e2c5 + dirty tree (26 changed/untracked paths), release binary re
 | Ignored rows marker | pass | '▸ node_modules ·', '▸ vendor ·', 'z.log ·'; a.txt has none |
 | Concurrent writer vs rename, 10 runs | pass | ok 10, violation 0, torn 0 |
 Note: the harness also ran inherited T6 flows; `R1-replace-race-late` (Save As/Replace, T6, not the explorer) reported 28/30 with 1 "no prompt" and 1 "replaced before any writer write" - outside T8, not re-investigated.
+
+## QC T6 replay (late replace) — WITHDRAW
+Build: release binary built in the detached worktree `.worktrees/qc-T6` (commit b787ff1, T6 and T8). Script: `qa-artifacts/T6/qc_flows.py`, flows `R3-replace-late-60` and `R3-replace-single`.
+
+- `R3-replace-late-60`: 60 runs, 59 refused with the prompt and the reason in the box, 1 flagged "no prompt" (run 50). Screen of that run: no dialog, the tab bar shows only `b.txt` (the `a.txt` tab became `b.txt`), no modified marker, buffer shows the writer's content `w50-637`, disk holds the writer's last version. A refused Replace leaves the `a.txt` tab modified with the prompt open, so this was a Replace that applied (Save As done), after which the late writer overwrote it. The harness counted it as "no prompt" because it only looks for a dialog.
+- `R3-replace-single`: 100 runs with exactly one writer version at a random 0-4 ms after the Replace click, so the outcome is classifiable from the final file. 92 refused with the prompt and "changed on disk; nothing was replaced" in the box; 8 applied first with no dialog (doc became `b.txt`, final disk = the writer's single version, written after the app). Our bytes over a writer version: 0. Refused without a prompt or without a reason: 0.
+
+Cause: harness classification (a successful Replace that a later writer write overwrote looks like "no prompt"). The T8 QC report of 28/30 is the same pair of cases (one applied-first, one "replaced before any writer write"). D98 (a refused Replace always reopens with the reason) holds: 0 refusals without prompt in 160 runs.
+
+## QC T10 — QC_PASS
+Build: `cargo build --release -p vr-ide` rebuilt on HEAD b787ff1 with a dirty tree (T10 changes uncommitted; the release binary found was older than the sources). Real release binary under a pty, one flow script `qa-artifacts/T10/flows.py`, results in `qa-artifacts/T10/flows_result.txt` (10 flow lines, all PASS). Engine: pty + vt.py screen model (incl. background attr).
+
+| AC | Status | Evidence |
+|---|---|---|
+| AC-10 find bar | pass | ac10_find_bar: "1/5" count, 5 match spans highlighted; Enter 2/5; f3 x5 3/5 4/5 5/5 1/5 2/5 (wraps); shift+f3 1/5 5/5 4/5 (wraps); alt+c 1/3, alt+w 1/4, back 1/5, alt+r `fn (\w+)` 1/3 |
+| AC-10 replace | pass | ac10_replace_ascii / _vietnamese: replace-one, one ctrl+z restores; replace-all "Replaced 3 occurrences"; saved bytes == python re.sub; one ctrl+z restores original bytes (Vietnamese prefix before matches included) |
+| AC-11 project search | pass | ac11_project_search: 5023-file fixture (git repo), first results 0.054 s after Enter, 101 results in 101 files grouped per file, gitignored dir and *.log never listed across all pages; Enter opens pkg28/f2807.txt Ln 12 Col 19, match selected |
+| AC-11 cancel / stale | pass | ac11_enter_position_and_cancel: 5 runs of new query sent 0-16 ms after the old one: only fresh results, no stale lines |
+| AC-11 large file | pass | ac11_large_file_warning: 40 MB file -> "1 file larger than 32 MB not searched" |
+| AC-12 | pass | ac12_preview_checked_files: preview per file with [x]; Space unchecks f2; Enter -> confirm dialog -> only f1 (CRLF kept, 3 CRLF) and f3 changed byte-exact; f2 identical; open tab t.txt with unsaved edit changed in buffer, disk untouched, ctrl+z undoes it. ac12_changed_on_disk_skipped: file changed after preview skipped ("skipped: file changed on disk"), others replaced |
+| Concurrent writer | pass | ac12_concurrent_writer: 20 runs (10 in-place, 10 temp+rename writer, ~1 ms period, started within +-2 ms of the confirming Enter), 20596 writer writes: final content == writer's last version in 20/20, lost = 0; other checked file replaced 20/20 |
+| 40x12 | pass | small_40x12: find bar, replace row, search panel, preview rendered, no panic, exit 0 |
+
+Notes (not defects): an Enter within ~0.7 s of a confirm dialog opening is ignored by design (enter settle); the flow script waits for it. Replace-one shows no notice (only replace-all does). The "terminal does not report these keys" notice appears because the pty has no kitty support. Project search reads disk, not unsaved tab buffers (dev's own note). At 40x12 the notice banner takes 3 rows.
+
+## Rule check T10
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-2 contracts | pass | vr-search find/search/plan/apply used as in plan; behaviour confirmed in flows |
+| BASE-3/4 tests + evidence | pass | notes list red lines and 132 passed run |
+| BASE-15/17 | pass | all sessions quit; 0 vr-ide processes left; scratch fixtures removed; no data committed to real stores |
+| BASE-23 entry paths | pass | find via ctrl+f and ctrl+h, project via ctrl+shift+f / ctrl+shift+h |
+| BASE-24 | pass | no git index changes |
+| BASE-46 | pass | runtime checks on b787ff1 + dirty tree release build |
+| Write path race (T7/T9 class) | pass | 20 racing-writer runs above, lost = 0 |
+| UI-fit 40x12 | pass | small_40x12 |
+
+## QC T10 re-check (round 1) — QC_PASS T10 R1
+Build: worktree `.worktrees/T10r1` (branch t10-round1, HEAD 228c3d2 plus uncommitted edits), `cargo build --release -p vr-ide` in its own target/. Same pty flow script `qa-artifacts/T10/flows.py`; results `qa-artifacts/T10/flows_result_r1.txt` (14 flow lines, all PASS; concurrent writer run with 10 runs).
+
+| Check | Status | Evidence |
+|---|---|---|
+| All round-0 flows (AC-10/11/12, 40x12) re-run | pass | same results as before on the new binary (first results 0.053 s on 5023 files; 40 MB file warning; CRLF/byte-exact replace; skipped-on-disk-change) |
+| Stale preview | pass | preview foo->bar, "Z" typed in the replace field, Down, Enter: no dialog, all files byte-identical. No message text was seen on screen in that run |
+| 2000-file preview/replace progress + Esc | pass | "Preparing preview 1984/2000", "Replacing 32/2000" shown; Esc during the replace: 64 files replaced, 1936 untouched, 0 partial/corrupt; panel reports "1936 files not replaced: ... (cancelled; not replaced)" (shown after the first notice, in the status line; per-file reasons are in the list) |
+| 100 MB file find | pass | 105,000,000 B file opened in 0.13 s; ctrl+f "e" shows "1/20000+" after 0.18 s; keystroke-to-redraw latency 11-12 ms for typing and backspace in the bar, 12 ms in the editor after closing |
+| 36x12 click a result, then type | pass | click on a result row opens b.rs; "Q" replaced the selected match in the editor ("// Q", saved to disk); panel query unchanged |
+| 40x12 palette | pass | palette (F1, "sa") drawn above the status row; status row `a.rs · Ln 1, Col 1 · LF · UTF-8` intact |
+| Concurrent writer during confirm, 10 runs | pass | 5 in-place + 5 temp+rename writers, ~1 ms period, 10281 writes: final == writer's last version in 10/10, lost = 0, other checked file replaced 10/10 |
+
+Cleanup: scratch fixtures removed, 0 vr-ide processes left, no git index changes.
+
+## QC T10 re-check (round 2) — QC_PASS T10 R2
+Build: `.worktrees/T10r1` (HEAD 228c3d2 + uncommitted edits), `cargo build --release -p vr-ide` rebuilt. Same pty script `qa-artifacts/T10/flows.py`; full run in `qa-artifacts/T10/flows_result_r2.txt` (20 flows; the one FAIL line there, r1_click_then_type_36x12, was my script waiting only 0.6 s for the save: the key had reached the editor; with a 1.5 s wait it passed 6/6 and the script was fixed).
+
+| Check | Status | Evidence |
+|---|---|---|
+| ctrl+q during "Replacing n/N" (2000 files) | pass | app stays alive, notice "Quit: a replace is running; Esc in the search panel cancels it"; replace continued to 2000/2000 files, 0 partial, no tmp files; ctrl+q quits once it is done. Variant: Esc after the refused ctrl+q cancels (64 replaced / 1936 untouched, 0 partial), then ctrl+q quits |
+| Esc during replace, then ctrl+q | pass | 3 runs: quit refused until the worker has stopped, then the app exits; each file fully replaced or untouched (32 / 1968), 0 `.vr-ide-save-*.tmp`; notice names 5 files + "and 1963 more (see the panel)" (checked at 220 columns) |
+| alt+c during replace | pass | notice "Replace in Project: the replace is running; Esc cancels it"; the Aa toggle attribute unchanged; replace finished 2000/2000 |
+| Close the tab of a target file during the replace | pass | the buffer (already replaced in memory) is dirty, so ctrl+w asks Save/Discard/Cancel; Discard: tab closed, recovery folder holds the buffer copy with the replaced text, file on disk unchanged, other 2000 files all replaced, app alive, no tmp files |
+
+Observations (not defects): the exit-time summary (stderr after the terminal is restored) is only printed when a job is still running at shutdown; with the normal ctrl+q path the warning is the in-app notice. Notices queue: after a refused ctrl+q the "N files not replaced" warning only shows after Esc dismisses the earlier notices (about 4 presses), and at 80x24 its 3-row notice area cuts the line before "and N more" (the full text is visible at 220 columns). Holding ctrl+q repeatedly (30 ms retries) while a replace runs slowed that replace to ~10 s for 2000 files but lost nothing. Cleanup: scratch fixtures removed, 0 vr-ide processes left, no git index changes.
+
+## QC T10 re-check (round 3) — QC_PASS T10 R3
+Build: worktree `.worktrees/T10r3` (HEAD 9cb9b00 + uncommitted edits), `cargo build --release -p vr-ide`, own target/. Same pty script `qa-artifacts/T10/flows.py`; results `flows_result_r3.txt` (full run, cut short by the 10-minute limit at r2_esc_then_ctrl_q) and `flows_result_r3_new.txt` (round-3 flows).
+Environment note: the first full run overlapped with heavy disk writeback (my 2 GB stuck-replace fixture plus other load on the machine, io pressure avg10 55-65). With that load several flows (ac10 replace ascii/Vietnamese save+undo timing, r1_progress, r2_quit_*, r2_esc_then_ctrl_q) failed on timing: fsyncs took seconds, a 2000-file replace needed >60 s, no data was lost and no file was corrupt. After the pressure dropped (avg10 < 8) every one of them passed on re-run (fsync+rename of a file 3 ms, 300-file replace 1.85 s). Not an app defect; reported because the stuck-replace flow depends on it.
+
+| Check | Status | Evidence |
+|---|---|---|
+| FIFO in place of a result file, preview + replace | pass | b.txt replaced by a FIFO (also held open by a reader/writer that never writes) after the search: preview ready in 0.05 s, row `[!] b.txt` with "not a regular file"; confirm "Replace 3 matches in 2 files"; a.txt and c.txt replaced byte-exact; the FIFO is still a FIFO; app responsive; ctrl+q exits at once |
+| FIFOs (3, in a 2000-file result set) during the preview, then ctrl+q | pass | 3 runs, ctrl+q 10-70 ms after the preview started: exit in 0.01-0.03 s, alternate screen / mouse / paste modes restored (output ends with `?1049l ?1000l ?2004l`), FIFOs intact, other files untouched |
+| Stuck replace, Esc, wait > 5 s, ctrl+q | pass | arranged with 64 files of 31 MB (two 32-file batches) on a loaded disk: after Esc "Cancelling… 0/64" stayed for 6 s; ctrl+q at 1 s refused (no dialog); at 6.5 s a confirm "The cancelled replace has not stopped after 5 s; it is probably blocked on big041.txt (a hung disk or network mount). Quit anyway leaves that file's state unknown; files not reached are not replaced." with [Quit anyway] [Cancel]; Quit anyway: "stopping the project replace (waiting up to 5 s)…" at once, process gone after 5.26 s, terminal restored, exit message "…was still writing big043.txt when vr-ide quit (blocked for more than 5 s); check that file. File state unknown: big043.txt, big050.txt, big019.txt, big044.txt, big028.txt and 57 more". On an idle disk the cancelled worker stops within 5 s, so the flow reports n-o (no stuck state can be produced without a hung mount) |
+| Round-2 quit-during-replace and Esc flows | pass | r2_quit_during_replace_refused (alive, notice, 2000/2000 replaced, quit after done), r2_quit_during_replace_then_esc (32/1968, no partial), r2_esc_then_ctrl_q (3 runs, 5 files + "and 1963 more (see the panel)", no tmp files), r2_alt_c_refused, r2_close_tab (Discard keeps a recovery copy) |
+| Earlier rounds' flows (AC-10/11/12, race 10 runs, 40x12, r1) | pass | all pass on the round-3 binary (race: 10 of 10 writer-final, lost 0) |
+
+Cleanup: scratch fixtures removed (including the 2 GB set), 0 vr-ide processes left, no git index changes.

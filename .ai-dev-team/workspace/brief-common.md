@@ -66,3 +66,6 @@ Notes end with `## Rule compliance` (rule-packs.md §6: one row per exercised ru
 
 ## Report files
 - Writing your notes / verdict files under `.ai-dev-team/workspace/` is required. The user instruction "never create artifacts" means the claude.ai Artifact tool only, not these files.
+
+## New states rule (from 16:51)
+- A fix that adds a state, thread, background job, branch or kept value lists it under `## New states (round n)` in the notes, with how quit, cancel/Esc, an error halfway, the input changing, a second request and a concurrent writer behave there, plus a call that never returns (a hung network file system, a FIFO or device in place of a file), and one test per case that can lose data or leave the app stuck.

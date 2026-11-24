@@ -11,8 +11,8 @@
 | T7 | vr-fs tree, file ops (trash), fuzzy file index | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-fs/Cargo.toml, crates/vr-fs/src/lib.rs until T1 committed) | - | AC-8, AC-9 | crates/vr-fs/** | `cargo test -p vr-fs` | done | 3 |
 | T8 | Explorer panel + go-to-file | fe | T6, T7 | ui | AC-1, AC-8, AC-9 | crates/vr-ide/src/ui/{explorer,layout,palette}.rs, commands/explorer.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | done | 1 |
 | T9 | vr-search engine: find/replace, project search, project replace | be | T2 | - | AC-9, AC-10, AC-11, AC-12 | crates/vr-search/** | `cargo test -p vr-search` | done | 2 |
-| T10 | Find/replace bar + project search panel | fe | T8, T9 | ui | AC-10, AC-11, AC-12 | crates/vr-ide/src/ui/{find_bar,search_panel,layout}.rs, commands/{find,search}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | in-progress | 0 |
-| T11 | Bench run, README, docs/keymap.md | be | T10 | - | AC-1 | README.md, scripts/bench-startup.sh, docs/keymap.md | bench script | todo | 0 |
+| T10 | Find/replace bar + project search panel | fe | T8, T9 | ui | AC-10, AC-11, AC-12 | crates/vr-ide/src/ui/{find_bar,search_panel,layout}.rs, commands/{find,search}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | done | 3 |
+| T11 | Bench run, README, docs/keymap.md | be | T10 (relaxed: docs and bench only; the command list is final once T10 is DONE) | - | AC-1 | README.md, scripts/bench-startup.sh, docs/keymap.md | bench script | done | 0 |
 | T12 | Shared racing-writer test helper (vr-core test utils) + use it in T4/T7/T9 write-path tests | be | T4, T9 | - | AC-3, AC-8, AC-12 | crates/vr-core/src/testutil.rs (cfg test feature), tests in vr-core, vr-fs, vr-search | `cargo test -p vr-core -p vr-fs -p vr-search` | done | 0 |
 | FR-1 | Racing writer records what each write replaced (exact oracle, drop the one exception) | be | T4 | - | AC-3 | crates/vr-core/src/testutil.rs | `cargo test -p vr-core -p vr-search` | done | 0 |
 | FR-2 | vr-core: version of any path + save_as_seen (Save As never replaces an unseen target) + FR-1 oracle minors | be | T4, FR-1 | - | AC-3 | crates/vr-core/src/{document,testutil}.rs | `cargo test -p vr-core -p vr-search -p vr-ide` | done | 1 |
@@ -22,9 +22,9 @@
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
 ## Notes
-- presence: away (user, 14:42)
-- hand-off: ready (14:42) — identity set, history rewrite approved and scheduled at the T6 stop point
-- eta: ~18:35 (set 15:11, +25m: T8 needs FR-4 (vr-core watch) + round 1; remaining FR-4 ~25m ∥ QC T8 → T8 r1 ~25m + recheck 10m → T10 ~50m → T11 15m → sign-off 25m → Phase 5 40m + fixes 20m)
+- presence: away (user, 15:52)
+- hand-off: ready (15:52) — attribution removal approved; message rewrite scheduled after the T10 commit
+- eta: ~19:00 (set 17:19, +25m: T10 needed rounds 2 and 3; r3 ~25m + recheck 15m → merge + message rewrite 10m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
 - commits: one per task after review + QC pass, push to origin/master (user, 11:21)
 - research: skipped — direction settled in conversation (leader, 11:21)
@@ -95,3 +95,14 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - FR-4 verdict (15:19): review APPROVE + QP1 re-check APPROVE; QC n-a (library API, covered by tests and by T8's QC after wiring); merged
 - T10 brief must include (T8 R1 minor): the >200k-files go-to-file notice shows once per session, not on every ctrl+p
 - T8 verdicts (15:49): R1 review APPROVE (opus), QC_PASS R1. Side observation: inherited T6 flow R1-replace-race-late gave 1 'no prompt' in 30 → replay by T6's QC
+- HELD for user (15:52): relayed request — no AI attribution in this repo (.claude/settings.json attribution off + CLAUDE.md line) and rewrite all commit messages to drop the Co-Authored-By trailer + force-push. Not done: needs the user's own confirmation in this session (settings edit, history rewrite, force push). Trailer kept on new commits until then.
+- AI attribution removal APPROVED by the user (15:52): .claude/settings.json + CLAUDE.md written; new commits carry no trailer; history rewrite of messages + force-push at the next stop point (after T10 commit)
+- T6 replay (16:02): WITHDRAWN — the 'no prompt' was a Replace applied first then overwritten by the late writer (harness classification); D98 holds, 0 refusals without prompt in 160 runs
+- T11 (16:18): docs review CHANGES (2 doc majors, 2 minors) fixed by the leader as one-line text fixes with the reviewer's wording; bench 22 ms / 6 MB (5k files), 145 ms / 210 MB (100 MB file)
+- T10 review (16:19): 4 major (stale replace preview writes old text — data; O(n²)+UI-thread preview/apply; unbounded find_all per keystroke; hidden panel keeps focus) + minors; D122–D124; round 1 after QC verdict
+- T10 round 1 (16:35) in worktree .worktrees/T10r1 (branch t10-round1 = wip snapshot of T10 via temp index; main tree untouched); QC issues will join as addendum
+- T10 round 2 (16:56): quit during Replacing n/N kills the worker (major) + 3 minors; new-states rule applies; QC R1 PASS
+- T10 round 3 (17:19, last) in worktree .worktrees/T10r3 (snapshot of rounds 1-2); QC R2 still running on T10r1; fresh opus developer
+- T10 QC R2 PASS (17:27); worktree T10r1 removed (its state is snapshotted in t10-round3 9cb9b00)
+- T10 R3 review APPROVE (17:31). Minors: 'Quit anyway' confirm must default to Cancel (quick pass after QC); UI-thread tab-path resolve on preview start = follow-up (report). Flaky under load: app_tests::external_modify_reloads_within_one_second_with_real_watcher (1 s wall clock) — watch at sign-off
+- T10 verdicts (17:56): R3 review APPROVE + QP1 APPROVE (opus), QC_PASS R3; merged via plumbing (master had T10 round-0 files uncommitted, identical to the snapshot)
