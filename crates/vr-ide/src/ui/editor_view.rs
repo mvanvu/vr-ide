@@ -254,6 +254,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         let i = matches.partition_point(|&(_, e)| e <= abs);
         matches.get(i).is_some_and(|&(s, _)| s <= abs)
     };
+    let spans = visible_spans(app, active, top, left, rows, text_w);
     for row in 0..rows {
         let ln = top + row;
         if ln > last_line {
@@ -282,19 +283,55 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             let x = x0 + (col - skip) as u16;
             buf.set_stringn(x, y, sym, w, style);
         };
+        // Byte offset of each cell, for the syntax spans (bytes of the document).
+        let mut at = if spans.is_empty() {
+            0
+        } else {
+            rope.char_to_byte(line_start + from)
+        };
+        let mut k = spans.partition_point(|(r, _)| r.end <= at);
         let (end_col, end) = walk_from(line, from, tw, |c| {
+            let byte = at;
+            at += c.symbol.len();
             if c.col + c.width <= skip && c.width > 0 || c.col < skip && c.width == 0 {
                 return true;
             }
             if c.col >= skip + text_w {
                 return false;
             }
-            let style = if selected(line_start + c.start) {
+            let (sel, found) = (
+                selected(line_start + c.start),
+                in_match(line_start + c.start),
+            );
+            let plain = if sel {
                 theme.selection
-            } else if in_match(line_start + c.start) {
+            } else if found {
                 theme.text.patch(theme.find_match)
             } else {
                 theme.text
+            };
+            while spans.get(k).is_some_and(|(r, _)| r.end <= byte) {
+                k += 1;
+            }
+            let capture = spans
+                .get(k)
+                .filter(|(r, _)| r.start <= byte)
+                .filter(|_| theme.syntax_on_highlight || !(sel || found))
+                .map(|&(_, cap)| cap);
+            // Syntax colours stay under the selection and find matches when the theme allows
+            // it; only the background says which one it is.
+            let style = match capture {
+                Some(cap) => {
+                    let code = theme.text.patch(theme.syntax(cap));
+                    if sel {
+                        code.patch(theme.selection)
+                    } else if found {
+                        code.patch(theme.find_match)
+                    } else {
+                        code
+                    }
+                }
+                None => plain,
             };
             let clipped = c.col < skip || c.col + c.width > skip + text_w;
             if clipped || c.symbol == "\t" {
@@ -303,7 +340,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
                     put(buf, col, " ", 1, style);
                 }
             } else if is_control(&c.symbol) {
-                put(buf, c.col, "?", 1, theme.control.patch(style));
+                put(buf, c.col, "?", 1, theme.control.patch(plain));
             } else if c.width > 0 {
                 put(buf, c.col, &c.symbol, c.width, style);
             }
@@ -333,6 +370,56 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         let y = area.y + (head_line - top) as u16;
         frame.set_cursor_position((x, y));
     }
+}
+
+/// The window of a long line whose spans are fetched: graphemes are at most a few chars per
+/// cell, so this covers the screen without reading the rest of a 10 MB line.
+const LONG_LINE_SPAN_CHARS: usize = 64;
+
+/// Above this many bytes between the first and the last visible char (long lines in view), the
+/// spans are fetched per row instead of for the whole window.
+const SPAN_WINDOW_BYTES: usize = 256 * 1024;
+
+/// Syntax spans of the visible part of document `i` (sorted, bytes of the document); empty for
+/// plain text. Only the drawn rows are asked for, so cost follows the screen, not the file.
+fn visible_spans(
+    app: &App,
+    i: usize,
+    top: usize,
+    left: usize,
+    rows: usize,
+    text_w: usize,
+) -> Vec<(std::ops::Range<usize>, vr_syntax::Capture)> {
+    if app.syntax.language(i).is_none() {
+        return Vec::new();
+    }
+    let rope = app.docs[i].buffer.text();
+    let last = rope.len_lines().saturating_sub(1);
+    let segments: Vec<std::ops::Range<usize>> = (top..=(top + rows).min(last))
+        .take(rows)
+        .map(|ln| {
+            let line = rope.line(ln);
+            let start = rope.line_to_char(ln);
+            let len = content_len(line);
+            let (from, to) = if is_long(line) {
+                let from = grapheme_start(line, left);
+                (from, (from + text_w * 4 + LONG_LINE_SPAN_CHARS).min(len))
+            } else {
+                (0, len)
+            };
+            rope.char_to_byte(start + from)..rope.char_to_byte(start + to)
+        })
+        .collect();
+    let (Some(first), Some(end)) = (segments.first(), segments.last()) else {
+        return Vec::new();
+    };
+    if end.end - first.start <= SPAN_WINDOW_BYTES {
+        return app.syntax.spans(i, first.start..end.end);
+    }
+    segments
+        .into_iter()
+        .flat_map(|seg| app.syntax.spans(i, seg))
+        .collect()
 }
 
 /// Shown when no file is open: the project root (AC-1) and the keys to get started,

@@ -163,6 +163,8 @@ pub struct App {
     /// The tab that had the editor focus at the last [`App::sync_mode`] (None: the keys were
     /// elsewhere), to tell when the editor gains the keys on a tab.
     editor_seen: Option<usize>,
+    /// Syntax highlighting of the open documents (M4).
+    pub syntax: crate::syntax::Syntax,
 }
 
 impl App {
@@ -207,7 +209,17 @@ impl App {
             find: Default::default(),
             search: Default::default(),
             editor_seen: None,
+            syntax: crate::syntax::Syntax::new(crate::syntax::builtin_registry()),
         }
+    }
+
+    /// Builds the language table from the built-in `languages.toml` overridden by `user`
+    /// (AC-13e: a language whose grammar is not compiled in becomes a startup notice, shown by
+    /// [`App::report_config`]); returns the file's own warnings.
+    pub fn load_languages(&mut self, user: Option<&Path>) -> Vec<ConfigWarning> {
+        let (languages, warnings) = vr_config::Languages::load(user);
+        self.syntax.set_languages(&languages);
+        warnings
     }
 
     /// Loads keymap and settings from `config_dir()`; returns the load warnings for
@@ -218,6 +230,7 @@ impl App {
         let (settings, w) = Settings::load(Some(&dir.join("settings.toml")));
         warnings.extend(w);
         let mut app = App::new(root, keymap, settings, clipboard);
+        warnings.extend(app.load_languages(Some(&dir.join(vr_config::LANGUAGES_FILE))));
         app.recovery_dir = Some(vr_config::state_dir().join("recovery"));
         (app, warnings)
     }
@@ -240,6 +253,9 @@ impl App {
         let unknown = self.keymap.validate(&names);
         for w in warnings.iter().chain(&unknown) {
             self.warn(w.to_string());
+        }
+        for w in self.syntax.take_startup_notices() {
+            self.warn(w);
         }
         if crate::theme::Theme::named(&self.settings.theme).is_none() {
             let msg = format!(
@@ -422,6 +438,8 @@ impl App {
             ..View::default()
         });
         self.set_active(self.docs.len() - 1);
+        // The highlighter starts now (its parse runs on a worker), not at the first frame.
+        self.sync_syntax();
         self.sync_mode();
         Ok(())
     }
@@ -505,6 +523,7 @@ impl App {
         }
         let doc = self.docs.remove(i);
         self.views.remove(i);
+        self.syntax.remove(i);
         // The watch is per path: another tab still on it keeps needing it.
         let shared = doc
             .path
@@ -524,6 +543,29 @@ impl App {
             other => other,
         };
         self.dirty = true;
+    }
+
+    /// Brings the active document's highlighter in step with its buffer (before each frame;
+    /// other tabs catch up when they are shown) and shows why highlighting is off, once.
+    pub fn sync_syntax(&mut self) {
+        let i = self.active;
+        let Some(doc) = self.docs.get(i) else {
+            return;
+        };
+        let notice = self.syntax.sync(i, doc, self.settings.max_highlight_bytes);
+        if let Some(n) = notice {
+            let name = doc
+                .path
+                .as_deref()
+                .map(|p| self.display_path(p))
+                .unwrap_or_default();
+            let level = if n.warning {
+                NoticeLevel::Warning
+            } else {
+                NoticeLevel::Info
+            };
+            self.notify(level, format!("{name}: {}", n.text));
+        }
     }
 
     pub fn active_doc(&self) -> Option<&Document> {
@@ -1113,7 +1155,10 @@ impl App {
         let doc = &mut self.docs[i];
         let msg = match state {
             DiskState::ChangedOnDisk if !modified => match doc.reload() {
-                Ok(()) => None,
+                Ok(()) => {
+                    self.syntax.reset(i);
+                    None
+                }
                 Err(e) => Some((NoticeLevel::Error, format!("{name}: reload failed: {e}"))),
             },
             DiskState::ChangedOnDisk if before != state => Some((

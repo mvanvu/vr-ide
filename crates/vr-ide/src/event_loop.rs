@@ -185,6 +185,10 @@ where
         app.drain_index();
         app.drain_search();
         app.tick(Instant::now());
+        // A highlighter's worker published spans (or gave up) since the last pass.
+        if app.syntax.take_wake() {
+            app.dirty = true;
+        }
         if app.dirty {
             draw_frame(terminal, app, &recovery::GLOBAL, ui::render)?;
             set_cursor_shape(&mut bar, app.wants_bar_cursor());

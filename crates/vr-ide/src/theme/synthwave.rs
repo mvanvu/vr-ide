@@ -3,7 +3,9 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-use super::{ColorDepth, Theme, fit};
+use vr_syntax::Capture;
+
+use super::{ColorDepth, Theme, fit, fit_floors, syntax_floors, syntax_table};
 
 /// A surface: the true-colour value and a hand-picked xterm-256 index for the fallback.
 type Surface = (u32, u8);
@@ -76,6 +78,14 @@ pub(super) fn build(depth: ColorDepth) -> Theme {
     };
     let (read, edit) = (accent(p.read), accent(p.edit));
     let bold = Modifier::BOLD;
+    let floors = syntax_floors(bg, line, found);
+    let code = |c: Capture| {
+        let (rgb, modifier) = syntax_colour(c);
+        Style::default()
+            .fg(fit_floors(depth, rgb, &floors))
+            .add_modifier(modifier)
+    };
+    let captures = syntax_table(code);
     Theme {
         text: Style::default().bg(bg).fg(fg),
         gutter: Style::default().fg(comment),
@@ -104,6 +114,32 @@ pub(super) fn build(depth: ColorDepth) -> Theme {
         focus: Style::default().fg(pick(p.focus)).add_modifier(bold),
         mode_read: Style::default().bg(read).fg(bg).add_modifier(bold),
         mode_edit: Style::default().bg(edit).fg(bg).add_modifier(bold),
+        syntax_on_highlight: true,
+        captures,
+    }
+}
+
+/// Syntax colours in the spirit of SynthWave '84: pink-lavender keywords, amber strings,
+/// cyan functions, yellow types, green tags, blue property names. Each is light enough for
+/// 4.5:1 on the editor and 3:1 on the selection and find-match surfaces (the comment and
+/// keyword tones are lifted from the palette's comment purple and hot pink for that). Strings
+/// are lighter than the orange of warnings and the EDIT badge so code does not read as chrome.
+fn syntax_colour(c: Capture) -> (u32, Modifier) {
+    let none = Modifier::empty();
+    match c {
+        Capture::Keyword | Capture::Operator => (0xff7edb, none),
+        Capture::String => (0xffb454, none),
+        Capture::Comment => (0x9884c9, Modifier::ITALIC),
+        Capture::Function => (0x2de2e6, none),
+        Capture::Type => (0xffe66d, none),
+        Capture::Number | Capture::Constant => (0xf97e72, none),
+        Capture::VariableBuiltin => (0xc77dff, Modifier::ITALIC),
+        Capture::Property => (0x82aaff, none),
+        Capture::Tag => (0x72f1b8, none),
+        Capture::Attribute => (0xffe66d, Modifier::ITALIC),
+        Capture::Punctuation => (0xb9a6e6, none),
+        Capture::Escape => (0xff6e7f, Modifier::BOLD),
+        Capture::Other => (0xf6eefc, none),
     }
 }
 

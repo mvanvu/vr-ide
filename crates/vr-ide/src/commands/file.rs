@@ -636,10 +636,11 @@ pub fn reload_doc(app: &mut App, i: usize) {
         }
         Err(e) => return app.error(e),
     }
-    if let Some(doc) = app.docs.get_mut(i)
-        && let Err(e) = doc.reload()
-    {
-        app.error(format!("Reload: {e}"));
+    if let Some(doc) = app.docs.get_mut(i) {
+        match doc.reload() {
+            Ok(()) => app.syntax.reset(i),
+            Err(e) => app.error(format!("Reload: {e}")),
+        }
     }
     app.cursor_moved();
 }

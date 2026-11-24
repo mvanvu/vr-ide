@@ -12,7 +12,7 @@ mod query;
 mod registry;
 
 pub use capture::Capture;
-pub use edit::{Edit, Point};
+pub use edit::{Edit, LineBreaks, Point, has_lone_cr, lone_cr_in};
 pub use highlighter::{Disabled, HighlightOptions, HighlightStatus, Highlighter, Notify};
 pub use registry::{LanguageRegistry, RegistryWarning};
 

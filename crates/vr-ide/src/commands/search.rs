@@ -1207,6 +1207,7 @@ pub fn apply(app: &mut App) {
                                     doc.buffer.break_undo_group();
                                     doc.buffer.apply(tx);
                                     doc.buffer.break_undo_group();
+                                    app.syntax.reset(ti);
                                     p.in_tabs += 1;
                                     Ok(n)
                                 }

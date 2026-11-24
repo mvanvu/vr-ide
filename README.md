@@ -250,8 +250,9 @@ with your terminal's own paste shortcut (bracketed paste is supported).
 |---|---|
 | `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit. Built-in values: `crates/vr-config/defaults/settings.toml` |
 | `~/.config/vr-ide/keymap.toml` | Key overrides on top of the VS Code defaults; see [docs/keymap.md](docs/keymap.md) |
+| `~/.config/vr-ide/languages.toml` | File patterns → language for syntax highlighting; see [Syntax highlighting](#syntax-highlighting). Built-in table: `crates/vr-config/defaults/languages.toml` |
 
-Both files are optional; a missing key keeps its default. A bad entry is reported in a startup notice
+These files are optional; a missing key keeps its default. A bad entry is reported in a startup notice
 and the rest of the file still applies. Example:
 
 ```toml
@@ -270,6 +271,37 @@ show_ignored = true
 
 The key spelling, context tables (`[editor]`, `[explorer]`) and every command name are in
 [docs/keymap.md](docs/keymap.md).
+
+### Syntax highlighting
+
+Files are coloured by their language with tree-sitter grammars compiled into the binary, in the
+active theme's colours (keywords, strings, comments, functions, types, numbers, tags, attributes
+and more). Colours do not depend on read or edit mode, and they stay under the selection and find
+matches in synthwave and dracula (dark and light show plain text there, since the terminal's palette is unknown).
+
+- Languages: PHP, Blade, Twig, JavaScript (and JSX), TypeScript, TSX, Vue, HTML, CSS, SCSS, Dart,
+  Go, Python, Rust, JSON, YAML, TOML, Markdown. Embedded code is coloured in its own language:
+  `<script>` / `<style>` in HTML and Vue, HTML around PHP, Markdown fenced code by its info string.
+- A file with an unknown extension opens as plain text, with no notice.
+- The parse runs in the background: a file shows plain on its first frame and gains colours when
+  the parse lands; typing never waits for it.
+- `max_highlight_bytes` in `settings.toml` (default 10 MiB): larger files open as plain text with a
+  one-line notice. A parse that takes longer than 10 s also leaves the file plain, with a notice.
+- `languages.toml` maps file names to languages. Each `[id]` table has `extensions` (without the
+  dot; the longest match wins), `files` (exact names or `*` / `?` globs; they win over
+  extensions), `aliases` (names used in embedded code) and `grammar` (defaults to the id). Your
+  file overrides the built-in table field by field, and a new table adds a language that uses a
+  compiled-in grammar. A language whose grammar is not in the build is named in a startup notice
+  and its files open plain.
+
+```toml
+# ~/.config/vr-ide/languages.toml
+[javascript]
+extensions = ["js", "mjs", "cjs", "jsx", "es6"]   # also colour .es6 files as JavaScript
+
+[php]
+files = ["*.ctp"]                                  # CakePHP templates
+```
 
 Environment overrides:
 

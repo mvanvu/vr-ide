@@ -58,6 +58,7 @@ vr-core = { path = "crates/vr-core" }
 vr-config = { path = "crates/vr-config" }
 vr-fs = { path = "crates/vr-fs" }
 vr-search = { path = "crates/vr-search" }
+vr-syntax = { path = "crates/vr-syntax" }
 
 [profile.release]
 lto = "thin"

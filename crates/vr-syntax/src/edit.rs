@@ -25,14 +25,40 @@ pub struct Edit {
     pub new_end_point: Point,
 }
 
+/// What the caller knows about the line breaks of the text an edit is computed on. Rows of
+/// edit points follow tree-sitter (a row ends at LF only); the rope's own line index also
+/// breaks at a lone CR, so it can only be used when the text has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineBreaks {
+    /// The text may hold a lone CR: rows are counted by a pass over the text (linear, about
+    /// 1 ms per 10 MB).
+    #[default]
+    Unknown,
+    /// The text has no lone CR (LF and CRLF only): rows come from the rope's line index in
+    /// O(log n). Saying this of a text that has one gives wrong rows (columns of reused
+    /// nodes), so callers keep the flag in step with [`has_lone_cr`] / [`lone_cr_in`].
+    NoLoneCr,
+}
+
 impl Edit {
     /// The edit for replacing chars `from..to` of `before` with `insert` (a vr-core `Change`).
     pub fn from_chars(before: &Rope, from: usize, to: usize, insert: &str) -> Edit {
+        Self::from_chars_in(before, from, to, insert, LineBreaks::Unknown)
+    }
+
+    /// [`Edit::from_chars`] for a text whose line breaks are described by `breaks`.
+    pub fn from_chars_in(
+        before: &Rope,
+        from: usize,
+        to: usize,
+        insert: &str,
+        breaks: LineBreaks,
+    ) -> Edit {
         let len = before.len_chars();
         let (from, to) = (from.min(len), to.min(len).max(from.min(len)));
         let start_byte = before.char_to_byte(from);
         let old_end_byte = before.char_to_byte(to);
-        let p = points_at(before, &[start_byte, old_end_byte]);
+        let p = points_in(before, &[start_byte, old_end_byte], breaks);
         Edit {
             start_byte,
             old_end_byte,
@@ -50,6 +76,15 @@ impl Edit {
         before: &Rope,
         changes: impl IntoIterator<Item = (usize, usize, &'a str)>,
     ) -> Vec<Edit> {
+        Self::from_changes_in(before, changes, LineBreaks::Unknown)
+    }
+
+    /// [`Edit::from_changes`] for a text whose line breaks are described by `breaks`.
+    pub fn from_changes_in<'a>(
+        before: &Rope,
+        changes: impl IntoIterator<Item = (usize, usize, &'a str)>,
+        breaks: LineBreaks,
+    ) -> Vec<Edit> {
         let len = before.len_chars();
         let changes: Vec<(usize, usize, &str)> = changes
             .into_iter()
@@ -60,7 +95,7 @@ impl Edit {
             .collect();
         // Points of every change in one pass (one pass per change is quadratic in a replace-all).
         let bytes: Vec<usize> = changes.iter().flat_map(|&(s, e, _)| [s, e]).collect();
-        let points = points_at(before, &bytes);
+        let points = points_in(before, &bytes, breaks);
         let mut edits: Vec<Edit> = changes
             .iter()
             .zip(points.chunks(2))
@@ -82,6 +117,11 @@ impl Edit {
     /// Ropes that share chunks (a clone edited in place) compare in time proportional to the
     /// number of chunks, not bytes.
     pub fn diff(old: &Rope, new: &Rope) -> Option<Edit> {
+        Self::diff_in(old, new, LineBreaks::Unknown)
+    }
+
+    /// [`Edit::diff`] where `breaks` describes the line breaks of `old`.
+    pub fn diff_in(old: &Rope, new: &Rope, breaks: LineBreaks) -> Option<Edit> {
         let (old_len, new_len) = (old.len_bytes(), new.len_bytes());
         let mut prefix = common_prefix(old, new);
         if prefix == old_len && prefix == new_len {
@@ -97,7 +137,7 @@ impl Edit {
             suffix -= 1;
         }
         let (old_end_byte, new_end_byte) = (old_len - suffix, new_len - suffix);
-        let p = points_at(old, &[prefix, old_end_byte]);
+        let p = points_in(old, &[prefix, old_end_byte], breaks);
         Some(Edit {
             start_byte: prefix,
             old_end_byte,
@@ -163,6 +203,66 @@ pub(crate) fn points_at(rope: &Rope, bytes: &[usize]) -> Vec<Point> {
         });
     }
     out
+}
+
+/// The points of ascending byte offsets: [`points_at`] for `Unknown`, the rope's line index
+/// for `NoLoneCr` (O(log n) per point, no pass over the text).
+pub(crate) fn points_in(rope: &Rope, bytes: &[usize], breaks: LineBreaks) -> Vec<Point> {
+    if breaks == LineBreaks::Unknown {
+        return points_at(rope, bytes);
+    }
+    let len = rope.len_bytes();
+    bytes
+        .iter()
+        .map(|&byte| {
+            let byte = byte.min(len);
+            // Between the CR and the LF of a CRLF the row has not ended yet (tree-sitter ends
+            // it at the LF); take the CR's row and count the CR as a column.
+            let (at, extra) = if byte > 0 && rope.byte(byte - 1) == b'\r' {
+                (byte - 1, 1)
+            } else {
+                (byte, 0)
+            };
+            let row = rope.byte_to_line(at);
+            Point {
+                row,
+                column: at - rope.line_to_byte(row) + extra,
+            }
+        })
+        .collect()
+}
+
+/// True when `text` has a CR that is not followed by an LF (one pass; for the flag a caller
+/// keeps per document, see [`LineBreaks`]).
+pub fn has_lone_cr(text: &Rope) -> bool {
+    // The rope never splits a CRLF between chunks, so a CR ending a chunk is a lone CR.
+    text.chunks().any(|chunk| {
+        let b = chunk.as_bytes();
+        b.iter()
+            .enumerate()
+            .any(|(i, &c)| c == b'\r' && b.get(i + 1) != Some(&b'\n'))
+    })
+}
+
+/// True when bytes `range` of `text` (the text after an edit that inserted them), or the byte
+/// just before them, hold a CR not followed by an LF: an edit can only make a lone CR there
+/// (inserted text, a CRLF split by inserting or deleting between its bytes).
+pub fn lone_cr_in(text: &Rope, range: Range<usize>) -> bool {
+    let len = text.len_bytes();
+    let end = range.end.min(len);
+    let start = range.start.min(end).saturating_sub(1);
+    // One byte past the range is read only to see whether a CR at its end has its LF.
+    let mut bytes = text.bytes_at(start).take(end - start + 1).peekable();
+    let mut at = start;
+    while at < end
+        && let Some(b) = bytes.next()
+    {
+        if b == b'\r' && bytes.peek() != Some(&b'\n') {
+            return true;
+        }
+        at += 1;
+    }
+    false
 }
 
 fn advance(mut p: Point, inserted: &[u8]) -> Point {
@@ -357,6 +457,72 @@ mod tests {
         // The edit for typing after the lone CR carries that point.
         let e = Edit::from_chars(&rope, 3, 3, "x");
         assert_eq!(e.start_point, Point { row: 0, column: 3 });
+    }
+
+    #[test]
+    fn indexed_points_equal_scanned_points_without_a_lone_cr() {
+        for text in [
+            "",
+            "abc",
+            "a\nb\r\ncđ\r\n\r\n\nx",
+            "\r\n\r\n",
+            "漢字\r\nend\n",
+            "x\n\n\r\nyy\r\n",
+        ] {
+            let rope = Rope::from_str(text);
+            assert!(!has_lone_cr(&rope), "{text:?}");
+            // Edit points sit on char boundaries.
+            let all: Vec<usize> = (0..=text.len())
+                .filter(|&b| text.is_char_boundary(b))
+                .collect();
+            let scanned = points_at(&rope, &all);
+            let indexed = points_in(&rope, &all, LineBreaks::NoLoneCr);
+            assert_eq!(indexed, scanned, "{text:?}");
+            for from in 0..=rope.len_chars() {
+                for to in from..=rope.len_chars().min(from + 3) {
+                    assert_eq!(
+                        Edit::from_chars_in(&rope, from, to, "q\r\nz", LineBreaks::NoLoneCr),
+                        Edit::from_chars(&rope, from, to, "q\r\nz"),
+                        "{text:?} {from}..{to}"
+                    );
+                }
+            }
+            let changes = [(0, 0, "a"), (rope.len_chars(), rope.len_chars(), "\r\n")];
+            assert_eq!(
+                Edit::from_changes_in(&rope, changes, LineBreaks::NoLoneCr),
+                Edit::from_changes(&rope, changes)
+            );
+            let new = Rope::from_str(&format!("{text}tail\r\n"));
+            assert_eq!(
+                Edit::diff_in(&rope, &new, LineBreaks::NoLoneCr),
+                Edit::diff(&rope, &new)
+            );
+        }
+    }
+
+    #[test]
+    fn lone_crs_are_found_in_the_text_and_next_to_an_edit() {
+        assert!(has_lone_cr(&Rope::from_str("a\rb")));
+        assert!(has_lone_cr(&Rope::from_str("ab\r")));
+        assert!(!has_lone_cr(&Rope::from_str("a\r\nb\n")));
+        // Many chunks: CRLF pairs are never split between them.
+        let mut big = Rope::from_str(&"xy\r\n".repeat(100_000));
+        assert!(!has_lone_cr(&big));
+        big.insert(200_001, "\r");
+        assert!(has_lone_cr(&big));
+        // "a\r\nb": deleting the LF (byte 2) leaves "a\rb"; the CR sits just before the edit.
+        let after = Rope::from_str("a\rb");
+        assert!(lone_cr_in(&after, 2..2));
+        // Typing between CR and LF: "a\rX\nb" — the CR is one byte before the inserted range.
+        let after = Rope::from_str("a\rX\nb");
+        assert!(lone_cr_in(&after, 2..3));
+        // An inserted CRLF is not a lone CR; a lone CR far from the range is not looked at.
+        let after = Rope::from_str("\rzz a\r\nb");
+        assert!(!lone_cr_in(&after, 5..7));
+        assert!(lone_cr_in(&after, 0..1));
+        // A CR at the end of the range followed by the LF just after it is a CRLF.
+        assert!(!lone_cr_in(&Rope::from_str("ab\r\n"), 0..3));
+        assert!(lone_cr_in(&Rope::from_str("ab\r"), 0..3));
     }
 
     #[test]

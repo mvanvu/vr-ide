@@ -9,6 +9,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod event_loop;
 pub mod recovery;
+pub mod syntax;
 pub mod theme;
 pub mod ui;
 
@@ -24,3 +25,5 @@ mod find_tests;
 mod mode_tests;
 #[cfg(test)]
 mod search_tests;
+#[cfg(test)]
+mod syntax_tests;
