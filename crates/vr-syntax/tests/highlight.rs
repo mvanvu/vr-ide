@@ -133,6 +133,14 @@ fn assert_class(h: &Highlighter, text: &str, needle: &str, want: Capture) {
     );
 }
 
+/// Options whose fresh-parse check of text with errors starts right after each reparse.
+fn no_idle() -> HighlightOptions {
+    HighlightOptions {
+        verify_idle: Duration::ZERO,
+        ..HighlightOptions::default()
+    }
+}
+
 fn all_spans(h: &Highlighter, len: usize) -> Vec<(Range<usize>, Capture)> {
     h.spans(0..len)
 }
@@ -583,20 +591,43 @@ fn sample_language(file: &str) -> String {
 /// several seeds (one seed alone missed cases). The single-edit runs use the same generator
 /// sequence as QC's probe (`seed ^ file_index * 7919`); the transaction runs add a 2–40-change
 /// edit every 10th step.
+///
+/// The default run keeps the two seeds that found real mismatches (987654321: php_only,
+/// 42: blade) plus one transaction run; `VR_SYNTAX_FUZZ_SEED=<n>` runs one seed instead. The
+/// full set is `every_sample_equals_a_fresh_parse_full_seed_set` (ignored; run it in release).
 #[test]
 fn every_sample_equals_a_fresh_parse_after_each_random_char_edit() {
-    let seeds: Vec<u64> = match std::env::var("VR_SYNTAX_FUZZ_SEED") {
-        Ok(s) => vec![s.parse().expect("VR_SYNTAX_FUZZ_SEED is a number")],
-        Err(_) => vec![0xC0FFEE, 987654321, 0x5EED_0001, 0xDEAD_BEEF, 42],
+    let failures = match std::env::var("VR_SYNTAX_FUZZ_SEED") {
+        Ok(s) => {
+            let seed = s.parse().expect("VR_SYNTAX_FUZZ_SEED is a number");
+            fuzz_seeds(&[seed], &[seed])
+        }
+        Err(_) => fuzz_seeds(&[987654321, 42], &[0xC0FFEE]),
     };
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The oracle over every seed: 5 single-edit runs and 2 transaction runs (40 s in release,
+/// over 2 min in debug). QC: `cargo test -p vr-syntax --release --test highlight -- --ignored`.
+#[test]
+#[ignore = "full fuzz seed set: run in release with --ignored"]
+fn every_sample_equals_a_fresh_parse_full_seed_set() {
+    let failures = fuzz_seeds(
+        &[0xC0FFEE, 987654321, 0x5EED_0001, 0xDEAD_BEEF, 42],
+        &[0xC0FFEE, 987654321],
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn fuzz_seeds(single: &[u64], transactions: &[u64]) -> Vec<String> {
     let mut failures = Vec::new();
-    for &seed in &seeds {
+    for &seed in single {
         failures.extend(fuzz_against_fresh(seed, false));
     }
-    for &seed in seeds.iter().take(2) {
+    for &seed in transactions {
         failures.extend(fuzz_against_fresh(seed, true));
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    failures
 }
 
 /// Text with syntax errors gets a fresh-parse check after each reparse; edits arriving during
@@ -605,7 +636,8 @@ fn every_sample_equals_a_fresh_parse_after_each_random_char_edit() {
 fn edits_during_the_fresh_parse_check_are_not_lost() {
     let text = sample("php_only.php").replace("function", "func tion {{ (");
     let mut rope = Rope::from_str(&text);
-    let mut h = highlighter("php_only", &text);
+    // No pause before the check, so checks start between these edits and get superseded.
+    let mut h = Highlighter::new(registry(), "php_only", rope.clone(), no_idle(), None);
     for i in 0..60 {
         let at = (i * 7) % rope.len_chars();
         let insert = ["`", "(", "x", "\"", "\n"][i % 5];
@@ -615,6 +647,46 @@ fn edits_during_the_fresh_parse_check_are_not_lost() {
     }
     assert!(h.wait(PARSE_WAIT));
     assert_eq!(h.status(), HighlightStatus::Ready);
+    let after = rope.to_string();
+    let fresh = highlighter("php_only", &after);
+    assert_eq!(all_spans(&h, after.len()), all_spans(&fresh, after.len()));
+}
+
+/// The fresh-parse check of text with errors waits for a pause in typing: during a burst of
+/// keystrokes 30 ms apart the spans stay provisional (`Parsing`), and the check lands only once
+/// the document has been idle for `verify_idle`.
+#[test]
+fn the_fresh_parse_check_waits_until_typing_pauses() {
+    let idle = HighlightOptions::default().verify_idle;
+    assert!(idle >= Duration::from_millis(100), "{idle:?}");
+    let text = sample("php_only.php").replace("function", "func tion {{ (");
+    let mut rope = Rope::from_str(&text);
+    let mut h = highlighter("php_only", &text);
+    let at = rope.len_chars() / 2;
+    let mut last = Instant::now();
+    let mut ready_mid_burst = Vec::new();
+    for i in 0..20 {
+        // Under load a sleep can overshoot past the idle time; only short gaps count.
+        if i > 0 && last.elapsed() < idle && h.status() == HighlightStatus::Ready {
+            ready_mid_burst.push(i);
+        }
+        let e = Edit::from_chars(&rope, at + i, at + i, "x");
+        rope.insert(at + i, "x");
+        h.edit(&[e], rope.clone());
+        last = Instant::now();
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert!(
+        ready_mid_burst.is_empty(),
+        "the check ran during typing before keystrokes {ready_mid_burst:?}"
+    );
+    assert!(h.wait(PARSE_WAIT));
+    assert_eq!(h.status(), HighlightStatus::Ready);
+    assert!(
+        last.elapsed() >= idle,
+        "Ready {:?} after the last edit",
+        last.elapsed()
+    );
     let after = rope.to_string();
     let fresh = highlighter("php_only", &after);
     assert_eq!(all_spans(&h, after.len()), all_spans(&fresh, after.len()));
@@ -639,13 +711,9 @@ fn fuzz_against_fresh(seed: u64, transactions: bool) -> Vec<String> {
     for (fi, file) in files.iter().enumerate() {
         let lang = sample_language(file);
         let mut rope = Rope::from_str(&sample(file));
-        let mut h = Highlighter::new(
-            registry(),
-            &lang,
-            rope.clone(),
-            HighlightOptions::default(),
-            None,
-        );
+        // The oracle waits for the check after every edit; the pause before it would only add
+        // `verify_idle` per step, the result is the same.
+        let mut h = Highlighter::new(registry(), &lang, rope.clone(), no_idle(), None);
         let mut rng = Lcg(seed ^ (fi as u64 * 7919));
         let mut bad = 0;
         let mut first = None;
@@ -1200,5 +1268,77 @@ fn perf_edit_to_spans_typical_files() {
         html,
         100_000,
         97_000..103_000,
+    );
+}
+
+/// CPU time (ns) of each live highlighter worker thread of this process, by thread id (Linux).
+fn worker_cpu_ns() -> std::collections::HashMap<String, u64> {
+    let mut cpu = std::collections::HashMap::new();
+    let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+        return cpu;
+    };
+    for task in tasks.flatten() {
+        let comm = std::fs::read_to_string(task.path().join("comm")).unwrap_or_default();
+        // Thread names are cut to 15 bytes: "vr-syntax php_o".
+        if !comm.starts_with("vr-syntax php_o") {
+            continue;
+        }
+        let stat = std::fs::read_to_string(task.path().join("schedstat")).unwrap_or_default();
+        if let Some(ns) = stat.split_whitespace().next().and_then(|s| s.parse().ok()) {
+            cpu.insert(task.file_name().to_string_lossy().into_owned(), ns);
+        }
+    }
+    cpu
+}
+
+/// Worker CPU while someone types 200 characters at 30 ms intervals into a 200 KB PHP file that
+/// keeps a syntax error: the fresh-parse check must not run during the burst. `verify_idle: 0`
+/// is the behaviour without the pause (a check after every reparse). Run it alone (`--exact`):
+/// another php_only worker started meanwhile would make the thread ambiguous.
+#[test]
+#[ignore = "perf: run in release with --ignored"]
+fn perf_worker_cpu_while_typing_into_text_with_an_error() {
+    let mut text = String::from("<?php\nfunction broken( {{\n");
+    while text.len() < 200_000 {
+        text.push_str(&sample("php_only.php"));
+    }
+    for options in [no_idle(), HighlightOptions::default()] {
+        let label = format!("verify_idle {:?}", options.verify_idle);
+        type_into_text_with_an_error(&label, &text, options);
+    }
+}
+
+fn type_into_text_with_an_error(label: &str, text: &str, options: HighlightOptions) {
+    let mut rope = Rope::from_str(text);
+    let before = worker_cpu_ns();
+    let mut h = Highlighter::new(registry(), "php_only", rope.clone(), options, None);
+    assert!(h.wait(PARSE_WAIT));
+    let new: Vec<String> = worker_cpu_ns()
+        .into_keys()
+        .filter(|tid| !before.contains_key(tid))
+        .collect();
+    let [tid] = new.as_slice() else {
+        panic!("{} new php_only workers: run this test alone", new.len());
+    };
+    let ours = || worker_cpu_ns()[tid];
+    let start_cpu = ours();
+    let t = Instant::now();
+    let at = rope.len_chars() / 2;
+    for i in 0..200 {
+        let e = Edit::from_chars(&rope, at + i, at + i, "x");
+        rope.insert(at + i, "x");
+        h.edit(&[e], rope.clone());
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let typing_cpu = ours() - start_cpu;
+    let typing = t.elapsed();
+    assert!(h.wait(PARSE_WAIT));
+    let total_cpu = ours() - start_cpu;
+    eprintln!(
+        "200 KB php_only with an error, 200 chars at 30 ms, {label}: worker CPU during typing {:?} over \
+         {typing:?} ({:.0}% of a core); including the final check {:?}",
+        Duration::from_nanos(typing_cpu),
+        typing_cpu as f64 / typing.as_nanos() as f64 * 100.0,
+        Duration::from_nanos(total_cpu)
     );
 }

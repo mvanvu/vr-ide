@@ -14,7 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ops::{ControlFlow, Range};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,9 @@ pub struct HighlightOptions {
     pub parse_timeout: Duration,
     /// Limit of one `spans()` call on the caller's thread; it returns what it has by then.
     pub query_timeout: Duration,
+    /// Quiet time (no new edit) before a text with syntax errors gets its fresh-parse check, so
+    /// a burst of typing never starts one.
+    pub verify_idle: Duration,
 }
 
 impl Default for HighlightOptions {
@@ -56,6 +59,7 @@ impl Default for HighlightOptions {
             max_bytes: 10 * 1024 * 1024,
             parse_timeout: Duration::from_secs(10),
             query_timeout: Duration::from_millis(50),
+            verify_idle: Duration::from_millis(150),
         }
     }
 }
@@ -367,6 +371,8 @@ impl Highlighter {
 
     /// Blocks up to `timeout` until spans describe the current text (or highlighting is
     /// disabled); true when they do. For tests and callers that accept a short bounded wait.
+    /// Text with syntax errors is ready only after its fresh-parse check, which starts once the
+    /// document has had no edit for `verify_idle`.
     pub fn wait(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let mut state = self.shared.lock();
@@ -430,6 +436,7 @@ impl Highlighter {
             old_layers: Vec::new(),
             root_records: None,
             verifying: false,
+            verify_idle: self.options.verify_idle,
             edited: Vec::new(),
         };
         let spawned = std::thread::Builder::new()
@@ -501,6 +508,8 @@ struct Worker {
     root_records: Option<Vec<Record>>,
     /// Inside `verify`: parses stop when the caller has newer text.
     verifying: bool,
+    /// `HighlightOptions::verify_idle`.
+    verify_idle: Duration,
     /// Byte ranges (current text) edited since the last cycle.
     edited: Vec<(usize, usize)>,
 }
@@ -527,7 +536,16 @@ impl Worker {
                 });
             }
         };
-        while let Ok(msg) = rx.recv() {
+        // A message that arrived while waiting for a pause before the check.
+        let mut next = None;
+        loop {
+            let msg = match next.take() {
+                Some(msg) => msg,
+                None => match rx.recv() {
+                    Ok(msg) => msg,
+                    Err(_) => return,
+                },
+            };
             self.absorb(msg);
             // Coalesce: parse once for everything typed meanwhile.
             while let Ok(msg) = rx.try_recv() {
@@ -536,9 +554,13 @@ impl Worker {
             if self.cancel.load(Ordering::Relaxed) {
                 return;
             }
+            // A cycle with no old tree, layers or records already is a fresh parse.
+            let from_scratch =
+                self.tree.is_none() && self.old_layers.is_empty() && self.root_records.is_none();
             match self.cycle(&config) {
                 Ok(snapshot) => {
-                    let check = snapshot.text.len_bytes() <= VERIFY_MAX_BYTES
+                    let check = !from_scratch
+                        && snapshot.text.len_bytes() <= VERIFY_MAX_BYTES
                         && snapshot
                             .layers
                             .iter()
@@ -549,6 +571,20 @@ impl Worker {
                         n();
                     }
                     if check {
+                        // Typing bursts never start a check: the next keystroke's cycle
+                        // replaces this snapshot anyway, and a check per keystroke kept a core
+                        // busy. The check runs once the document has been quiet for a moment.
+                        match rx.recv_timeout(self.verify_idle) {
+                            Ok(msg) => {
+                                next = Some(msg);
+                                continue;
+                            }
+                            Err(RecvTimeoutError::Disconnected) => return,
+                            Err(RecvTimeoutError::Timeout) => {}
+                        }
+                        if self.cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
                         match self.verify(&config) {
                             Ok(Some(fresh)) => self.shared.publish(fresh, Arc::new(true.into())),
                             // Newer text arrived: its cycle comes next.
