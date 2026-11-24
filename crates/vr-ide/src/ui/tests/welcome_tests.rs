@@ -37,6 +37,7 @@ fn history(offset: usize) -> Vec<f32> {
 
 fn welcome_app() -> App {
     let (mut app, _) = test_app(Path::new(ROOT));
+    app.keyboard_enhanced = true;
     app.monitor = Monitor::fixed(
         reading(),
         &history(0),
@@ -109,7 +110,7 @@ fn welcome_shows_the_dashboard_parts_at_120x40() {
         "Command palette",
         "ctrl+e",
         "Explorer",
-        "ctrl+shift+f",
+        "ctrl+alt+f",
         "Search",
         "ctrl+q",
         "Quit",
@@ -145,7 +146,8 @@ fn compact_drops_everything_but_cpu_ram_and_four_keys() {
     ] {
         assert!(screen.contains(kept), "{kept:?} missing:\n{screen}");
     }
-    assert!(!screen.contains("Search"));
+    // The row the project root used to take shows one more key (Search).
+    assert!(screen.contains("Search"), "{screen}");
 }
 
 #[test]
@@ -245,7 +247,11 @@ fn a_command_without_a_key_has_no_hint() {
     // With `terminal.toggle` bound (M5) its row shows the key; with ctrl+` removed by the user
     // there is no "Terminal" row rather than "run terminal.toggle".
     let screen = lines(&mut app, 120, 40).join("\n");
-    assert!(screen.contains("ctrl+`        Terminal"), "{screen}");
+    let row = screen
+        .lines()
+        .find(|l| l.contains("Terminal"))
+        .expect("Terminal row");
+    assert!(row.contains("ctrl+`"), "{screen}");
     let dir = tempfile::tempdir().unwrap();
     let user = dir.path().join("keymap.toml");
     std::fs::write(&user, "\"ctrl+`\" = \"\"\n[terminal]\n\"ctrl+`\" = \"\"\n").unwrap();
@@ -375,4 +381,53 @@ fn history_label_matches_the_graph_width() {
     // Wider than the ring: the label is the ring length.
     let screen = lines(&mut app, 160, 40).join("\n");
     assert!(screen.contains("60 s"), "{screen}");
+}
+
+#[test]
+fn legacy_keyboard_welcome_never_shows_an_unreachable_key() {
+    let mut app = welcome_app();
+    app.keyboard_enhanced = false;
+    let screen = lines(&mut app, 120, 40).join("\n");
+    assert!(!screen.contains("ctrl+shift+f"), "{screen}");
+    // The reachable second key takes its place (D220).
+    let search = screen
+        .lines()
+        .find(|l| l.contains("Search"))
+        .expect("Search hint");
+    assert!(search.contains("ctrl+alt+f"), "{search}");
+    assert!(
+        app.keymap
+            .keys_for("search.project")
+            .iter()
+            .any(crate::event_loop::legacy_unreachable)
+    );
+    // The other hints stay.
+    for kept in ["ctrl+p", "f1", "ctrl+e", "ctrl+q"] {
+        assert!(screen.contains(kept), "{kept}:\n{screen}");
+    }
+    let t = draw(&mut app, 120, 40);
+    insta::assert_snapshot!("welcome_legacy_keyboard_120x40", t.backend());
+}
+
+/// The compact welcome leaves the project root to the status bar and gives its row to a hint.
+#[test]
+fn compact_welcome_does_not_repeat_the_root_and_shows_one_more_hint() {
+    let mut app = welcome_app();
+    let l = lines(&mut app, 40, 10);
+    // Row 0 is the tab row.
+    let body = l[1..l.len() - 1].join("\n");
+    assert!(!body.contains("/home/user"), "{body}");
+    assert!(l.last().unwrap().contains("/home/user"), "{l:?}");
+    let shown = [
+        "Go to file",
+        "Command palette",
+        "Explorer",
+        "Quit",
+        "Search",
+        "Terminal",
+    ]
+    .iter()
+    .filter(|t| body.contains(*t))
+    .count();
+    assert_eq!(shown, 3, "{body}");
 }

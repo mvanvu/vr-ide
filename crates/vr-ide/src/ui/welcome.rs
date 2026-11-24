@@ -318,10 +318,12 @@ fn hints(app: &App) -> Vec<Hint> {
     ];
     ALL.iter()
         .filter_map(|&(cmd, title, priority)| {
+            // Without the kitty protocol a key the terminal cannot send is not recommended.
             let key = app
                 .keymap
                 .keys_for(cmd)
                 .iter()
+                .filter(|k| app.keyboard_enhanced || !crate::event_loop::legacy_unreachable(k))
                 .map(ToString::to_string)
                 .min_by_key(String::len)?;
             Some(Hint {
@@ -429,8 +431,8 @@ fn compact(buf: &mut Buffer, area: Rect, app: &App, p: &Palette) {
             p.ok,
         );
     }
-    root_line(&mut pen, 1, &app.root, p);
-    let mut row = 3;
+    // The root is in the status bar; its row goes to the hints.
+    let mut row = 2;
     if m.supported() {
         cpu_trace_row(&mut pen, row, m, p);
         let (used, total) = (m.reading.mem.used(), m.reading.mem.total);

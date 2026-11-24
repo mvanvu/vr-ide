@@ -938,11 +938,11 @@ fn panel_colours_follow_the_theme() {
         bg: TColor::Default,
         flags: CellFlags::default(),
     };
-    let s = cell_style(&red, p.as_ref());
+    let s = cell_style(&red, p.as_ref(), crate::theme::ColorDepth::TrueColor);
     assert_eq!(s.fg, Some(p.unwrap().colors[1]));
     assert_eq!(s.bg, Some(p.unwrap().bg));
     // dark keeps the terminal's own colours.
-    let s = cell_style(&red, None);
+    let s = cell_style(&red, None, crate::theme::ColorDepth::TrueColor);
     assert_eq!(s.fg, Some(Color::Indexed(1)));
     assert_eq!(s.bg, Some(Color::Reset));
     // 256-colour and true-colour cells pass through.
@@ -951,7 +951,7 @@ fn panel_colours_follow_the_theme() {
         bg: TColor::Rgb(1, 2, 3),
         ..red.clone()
     };
-    let s = cell_style(&cube, p.as_ref());
+    let s = cell_style(&cube, p.as_ref(), crate::theme::ColorDepth::TrueColor);
     assert_eq!(
         (s.fg, s.bg),
         (Some(Color::Indexed(200)), Some(Color::Rgb(1, 2, 3)))
@@ -968,7 +968,7 @@ fn panel_colours_follow_the_theme() {
         },
         ..red.clone()
     };
-    let s = cell_style(&inv, p.as_ref());
+    let s = cell_style(&inv, p.as_ref(), crate::theme::ColorDepth::TrueColor);
     assert_eq!(s.fg, Some(p.unwrap().bg));
     assert_eq!(s.bg, Some(p.unwrap().colors[1]));
     for m in [
@@ -980,6 +980,149 @@ fn panel_colours_follow_the_theme() {
         assert!(s.add_modifier.contains(m), "{m:?}");
     }
     // Without a palette inverse is left to the terminal.
-    let s = cell_style(&inv, None);
+    let s = cell_style(&inv, None, crate::theme::ColorDepth::TrueColor);
     assert!(s.add_modifier.contains(Modifier::REVERSED));
+}
+
+/// At 256 colours a program's true-colour cells are mapped to the nearest xterm index, as the
+/// theme's own colours are; the child is told it may use true colour only when vr-ide can.
+#[test]
+fn truecolor_cells_follow_the_colour_depth() {
+    use crate::theme::ColorDepth;
+    use crate::ui::terminal_view::cell_style;
+    use ratatui::style::Color;
+    let cell = Cell {
+        ch: "x".into(),
+        fg: TColor::Rgb(255, 0, 0),
+        bg: TColor::Rgb(1, 2, 3),
+        flags: CellFlags::default(),
+    };
+    let s = cell_style(&cell, None, ColorDepth::TrueColor);
+    assert_eq!(
+        (s.fg, s.bg),
+        (Some(Color::Rgb(255, 0, 0)), Some(Color::Rgb(1, 2, 3)))
+    );
+    let s = cell_style(&cell, None, ColorDepth::Indexed256);
+    assert_eq!(s.fg, Some(ColorDepth::Indexed256.color(0xff0000)));
+    assert!(matches!(s.fg, Some(Color::Indexed(_))), "{s:?}");
+    assert!(matches!(s.bg, Some(Color::Indexed(_))), "{s:?}");
+    assert_eq!(s.fg, Some(Color::Indexed(196)));
+
+    let get = |env: &[(std::ffi::OsString, std::ffi::OsString)]| {
+        env.iter()
+            .rev()
+            .find(|(k, _)| k == "COLORTERM")
+            .map(|(_, v)| v.to_string_lossy().into_owned())
+    };
+    let user = vec![("VR_X".into(), "1".into())];
+    let env = crate::commands::terminal::child_env(&user, ColorDepth::TrueColor);
+    assert_eq!(get(&env).as_deref(), Some("truecolor"));
+    assert!(env.contains(&user[0]));
+    assert_eq!(
+        get(&crate::commands::terminal::child_env(
+            &user,
+            ColorDepth::Indexed256
+        )),
+        None
+    );
+    // The user's own setting still wins.
+    let own = vec![("COLORTERM".into(), "yes".into())];
+    let env = crate::commands::terminal::child_env(&own, ColorDepth::TrueColor);
+    assert_eq!(get(&env).as_deref(), Some("yes"));
+}
+
+/// A focused terminal always shows the way out in the status bar; the size gives way first.
+#[test]
+fn the_status_bar_names_the_way_out_before_the_size() {
+    let (_d, mut app, _) = term_app();
+    app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
+    app.terminal.visible = true;
+    app.focus = Focus::Terminal;
+    for w in [30, 36, 40, 80] {
+        let t = draw(&mut app, w, 12);
+        let status = row_text(&t, 11);
+        assert!(status.contains("alt+q editor"), "{w}: {status}");
+        if w <= 36 {
+            assert!(!status.contains('×'), "{w}: {status}");
+        }
+    }
+}
+
+/// A 90 % panel still leaves the editor a few rows on a screen that has them.
+#[test]
+fn a_tall_panel_leaves_the_editor_a_few_rows() {
+    let (_d, mut app, _) = term_app();
+    app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
+    app.terminal.visible = true;
+    app.terminal.height_percent = 90;
+    for h in [12, 24, 40] {
+        draw(&mut app, 80, h);
+        assert!(app.layout.editor.height >= 3, "{h}: {:?}", app.layout);
+    }
+}
+
+/// With no editor row (a tiny screen) the keys stay in the terminal, and the resource monitor
+/// is not sampled for a welcome screen nobody can see.
+#[test]
+fn a_zero_row_editor_never_gets_the_keys_or_a_monitor() {
+    let (_d, mut app, _) = term_app();
+    app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
+    app.terminal.visible = true;
+    app.focus = Focus::Terminal;
+    draw(&mut app, 80, 7);
+    assert_eq!(app.layout.editor.height, 0, "{:?}", app.layout);
+    alt_q(&mut app);
+    assert_eq!(app.focus, Focus::Terminal);
+    let now = std::time::Instant::now();
+    app.tick(now);
+    assert!(!app.monitor.running());
+    // With rows for the editor the welcome is drawn and sampled.
+    draw(&mut app, 80, 24);
+    app.tick(now + std::time::Duration::from_secs(2));
+    assert_eq!(app.monitor.running(), app.monitor.supported());
+}
+
+/// A side column that takes the whole width (search below 40 columns) must not leave a
+/// terminal with the keys that nobody can see; showing the panel makes room for it.
+#[test]
+fn a_covered_terminal_gets_no_keys_and_showing_it_uncovers_it() {
+    let (_d, mut app, _) = term_app();
+    app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
+    app.search.visible = true;
+    app.terminal.visible = true;
+    app.focus = Focus::Terminal;
+    let t = draw(&mut app, 30, 12);
+    assert_eq!(app.layout.terminal.width, 0, "{:?}", app.layout);
+    drop(t);
+    key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+    assert_ne!(app.focus, Focus::Terminal);
+    assert!(!app.search.visible, "the covering column gives way");
+
+    // Hidden panel, covering search: showing the panel hides the column.
+    let (_d, mut app, _) = term_app();
+    app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
+    app.search.visible = true;
+    draw(&mut app, 30, 12);
+    app.keyboard_enhanced = true;
+    ctrl_backtick(&mut app);
+    assert!(app.terminal.visible && !app.search.visible);
+    assert_eq!(app.focus, Focus::Terminal);
+    draw(&mut app, 30, 12);
+    assert!(app.layout.terminal.width > 0, "{:?}", app.layout);
+}
+
+/// The fast poll is for programs that may still print; exited terminals do not need it.
+#[test]
+fn the_fast_poll_runs_only_while_a_terminal_is_running() {
+    use crate::event_loop::poll_interval;
+    let (_d, mut app, _) = term_app();
+    let idle = poll_interval(&app);
+    app.terminal.visible = true;
+    assert_eq!(poll_interval(&app), idle);
+    app.terminal
+        .tabs
+        .push(fake_tab("sh", TermStatus::Exited(0)));
+    assert_eq!(poll_interval(&app), idle, "only exited terminals");
+    app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
+    assert!(poll_interval(&app) < idle);
 }

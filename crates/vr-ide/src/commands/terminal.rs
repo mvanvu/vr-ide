@@ -312,6 +312,10 @@ fn shrink(app: &mut App, _: CmdArgs) -> CmdResult {
 
 /// alt+q in a focused terminal (D8): the editor gets the keys; the panel stays.
 fn focus_editor(app: &mut App, _: CmdArgs) -> CmdResult {
+    // A panel that covers the whole editor keeps the keys: nothing would show them.
+    if app.layout.status.height > 0 && app.layout.editor.height == 0 && has_keys(app) {
+        return Ok(());
+    }
     super::search::focus_editor(app);
     Ok(())
 }
@@ -333,9 +337,27 @@ fn reveal(app: &mut App) {
             tab.refresh();
         }
     }
+    // A side column that took the whole width would leave the panel no cells.
+    if app.layout.editor.width == 0 {
+        if app.layout.search.width > 0 {
+            app.search.visible = false;
+        }
+        if app.layout.explorer.width > 0 {
+            app.explorer.visible = false;
+        }
+    }
     app.terminal.visible = true;
     app.focus = Focus::Terminal;
     app.dirty = true;
+}
+
+/// The last frame left the panel no cells (a side column took the whole width, or the editor has
+/// no rows): keys must not go to a terminal nobody can see.
+fn covered(app: &App) -> bool {
+    let l = &app.layout;
+    l.status.height > 0
+        && (l.terminal.width == 0 || l.terminal.height == 0)
+        && (l.editor.width == 0 || l.editor.height == 0)
 }
 
 /// Hides the panel; terminals keep running. The editor gets the keys if the panel had them.
@@ -464,7 +486,7 @@ fn spawn(app: &App, output: &Arc<AtomicBool>) -> Result<(Terminal, PathBuf), Ter
                 shell: shell.to_path_buf(),
                 args: Vec::new(),
                 cwd: app.root.clone(),
-                env: p.env.clone(),
+                env: child_env(&p.env, crate::theme::ColorDepth::detect()),
                 cols,
                 rows,
                 scrollback: p.scrollback,
@@ -481,6 +503,21 @@ fn spawn(app: &App, output: &Arc<AtomicBool>) -> Result<(Terminal, PathBuf), Ter
         },
         _ => start(fallback),
     }
+}
+
+/// Environment of a new terminal: `COLORTERM=truecolor` only when vr-ide itself can show true
+/// colour (its cells are otherwise downsampled, so a program must not be told it may use it);
+/// the user's own entries come last and win.
+pub(crate) fn child_env(
+    user: &[(OsString, OsString)],
+    depth: crate::theme::ColorDepth,
+) -> Vec<(OsString, OsString)> {
+    let mut env = Vec::new();
+    if depth == crate::theme::ColorDepth::TrueColor {
+        env.push((OsString::from("COLORTERM"), OsString::from("truecolor")));
+    }
+    env.extend(user.iter().cloned());
+    env
 }
 
 /// Size for a new terminal: the panel's grid when laid out, else where the next frame puts it.
@@ -587,6 +624,10 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     }
     if !app.terminal.visible || app.terminal.tabs.is_empty() {
         // Keys never go to a terminal that is not shown.
+        super::search::focus_editor(app);
+        return false;
+    }
+    if covered(app) {
         super::search::focus_editor(app);
         return false;
     }

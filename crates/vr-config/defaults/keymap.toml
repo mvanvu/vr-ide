@@ -28,6 +28,7 @@
 "ctrl+o" = "file.open"
 "ctrl+s" = "file.save"
 "ctrl+shift+s" = "file.save_as"
+"ctrl+alt+s" = "file.save_as"
 "ctrl+w" = "file.close"
 "ctrl+f4" = "file.close"
 # VS Code's ctrl+n opens an untitled file; vr-ide has no untitled buffers, so it creates one on disk.
@@ -39,8 +40,14 @@
 # show it and focus it; shown: hide it and the editor gets the keys.
 "ctrl+e" = "explorer.toggle_focus"
 "ctrl+shift+e" = "explorer.focus"
+"ctrl+alt+e" = "explorer.focus"
 "ctrl+shift+f" = "search.project"
+# ctrl+alt+<key> alternatives (D220, D221): legacy terminals cannot send the ctrl+shift chords and
+# emulators (GNOME Terminal / VTE) take several of them for themselves; vr-ide adapts, not them.
+# Second key for terminals whose emulator takes ctrl+shift+f for its own Find (D220).
+"ctrl+alt+f" = "search.project"
 "ctrl+shift+h" = "search.replace_project"
+"ctrl+alt+h" = "search.replace_project"
 "f4" = "search.next_result"
 "shift+f4" = "search.prev_result"
 "f6" = "focus.cycle"
@@ -50,6 +57,7 @@
 # well, unless the setting terminal_pass_nul = true).
 "ctrl+`" = "terminal.toggle"
 "ctrl+shift+`" = "terminal.new"
+"ctrl+alt+`" = "terminal.new"
 # No VS Code default key (palette only): file.reload, explorer.reveal, explorer.new_folder,
 # explorer.move, explorer.toggle_ignored, explorer.toggle_hidden, terminal.close, terminal.next,
 # terminal.prev, terminal.grow, terminal.shrink.
@@ -77,6 +85,7 @@
 "ctrl+v" = "edit.paste"
 "ctrl+a" = "edit.select_all"
 "ctrl+shift+k" = "edit.delete_line"
+"ctrl+alt+k" = "edit.delete_line"
 "shift+alt+down" = "edit.duplicate_line"
 "shift+alt+up" = "edit.duplicate_line"
 "alt+up" = "edit.move_line_up"
@@ -92,6 +101,7 @@
 "f3" = "find.next"
 "shift+f3" = "find.prev"
 "ctrl+shift+1" = "find.replace_one"
+"ctrl+alt+1" = "find.replace_one"
 "ctrl+alt+enter" = "find.replace_all"
 
 [explorer]
@@ -114,3 +124,4 @@
 "alt+q" = "focus.editor"
 "ctrl+`" = "terminal.toggle"
 "ctrl+shift+`" = "terminal.new"
+"ctrl+alt+`" = "terminal.new"

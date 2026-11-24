@@ -425,6 +425,30 @@ mod tests {
         snap("render_notice_and_read_only_status", &mut app);
     }
 
+    /// The remedy and the dismiss hint come first and stay visible at every width; only the
+    /// key list at the end is cut, with an ellipsis.
+    #[test]
+    fn legacy_keyboard_notice_keeps_remedy_and_dismiss_hint_at_every_width() {
+        for (w, h) in [(120, 40), (80, 24), (60, 20), (40, 12), (30, 12)] {
+            let (mut app, _) = test_app(std::path::Path::new("/home/user/DEV/shop"));
+            app.report_startup(Vec::new(), false);
+            let t = draw(&mut app, w, h);
+            let buf = t.backend().buffer();
+            let rows = app.layout.notice;
+            let shown: Vec<String> = (rows.y..rows.y + rows.height)
+                .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .collect();
+            let notice = shown.join("\n");
+            assert!(shown[0].starts_with("Keyboard:"), "{w}x{h}:\n{notice}");
+            assert!(notice.contains("palette"), "{w}x{h}:\n{notice}");
+            assert!(notice.contains("(Esc)"), "{w}x{h}:\n{notice}");
+            assert!(!notice.contains("(app."), "{w}x{h}:\n{notice}");
+            if w <= 40 {
+                assert!(notice.trim_end().ends_with('…'), "{w}x{h}:\n{notice}");
+            }
+        }
+    }
+
     fn status_row(t: &Terminal<TestBackend>) -> String {
         let buf = t.backend().buffer();
         let y = buf.area.height - 1;

@@ -118,7 +118,7 @@ that cannot be changed, is in [docs/keymap.md](docs/keymap.md); every key can be
 | Go to File (fuzzy search by name) | `ctrl+p` |
 | New file (created on disk at once; there are no untitled buffers) | `ctrl+n` |
 | Save | `ctrl+s` |
-| Save As (a new file name, relative to the project root) | `ctrl+shift+s` |
+| Save As (a new file name, relative to the project root) | `ctrl+shift+s` or `ctrl+alt+s` |
 | Close the tab | `ctrl+w` or `ctrl+f4` |
 | Next / previous tab | `ctrl+pagedown` / `ctrl+pageup` |
 | Command palette | `ctrl+shift+p` or `F1` |
@@ -145,7 +145,7 @@ from disk still update open files in either mode.
 | Select all | `ctrl+a` |
 | Extend the selection | hold `shift` with the arrows, `home`, `end`, `pageup`, `pagedown` |
 | Move by word / to start or end of the file | `ctrl+left` `ctrl+right` / `ctrl+home` `ctrl+end` |
-| Delete line / duplicate line | `ctrl+shift+k` / `shift+alt+up` or `shift+alt+down` |
+| Delete line / duplicate line | `ctrl+shift+k` or `ctrl+alt+k` / `shift+alt+up` or `shift+alt+down` |
 | Move line up / down | `alt+up` / `alt+down` |
 | Indent / outdent | `ctrl+]` / `ctrl+[` or `shift+tab` |
 | Toggle line comment | `ctrl+/` |
@@ -162,7 +162,7 @@ Most terminals send `ctrl+[` as `Esc`; use `shift+tab` to outdent there.
 | Find | `ctrl+f` |
 | Replace | `ctrl+h` |
 | Next / previous match | `enter` / `shift+enter` in the find bar, or `f3` / `shift+f3` |
-| Replace one / replace all (edit mode only; find works in read mode) | `ctrl+shift+1` / `ctrl+alt+enter` (or `enter` in the replace field to replace one) |
+| Replace one / replace all (edit mode only; find works in read mode) | `ctrl+shift+1` or `ctrl+alt+1` / `ctrl+alt+enter` (or `enter` in the replace field to replace one) |
 | Match case / whole word / regex | `alt+c` / `alt+w` / `alt+r` |
 | Switch between the find and replace fields | `tab` / `shift+tab` |
 | Close the bar | `esc` |
@@ -171,8 +171,8 @@ Most terminals send `ctrl+[` as `Esc`; use `shift+tab` to outdent there.
 
 | Task | Keys |
 |---|---|
-| Search in Project | `ctrl+shift+f` |
-| Replace in Project | `ctrl+shift+h` |
+| Search in Project | `ctrl+shift+f` or `ctrl+alt+f` |
+| Replace in Project | `ctrl+shift+h` or `ctrl+alt+h` |
 | Next / previous result | `f4` / `shift+f4` |
 
 In the panel, type in the search field and press `enter` to search; results stream in as the files
@@ -182,7 +182,7 @@ files are. `esc` leaves the panel.
 
 Replacing across files is always previewed first:
 
-1. Press `ctrl+shift+h`, fill in the search and the replace field.
+1. Press `ctrl+shift+h` (or `ctrl+alt+h`), fill in the search and the replace field.
 2. Press `enter` in the replace field: the panel shows a preview per file. Nothing is written yet.
 3. Move through the preview; `space` checks or unchecks a file (unchecked files are left alone).
 4. Press `enter` to confirm. A dialog asks Replace or Cancel; Cancel is the default button.
@@ -200,7 +200,7 @@ not overwritten.
 |---|---|
 | Show the explorer and focus it / hide it (the editor gets the keys) | `ctrl+e` |
 | Show / hide the explorer (focus stays where it is) | `ctrl+b` |
-| Focus the explorer | `ctrl+shift+e` |
+| Focus the explorer | `ctrl+shift+e` or `ctrl+alt+e` |
 | Cycle focus between the parts | `f6` |
 | Back to the editor | `esc` |
 | Move, expand, collapse | `up` `down` `pageup` `pagedown` `home` `end`; `right` expands, `left` collapses or goes to the parent |
@@ -360,7 +360,7 @@ Environment overrides:
   terminal sends. Some chords are also taken by the terminal itself or by your window manager.
 - **`ctrl+shift+e` hides the explorer instead of focusing it.** Without the kitty keyboard
   protocol the terminal sends `ctrl+shift+e` as `ctrl+e`, which toggles the explorer (shows and
-  focuses it when hidden, hides it when shown). Use `ctrl+e` or `F6` to reach the tree there.
+  focuses it when hidden, hides it when shown). Use `ctrl+alt+e`, `ctrl+e` or `F6` to reach the tree there.
 - **Typing does nothing and "Read mode: ctrl+i to edit" appears.** The tab is in read mode;
   press `ctrl+i` (or `tab`, which is what `ctrl+i` arrives as in a terminal without the kitty
   keyboard protocol) to edit.

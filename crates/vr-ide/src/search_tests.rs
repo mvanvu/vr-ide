@@ -1311,3 +1311,21 @@ fn rename_during_a_running_search_says_search_again() {
     let shown = app.search.errors.join(" | ");
     assert!(shown.contains("search again"), "{shown}");
 }
+
+/// D220: ctrl+alt+f opens the project search where the emulator keeps ctrl+shift+f. A legacy
+/// terminal sends ESC + ^F, which crossterm reports as this same event (ctrl+alt+f).
+#[test]
+fn ctrl_alt_f_opens_the_project_search_panel() {
+    let ev = KeyEvent::new(
+        KeyCode::Char('f'),
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    );
+    for enhanced in [true, false] {
+        let (_d, mut app) = project(&[("a.txt", "x\n")]);
+        app.keyboard_enhanced = enhanced;
+        assert!(!app.search.visible);
+        app.handle_key(ev);
+        assert!(app.search.visible, "enhanced={enhanced}");
+        assert_eq!(app.focus, Focus::Search, "enhanced={enhanced}");
+    }
+}

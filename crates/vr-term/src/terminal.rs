@@ -208,8 +208,8 @@ impl std::fmt::Debug for Terminal {
 }
 
 impl Terminal {
-    /// Starts `opts.shell` in a new PTY session with `TERM=xterm-256color` and
-    /// `COLORTERM=truecolor`. `notify` is called (coalesced) whenever there is something new to draw.
+    /// Starts `opts.shell` in a new PTY session with `TERM=xterm-256color`; `COLORTERM`
+    /// is left as inherited (the caller sets it through `opts.env`). `notify` is called (coalesced) whenever there is something new to draw.
     pub fn spawn(opts: SpawnOptions, notify: Notify) -> Result<Terminal, TermError> {
         if opts.cols == 0 || opts.rows == 0 {
             return Err(TermError::BadSize {
@@ -231,7 +231,6 @@ impl Terminal {
             cmd.env_remove(key);
         }
         cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
         for (key, value) in &opts.env {
             cmd.env(key, value);
         }

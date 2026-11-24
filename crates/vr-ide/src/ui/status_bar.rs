@@ -4,8 +4,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget, Wrap};
+use ratatui::text::Span;
 use vr_core::{DiskState, LineEnding};
 
 use crate::app::{App, Focus, NoticeLevel, encoding_name};
@@ -23,7 +22,7 @@ fn esc_dismisses(app: &App) -> bool {
         && !(app.focus == Focus::Editor && app.edit_mode())
 }
 
-/// Text of the oldest notice with a hint about the rest.
+/// Text of the oldest notice with a hint about the rest; its detail (if any) comes last.
 pub fn notice_text(app: &App) -> Option<String> {
     let n = app.notices.front()?;
     let more = app.notices.len() - 1;
@@ -45,7 +44,64 @@ pub fn notice_text(app: &App) -> Option<String> {
     } else {
         String::new()
     };
-    Some(format!("{}{suffix}", n.text))
+    let detail = n
+        .detail
+        .as_ref()
+        .map_or_else(String::new, |d| format!("  {d}"));
+    Some(format!("{}{suffix}{detail}", n.text))
+}
+
+/// Greedy word wrap by display width; a word longer than a row is split.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = vec![String::new()];
+    let mut used = 0;
+    for word in text.split_inclusive(' ') {
+        let mut word = word;
+        if used > 0 && used + width_of(word.trim_end()) > width {
+            lines.push(String::new());
+            used = 0;
+        }
+        while width_of(word.trim_end()) > width {
+            let mut cut = 0;
+            let mut cw = 0;
+            for c in word.chars() {
+                let ch = width_of(c.encode_utf8(&mut [0; 4]));
+                if cw + ch > width {
+                    break;
+                }
+                cut += c.len_utf8();
+                cw += ch;
+            }
+            if cut == 0 {
+                // A single glyph wider than the row: drop it rather than loop.
+                word = &word[word.chars().next().map_or(0, char::len_utf8)..];
+                continue;
+            }
+            lines.last_mut().unwrap().push_str(&word[..cut]);
+            lines.push(String::new());
+            word = &word[cut..];
+            used = 0;
+        }
+        lines.last_mut().unwrap().push_str(word);
+        used += width_of(word);
+    }
+    lines.iter().map(|l| l.trim_end().to_string()).collect()
+}
+
+/// The notice as at most `rows` rows of `width` cells; a cut ends in `…`.
+fn notice_lines(text: &str, width: u16, rows: u16) -> Vec<String> {
+    let mut lines = wrap(text, usize::from(width));
+    let rows = usize::from(rows.max(1));
+    if lines.len() > rows {
+        lines.truncate(rows);
+        let last = lines.last_mut().unwrap();
+        while !last.is_empty() && width_of(last) + 1 > usize::from(width.max(1)) {
+            last.pop();
+        }
+        last.push('…');
+    }
+    lines
 }
 
 /// Rows the oldest notice needs at `width` (0 without notices).
@@ -53,9 +109,7 @@ pub fn notice_rows(app: &App, width: u16) -> u16 {
     let Some(text) = notice_text(app) else {
         return 0;
     };
-    let w = Span::raw(text).width().max(1);
-    let width = usize::from(width.max(1));
-    (w.div_ceil(width) as u16).clamp(1, MAX_NOTICE_ROWS)
+    (wrap(&text, usize::from(width)).len() as u16).clamp(1, MAX_NOTICE_ROWS)
 }
 
 pub fn render_notice(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
@@ -70,9 +124,13 @@ pub fn render_notice(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         NoticeLevel::Warning => theme.warning,
         NoticeLevel::Error => theme.error,
     };
-    Paragraph::new(Line::styled(text, style))
-        .wrap(Wrap { trim: false })
-        .render(area, buf);
+    let width = usize::from(area.width);
+    for (i, line) in notice_lines(&text, area.width, area.height)
+        .iter()
+        .enumerate()
+    {
+        buf.set_stringn(area.x, area.y + i as u16, line, width, style);
+    }
 }
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {

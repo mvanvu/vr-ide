@@ -11,7 +11,7 @@ use vr_term::{Cell, Color as TermColor, TermStatus};
 
 use crate::app::App;
 use crate::commands::terminal::{self as term, TerminalPanel};
-use crate::theme::{AnsiPalette, Theme};
+use crate::theme::{AnsiPalette, ColorDepth, Theme};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     if area.height == 0 || area.width == 0 || !app.terminal.visible {
@@ -241,11 +241,12 @@ fn render_grid(
     theme: &Theme,
 ) -> Option<(u16, u16)> {
     let palette = theme.ansi_palette();
+    let depth = ColorDepth::detect();
     let blank = Cell {
         ch: " ".into(),
         ..Cell::default()
     };
-    buf.set_style(area, cell_style(&blank, palette));
+    buf.set_style(area, cell_style(&blank, palette, depth));
     let tab = panel.active_tab()?;
     let g = &tab.grid;
     let (w, h) = (usize::from(area.width), usize::from(area.height));
@@ -256,7 +257,7 @@ fn render_grid(
                 continue;
             };
             let x = area.x + c as u16;
-            let mut style = cell_style(cell, palette);
+            let mut style = cell_style(cell, palette, depth);
             if panel.selection.is_some_and(|s| s.contains(r, c)) {
                 style = style.patch(theme.selection);
             }
@@ -316,16 +317,23 @@ pub fn render_status(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         TermStatus::Exited(code) => format!(" [exited {code}]"),
     };
     let (i, n) = (p.active + 1, p.tabs.len());
-    let rights = [format!(" {i}/{n} · {cols}×{rows} "), format!(" {i}/{n} ")];
+    // The way out of a focused terminal outranks its size: the size gives way first.
+    let out = format!("{} editor", first_key(app, "focus.editor"));
+    let rights = [
+        (format!(" {i}/{n} · {cols}×{rows} · {out} "), 6),
+        (format!(" {i}/{n} · {out} "), 2),
+        (format!(" {i}/{n} · {cols}×{rows} "), 6),
+        (format!(" {i}/{n} "), 0),
+    ];
     let room = width - bw;
     let x = area.x + bw as u16;
     // Which terminal of how many always shows (the size first gives way); the title is cut
     // keeping its end, the directory of `user@host: dir`.
-    let title_min = 6;
     let right = rights
         .iter()
-        .find(|r| width_of(r) + title_min <= room)
-        .or_else(|| rights.iter().find(|r| width_of(r) <= room));
+        .find(|(r, title_min)| width_of(r) + title_min <= room)
+        .or_else(|| rights.iter().find(|(r, _)| width_of(r) <= room))
+        .map(|(r, _)| r);
     let rw = right.map_or(0, |r| width_of(r));
     let title = format!("{}{state}", tab.title());
     let left = format!(
@@ -345,8 +353,9 @@ pub fn render_status(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
 }
 
 /// Style of one terminal cell: ANSI 0–15 and the default colours through the theme's palette
-/// (the terminal's own colours without one), 256-colour and true-colour values as they are.
-pub fn cell_style(cell: &Cell, palette: Option<&AnsiPalette>) -> Style {
+/// (the terminal's own colours without one), 256-colour values as they are, true-colour values
+/// at the depth of vr-ide's own terminal.
+pub fn cell_style(cell: &Cell, palette: Option<&AnsiPalette>, depth: ColorDepth) -> Style {
     let resolve = |c: TermColor, fg: bool| match (c, palette) {
         (TermColor::Default, Some(p)) => {
             if fg {
@@ -358,7 +367,9 @@ pub fn cell_style(cell: &Cell, palette: Option<&AnsiPalette>) -> Style {
         (TermColor::Default, None) => Color::Reset,
         (TermColor::Indexed(i), Some(p)) if i < 16 => p.colors[usize::from(i)],
         (TermColor::Indexed(i), _) => Color::Indexed(i),
-        (TermColor::Rgb(r, g, b), _) => Color::Rgb(r, g, b),
+        (TermColor::Rgb(r, g, b), _) => {
+            depth.color(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b))
+        }
     };
     let (mut fg, mut bg) = (resolve(cell.fg, true), resolve(cell.bg, false));
     let f = cell.flags;

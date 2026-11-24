@@ -147,8 +147,8 @@ pub struct SpawnOptions {
     pub args: Vec<OsString>,
     /// Working directory; must be an existing directory.
     pub cwd: PathBuf,
-    /// Extra environment on top of the inherited one (`TERM` / `COLORTERM` are set first and may
-    /// be overridden here).
+    /// Extra environment on top of the inherited one (`TERM` is set first and may be
+    /// overridden here; `COLORTERM` is only what the caller gives).
     pub env: Vec<(OsString, OsString)>,
     pub cols: u16,
     pub rows: u16,

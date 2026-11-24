@@ -89,7 +89,9 @@ pub fn legacy_unreachable(chord: &KeyChord) -> bool {
     match chord.code {
         C::Char(c) if m.ctrl => {
             // ctrl+` arrives as NUL, which the app takes as ctrl+` outside a terminal (D185).
-            (m.shift && !(c == ' '))
+            // With alt it arrives as ESC NUL, which is ctrl+alt+space.
+            (m.alt && c == '`')
+                || (m.shift && !(c == ' '))
                 || !(c.is_ascii_lowercase() || matches!(c, ' ' | '\\' | ']' | '/' | '`'))
         }
         C::Enter => m.ctrl || m.shift,
@@ -166,12 +168,17 @@ pub fn exit(
 }
 
 /// How long to wait for input before looking at the wake flags again. A shown terminal panel
-/// is polled more often so a program's output (an echo of typed keys) appears within a frame;
+/// with a running program is polled more often so a program's output (an echo of typed keys) appears within a frame;
 /// still a timed wait, not a busy loop.
 const TERMINAL_POLL: Duration = Duration::from_millis(16);
 
-fn poll_interval(app: &App) -> Duration {
-    if app.terminal.visible && !app.terminal.tabs.is_empty() {
+pub(crate) fn poll_interval(app: &App) -> Duration {
+    let running = app
+        .terminal
+        .tabs
+        .iter()
+        .any(|t| t.status() == vr_term::TermStatus::Running);
+    if app.terminal.visible && running {
         TERMINAL_POLL
     } else {
         POLL
@@ -378,7 +385,7 @@ mod tests {
         assert!(!u("ctrl+s") && !u("ctrl+]") && !u("ctrl+/") && !u("f1") && !u("shift+tab"));
         assert!(!u("alt+up") && !u("ctrl+pagedown"));
         // ctrl+` arrives as NUL, which stands for it outside a focused terminal (D185).
-        assert!(!u("ctrl+`") && u("ctrl+shift+`"));
+        assert!(!u("ctrl+`") && u("ctrl+shift+`") && u("ctrl+alt+`") && !u("ctrl+alt+f"));
     }
 
     /// AC-14a: a legacy NUL (ctrl+space) maps to that chord; the app treats it as ctrl+`.

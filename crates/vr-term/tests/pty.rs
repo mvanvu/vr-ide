@@ -48,6 +48,8 @@ fn shell_sees_term_colorterm_cwd_and_extra_env() {
     );
     o.cwd = dir.path().to_path_buf();
     o.env
+        .push((OsString::from("COLORTERM"), OsString::from("truecolor")));
+    o.env
         .push((OsString::from("VR_X"), OsString::from("extra")));
     let (term, wake) = spawn_opts(o);
     let want = format!("xterm-256color|truecolor|{}|extra", real.display());

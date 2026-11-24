@@ -394,9 +394,18 @@ fn legacy_terminal_notice_lists_unreachable_default_keys() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = test_app(dir.path());
     app.report_startup(Vec::new(), false);
-    let all = notices(&app).join("\n");
-    assert!(all.contains("ctrl+shift+p (app.palette)"), "{all}");
-    assert!(all.contains("ctrl+[ (edit.outdent)"), "{all}");
+    let all = format!(
+        "{}\n{}",
+        notices(&app).join("\n"),
+        app.notices[0].detail.as_deref().unwrap_or("")
+    );
+    // Chords with a reachable key (f1, shift+tab, ctrl+alt+<key>) are not lost.
+    assert!(all.contains("ctrl+alt+enter"), "{all}");
+    assert!(
+        !all.contains("ctrl+shift+p") && !all.contains("ctrl+["),
+        "{all}"
+    );
+    assert!(!all.contains("(app.palette)"), "key names only: {all}");
     assert!(all.contains("f1"), "palette fallback: {all}");
     assert!(!all.contains("ctrl+s (file.save)"), "{all}");
     let (mut app, _) = test_app(dir.path());
@@ -541,4 +550,63 @@ fn recent_files_are_most_recent_first_unique_and_bounded() {
     // A path that cannot be opened is not remembered.
     assert!(app.open_path(&dir.path().join("missing.txt")).is_err());
     assert!(!app.recent.iter().any(|p| p.ends_with("missing.txt")));
+}
+
+/// D220 / D221: every chord a legacy terminal cannot send or an emulator keeps has a
+/// ctrl+alt alternative. The legacy byte form ESC + ctrl-letter is reported by crossterm as
+/// the very same event (letter + CONTROL + ALT), so one event covers both.
+#[test]
+fn ctrl_alt_alternatives_run_the_same_commands() {
+    use crate::event_loop::{chord_from_key, legacy_unreachable};
+    let dir = tempfile::tempdir().unwrap();
+    let (app, _) = test_app(dir.path());
+    let ca = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    let cases = [
+        ('f', "search.project", "ctrl+shift+f"),
+        ('h', "search.replace_project", "ctrl+shift+h"),
+        ('s', "file.save_as", "ctrl+shift+s"),
+        ('e', "explorer.focus", "ctrl+shift+e"),
+        ('k', "edit.delete_line", "ctrl+shift+k"),
+        ('`', "terminal.new", "ctrl+shift+`"),
+        ('1', "find.replace_one", "ctrl+shift+1"),
+    ];
+    for (c, cmd, original) in cases {
+        for enhanced in [true, false] {
+            let ev = KeyEvent::new(KeyCode::Char(c), ca);
+            let chord = chord_from_key(&ev, enhanced).unwrap();
+            assert_eq!(app.keymap.command_for(&chord), Some(cmd), "{chord}");
+        }
+        // The original chord stays, and the command now has two keys.
+        let keys = app.keymap.keys_for(cmd);
+        assert!(keys.iter().any(|k| k.to_string() == original), "{cmd}");
+        assert_eq!(keys.len(), 2, "{cmd}: {keys:?}");
+        // Letters are reachable on a legacy keyboard; ctrl+alt+1 and ctrl+alt+` are not (a
+        // legacy terminal sends ESC 1 and ESC NUL).
+        let reachable = c.is_ascii_lowercase();
+        let k = keys
+            .iter()
+            .find(|k| k.to_string() == format!("ctrl+alt+{c}"));
+        assert_eq!(!legacy_unreachable(k.unwrap()), reachable, "{c}");
+    }
+}
+
+/// The legacy notice lists only the chords that stay unreachable once their alternative exists.
+#[test]
+fn legacy_notice_lists_only_chords_without_a_reachable_alternative() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = test_app(dir.path());
+    app.report_startup(Vec::new(), false);
+    let detail = app.notices[0].detail.clone().unwrap();
+    for gone in [
+        "ctrl+shift+f",
+        "ctrl+shift+h",
+        "ctrl+shift+s",
+        "ctrl+shift+e",
+        "ctrl+shift+k",
+    ] {
+        assert!(!detail.contains(gone), "{gone} has ctrl+alt: {detail}");
+    }
+    for kept in ["ctrl+shift+1", "ctrl+shift+`", "ctrl+alt+enter"] {
+        assert!(detail.contains(kept), "{kept}: {detail}");
+    }
 }

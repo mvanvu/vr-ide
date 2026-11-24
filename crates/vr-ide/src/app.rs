@@ -73,6 +73,8 @@ pub struct Notice {
     pub expires: Option<Instant>,
     /// Removed as soon as another notice arrives (a startup hint must not hide later news).
     pub until_next: bool,
+    /// Shown after the dismiss hint and cut first (with an ellipsis) when the rows run out.
+    pub detail: Option<String>,
 }
 
 pub const INFO_NOTICE_TTL: Duration = Duration::from_secs(5);
@@ -292,12 +294,23 @@ impl App {
         self.keyboard_enhanced = keyboard_enhanced;
         let names = commands::command_names();
         if !keyboard_enhanced {
-            let lost: Vec<String> = self
-                .keymap
-                .bindings()
-                .filter(|(_, k, c)| legacy_unreachable(k) && names.contains(c))
-                .map(|(_, k, c)| format!("{k} ({c})"))
-                .collect();
+            // A command with a reachable alternative key (ctrl+alt+<key>) is not lost.
+            let mut lost: Vec<String> = Vec::new();
+            for (_, k, c) in self.keymap.bindings() {
+                let has_reachable = self
+                    .keymap
+                    .keys_for(c)
+                    .iter()
+                    .any(|k| !legacy_unreachable(k));
+                let name = k.to_string();
+                if legacy_unreachable(k)
+                    && names.contains(&c)
+                    && !has_reachable
+                    && !lost.contains(&name)
+                {
+                    lost.push(name);
+                }
+            }
             if !lost.is_empty() {
                 let palette: Vec<String> = self
                     .keymap
@@ -306,19 +319,17 @@ impl App {
                     .filter(|k| !legacy_unreachable(k))
                     .map(ToString::to_string)
                     .collect();
-                let palette = if palette.is_empty() {
-                    String::new()
+                let remedy = if palette.is_empty() {
+                    "run them from the command palette".to_string()
                 } else {
-                    format!("; use the command palette ({})", palette.join(" / "))
+                    format!("use the command palette ({})", palette.join(" / "))
                 };
                 self.push_notice(Notice {
                     level: NoticeLevel::Warning,
-                    text: format!(
-                        "this terminal does not report these keys: {}{palette}",
-                        lost.join(", ")
-                    ),
+                    text: format!("Keyboard: this terminal cannot send some keys; {remedy}."),
                     expires: Some(Instant::now() + KEYBOARD_NOTICE_TTL),
                     until_next: true,
+                    detail: Some(format!("Unavailable: {}", lost.join(", "))),
                 });
             }
         }
@@ -714,6 +725,7 @@ impl App {
             text,
             expires,
             until_next: true,
+            detail: None,
         });
     }
 
@@ -776,6 +788,7 @@ impl App {
             text: text.into(),
             expires,
             until_next: false,
+            detail: None,
         });
     }
 
@@ -800,8 +813,11 @@ impl App {
     /// Drops expired info notices and runs a find rescan whose typing pause is over.
     pub fn tick(&mut self, now: Instant) {
         commands::find::poll(self, now);
-        // The welcome screen is the only reader of the monitor: nothing is read behind a file.
-        if self.monitor.tick(now, self.docs.is_empty()) {
+        // The welcome screen is the only reader of the monitor: nothing is read behind a file or a panel that covers it.
+        // Before the first frame nothing is known: sample as usual.
+        let covered = self.layout.status.height > 0 && self.layout.editor.height == 0;
+        let welcome_drawn = self.docs.is_empty() && !covered;
+        if self.monitor.tick(now, welcome_drawn) {
             self.monitor.branch = crate::monitor::git_branch(&self.root);
             self.dirty = true;
         }

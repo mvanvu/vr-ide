@@ -15,21 +15,21 @@ vr-ide ships VS Code's default Linux keybindings. The list below comes from
 | `file.goto` | Go to File | `ctrl+p` |
 | `file.open` | Open File | `ctrl+o` |
 | `file.save` | Save | `ctrl+s` |
-| `file.save_as` | Save As | `ctrl+shift+s` |
+| `file.save_as` | Save As | `ctrl+shift+s`, `ctrl+alt+s` |
 | `file.close` | Close File | `ctrl+w`, `ctrl+f4` |
 | `explorer.new_file` | Explorer: New File | `ctrl+n` (creates the file on disk; there are no untitled buffers) |
 | `tab.next` | Next Tab | `ctrl+pagedown` |
 | `tab.prev` | Previous Tab | `ctrl+pageup` |
 | `explorer.toggle` | Explorer: Toggle | `ctrl+b` |
 | `explorer.toggle_focus` | Explorer: Toggle and Focus | `ctrl+e` (hidden: shows the explorer and focuses it; shown: hides it and the editor gets the keys) |
-| `explorer.focus` | Explorer: Focus | `ctrl+shift+e` |
-| `search.project` | Search in Project | `ctrl+shift+f` |
-| `search.replace_project` | Replace in Project | `ctrl+shift+h` |
+| `explorer.focus` | Explorer: Focus | `ctrl+shift+e`, `ctrl+alt+e` |
+| `search.project` | Search in Project | `ctrl+shift+f`, `ctrl+alt+f` |
+| `search.replace_project` | Replace in Project | `ctrl+shift+h`, `ctrl+alt+h` |
 | `search.next_result` | Search: Next Result | `f4` |
 | `search.prev_result` | Search: Previous Result | `shift+f4` |
 | `focus.cycle` | Focus Next Part | `f6` |
 | `terminal.toggle` | Terminal: Toggle Terminal | ``ctrl+` `` (hidden: shows the terminal panel and focuses it, starting a terminal if none runs; shown and focused: hides it; shown elsewhere: focuses it). Without the kitty protocol the terminal sends ``ctrl+` `` as NUL, the same byte as `ctrl+space`; that byte toggles too, inside a focused terminal as well unless `terminal_pass_nul = true` (see `[terminal]`) |
-| `terminal.new` | Terminal: New Terminal | ``ctrl+shift+` `` (needs the kitty protocol; the palette otherwise) |
+| `terminal.new` | Terminal: New Terminal | ``ctrl+shift+` ``, ``ctrl+alt+` `` (needs the kitty protocol; the palette otherwise) |
 
 ### `[editor]`
 
@@ -50,7 +50,7 @@ files in either mode.
 | `edit.cut` | Cut | `ctrl+x` |
 | `edit.paste` | Paste | `ctrl+v` |
 | `edit.select_all` | Select All | `ctrl+a` |
-| `edit.delete_line` | Delete Line | `ctrl+shift+k` |
+| `edit.delete_line` | Delete Line | `ctrl+shift+k`, `ctrl+alt+k` |
 | `edit.duplicate_line` | Duplicate Line | `shift+alt+down`, `shift+alt+up` |
 | `edit.move_line_up` | Move Line Up | `alt+up` |
 | `edit.move_line_down` | Move Line Down | `alt+down` |
@@ -64,7 +64,7 @@ files in either mode.
 | `find.replace_open` | Replace | `ctrl+h` |
 | `find.next` | Find Next | `f3` |
 | `find.prev` | Find Previous | `shift+f3` |
-| `find.replace_one` | Replace One | `ctrl+shift+1` |
+| `find.replace_one` | Replace One | `ctrl+shift+1`, `ctrl+alt+1` |
 | `find.replace_all` | Replace All | `ctrl+alt+enter` |
 
 ### `[explorer]`
@@ -87,7 +87,7 @@ No keymap entries; the palette's keys are built in (see below).
 |---|---|---|
 | `focus.editor` | Focus Editor | `alt+q` |
 | `terminal.toggle` | Terminal: Toggle Terminal | ``ctrl+` `` (hides the panel) |
-| `terminal.new` | Terminal: New Terminal | ``ctrl+shift+` `` |
+| `terminal.new` | Terminal: New Terminal | ``ctrl+shift+` ``, ``ctrl+alt+` `` |
 
 A focused terminal receives every key except the ones in `[terminal]` (D8): global keys such as
 `ctrl+s`, `ctrl+w` or `ctrl+p` go to the program. `alt+q` gives the keys back to the editor and is
@@ -178,6 +178,6 @@ Key spelling:
 
 An unknown command name is reported in a startup notice; the rest of the file still applies.
 A terminal without the kitty keyboard protocol cannot send some chords (for example `ctrl+shift+p`);
-vr-ide lists those in a startup notice, and `F1` opens the palette there. In such a terminal
+vr-ide lists those in a startup notice, and `F1` opens the palette there. Most have a `ctrl+alt+<same key>` alternative that such terminals and GNOME Terminal pass on (D220, D221); only `ctrl+alt+1` and ``ctrl+alt+` `` still need the kitty protocol. In such a terminal
 `ctrl+shift+e` arrives as `ctrl+e` and toggles the explorer (a shown explorer hides); use `ctrl+e`
 or `f6` to reach the tree.

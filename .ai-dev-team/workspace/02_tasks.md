@@ -38,7 +38,7 @@
 | M5-1 | vr-term crate: PTY spawn, reader thread, alacritty_terminal emulator, resize, kill, status, notify, snapshot, key/paste/mouse encoding | be | - | - | AC-14b, AC-14c, AC-14d | Cargo.toml, Cargo.lock, crates/vr-term/** | `cargo test -p vr-term` (worktree .worktrees/M5-1) | done | 2 (+qp1) |
 | M5-2 | Terminal panel in vr-ide: layout, render, tabs, focus/D8, ctrl+` (+legacy NUL), scrollback, copy/paste, exited state, quit guard, theme ANSI | fe | M5-1 (relaxed: API frozen; M5-1 fix round changes internals only — reader poll, reply cap, env) | ui | AC-14, AC-14a, AC-14b, AC-14d, AC-1 | crates/vr-ide/**, crates/vr-config defaults, docs | `cargo test -p vr-ide` | done | 1 |
 | M5-3 | Docs, previews, bench, AC-14 walk (htop/lazygit/vim) | fe | M5-2 | ui | AC-14, AC-1 | README.md, docs/, scripts | qc walk | done | 1 |
-| FR-12 | Phase 5 (M5 range): legacy-safe welcome hints, legacy notice remedy first, alt+q hint in narrow panel, compact welcome root, truecolor downsample + COLORTERM, 0-row editor guard, search panel vs terminal keys, idle poll | fe | sign-off after M5 | ui | AC-1, AC-14a | crates/vr-ide (welcome, status_bar, terminal_view, terminal commands, layout, event_loop), crates/vr-term (COLORTERM env only) | `cargo test -p vr-ide -p vr-term` | in progress | 0 |
+| FR-12 | Phase 5 (M5 range): legacy-safe welcome hints, legacy notice remedy first, alt+q hint in narrow panel, compact welcome root, truecolor downsample + COLORTERM, 0-row editor guard, search panel vs terminal keys, idle poll | fe | sign-off after M5 | ui | AC-1, AC-14a | crates/vr-ide (welcome, status_bar, terminal_view, terminal commands, layout, event_loop), crates/vr-term (COLORTERM env only) | `cargo test -p vr-ide -p vr-term` | done | 0 |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
@@ -274,3 +274,7 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - Phase 5 (M5 range) ui (05:14): 2 major with screenshots (welcome recommends ctrl+shift+f unreachable on legacy; legacy-key notice cut at 3 rows hides remedy/dismiss, lowercase) + 2 minors (no alt+q hint in a narrow focused panel; compact welcome repeats the root). Majors are observed on the build (screenshots in qa-artifacts/phase5-m5) → treated as confirmed. FR-12 after sign-off + truecolor verifier.
 - Phase 5 (M5 range) done (05:14): 2 confirmed major (ui) + 6 minor → 06_final_review_r4.json; truecolor re-graded minor. FR-12 after sign-off reports.
 - Sign-off after M5 (05:18): SIGNOFF_PASS at 8cffd8c — 718 pass / 0 fail / 13 ignored; release ignored 13/13; guard clean; walk 18/19 (miss = wrong expectation at 40x12); bench 18 ms / 6 MB; binary 19.3 MiB. Pushed. FR-12 started (sonnet).
+- user (05:21): ctrl+shift+f opens the outer terminal's Find → D220 ctrl+alt+f added to FR-12.
+- USER-4 added; D221 fallback ctrl+alt keys → FR-12 (05:26).
+- FR-12 DONE (05:29): 2 majors + 6 minors + D220/D221 ctrl+alt fallbacks; vr-ide 356/0; D222–D224. Review sonnet (code + design QA in a legacy pty).
+- FR-12 review APPROVE (05:32); minor accepted (40x12 legacy welcome shows only ctrl+p and f1 — f1 reaches everything). Committed, pushed, reinstalled. All rows done.

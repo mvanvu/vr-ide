@@ -96,13 +96,19 @@ pub fn compute(area: Rect, notice_rows: u16, side: Side, find_rows: u16) -> AppL
 /// Fewest rows the terminal panel gets (tab bar included) when the screen has them.
 pub const TERMINAL_MIN_ROWS: u16 = 5;
 
+/// Editor rows kept above a tall panel when the screen has room for both.
+pub const EDITOR_MIN_ROWS: u16 = 3;
+
 /// Takes the terminal panel from the bottom of the editor: `percent` of the screen height, at
-/// least [`TERMINAL_MIN_ROWS`], at most the whole editor (a tiny screen shows only the panel).
+/// least [`TERMINAL_MIN_ROWS`], at most the editor minus [`EDITOR_MIN_ROWS`] (a tiny screen shows only the panel).
 /// The panel sits beside the side column, like VS Code's panel under its editor groups.
 pub fn place_terminal(layout: &mut AppLayout, screen_height: u16, percent: u16) {
     let ed = layout.editor;
     let want = (u32::from(screen_height) * u32::from(percent) + 50) / 100;
-    let rows = (want as u16).max(TERMINAL_MIN_ROWS).min(ed.height);
+    let mut rows = (want as u16).max(TERMINAL_MIN_ROWS).min(ed.height);
+    if ed.height >= TERMINAL_MIN_ROWS + EDITOR_MIN_ROWS {
+        rows = rows.min(ed.height - EDITOR_MIN_ROWS);
+    }
     layout.terminal = Rect::new(ed.x, ed.y + ed.height - rows, ed.width, rows);
     layout.editor.height -= rows;
 }
