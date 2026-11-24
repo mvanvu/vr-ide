@@ -1085,3 +1085,60 @@ None.
 | No shell at start, none left after quit | pass | /proc |
 | BASE-14/15/17 | pass | background task, only own PIDs, fixtures in /tmp |
 | Defects | none | |
+
+## QC W-1
+Engine: release build (fresh, `cargo build --release -p vr-ide` Finished) driven in a pty (python harness `qa-artifacts/W-1/qc/flow.py` + `flows.py`/`flows3.py`, legacy keyboard, TERM=xterm-256color, SHELL=/bin/sh ENV=/dev/null, private VR_IDE_STATE_DIR / VR_IDE_CONFIG_DIR under qa-artifacts/W-1/qc/). One run per flow script, results:
+- PASS AC-W1 go to file (ctrl+p) lists alpha.txt/deep.txt of a and beta.txt of b, each with its root name in the path column (`alpha.txt  a`, `deep.txt  a/sub`)
+- PASS AC-W1 status bar `READ b/beta.txt`, `READ a/alpha.txt`
+- PASS AC-W2 Search in Project: results in root order (a then b), a/skip.txt ignored by a/.gitignore, b/skip.txt found
+- PASS AC-W2 Replace in Project: preview lists both roots, disk untouched until confirm; after confirm bytes on disk: a/alpha.txt "PIN one", a/skip.txt unchanged, b/beta.txt "PIN two", b/skip.txt "PIN b-not-ignored"
+- PASS AC-W2 race (writer renaming a new beta.txt every 1 ms during confirm, 1232 writes): final file holds the writer's last version (WRITER1232); stale-preview check (file edited between preview and confirm): CONCURRENT-EDIT kept, the other root's file still replaced
+- PASS AC-W4 `vr-ide x.vr-workspace` (`roots = ["a","b"]`) opens both roots; recent.toml after quit holds `[[workspace]] roots=[abs a, abs b]` (the workspace file is listed through its roots here, because the file entry is saved by Save As / Open; startup records the root set); corrupt (invalid UTF-8) recent.toml: warning "recent.toml: cannot read: stream did not contain valid UTF-8", app starts, file rewritten fresh
+- PASS edge `a a/sub`: notice "a/sub is inside the workspace folder a; nested folders are not added", one root; `a a`: one root, no notice, no root column in go to file
+- PASS AC-W6 New Terminal with b/beta.txt active: `pwd` = .../fx/b; with a/alpha.txt active: .../fx/a
+- PASS AC-1 bench-startup x3: first_frame_ms=23, 22, 23 (< 100)
+- PASS `cargo test -p vr-ide --lib workspace_tests::` 10 passed; `cargo test -p vr-config` 8 + 18 + 8 passed
+- ~/.local/state/vr-ide untouched (checked listing).
+
+Observations (not defects): search results show the root name as a trailing label (`alpha.txt a`) in root order rather than separate group headers; welcome screen shows the first root only (W-2 scope); a hand-written `.vr-workspace` needs `roots = [...]` (my first guess `[[folders]]` was refused with a clear error naming the file).
+
+## Rule check W-1
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-14 | pass | all runs foreground, no polling loops |
+| BASE-15 | pass | only own pty children killed by PID |
+| BASE-17 | pass | no data committed to shared DB; fixtures re-created per flow |
+| BASE-19 | pass | results written at the end of one run per flow script (short) |
+| COST-13 | pass | throwaway files only under qa-artifacts/W-1/qc/ |
+| LEDGER writer-race | pass | one racing check on the replace write path plus a stale-preview check |
+
+## T18
+Engine: cargo (heavy wrapper `skills/project-profiling/references/run-heavy.sh`, PATH needs `~/.cargo/bin`), release build driven in a pty (python harness, legacy bytes, TERM xterm-256color, SHELL=/bin/sh, private VR_IDE_CONFIG_DIR / VR_IDE_STATE_DIR). Artifacts: `qa-artifacts/T18/qc/` (test.log, clippy.log, fmt.log, walk*.py, walk*_*.txt screens, docs_check.py/.out).
+
+1. Suites: `cargo test --workspace` exit 0, 737 passed / 0 failed; `cargo clippy --workspace --all-targets -- -D warnings` exit 0; `cargo fmt --check` exit 0.
+2. AC-5/AC-6 runtime (legacy bytes -> observed effect, screens `walk_*.txt`, `walk2_*.txt`):
+- F1 (ESC O P) -> Command Palette with keys column (ctrl+w, ctrl+d, ...); Esc closes
+- ctrl+t (0x14) -> SEARCH panel; ctrl+r (0x12) -> REPLACE panel
+- ctrl+p + a.txt + Enter -> `READ a.txt`; tab (0x09, ctrl+i on legacy) -> `EDIT`; Esc -> `READ`; tab again -> `EDIT`
+- ctrl+d (0x04): "alpha one" line removed; ctrl+l (0x0c): `beta` duplicated; ctrl+/ (0x1f): `// beta`
+- ctrl+g (0x07) -> "Go to Line" dialog
+- ctrl+u (0x15) -> Replace field; F7 (ESC[18~) replaced one (`ZZ one`); shift+F7 (ESC[18;2~) -> "Replaced 1 occurrence" (the rest); in read mode F7/shift+F7 do nothing (documented: edit mode only)
+- F9 / shift+F9 (ESC[20~ / ESC[20;2~) -> b.txt / a.txt tabs switch
+- ctrl+e toggles explorer shown/hidden; ctrl+b focuses explorer
+- NUL (ctrl+`) -> `TERM sh 1/1` panel focused; NUL again -> editor `READ`; ctrl+F12 (ESC[24;5~) -> `2/2`; F8 (ESC[19~) -> `1/2`; ctrl+F4 (ESC[1;5S) -> terminal closed (panel shows `1 sh`)
+- F12 (ESC[24~) -> "Save As" dialog; F5 (ESC[15~) on a dirty buffer -> reload notice, no crash
+- Note (by D8, not a defect): terminal keys ctrl+F12/F8/ctrl+F4 act from the editor; in a focused terminal they go to the shell.
+3. User keymap `"ctrl+k ctrl+s" = "file.save"`: vr-ide starts, notice shown: `.../keymap.toml: key "ctrl+k ctrl+s" is not a valid key chord: unknown modifier "k ctrl"` (InvalidKey; unit test `a_key_sequence_is_an_invalid_key` also passes). Note: the message text says "unknown modifier" rather than "key sequences are not supported"; cosmetic.
+4. Docs: `docs_check.py` compares 61 bindings of keymap.toml with docs/keymap.md and README.md: every binding matches; the 4 reports are false positives (README writes `esc`; docs list keyless palette commands file.save_overwrite, explorer.toggle, explorer.move on purpose). No leader/alt/ctrl+shift default key in docs; the only ctrl+shift mention is the built-in terminal paste `ctrl+shift+v` (pre-existing, terminal-internal, not a vr-ide binding in keymap.toml).
+
+Verdict: PASS. Defects: none (S4 cosmetic: InvalidKey wording for sequences, crates/vr-config/src/keymap.rs:234).
+
+## Rule check T18
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-5 (one key per command, legacy-reachable) | pass | 25 keys driven with legacy bytes, effects observed; docs_check 61 bindings |
+| AC-6 (sequence = InvalidKey, no leader/chord) | pass | startup notice with sequence keymap; no leader in docs/keymap |
+| Full suite / clippy / fmt | pass | 737 passed, clippy -D warnings 0, fmt 0 |
+| BASE-14/15 | pass | foreground runs, only own pty children killed |
+| BASE-17 | pass | fixtures in /tmp, private config/state dirs, ~/.config not touched |
+| BASE-19 | pass | results written to this report after the walks |
