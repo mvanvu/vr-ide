@@ -37,9 +37,11 @@ pub struct WriterVersion {
     /// that an operation's bytes replaced the previous version even when this one wins later.
     pub saw_before: Option<Vec<u8>>,
     /// Exactly what this write replaced: the bytes of the file it overwrote (read through the
-    /// handle for an in-place write, taken out by an exchange for a rename write). None when
-    /// the writer could not tell. A later version whose `replaced` equals this one's bytes
-    /// proves the writer itself overwrote it.
+    /// handle for an in-place write, taken out by an exchange for a rename write); empty when
+    /// the path held no file. None when the writer could not tell: a rename write where
+    /// RENAME_EXCHANGE is unsupported or refused (non-Linux, some FUSE and network
+    /// filesystems). A later version whose `replaced` equals this one's bytes proves the
+    /// writer itself overwrote it.
     pub replaced: Option<Vec<u8>>,
 }
 
@@ -139,6 +141,25 @@ fn write_once(
     bytes: &[u8],
     between: impl FnOnce(),
 ) -> io::Result<Landed> {
+    write_once_with(
+        path,
+        mode,
+        seq,
+        bytes,
+        between,
+        crate::safe_replace::exchange_files,
+    )
+}
+
+/// `write_once` with the exchange as a seam (tests of the writer's error handling).
+fn write_once_with(
+    path: &Path,
+    mode: WriterMode,
+    seq: usize,
+    bytes: &[u8],
+    between: impl FnOnce(),
+    exchange: fn(&Path, &Path) -> io::Result<()>,
+) -> io::Result<Landed> {
     let saw_before = fs::read(path).ok();
     match mode {
         WriterMode::InPlace => {
@@ -169,17 +190,32 @@ fn write_once(
             let tmp: PathBuf = path.with_file_name(format!(".{name}.racing-{seq}"));
             fs::write(&tmp, bytes)?;
             between();
-            // Exchange, then read what came out: exactly the file this write replaced. Without
-            // exchange support, or when the path is gone, a plain rename creates the path.
-            let replaced = match crate::safe_replace::exchange_files(&tmp, path) {
+            // Exchange, then read what came out: exactly the file this write replaced. When the
+            // path is gone a plain rename creates it and nothing was replaced. Without exchange
+            // support a plain rename replaces a file it cannot read any more: unknown. Any other
+            // failure ends the writer (the test fails) rather than leave `replaced` unknown.
+            let replaced = match exchange(&tmp, path) {
                 Ok(()) => {
-                    let old = fs::read(&tmp).ok();
+                    let old = fs::read(&tmp)?;
                     fs::remove_file(&tmp)?;
-                    old
+                    Some(old)
                 }
-                Err(_) => {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    fs::rename(&tmp, path)?;
+                    Some(Vec::new())
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::Unsupported | io::ErrorKind::InvalidInput
+                    ) =>
+                {
                     fs::rename(&tmp, path)?;
                     None
+                }
+                Err(e) => {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(e);
                 }
             };
             Ok(Landed {
@@ -300,8 +336,13 @@ fn no_lost_write(
 /// A refused run that had `ours` at the path for a moment: the writer's sight of `ours` no
 /// longer shows a loss by itself, so each version is traced instead. A version is accounted
 /// for only when it is the final content, in a conflict copy, or exactly what a later write
-/// replaced (`replaced`): the writer overwriting it itself is proven, never inferred.
-/// Writers that could not read what they replaced (`replaced: None`) prove nothing.
+/// replaced (`replaced`): the writer overwriting it itself is proven, never inferred. Only a
+/// later write that landed at the path (`visible`) proves anything. A version followed by a
+/// visible write that could not tell what it replaced (`replaced: None`, a filesystem without
+/// RENAME_EXCHANGE) cannot be traced and is not checked: on such a filesystem this part of
+/// the rule is weaker (reported on stderr); the final-content rules still apply. Strict
+/// racing tests call `assert_exchange_proofs_known`, which fails a run with unknown
+/// `replaced` where RENAME_EXCHANGE works.
 fn assert_versions_accounted_for(
     final_bytes: &[u8],
     ours: &[u8],
@@ -313,12 +354,33 @@ fn assert_versions_accounted_for(
         if !v.visible && !saw_ours(v) {
             continue;
         }
-        let later = &versions[i + 1..];
-        let survives = v.bytes == final_bytes
-            || kept.contains(&v.bytes)
-            || later
-                .iter()
-                .any(|w| w.replaced.as_deref() == Some(&v.bytes[..]));
+        // Only a write into a file that is readable proves what it replaced: one that went
+        // into a file deleted from the path read that file, not the path's version. A write
+        // the writer saw off the path still counts when its file came back: its bytes are the
+        // final content, in a conflict copy, or what a later write read at the path (version
+        // bytes are unique, so they name that file).
+        let readable = |w: &&WriterVersion| {
+            w.visible
+                || w.bytes == final_bytes
+                || kept.contains(&w.bytes)
+                || versions
+                    .iter()
+                    .any(|x| x.replaced.as_deref() == Some(&w.bytes[..]))
+        };
+        let mut later = versions[i + 1..].iter().filter(readable);
+        let proven = |w: &&WriterVersion| w.replaced.as_deref() == Some(&v.bytes[..]);
+        let untraceable = |w: &&WriterVersion| w.replaced.is_none();
+        let survives =
+            v.bytes == final_bytes || kept.contains(&v.bytes) || later.clone().any(|w| proven(&w));
+        if !survives && later.any(|w| untraceable(&w)) {
+            eprintln!(
+                "WARNING: writer version {} of {} not checked: a later write could not tell \
+                 what it replaced (no RENAME_EXCHANGE)",
+                i + 1,
+                versions.len()
+            );
+            continue;
+        }
         assert!(
             survives,
             "lost write: writer version {} of {} is in no file after a run that reported an \
@@ -327,6 +389,41 @@ fn assert_versions_accounted_for(
             versions.len()
         );
     }
+}
+
+/// Whether RENAME_EXCHANGE works in `dir` (probed with two scratch files that are removed).
+pub fn exchange_supported(dir: &Path) -> bool {
+    let a = dir.join(format!(".racing-probe-a-{}", std::process::id()));
+    let b = dir.join(format!(".racing-probe-b-{}", std::process::id()));
+    let ok = fs::write(&a, b"a").is_ok()
+        && fs::write(&b, b"b").is_ok()
+        && crate::safe_replace::exchange_files(&a, &b).is_ok();
+    let _ = fs::remove_file(&a);
+    let _ = fs::remove_file(&b);
+    ok
+}
+
+/// Call after `RacingWriter::stop` in a strict racing test, with the directory of the raced
+/// file. A version that could not tell what it replaced (`replaced: None`) leaves the
+/// versions before it untraceable, which weakens `assert_no_lost_write_swapping`. Where
+/// RENAME_EXCHANGE works that must never happen, so it fails the test; where it does not
+/// work the weaker run is reported on stderr, never passed silently.
+pub fn assert_exchange_proofs_known(dir: &Path, versions: &[WriterVersion]) {
+    let unknown = versions.iter().filter(|v| v.replaced.is_none()).count();
+    if unknown == 0 {
+        return;
+    }
+    assert!(
+        !exchange_supported(dir),
+        "oracle weakened: {unknown} writer version(s) could not tell what they replaced \
+         although RENAME_EXCHANGE works in {}",
+        dir.display()
+    );
+    eprintln!(
+        "WARNING: strict racing oracle weakened: RENAME_EXCHANGE is unsupported in {}; \
+         {unknown} writer version(s) cannot be traced",
+        dir.display()
+    );
 }
 
 /// The first two bullets of `assert_no_lost_write` only: for a write path with a documented
@@ -590,6 +687,100 @@ mod tests {
     }
 
     #[test]
+    fn rename_writer_fails_on_an_unexpected_exchange_error() {
+        // Only a filesystem without RENAME_EXCHANGE may leave `replaced` unknown; any other
+        // failure would weaken the oracle without a word, so the writer stops instead.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f.txt");
+        fs::write(&p, "init").unwrap();
+        let denied = |_: &Path, _: &Path| Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        let r = write_once_with(
+            &p,
+            WriterMode::TempRename,
+            1,
+            &version_bytes(1),
+            || {},
+            denied,
+        );
+        assert!(r.is_err(), "unknown `replaced` accepted silently");
+        let unsupported = |_: &Path, _: &Path| Err(io::Error::from(io::ErrorKind::Unsupported));
+        let landed = write_once_with(
+            &p,
+            WriterMode::TempRename,
+            2,
+            &version_bytes(2),
+            || {},
+            unsupported,
+        )
+        .unwrap();
+        assert_eq!(landed.replaced, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "oracle weakened")]
+    fn unknown_replaced_where_exchange_works_fails_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            exchange_supported(dir.path()),
+            "tmpfs/ext4 support exchange"
+        );
+        assert_exchange_proofs_known(dir.path(), &[v(1)]);
+    }
+
+    #[test]
+    fn rename_writer_onto_a_missing_path_knows_it_replaced_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("gone.txt");
+        let landed = write_once(&p, WriterMode::TempRename, 1, &version_bytes(1), || {}).unwrap();
+        assert_eq!(landed.replaced, Some(Vec::new()));
+        assert_eq!(fs::read(&p).unwrap(), version_bytes(1));
+    }
+
+    #[test]
+    fn swapping_rule_does_not_count_unknown_replaced_as_a_loss() {
+        // Without RENAME_EXCHANGE the rename writer cannot read what it replaced; v2 may well
+        // have replaced v1, so the refused run is not reported as losing it.
+        let (v1, v2) = (v(1), v(2));
+        let last = v2.bytes.clone();
+        assert_no_lost_write_swapping(b"init", &last, b"ours", &[v1, v2], run(false), &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lost write")]
+    fn swapping_rule_ignores_proof_from_a_write_into_a_dead_file() {
+        // v1 landed and the refused run deleted it. v2 had opened v1's file before that and
+        // wrote into it after it left the path: it read v1 through its handle, but nobody can
+        // read v2 at the path, so it does not show that the writer itself overwrote v1.
+        let (v1, mut v2) = (v(1), v(2));
+        v2.visible = false;
+        v2.replaced = Some(v1.bytes.clone());
+        assert_no_lost_write_swapping(b"init", b"init", b"ours", &[v1, v2], run(false), &[]);
+    }
+
+    #[test]
+    fn swapping_rule_accepts_proof_from_a_write_whose_file_came_back() {
+        // v2 opened v1's file, the refused run swapped ours in, v2 wrote into v1's file while
+        // it was out of the path (so the writer saw it as not visible), and the swap-back put
+        // that file at the path again: v2 is the final content, so the writer itself
+        // overwrote v1. The same holds when that file ended in the conflict copy.
+        let (v1, mut v2) = (v(1), v(2));
+        v2.visible = false;
+        v2.replaced = Some(v1.bytes.clone());
+        let last = v2.bytes.clone();
+        let versions = [v1, v2];
+        assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[]);
+        let kept = [last];
+        assert_no_lost_write_swapping(b"init", b"init", b"ours", &versions, run(false), &kept);
+        // The file came back and v3 then replaced v2 at the path (trace of a real run).
+        let (v1, mut v2, mut v3) = (v(1), v(2), v(3));
+        v2.visible = false;
+        v2.replaced = Some(v1.bytes.clone());
+        v3.replaced = Some(v2.bytes.clone());
+        let last = v3.bytes.clone();
+        assert_no_lost_write_swapping(b"init", &last, b"ours", &[v1, v2, v3], run(false), &[]);
+    }
+
+    #[test]
     #[should_panic(expected = "newest writer version")]
     fn flags_vanished_version_on_move() {
         assert_versions_survive(b"init", &[b"init".to_vec()], &[v(1)]);
@@ -625,7 +816,17 @@ mod tests {
                 assert_whole_content(initial, last, ours, versions, run)
             }
         };
-        race_document_save_with(rule, Duration::from_millis(3), 4, STEP, 20);
+        let counts = race_document_save_with(rule, Duration::from_millis(3), 4, STEP, 20);
+        assert_both_outcomes(Target::Own, counts);
+    }
+
+    /// A 3 ms writer must meet both a successful and a refused run, so the strict rules for
+    /// both paths are exercised (a fast writer may legitimately refuse every run).
+    fn assert_both_outcomes(target: Target, (ok, refused): (usize, usize)) {
+        assert!(
+            ok > 0 && refused > 0,
+            "{target:?}: the race did not exercise both paths (ok={ok} refused={refused})"
+        );
     }
 
     fn race_document_save_with(
@@ -634,22 +835,110 @@ mod tests {
         versions: usize,
         step: Duration,
         sweep: usize,
-    ) {
-        use crate::Document;
-        let (mut ok_count, mut err_count, mut kept_count) = (0, 0, 0);
-        for mode in [WriterMode::InPlace, WriterMode::TempRename] {
+    ) -> (usize, usize) {
+        race_with(Target::Own, rule, interval, versions, step, sweep)
+    }
+
+    /// The file the operation writes and the writer races.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Target {
+        /// `save` of the document's own file.
+        Own,
+        /// `save_as_seen` to another existing file, seen before the writer starts.
+        Other,
+        /// `save_as_seen` to a name seen absent; only a rename writer can create it.
+        Absent,
+        /// Plain `save_as` to another existing file, no prompt: it may replace the version
+        /// on disk when it takes the target's version, never one written after that.
+        Unprompted,
+    }
+
+    fn race_with(
+        target: Target,
+        rule: Rule,
+        interval: Duration,
+        versions: usize,
+        step: Duration,
+        sweep: usize,
+    ) -> (usize, usize) {
+        use crate::{DiskVersion, Document};
+        let (mut ok_count, mut err_count, mut kept_count, mut partial_takes) = (0, 0, 0, 0);
+        let modes: &[WriterMode] = match target {
+            Target::Absent => &[WriterMode::TempRename],
+            _ => &[WriterMode::InPlace, WriterMode::TempRename],
+        };
+        for &mode in modes {
             for offset in sweep_offsets(sweep, step) {
                 let dir = tempfile::tempdir().unwrap();
-                let p = dir.path().join("doc.txt");
-                let initial = b"initial\n".to_vec();
-                fs::write(&p, &initial).unwrap();
-                let mut doc = Document::open(&p, u64::MAX).unwrap();
+                let own = dir.path().join("doc.txt");
+                fs::write(&own, b"initial\n").unwrap();
+                let mut doc = Document::open(&own, u64::MAX).unwrap();
                 doc.buffer.insert_text("X");
                 let ours = b"Xinitial\n".to_vec();
+                let (p, initial) = match target {
+                    Target::Own => (own.clone(), b"initial\n".to_vec()),
+                    Target::Other | Target::Unprompted => {
+                        let p = dir.path().join("other.txt");
+                        fs::write(&p, b"other\n").unwrap();
+                        (p, b"other\n".to_vec())
+                    }
+                    // Never matches: the file only exists once someone wrote it.
+                    Target::Absent => (dir.path().join("new.txt"), Vec::new()),
+                };
+                let seen = DiskVersion::of_path(&p).unwrap();
+                let taken = std::rc::Rc::new(std::cell::Cell::new(None));
+                if target == Target::Unprompted {
+                    let at = taken.clone();
+                    crate::document::hook::set(
+                        crate::document::hook::Stage::SaveAsVersionTaken,
+                        move || at.set(Some(Instant::now())),
+                    );
+                }
                 let writer = RacingWriter::start_after(offset, &p, mode, interval, versions);
-                let (result, run) = timed(|| doc.save(), |r| r.is_ok());
-                let versions = writer.stop();
+                let (result, run) = timed(
+                    || match target {
+                        Target::Own => doc.save(),
+                        Target::Unprompted => doc.save_as(&p),
+                        _ => doc.save_as_seen(&p, &seen),
+                    },
+                    |r| r.is_ok(),
+                );
+                let mut versions = writer.stop();
+                assert_exchange_proofs_known(dir.path(), &versions);
+                let all_versions = versions.clone();
                 let final_bytes = fs::read(&p).unwrap();
+                let mut initial = initial;
+                if target == Target::Unprompted {
+                    // `save_as` may replace the version it took and, with it, the writer's
+                    // earlier ones; every version after it must survive (strict rule below).
+                    let took = crate::document::hook::take_version_taken()
+                        .expect("save_as took no version");
+                    let excused = match versions.iter().position(|v| took.holds(&v.bytes)) {
+                        Some(i) => i + 1,
+                        None if took.holds(&initial) => 0,
+                        // Taken while an in-place write had truncated the file: the version in
+                        // flight and the earlier ones are excused (the stated window).
+                        None => {
+                            let taken = taken.get().expect("save_as took no version");
+                            partial_takes += 1;
+                            versions.iter().take_while(|v| v.begun < taken).count()
+                        }
+                    };
+                    let after = versions.split_off(excused);
+                    if let Some(v) = versions.iter().find(|v| v.bytes == final_bytes) {
+                        initial = v.bytes.clone();
+                    }
+                    versions = after;
+                }
+                if target != Target::Own {
+                    let expected = if run.ok { &p } else { &own };
+                    assert_eq!(
+                        doc.path.as_ref(),
+                        Some(expected),
+                        "document path after Save As"
+                    );
+                    assert_eq!(fs::read(&own).unwrap(), b"initial\n", "own file untouched");
+                }
                 // Nothing is left behind except a conflict copy the error names, and that
                 // copy holds a whole writer version (or our bytes when in doubt), never less.
                 let kept = match &result {
@@ -662,13 +951,13 @@ mod tests {
                 let mut kept_bytes = Vec::new();
                 for entry in fs::read_dir(dir.path()).unwrap() {
                     let entry = entry.unwrap().path();
-                    if entry == p {
+                    if entry == p || entry == own {
                         continue;
                     }
                     assert_eq!(Some(&entry), kept.as_ref(), "unreported file left behind");
                     let bytes = fs::read(&entry).unwrap();
                     assert!(
-                        bytes == ours || versions.iter().any(|v| v.bytes == bytes),
+                        bytes == ours || all_versions.iter().any(|v| v.bytes == bytes),
                         "conflict copy holds torn content ({} bytes)",
                         bytes.len()
                     );
@@ -683,7 +972,10 @@ mod tests {
                 }
             }
         }
-        eprintln!("save: ok={ok_count} refused={err_count} kept={kept_count}");
+        eprintln!(
+            "{target:?}: ok={ok_count} refused={err_count} kept={kept_count} partial_takes={partial_takes}"
+        );
+        (ok_count, err_count)
     }
 
     #[test]
@@ -704,6 +996,59 @@ mod tests {
     #[test]
     fn document_save_never_loses_a_write_from_a_fast_writer() {
         race_document_save_with(
+            assert_no_lost_write_swapping,
+            Duration::ZERO,
+            300,
+            STEP / 4,
+            40,
+        );
+    }
+
+    // Save As onto a file the user was shown (the Replace prompt) while a writer keeps
+    // rewriting it: only that version is ever replaced, under the strict rule.
+    #[test]
+    fn save_as_seen_never_loses_a_concurrent_write() {
+        for target in [Target::Other, Target::Absent] {
+            let counts = race_with(
+                target,
+                assert_no_lost_write_swapping,
+                Duration::from_millis(3),
+                4,
+                STEP,
+                20,
+            );
+            assert_both_outcomes(target, counts);
+        }
+    }
+
+    #[test]
+    fn save_as_seen_never_loses_a_write_from_a_fast_writer() {
+        for target in [Target::Other, Target::Absent] {
+            race_with(
+                target,
+                assert_no_lost_write_swapping,
+                Duration::ZERO,
+                300,
+                STEP / 4,
+                40,
+            );
+        }
+    }
+
+    // `file.save_as` with a path argument calls plain `save_as` without any prompt (D89).
+    #[test]
+    fn unprompted_save_as_never_loses_a_concurrent_write() {
+        let counts = race_with(
+            Target::Unprompted,
+            assert_no_lost_write_swapping,
+            Duration::from_millis(3),
+            4,
+            STEP,
+            20,
+        );
+        assert_both_outcomes(Target::Unprompted, counts);
+        race_with(
+            Target::Unprompted,
             assert_no_lost_write_swapping,
             Duration::ZERO,
             300,
