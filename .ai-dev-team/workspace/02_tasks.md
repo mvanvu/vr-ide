@@ -246,3 +246,4 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - T16 review (03:33): CHANGES — major: mouse guard and deny list untested; minors: palette bypasses the deny list, deny list misses editor.* and save_overwrite. Round 1 + D190 ctrl+alt+w to the same developer.
 - T16 r1 DONE (03:35): allow-list in run_command (palette/keys/dialogs), ctrl+alt+w (D190), tests; vr-ide 292/0; D191. Re-check → reviewer.
 - T16 r1 re-check APPROVE (03:36); 2 minors left for the report (find bar keys while welcome is up move the hidden selection; search.project seeds from the hidden selection). Committed, pushed, reinstalled.
+- T17 design r1 (03:40): F1–F10 fixed (honest bars, chrome as built, no-tabs variants); quick re-check by design QA before showing the user.
