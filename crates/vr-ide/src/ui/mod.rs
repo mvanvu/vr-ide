@@ -9,6 +9,7 @@ pub mod palette;
 pub mod search_panel;
 pub mod status_bar;
 pub mod tabs;
+pub mod welcome;
 
 use ratatui::Frame;
 
@@ -69,6 +70,7 @@ mod tests {
     use crate::app_tests::{app_with_file, test_app};
 
     mod preview;
+    mod welcome_tests;
 
     const SIZES: [(u16, u16); 2] = [(80, 24), (40, 12)];
 
@@ -102,7 +104,7 @@ mod tests {
         let screen = format!("{:?}", draw(&mut app, 80, 24).backend());
         let line = screen
             .lines()
-            .find(|l| l.contains("explorer"))
+            .find(|l| l.contains("Explorer"))
             .unwrap_or_else(|| panic!("no explorer hint:\n{screen}"));
         assert!(
             line.contains(&app.key_hint("explorer.toggle_focus")),

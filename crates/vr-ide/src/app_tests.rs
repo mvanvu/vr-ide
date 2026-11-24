@@ -496,3 +496,49 @@ fn legacy_keyboard_notice_does_not_hide_later_notices() {
     app.tick(std::time::Instant::now() + std::time::Duration::from_secs(60));
     assert!(app.notices.is_empty(), "{:?}", notices(&app));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn monitor_samples_only_while_no_file_is_open() {
+    use std::time::{Duration, Instant};
+    let (_d, path, mut app, _) = app_with_file("x\n");
+    let t0 = Instant::now();
+    app.tick(t0);
+    assert_eq!(app.monitor.samples_taken, 0);
+    assert!(!app.monitor.running());
+    app.close_doc(0);
+    app.dirty = false;
+    app.tick(t0 + Duration::from_secs(1));
+    assert_eq!(app.monitor.samples_taken, 1);
+    assert!(app.dirty, "a new reading needs a redraw");
+    app.open_path(&path).unwrap();
+    app.tick(t0 + Duration::from_secs(3));
+    assert_eq!(app.monitor.samples_taken, 1, "no sampling behind a file");
+    assert!(!app.monitor.running());
+}
+
+#[test]
+fn recent_files_are_most_recent_first_unique_and_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = test_app(dir.path());
+    assert!(app.recent.is_empty());
+    let paths: Vec<PathBuf> = (0..10)
+        .map(|i| {
+            let p = dir.path().join(format!("f{i}.txt"));
+            std::fs::write(&p, "x").unwrap();
+            p
+        })
+        .collect();
+    for p in &paths {
+        app.open_path(p).unwrap();
+    }
+    assert_eq!(app.recent.len(), crate::app::RECENT_MAX);
+    assert_eq!(app.recent[0], paths[9]);
+    // Re-opening (activating) an older one moves it to the front once.
+    app.open_path(&paths[5]).unwrap();
+    assert_eq!(app.recent[0], paths[5]);
+    assert_eq!(app.recent.iter().filter(|p| **p == paths[5]).count(), 1);
+    // A path that cannot be opened is not remembered.
+    assert!(app.open_path(&dir.path().join("missing.txt")).is_err());
+    assert!(!app.recent.iter().any(|p| p.ends_with("missing.txt")));
+}

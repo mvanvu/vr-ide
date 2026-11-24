@@ -62,3 +62,9 @@ echo "rust_200kb_rss_at_first_frame_mb=$(max_rss_mb "$work/frame.log")"
 (cd "$work" && { sleep 4; printf '\021'; } | \
   script -qec "$(printf '%q ' /usr/bin/time -v -o "$work/coloured.log" "$bin" "$big")" /dev/null >/dev/null)
 echo "rust_200kb_max_rss_after_colours_mb=$(max_rss_mb "$work/coloured.log")  (target < 60)"
+
+# The welcome dashboard samples /proc once a second while it is shown: stay open on the empty
+# project long enough for a few samples and report the peak.
+(cd "$target_dir" && { sleep 4; printf '\021'; } | \
+  script -qec "$(printf '%q ' /usr/bin/time -v -o "$work/welcome.log" "$bin")" /dev/null >/dev/null)
+echo "welcome_monitor_max_rss_after_4s_mb=$(max_rss_mb "$work/welcome.log")  (target < 60)"

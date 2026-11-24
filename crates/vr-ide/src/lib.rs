@@ -8,6 +8,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod commands;
 pub mod event_loop;
+pub mod monitor;
 pub mod recovery;
 pub mod syntax;
 pub mod theme;

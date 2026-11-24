@@ -1,0 +1,16 @@
+---
+source: crates/vr-ide/src/ui/tests/welcome_tests.rs
+expression: t.backend()
+---
+" /home/user/DEV/shop                    "
+" vr-ide v0.1.0  main                    "
+" /home/user/DEV/shop                    "
+"                                        "
+" CPU ▅▃▃▃▄▂▅▅▅▃▂▅▂▃▂▅▅▃▅▄▄▅▃▅▅▂▃▂▅  37% "
+" RAM ██████████░░░░░░ 9.4/15.5 GiB  61% "
+"                                        "
+" ctrl+p  Go to file                     "
+" f1      Command palette                "
+" ctrl+e  Explorer                       "
+" ctrl+q  Quit                           "
+" /home/user/DEV/shop                    "

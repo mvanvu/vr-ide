@@ -28,6 +28,9 @@ pub struct Theme {
     pub warning: Style,
     pub error: Style,
     pub dim: Style,
+    /// Healthy level of a meter (the welcome screen's resource monitor); `warning` and `error`
+    /// are the next two.
+    pub ok: Style,
     /// Dialogs and the palette.
     pub popup: Style,
     pub popup_border: Style,
@@ -101,6 +104,7 @@ impl Theme {
             warning: Style::default().fg(Color::Yellow),
             error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             dim: Style::default().fg(Color::DarkGray),
+            ok: Style::default().fg(Color::Green),
             popup: Style::default().bg(Color::Indexed(236)).fg(Color::White),
             popup_border: Style::default().fg(Color::Cyan),
             input: Style::default().bg(Color::Indexed(238)).fg(Color::White),
@@ -151,6 +155,7 @@ impl Theme {
             warning: Style::default().fg(Color::Indexed(130)),
             error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             dim: Style::default().fg(Color::Gray),
+            ok: Style::default().fg(Color::Indexed(28)),
             popup: Style::default().bg(Color::Indexed(254)).fg(Color::Black),
             popup_border: Style::default().fg(Color::Blue),
             input: Style::default().bg(Color::White).fg(Color::Black),
@@ -435,6 +440,7 @@ impl Theme {
             warning: Style::default().fg(orange),
             error: Style::default().fg(red).add_modifier(Modifier::BOLD),
             dim: Style::default().fg(dim),
+            ok: Style::default().fg(green),
             popup: Style::default().bg(raised).fg(fg),
             popup_border: Style::default().fg(purple),
             input: Style::default().bg(input).fg(fg),

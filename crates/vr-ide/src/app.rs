@@ -85,6 +85,9 @@ pub const ENTER_REPEAT_GAP: Duration = Duration::from_millis(700);
 /// How long the legacy-keyboard startup hint stays when nothing else is shown.
 pub const KEYBOARD_NOTICE_TTL: Duration = Duration::from_secs(15);
 
+/// Files kept in [`App::recent`].
+pub const RECENT_MAX: usize = 8;
+
 /// The key that dismisses a notice. Built in like the cursor keys (the plan keeps those out
 /// of the keymap); see decisions.md.
 pub const DISMISS_KEY: KeyCode = KeyCode::Esc;
@@ -165,6 +168,10 @@ pub struct App {
     editor_seen: Option<usize>,
     /// Syntax highlighting of the open documents (M4).
     pub syntax: crate::syntax::Syntax,
+    /// Resource monitor of the welcome screen; samples only while that screen is shown.
+    pub monitor: crate::monitor::Monitor,
+    /// Files opened this session, newest first (at most [`RECENT_MAX`]).
+    pub recent: Vec<PathBuf>,
 }
 
 impl App {
@@ -210,6 +217,8 @@ impl App {
             search: Default::default(),
             editor_seen: None,
             syntax: crate::syntax::Syntax::new(crate::syntax::builtin_registry()),
+            monitor: Default::default(),
+            recent: Vec::new(),
         }
     }
 
@@ -388,6 +397,12 @@ impl App {
 
     // ---- documents ---------------------------------------------------------------------
 
+    fn remember_recent(&mut self, path: &Path) {
+        self.recent.retain(|p| p != path);
+        self.recent.insert(0, path.to_path_buf());
+        self.recent.truncate(RECENT_MAX);
+    }
+
     /// Opens `path` (relative paths are taken from the project root) in a new tab, or
     /// activates its tab when it is already open.
     pub fn open_path(&mut self, path: &Path) -> anyhow::Result<()> {
@@ -398,6 +413,7 @@ impl App {
             .position(|d| d.path.as_deref() == Some(&path))
         {
             self.set_active(i);
+            self.remember_recent(&path);
             return Ok(());
         }
         // A running project replace never writes a file a tab opens on.
@@ -427,6 +443,7 @@ impl App {
                 self.display_path(&path)
             ));
         }
+        self.remember_recent(&path);
         self.docs.push(doc);
         self.views.push(View {
             follow_cursor: true,
@@ -773,6 +790,11 @@ impl App {
     /// Drops expired info notices and runs a find rescan whose typing pause is over.
     pub fn tick(&mut self, now: Instant) {
         commands::find::poll(self, now);
+        // The welcome screen is the only reader of the monitor: nothing is read behind a file.
+        if self.monitor.tick(now, self.docs.is_empty()) {
+            self.monitor.branch = crate::monitor::git_branch(&self.root);
+            self.dirty = true;
+        }
         let before = self.notices.len();
         self.notices.retain(|n| n.expires.is_none_or(|t| t > now));
         if self.notices.len() != before {

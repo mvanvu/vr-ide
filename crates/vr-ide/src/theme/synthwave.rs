@@ -104,6 +104,7 @@ pub(super) fn build(depth: ColorDepth) -> Theme {
         warning: Style::default().fg(orange),
         error: Style::default().fg(red).add_modifier(bold),
         dim: Style::default().fg(dim),
+        ok: Style::default().fg(green),
         popup: Style::default().bg(raised).fg(fg),
         popup_border: Style::default().fg(pick(p.border)),
         input: Style::default().bg(input).fg(fg),
