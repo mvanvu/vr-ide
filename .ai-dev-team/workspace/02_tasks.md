@@ -22,11 +22,12 @@
 | FR-6 | vr-core: disk_version_of_a_file_that_keeps_changing_is_an_error fails on a 1 ms timestamp tick (same-length rewrite inside one tick is not seen by DiskStamp) — decide product defect vs test assumption; data-safety oracle, not loosened without reviewer agreement | be | sign-off report | - | AC-3, AC-7 | crates/vr-core/src/document.rs (+ testutil.rs if needed) | `cargo test -p vr-core` (worktree .worktrees/FR6, branch fr6-disk-version) | done | 2 |
 | FR-7 | find_tests::find_debounces_rescans_in_a_large_file fails under load (draw() refresh uses the real clock while the test ticks a fake one; red on base and on FR-5, load 6–12) | fe | - | - | AC-10 | crates/vr-ide/src/{find_tests,commands/find}.rs (+ ui/find_bar.rs if the clock lives there) | test 10× under load (worktree .worktrees/FR7) | done | 0 |
 | FR-8 | Phase 5 resume fixes: Keep mine recreate → explorer row (major) + note_written reload for filtered files + BeingReplaced wording/severity outside the panel (minors) | fe | re-sign-off report | ui | AC-3, AC-7, AC-8, AC-12 | crates/vr-ide/src/commands/{file,explorer,palette,search}.rs, explorer_tests.rs, search_tests.rs | `cargo test -p vr-ide` related | done | 0 (+qp1) |
+| FR-9 | README: install and usage guide (user request 19:50) | be | - | docs | AC-1, AC-2 | README.md (docs/keymap.md links only) | commands in the README run as written | done | 0 (+qp1) |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
 ## Notes
-- presence: away (user, 19:32)
+- presence: present (user typed, 19:50)
 - hand-off: ready (19:32) — nothing new open; account_switch none; commit + push after re-sign-off and FR-8
 - eta: ~19:00 (set 17:19, +25m: T10 needed rounds 2 and 3; r3 ~25m + recheck 15m → merge + message rewrite 10m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
@@ -161,3 +162,5 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - Fable used: T4 escalation (case 1, earlier session). None this session.
 - Open follow-ups (minor, not started): UI-thread canonicalize of open-tab paths at replace preview start (T10 R3); main-thread panic during a replace exits without joining the worker (D128); racing-oracle known false positive ~1 %/run under heavy load (D99); "opened in a tab; not replaced" skip not hit live (window too short; unit + FR-5 walk); temporary replace refusal at the Save As prompt only reworded.
 - Final full suite at 9133968 (424/0); FR-8 + qp1 (vr-ide only) verified by vr-ide lib 174/0, related tests, workspace clippy and a release walk — no second full-suite run.
+- FR-9 (19:52, follow-up, light tier): README install + usage guide; developer sonnet, reviewer sonnet (doc states commands and keys); no qc.
+- FR-9 (20:02): review APPROVE (sonnet) + 2 wording minors — Quit guard line added by the leader (one-line text fix), External changes bullets by the developer with the reviewer's wording; leader checked the text. Committed and pushed.
