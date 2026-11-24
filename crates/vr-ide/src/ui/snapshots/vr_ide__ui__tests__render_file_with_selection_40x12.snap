@@ -1,0 +1,16 @@
+---
+source: crates/vr-ide/src/ui/mod.rs
+expression: t.backend()
+---
+" a.txt                                  "
+"  1 fn main() {                         "
+"  2     let x = 1;                      "
+"  3     println!("{x}");                "
+"  4 }                                   "
+"  5                                     "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+" a.txt · Ln 2, Col 15 · LF · UTF-8      "

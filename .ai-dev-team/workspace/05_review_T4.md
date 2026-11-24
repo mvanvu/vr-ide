@@ -140,3 +140,43 @@ Residual risks (accepted, documented): the µs window between stat and `rename` 
 | AC-7 | pass | revert tests + earlier watch_* tests |
 | Review Focus 2 | pass | — |
 | Review Focus 3 | pass | — |
+
+## Round 3 re-check (worktree .worktrees/T4r3, branch t4-round3)
+
+Verdict: **CHANGES T4 R3**, with 1 blocker. It is in the shared helper, so it affects `Document::save` and vr-search replace alike.
+
+Commands:
+- `for i in $(seq 20); do cargo test -q -p vr-core document_save_never_loses_a_concurrent_write || break; done` → 20/20 pass.
+- `cargo test -p vr-core -p vr-search` → vr-core `95 passed; 1 ignored`, vr-search `34 passed; 1 ignored`, racing_writer `2 passed`.
+
+Probe: `qa-artifacts/T4-review/probe` against the worktree (target dir removed).
+Read: the full diff (document.rs, lib.rs, testutil.rs, vr-core Cargo.toml, Cargo.lock, vr-search replace.rs) and all of safe_replace.rs.
+
+### Findings
+[blocker] crates/vr-core/src/safe_replace.rs:96-106: an in-place write into our inode during the swap→swap-back gap is deleted
+Scenario: writer A writes the target in place after our last check, so the swapped-out file no longer matches. Between our `EXCHANGE` and the swap-back, our inode N sits at `target`. A second in-place write by path in that gap lands in N. Examples: the agent's next edit, a formatter run, or `fs::write`. The gap also includes `unchanged(tmp)` hashing the whole swapped-out file, so it is O(file size), not µs. The swap-back brings N to `tmp`. `file_id(tmp) == ours` passes, because the inode check proves only identity, not content. `remove_ours(tmp)` then deletes the agent's latest version. The path shows the older version v1, and the result is `Changed`, which the UI reports as an ordinary "changed on disk".
+Probe (the public `replace_if_unchanged` with the real `exchange_files`; `before_swap` writes "agent v1", the second `swap` call first writes "agent v2 (latest)" by path): `outcome Changed; target now "agent v1\n"; dir ["a.txt"]`. v2 is gone, with no conflict file and no error.
+The strict racing test does not exercise this sequence, which needs two writes, one before the swap and one in the gap. That is why 20/20 pass.
+Fix: after the swap-back, delete `tmp` only if it is our inode and still holds exactly our bytes. Pass our length + hash, which `write_atomic` already computes as `hasher.finish()`, or an `ours_intact` closure. Otherwise keep it via `keep_conflict` and return `Kept`. The same check applies to vr-search, which gets it through the helper. Test: a seam test like the probe (in-place write on the second `swap` call) → `Kept`, conflict file holds v2, target holds v1. Also add a vr-search variant.
+
+### Audit notes (no finding)
+- **`Replaced` path:** the swapped-out file X is content-verified, then deleted. Writes after the verify reach X only through an fd opened before the swap. That version was never visible at the path again, which is inherent to any rename-based save (testutil `visible = false`). Accepted.
+- **Swap-back inode check:** this correctly catches a third version renamed in. That version is kept under `<name>.vr-ide-conflict-PID-N`, created by hard link + unlink, so it never replaces anything. The name is cut to 200 bytes at a char boundary, so it stays under NAME_MAX. The message ends "kept at <path>". In `Document`, `guard.0 = None` stops `TempGuard` deleting it. If `keep_conflict` fails, the version stays at the hidden temp name and is still not deleted.
+- **Error paths:** every error after the swap becomes `Kept`. Errors before the swap leave only our bytes at `tmp`, so `TempGuard` deletes them safely.
+- **Absent target:** `RENAME_NOREPLACE` → `AlreadyExists` refused; hard link fallback (atomic no-replace, `tmp` unlinked after); check+rename only where neither exists (vfat/exFAT). That last window is D63's documented decision. The test save_never_replaces_file_created_at_swap is red→green per notes.
+- **EXCHANGE unavailable (EINVAL/ENOTSUP):** check+rename window, documented in the module and in D63, with mutation evidence (3/20). Linux ext4/btrfs/xfs/tmpfs support EXCHANGE.
+- **vr-search:** behaviour is unchanged except for the strengthened swap-back. `commit_replace` maps Replaced → sync_dir + Ok, Changed → `changed_on_disk()`, Kept → sync_dir + "kept at" error, and Err → remove tmp + Err. These are the same mappings as the old `commit_inner`/`TmpHolds`. The test module is untouched (diff shows non-test lines only), the seams (`swap`, `before_swap`) are kept and pass, and `TEMP_SEQ` is still used for temp names.
+- **`save_overwrite` / `save_as`:** plain `rename` (document.rs `None =>` arm), by design per D63. The user chose to replace. A version written after the user's choice is still replaced. If the leader wants that closed too, `save_overwrite` could carry the stamp the user saw at the prompt. That is a leader decision, not filed.
+- **New dependency:** rustix is a workspace dependency (D25/D45). It is added to vr-core only, and Cargo.lock gains one line.
+
+### Rule check T4 (R3)
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-2 | pass | Document API unchanged; `pub mod safe_replace` additive (D63) |
+| BASE-3 | pass | reds recorded (3 document, 4 helper, strict 2/20) before the code |
+| BASE-4 | pass | reproduced: 20/20 strict, vr-core 95 / vr-search 34+2 passed |
+| BASE-8 | pass | rustix from the workspace manifest, per D25/D45/D63 |
+| BASE-16 | pass | T9 commit logic moved, not duplicated |
+| BASE-32 | fail | D24/D25/D63 no-overwrite: blocker above |
+| AC-3 | pass | save atomic; save_* green |
+| Review Focus 2 | fail | blocker above (a concurrent writer's latest version deleted) |

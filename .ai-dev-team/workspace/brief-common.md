@@ -63,3 +63,6 @@ Notes end with `## Rule compliance` (rule-packs.md §6: one row per exercised ru
 
 ## Severity anchor (reviewers of write paths)
 - A race window in which a concurrent writer's data is overwritten or deleted is a `blocker` however small; "narrow enough" is never accepted without a racing-writer stress test (vr_core::testutil, T12) that loses nothing.
+
+## Report files
+- Writing your notes / verdict files under `.ai-dev-team/workspace/` is required. The user instruction "never create artifacts" means the claude.ai Artifact tool only, not these files.

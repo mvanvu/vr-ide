@@ -1,21 +1,37 @@
-mod cli;
-
 use std::io::{self, Stdout};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::widgets::Paragraph;
+use vr_ide::app::App;
+use vr_ide::{cli, clipboard, event_loop, recovery, ui};
+
+/// Set once the kitty keyboard flags were pushed, so restoring pops them (also from the
+/// panic hook).
+static ENHANCED: AtomicBool = AtomicBool::new(false);
 
 fn restore_terminal() {
+    let mut out = io::stdout();
+    if ENHANCED.swap(false, Ordering::SeqCst) {
+        let _ = execute!(out, PopKeyboardEnhancementFlags);
+    }
+    let _ = execute!(
+        out,
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    );
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen);
 }
 
 fn main() -> Result<()> {
@@ -28,43 +44,57 @@ fn main() -> Result<()> {
         }
     };
 
-    // Leave the terminal usable before the default hook prints the panic message.
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
-        default_hook(info);
-    }));
+    recovery::install_panic_hook(vr_config::state_dir().join("recovery"), restore_terminal);
 
+    let (mut app, warnings) = App::load(launch.root.clone(), clipboard::system());
     enable_raw_mode()?;
-    if let Err(e) = execute!(io::stdout(), EnterAlternateScreen) {
+    let setup = execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        SetTitle(app.title())
+    );
+    if let Err(e) = setup {
         restore_terminal();
         return Err(e.into());
     }
-    let result = run(&launch);
+    app.report_config(warnings);
+    app.start_watcher();
+    if let Some(file) = &launch.open_file
+        && let Err(e) = app.open_path(file)
+    {
+        app.error(e.to_string());
+    }
+
+    let result = run(&mut app);
     restore_terminal();
-    result
+    event_loop::finish(result, &app, &vr_config::state_dir().join("recovery"))
 }
 
-fn run(launch: &cli::Launch) -> Result<()> {
+fn run(app: &mut App) -> Result<()> {
     let mut terminal: Terminal<CrosstermBackend<Stdout>> =
         Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut text = format!("vr-ide — {}", launch.root.display());
-    if let Some(f) = &launch.open_file {
-        text.push_str(&format!("\nopen: {}", f.display()));
+    // The first frame goes out before the keyboard query: a terminal that never answers it
+    // makes crossterm wait up to 2 s.
+    terminal.draw(|f| ui::render(f, app))?;
+    if std::env::var_os("VR_IDE_EXIT_AFTER_FIRST_FRAME").is_some() {
+        return Ok(());
     }
-    let exit_after_first = std::env::var_os("VR_IDE_EXIT_AFTER_FIRST_FRAME").is_some();
-    loop {
-        terminal.draw(|frame| frame.render_widget(Paragraph::new(text.as_str()), frame.area()))?;
-        if exit_after_first {
-            return Ok(());
-        }
-        if event::poll(Duration::from_millis(250))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.code == KeyCode::Char('q')
-        {
-            return Ok(());
-        }
-    }
+    // Without the kitty protocol, ctrl+shift+<letter>, ctrl+/ and similar chords cannot be
+    // told apart; the startup notice lists the affected keys.
+    let enhanced = matches!(supports_keyboard_enhancement(), Ok(true))
+        && execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                    // Labels auto-repeat, so a held quit / close key cannot confirm itself.
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        )
+        .is_ok();
+    ENHANCED.store(enhanced, Ordering::SeqCst);
+    app.report_keyboard(enhanced);
+    event_loop::run(&mut terminal, app)
 }

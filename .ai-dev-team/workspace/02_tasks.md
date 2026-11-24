@@ -6,7 +6,7 @@
 | T2 | vr-core text, selection, transactions, history, edit ops | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-core/Cargo.toml, crates/vr-core/src/lib.rs until T1 committed) | - | AC-3, AC-10 | crates/vr-core/src/{lib,text,selection,transaction,history,motion,edit_ops}.rs | `cargo test -p vr-core` | done | 0 |
 | T3 | vr-config keymap + settings (D10 defaults) | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-config/Cargo.toml, crates/vr-config/src/lib.rs until T1 committed) | - | AC-5 | crates/vr-config/** | `cargo test -p vr-config` | done | 0 |
 | T4 | vr-core documents (load/save/encoding) + file watching | be | T2 | - | AC-3, AC-7, AC-18 | crates/vr-core/src/{document,watch,lib}.rs | `cargo test -p vr-core` | fix | 3 |
-| T5 | App shell: event loop, editor view, commands, tabs, status, clipboard, recovery | fe | T1, T2, T3, T4 | ui | AC-1, AC-3, AC-4, AC-5, AC-7, AC-18 | crates/vr-ide/src/{main,app,event_loop,clipboard,recovery,theme}.rs, commands/{registry,app,file,edit,tab}.rs, ui/{layout,editor_view,tabs,status_bar}.rs, ui/snapshots/ | `cargo test -p vr-ide` | in-progress | 0 |
+| T5 | App shell: event loop, editor view, commands, tabs, status, clipboard, recovery | fe | T1, T2, T3, T4 | ui | AC-1, AC-3, AC-4, AC-5, AC-7, AC-18 | crates/vr-ide/src/{main,app,event_loop,clipboard,recovery,theme}.rs, commands/{registry,app,file,edit,tab}.rs, ui/{layout,editor_view,tabs,status_bar}.rs, ui/snapshots/ | `cargo test -p vr-ide` | done | 1 |
 | T6 | Palette, dialogs, go-to-line, external-change prompt, quit guard | fe | T5 | ui | AC-6, AC-7 | crates/vr-ide/src/ui/{palette,dialog}.rs, commands/{nav,palette}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T7 | vr-fs tree, file ops (trash), fuzzy file index | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-fs/Cargo.toml, crates/vr-fs/src/lib.rs until T1 committed) | - | AC-8, AC-9 | crates/vr-fs/** | `cargo test -p vr-fs` | done | 3 |
 | T8 | Explorer panel + go-to-file | fe | T6, T7 | ui | AC-1, AC-8, AC-9 | crates/vr-ide/src/ui/{explorer,layout,palette}.rs, commands/explorer.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
@@ -20,7 +20,7 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 ## Notes
 - presence: away (user, 11:31)
 - hand-off: ready (11:31) — push verified working (19dbd52)
-- eta: ~16:35 (set 12:15, moved +15m: T4 (critical path) needs fix round 2; remaining T4 round 2 + re-check ~20m → T5 40m → T6 25m → T8 35m → T10 35m → T11 15m + sign-off 25m + Phase 5 40m + buffer)
+- eta: ~17:10 (set 12:48, moved +35m: T4 escalation (parallel, must land before sign-off), T5 round 1 with 7 majors; basis: every task so far needed 1–3 fix rounds of ~5–10m plus ~5m re-review — T5 r1+recheck to ~13:15 → T6 ~45m → T8 ~45m → T10 ~45m → T11 15m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
 - commits: one per task after review + QC pass, push to origin/master (user, 11:21)
 - research: skipped — direction settled in conversation (leader, 11:21)
@@ -62,3 +62,9 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - T12 runs in worktree .worktrees/T12 (branch t12-racing-writer, own target/) — shared compile unit with running vr-ide tasks; merge --no-ff when done (12:21)
 - T12 found (12:29): Document::save strict no-lost-write fails ~13% (writer lands between the last stat and rename; D25 window is hit easily, not rarely). T4 reopens as fix round 3 (last) in a worktree after T12 merges; QC of T4 earlier missed it (its rule allowed it). D25 'accepted window' no longer holds for save.
 - T12 verdicts (12:39): review APPROVE + QP1/QP2 re-checks APPROVE; QC skipped (test-only task; 50× clean runs in notes); merged --no-ff
+- T4 round 3 (12:40) in worktree .worktrees/T4r3 (branch t4-round3); off the critical path (T5 keeps the save API); must land before sign-off
+- model: T5 review opus — wires save / save_overwrite / recovery writes (decides when user files are overwritten)
+- T4 round 3 review (12:47): BLOCKER in shared safe_replace — a 2nd write landing between EXCHANGE and swap-back goes into our tmp and is deleted. Rounds exhausted → escalation developer on fable (policy auto) after QC R3 reports; worktree T4r3
+- T5 fix round 1 (12:49): 7 major + minors from opus review; QC_FAIL concurrent writer = the T4 D25 window in master (owned by T4 escalation, not T5); QC minor: legacy-terminal startup warning fills the notice rows and hides the save refusal. Fresh opus developer (first one at ~292k tokens, COST-16).
+- T4 escalation started (12:50) on fable (policy auto, case 1: 3 rounds exhausted) in worktree T4r3; brief asks for a commit-protocol state machine, not another patch; includes D64 API
+- T5 verdicts (13:02): round 1 review APPROVE (opus; 2 new minors on quit/close recovery notices → folded into T6, which replaces those flows), QC_PASS R1; concurrent-writer flow re-tested after the T4 escalation lands

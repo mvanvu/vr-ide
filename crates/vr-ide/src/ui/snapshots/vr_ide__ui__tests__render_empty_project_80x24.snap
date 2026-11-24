@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/mod.rs
+expression: t.backend()
+---
+" /home/user/DEV/shop                                                            "
+"                                                                                "
+"  vr-ide                                                                        "
+"  /home/user/DEV/shop                                                           "
+"                                                                                "
+"  ctrl+shift+p / f1  Command palette                                            "
+"  ctrl+e / ctrl+p    Go to file                                                 "
+"  ctrl+q             Quit                                                       "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" /home/user/DEV/shop                                                            "

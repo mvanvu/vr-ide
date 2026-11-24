@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/mod.rs
+expression: t.backend()
+---
+" a.txt                                                                          "
+"  1 Tiếng Việt                                                                  "
+"  2 漢字x                                                                       " Hidden by multi-width symbols: [(5, " "), (7, " ")]
+"  3 👨‍👩‍👧 🇻🇳 ok                                                                    " Hidden by multi-width symbols: [(5, " "), (8, " ")]
+"  4     Tab|                                                                    "
+"  5                                                                             "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" a.txt · Ln 2, Col 4 · LF · UTF-8                                               "
