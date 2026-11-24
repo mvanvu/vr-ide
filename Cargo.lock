@@ -2430,6 +2430,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "trash",
+ "vr-core",
 ]
 
 [[package]]

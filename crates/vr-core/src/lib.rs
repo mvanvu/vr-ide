@@ -8,6 +8,8 @@ pub mod edit_ops;
 pub mod history;
 pub mod motion;
 pub mod selection;
+#[cfg(any(test, feature = "test-util"))]
+pub mod testutil;
 pub mod text;
 pub mod transaction;
 pub mod watch;

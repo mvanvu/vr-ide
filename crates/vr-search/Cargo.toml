@@ -16,4 +16,5 @@ rustix.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+vr-core = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
