@@ -79,6 +79,9 @@ pub enum DialogAction {
     Trash(Vec<PathBuf>),
     /// Search panel: Replace / Cancel for the checked files of the replace preview (AC-12).
     ReplaceInFiles,
+    /// Quit while a cancelled project replace has not stopped (its worker is blocked in
+    /// I/O): Quit anyway / Cancel.
+    QuitStuckReplace,
 }
 
 pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
@@ -122,6 +125,7 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
             super::explorer::answer_trash(app, &paths);
         }
         (DialogAction::ReplaceInFiles, Outcome::Chosen(0)) => super::search::apply(app),
+        (DialogAction::QuitStuckReplace, Outcome::Chosen(0)) => super::app::answer_quit_stuck(app),
         _ => {}
     }
 }

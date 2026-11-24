@@ -19,10 +19,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::thread::JoinHandle;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -161,13 +161,37 @@ pub struct Job {
     rx: Receiver<JobMsg>,
     /// Apply: the files handed to the worker (each must end with a result).
     sent: Vec<usize>,
-    /// The worker thread: joined on exit so a file it started is finished.
-    handle: Option<JoinHandle<()>>,
+    /// Apply: the file the worker is on (set before it touches the file, cleared after its
+    /// result is sent), so a worker blocked in I/O can be named.
+    current: Arc<Mutex<Option<PathBuf>>>,
+    /// When Esc cancelled the replace ("Cancelling…" since then).
+    cancelled_at: Option<Instant>,
+    /// The user confirmed quitting although the cancelled replace has not stopped.
+    quit_anyway: bool,
 }
 
 impl Job {
+    fn new(kind: JobKind, total: usize, cancel: Arc<AtomicBool>, rx: Receiver<JobMsg>) -> Job {
+        Job {
+            kind,
+            done: 0,
+            total,
+            cancel,
+            rx,
+            sent: Vec::new(),
+            current: Arc::new(Mutex::new(None)),
+            cancelled_at: None,
+            quit_anyway: false,
+        }
+    }
+
     pub fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+    }
+
+    /// The file the worker is on, if any.
+    fn current_file(&self) -> Option<PathBuf> {
+        self.current.lock().map_or(None, |c| c.clone())
     }
 }
 
@@ -707,20 +731,12 @@ fn build_preview(app: &mut App) {
         .collect();
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut job = Job {
-        kind: JobKind::Preview,
-        done: 0,
-        total: paths.len(),
-        cancel: cancel.clone(),
-        rx,
-        sent: Vec::new(),
-        handle: None,
-    };
+    let job = Job::new(JobKind::Preview, paths.len(), cancel.clone(), rx);
     let (root, hold) = (app.root.clone(), app.search.hold.clone());
     let (wq, wr) = (q.clone(), replacement.clone());
-    // Not joined while the app runs: it stops at the next batch once cancelled or once the
-    // receiver is gone; `shutdown` joins it on exit.
-    job.handle = Some(std::thread::spawn(move || {
+    // Never joined: it writes nothing, and stops at the next batch once cancelled or once
+    // the receiver is gone; exit does not wait for it.
+    std::thread::spawn(move || {
         for (b, batch) in paths.chunks(JOB_BATCH).enumerate() {
             if !proceed(&cancel, hold.as_deref()) {
                 return;
@@ -746,7 +762,7 @@ fn build_preview(app: &mut App) {
             }
         }
         let _ = tx.send(JobMsg::Done);
-    }));
+    });
     app.search.preview = Some(Preview {
         query: q,
         replacement,
@@ -763,23 +779,35 @@ fn build_preview(app: &mut App) {
 
 /// Takes what the preview / replace worker sent so far, without blocking.
 fn drain_job(app: &mut App) {
+    drain_job_until(app, None);
+}
+
+/// [`drain_job`]; with a `deadline`, waits until the worker ends or the deadline passes.
+fn drain_job_until(app: &mut App, deadline: Option<Instant>) {
     let Some(job) = app.search.preview.as_ref().and_then(|p| p.job.as_ref()) else {
         return;
     };
     let mut msgs = Vec::new();
     let mut ended = false;
     loop {
-        match job.rx.try_recv() {
-            Ok(JobMsg::Done) => {
+        // Err(true): the worker is gone (also after a panic); Err(false): nothing yet.
+        let next = match deadline {
+            None => job
+                .rx
+                .try_recv()
+                .map_err(|e| e == TryRecvError::Disconnected),
+            Some(d) => job
+                .rx
+                .recv_timeout(d.saturating_duration_since(Instant::now()))
+                .map_err(|e| e == RecvTimeoutError::Disconnected),
+        };
+        match next {
+            Ok(JobMsg::Done) | Err(true) => {
                 ended = true;
                 break;
             }
             Ok(m) => msgs.push(m),
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => {
-                ended = true;
-                break;
-            }
+            Err(false) => break,
         }
     }
     if msgs.is_empty() && !ended {
@@ -848,6 +876,7 @@ fn drain_job(app: &mut App) {
                     }
                 }
                 p.applied = true;
+                REPLACE_RUNNING.store(false, Ordering::SeqCst);
             }
         }
         let applied = p.applied;
@@ -1035,23 +1064,24 @@ pub fn apply(app: &mut App) {
     }
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
-    p.job = Some(Job {
-        kind: JobKind::Apply,
-        done: 0,
-        total: items.len(),
-        cancel: cancel.clone(),
-        rx,
-        sent: items.iter().map(|(i, _)| *i).collect(),
-        handle: None,
-    });
+    let mut job = Job::new(JobKind::Apply, items.len(), cancel.clone(), rx);
+    job.sent = items.iter().map(|(i, _)| *i).collect();
+    let current = job.current.clone();
+    p.job = Some(job);
     let hold = app.search.hold.clone();
-    // Joined only on exit (`shutdown`), like the preview's worker. A file it has not
-    // reached when cancelled is reported as not replaced; one it started is finished (each
-    // write is atomic).
-    let handle = std::thread::spawn(move || {
-        // apply_replace refuses a second path to the same file within one call; the
-        // batches share this set so a link and its target in two batches are refused too.
+    // Never joined while the app runs. A file it has not reached when cancelled is reported
+    // as not replaced; the batch in hand is finished (each write is atomic). On exit
+    // `shutdown` waits for it, but only up to a bound: a file on a hung mount can block it
+    // in the kernel, where no cancel check is reached.
+    std::thread::spawn(move || {
+        // apply_replace refuses a second path to the same file within one call; this set
+        // also covers a link and its target in two calls.
         let mut seen: HashSet<PathBuf> = HashSet::new();
+        let set_current = |f: Option<&Path>| {
+            if let Ok(mut c) = current.lock() {
+                *c = f.map(Path::to_path_buf);
+            }
+        };
         let mut batches = items.chunks(JOB_BATCH);
         for batch in batches.by_ref() {
             if !proceed(&cancel, hold.as_deref()) {
@@ -1061,33 +1091,31 @@ pub fn apply(app: &mut App) {
                 let _ = tx.send(JobMsg::Applied(rest.collect()));
                 break;
             }
-            let mut out = Vec::with_capacity(batch.len());
-            let mut previews = Vec::with_capacity(batch.len());
-            let mut idx = Vec::with_capacity(batch.len());
+            // One file per call and per message, so the UI knows each result as soon as it
+            // is on disk and, if the worker hangs, exactly which file it is on.
             for (i, fp) in batch {
-                match std::fs::canonicalize(&fp.path) {
+                set_current(Some(&fp.path));
+                let r = match std::fs::canonicalize(&fp.path) {
                     Ok(c) if seen.contains(&c) => {
-                        out.push((*i, Err("same file as another result; replaced once".into())));
+                        Err("same file as another result; replaced once".into())
                     }
                     c => {
                         if let Ok(c) = c {
                             seen.insert(c);
                         }
-                        previews.push(fp.clone());
-                        idx.push(*i);
+                        let path = [fp.path.clone()];
+                        vr_search::apply_replace(std::slice::from_ref(fp), &path)
+                            .pop()
+                            .map_or(Err("no result".into()), |(_, r)| {
+                                r.map_err(|e| e.to_string())
+                            })
                     }
+                };
+                let sent = tx.send(JobMsg::Applied(vec![(*i, r)]));
+                set_current(None);
+                if sent.is_err() {
+                    return;
                 }
-            }
-            let paths: Vec<PathBuf> = previews.iter().map(|fp| fp.path.clone()).collect();
-            // One result per confirmed path, in order: zipped back by position.
-            let results = vr_search::apply_replace(&previews, &paths);
-            out.extend(
-                idx.into_iter()
-                    .zip(results)
-                    .map(|(i, (_, r))| (i, r.map_err(|e| e.to_string()))),
-            );
-            if tx.send(JobMsg::Applied(out)).is_err() {
-                return;
             }
         }
         let rest: Vec<(usize, Result<(), String>)> = batches
@@ -1099,9 +1127,7 @@ pub fn apply(app: &mut App) {
         }
         let _ = tx.send(JobMsg::Done);
     });
-    if let Some(j) = &mut p.job {
-        j.handle = Some(handle);
-    }
+    REPLACE_RUNNING.store(true, Ordering::SeqCst);
     app.search.preview = Some(p);
     app.dirty = true;
 }
@@ -1178,24 +1204,132 @@ pub fn replacing(app: &App) -> bool {
     app.search.preview.as_ref().is_some_and(Preview::applying)
 }
 
-/// Before the process exits (after a quit or a terminal error): a running worker is
-/// cancelled and joined, so the batch in hand finishes and no file is cut off mid-write;
-/// then every file's result is recorded, and a replace's summary is printed after the
-/// terminal is restored.
+/// How long "Cancelling…" may last before quit is offered anyway (with a confirm).
+pub const CANCEL_WAIT: Duration = Duration::from_secs(5);
+
+/// Longest wait on exit for an apply worker to finish the batch in hand.
+pub const EXIT_WAIT: Duration = Duration::from_secs(5);
+
+/// Set while an apply worker runs, so the panic hook can say a replace was interrupted.
+pub static REPLACE_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Why quit cannot go ahead at once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuitBlock {
+    /// A replace is running, or was cancelled less than [`CANCEL_WAIT`] ago: refused.
+    Replacing,
+    /// The cancelled replace has not stopped for [`CANCEL_WAIT`]: its worker is probably
+    /// blocked in I/O on this file (if known). Quit needs a confirm.
+    Stuck(Option<PathBuf>),
+}
+
+/// What a running project replace means for quit (`None`: nothing in the way).
+pub fn quit_block(app: &App) -> Option<QuitBlock> {
+    let job = app.search.preview.as_ref()?.job.as_ref()?;
+    if job.kind != JobKind::Apply || job.quit_anyway {
+        return None;
+    }
+    match job.cancelled_at {
+        Some(t) if app.now().saturating_duration_since(t) >= CANCEL_WAIT => {
+            Some(QuitBlock::Stuck(job.current_file()))
+        }
+        _ => Some(QuitBlock::Replacing),
+    }
+}
+
+/// The confirm for [`QuitBlock::Stuck`].
+pub fn ask_quit_stuck(app: &mut App, file: Option<&Path>) {
+    let on = file.map_or_else(
+        || "in a file operation".to_string(),
+        |f| format!("on {}", app.display_path(f)),
+    );
+    let message = format!(
+        "The cancelled replace has not stopped after {} s; it is probably blocked {on} \
+         (a hung disk or network mount). Quit anyway leaves that file's state unknown; \
+         files not reached are not replaced.",
+        CANCEL_WAIT.as_secs()
+    );
+    let mut confirm = ConfirmDialog::new("Quit", message, &[QUIT_ANYWAY, super::file::CANCEL]);
+    // Quitting is irreversible here: Enter alone must not do it.
+    confirm.selected = 1;
+    app.open_dialog(
+        DialogWidget::Confirm(confirm),
+        DialogAction::QuitStuckReplace,
+    );
+}
+
+pub const QUIT_ANYWAY: &str = "Quit anyway";
+
+/// "Quit anyway" chosen: quit no longer waits for this replace (exit still waits up to
+/// [`EXIT_WAIT`] and names the file).
+pub fn allow_quit(app: &mut App) {
+    if let Some(j) = app.search.preview.as_mut().and_then(|p| p.job.as_mut()) {
+        j.quit_anyway = true;
+    }
+}
+
+/// Before the process exits (after a quit or a terminal error), with the terminal already
+/// restored and recovery written: see [`shutdown_within`] with [`EXIT_WAIT`].
 pub fn shutdown(app: &mut App) {
-    let Some(job) = app.search.preview.as_mut().and_then(|p| p.job.as_mut()) else {
+    shutdown_within(app, EXIT_WAIT);
+}
+
+/// A preview worker writes nothing: it is cancelled and left alone. An apply worker is
+/// cancelled and given up to `bound` to finish the batch in hand (each write is atomic), so
+/// every file gets its result. A worker blocked in I/O (a hung mount) never reaches its
+/// cancel check: after `bound` the exit goes on, and the message names the file it was on
+/// and the files whose state is unknown. The replace's summary goes to `exit_messages`.
+pub fn shutdown_within(app: &mut App, bound: Duration) {
+    let Some(p) = app.search.preview.as_mut() else {
         return;
     };
-    let apply = job.kind == JobKind::Apply;
+    let Some(job) = p.job.as_mut() else {
+        return;
+    };
     job.cancel.store(true, Ordering::SeqCst);
-    if let Some(h) = job.handle.take() {
-        // A panicked worker is reported like one that stopped: its files say so.
-        let _ = h.join();
+    if job.kind == JobKind::Preview {
+        p.job = None;
+        return;
     }
-    drain_job(app);
-    if apply {
-        let (done, not_done) = apply_summary(app);
-        app.exit_messages.extend(done.into_iter().chain(not_done));
+    drain_job_until(app, Some(Instant::now() + bound));
+    let mut stuck = None;
+    if let Some(p) = app.search.preview.as_mut()
+        && let Some(job) = p.job.take()
+    {
+        REPLACE_RUNNING.store(false, Ordering::SeqCst);
+        p.applied = true;
+        let unknown: Vec<PathBuf> = job
+            .sent
+            .iter()
+            .filter(|&&i| p.files[i].result.is_none())
+            .map(|&i| p.files[i].path.clone())
+            .collect();
+        stuck = Some((job.current_file(), unknown));
+    }
+    let (done, not_done) = apply_summary(app);
+    app.exit_messages.extend(done.into_iter().chain(not_done));
+    if let Some((current, unknown)) = stuck {
+        let mut msg = match current {
+            Some(f) => format!(
+                "Replace in Project: the replace was still writing {} when vr-ide quit \
+                 (blocked for more than {} s); check that file",
+                app.display_path(&f),
+                bound.as_secs_f32()
+            ),
+            None => "Replace in Project: the replace had not stopped when vr-ide quit".into(),
+        };
+        let named: Vec<String> = unknown
+            .iter()
+            .take(NAMED_FAILURES)
+            .map(|f| app.display_path(f))
+            .collect();
+        if !named.is_empty() {
+            msg.push_str(&format!(". File state unknown: {}", named.join(", ")));
+        }
+        if unknown.len() > named.len() {
+            msg.push_str(&format!(" and {} more", unknown.len() - named.len()));
+        }
+        app.exit_messages.push(msg);
     }
 }
 
@@ -1267,10 +1401,13 @@ fn next_field(app: &mut App, forward: bool) {
 /// results are current), otherwise gives the editor the keys; the panel stays.
 fn escape(app: &mut App) {
     app.search.preview_pending = false;
-    match &app.search.preview {
+    let now = app.now();
+    match &mut app.search.preview {
         Some(p) if p.applying() => {
-            if let Some(j) = &p.job {
+            if let Some(j) = &mut p.job {
                 j.cancel.store(true, Ordering::SeqCst);
+                // A second Esc keeps the first time: the cancel bound counts from it.
+                j.cancelled_at.get_or_insert(now);
             }
         }
         Some(p) => {
@@ -1409,7 +1546,7 @@ pub fn paste(app: &mut App, text: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn file(name: &str) -> PreviewFile {
@@ -1429,35 +1566,18 @@ mod tests {
 
     /// A replace worker that panics halfway: the files it reported keep their results, the
     /// others say the replace stopped before them, and the panel is free again (never stuck
-    /// in "Replacing"). On exit, `shutdown` joins it without panicking itself.
+    /// in "Replacing"). On exit, `shutdown` takes the disconnect without panicking itself.
     #[test]
     fn panicking_worker_is_reported_not_stuck() {
         for on_exit in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let (mut app, _) = crate::app_tests::test_app(dir.path());
             let (tx, rx) = mpsc::channel();
-            let handle = std::thread::spawn(move || {
+            std::thread::spawn(move || {
                 tx.send(JobMsg::Applied(vec![(0, Ok(()))])).unwrap();
                 panic!("worker bug (expected by the test)");
             });
-            app.search.preview = Some(Preview {
-                query: app.search.query(),
-                replacement: String::new(),
-                files: vec![file("a"), file("b"), file("c")],
-                applied: false,
-                selected: 0,
-                top: 0,
-                job: Some(Job {
-                    kind: JobKind::Apply,
-                    done: 0,
-                    total: 3,
-                    cancel: Arc::new(AtomicBool::new(false)),
-                    rx,
-                    sent: vec![0, 1, 2],
-                    handle: Some(handle),
-                }),
-                in_tabs: 0,
-            });
+            install_job(&mut app, JobKind::Apply, rx);
             if on_exit {
                 shutdown(&mut app);
                 let msgs = app.exit_messages.join(" | ");
@@ -1477,6 +1597,138 @@ mod tests {
                 let e = f.result.clone().unwrap().unwrap_err();
                 assert!(e.contains("stopped before this file"), "{e}");
             }
+        }
+    }
+
+    /// A preview of files a, b, c whose worker talks through `rx`.
+    fn install_job(app: &mut App, kind: JobKind, rx: Receiver<JobMsg>) {
+        let mut job = Job::new(kind, 3, Arc::new(AtomicBool::new(false)), rx);
+        if kind == JobKind::Apply {
+            job.sent = vec![0, 1, 2];
+        }
+        app.search.preview = Some(Preview {
+            query: app.search.query(),
+            replacement: String::new(),
+            files: vec![file("a"), file("b"), file("c")],
+            applied: false,
+            selected: 0,
+            top: 0,
+            job: Some(job),
+            in_tabs: 0,
+        });
+    }
+
+    /// A worker blocked inside a file (an open, read or write that never returns, as on a
+    /// hung network mount): an apply worker reports a, then hangs on b, ignoring `cancel`.
+    /// It is released 3 s later, so a caller that waits for it shows up as slow, not hung.
+    pub(crate) fn stuck_job(app: &mut App, kind: JobKind) {
+        let (tx, rx) = mpsc::channel();
+        install_job(app, kind, rx);
+        if kind == JobKind::Apply {
+            let job = app.search.preview.as_ref().unwrap().job.as_ref().unwrap();
+            *job.current.lock().unwrap() = Some(PathBuf::from("b"));
+        }
+        std::thread::spawn(move || {
+            if kind == JobKind::Apply {
+                tx.send(JobMsg::Applied(vec![(0, Ok(()))])).unwrap();
+            }
+            std::thread::sleep(Duration::from_secs(3));
+            drop(tx);
+        });
+    }
+
+    /// Exit with an apply worker that never returns: `shutdown` gives up after the bound,
+    /// names the file that may be mid-write and the files whose state is unknown, and still
+    /// reports what was replaced.
+    #[test]
+    fn shutdown_gives_up_on_a_held_apply_worker_and_names_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = crate::app_tests::test_app(dir.path());
+        stuck_job(&mut app, JobKind::Apply);
+        let t = Instant::now();
+        shutdown_within(&mut app, Duration::from_millis(300));
+        let took = t.elapsed();
+        assert!(took < Duration::from_secs(2), "shutdown waited {took:?}");
+        assert!(
+            took >= Duration::from_millis(250),
+            "gave up at once: {took:?}"
+        );
+        let msgs = app.exit_messages.join(" | ");
+        assert!(msgs.contains("Replaced 1 match in 1 file"), "{msgs}");
+        assert!(msgs.contains("still writing b"), "{msgs}");
+        assert!(msgs.contains("state unknown: b, c"), "{msgs}");
+        assert!(!app.search.busy(), "job still attached");
+    }
+
+    /// "Preparing preview" with a worker blocked in a read: Esc drops the preview at once
+    /// and the panel is free for a new search (the blocked thread is left behind).
+    #[test]
+    fn esc_drops_a_stuck_preview_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = crate::app_tests::test_app(dir.path());
+        stuck_job(&mut app, JobKind::Preview);
+        app.search.visible = true;
+        app.focus = Focus::Search;
+        let t = Instant::now();
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            t.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            t.elapsed()
+        );
+        assert!(app.search.preview.is_none() && !app.search.busy());
+        assert_eq!(quit_block(&app), None);
+    }
+
+    /// A preview writes nothing: exit cancels it and never waits for its worker.
+    #[test]
+    fn a_preview_job_never_delays_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = crate::app_tests::test_app(dir.path());
+        stuck_job(&mut app, JobKind::Preview);
+        let t = Instant::now();
+        shutdown_within(&mut app, Duration::from_secs(5));
+        let took = t.elapsed();
+        assert!(
+            took < Duration::from_millis(500),
+            "shutdown waited {took:?}"
+        );
+        assert!(app.exit_messages.is_empty(), "{:?}", app.exit_messages);
+        assert!(!app.search.busy(), "preview job still attached");
+    }
+
+    /// "Cancelling…" that never ends (the worker is blocked in I/O): quit stays refused
+    /// until the cancel bound has passed, then asks, naming the stuck file; Cancel keeps the
+    /// app, "Quit anyway" quits.
+    #[test]
+    fn quit_allowed_after_the_cancel_bound_with_a_confirm() {
+        use crate::commands::dialog::{self, DialogAction};
+        use crate::ui::dialog::Outcome;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = crate::app_tests::test_app(dir.path());
+        stuck_job(&mut app, JobKind::Apply);
+        app.search.visible = true;
+        app.focus = Focus::Search;
+        let t0 = Instant::now();
+        drain(&mut app);
+        app.handle_key_at(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0);
+        assert!(replacing(&app), "Esc stops a stuck worker at once?");
+        let ctrl_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        app.handle_key_at(ctrl_q, t0 + Duration::from_secs(1));
+        assert!(!app.quit && app.dialog.is_none(), "quit before the bound");
+        let later = t0 + CANCEL_WAIT + Duration::from_secs(1);
+        for (button, quits) in [(1, false), (0, true)] {
+            app.handle_key_at(ctrl_q, later);
+            let d = app.dialog.take().expect("a confirm after the cancel bound");
+            assert!(matches!(d.action, DialogAction::QuitStuckReplace));
+            let DialogWidget::Confirm(c) = &d.widget else {
+                panic!("confirm expected")
+            };
+            assert!(c.message.contains("blocked on b"), "{}", c.message);
+            assert_eq!(c.buttons, ["Quit anyway", "Cancel"]);
+            assert_eq!(c.selected, 1, "Cancel is the default button");
+            dialog::answer(&mut app, d, Outcome::Chosen(button));
+            assert_eq!(app.quit, quits, "button {button}");
         }
     }
 }

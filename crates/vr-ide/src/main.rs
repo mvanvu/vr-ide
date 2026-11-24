@@ -68,13 +68,15 @@ fn main() -> Result<()> {
     }
 
     let result = run(&mut app);
-    app.shutdown_jobs();
-    restore_terminal();
-    // Only now can the user read them (the alternate screen is gone).
-    for m in &app.exit_messages {
-        eprintln!("vr-ide: {m}");
-    }
-    event_loop::finish(result, &app, &vr_config::state_dir().join("recovery"))
+    // Terminal and recovery first, then the bounded wait for a project replace, then the
+    // exit messages (readable now that the alternate screen is gone).
+    event_loop::exit(
+        result,
+        &mut app,
+        &vr_config::state_dir().join("recovery"),
+        &mut restore_terminal,
+        vr_ide::commands::search::EXIT_WAIT,
+    )
 }
 
 fn run(app: &mut App) -> Result<()> {

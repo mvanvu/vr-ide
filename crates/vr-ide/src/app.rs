@@ -1012,12 +1012,6 @@ impl App {
         commands::search::drain(self);
     }
 
-    /// Before the process exits: stops the project replace worker without killing it
-    /// mid-file (see `commands::search::shutdown`).
-    pub fn shutdown_jobs(&mut self) {
-        commands::search::shutdown(self);
-    }
-
     /// Builds the go-to-file index on a background thread; [`App::drain_index`] takes it.
     /// A build already running is kept.
     pub fn start_index(&mut self) {

@@ -15,7 +15,7 @@ use vr_core::safe_replace::{self, Checks, Outcome, Step, exchange_files};
 
 use crate::Query;
 use crate::find::{Matcher, line_spans};
-use crate::project::{MAX_FILE_BYTES, read_capped, size_text};
+use crate::project::{MAX_FILE_BYTES, open_regular, read_capped, size_text};
 
 const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 
@@ -279,6 +279,12 @@ fn apply_one(p: &FilePreview, seen: &mut HashMap<PathBuf, PathBuf>) -> io::Resul
     }
     seen.insert(target.clone(), p.path.clone());
     let meta = fs::metadata(&target)?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
     // rename() ignores the target's mode, so a read-only file needs an explicit refusal.
     if meta.permissions().readonly() {
         return Err(io::Error::new(
@@ -409,7 +415,8 @@ fn commit_replace(
 /// True when the file at `path` holds exactly `expected` (read at most one byte more).
 fn holds(path: &Path, expected: &[u8]) -> io::Result<bool> {
     let mut buf = Vec::with_capacity(expected.len() + 1);
-    fs::File::open(path)?
+    open_regular(path)?
+        .0
         .take(expected.len() as u64 + 1)
         .read_to_end(&mut buf)?;
     Ok(buf == expected)
@@ -873,5 +880,62 @@ mod tests {
         assert_eq!(fs::read_to_string(&kept).unwrap(), "agent\n", "{err}");
         assert_eq!(fs::read_to_string(&target).unwrap(), "new\n");
         assert_eq!(names(dir.path()).len(), 2);
+    }
+
+    /// Runs `f` on another thread and fails when it has not returned within two seconds (an
+    /// open or read that blocks would otherwise hang the test run).
+    fn within_2s<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .expect("blocked for more than 2 s")
+    }
+
+    #[cfg(unix)]
+    fn mkfifo(p: &Path) {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            p,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o644),
+            0,
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_replace_refuses_a_fifo_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        mkfifo(&root.join("pipe.txt"));
+        let previews =
+            within_2s(move || plan_replace(&root, &re("old"), "new", &[PathBuf::from("pipe.txt")]));
+        let err = previews[0].error.as_deref().unwrap_or_default();
+        assert!(err.contains("not a regular file"), "{previews:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_replace_refuses_a_fifo_put_in_place_of_a_result_without_blocking() {
+        use std::os::unix::fs::FileTypeExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let target = root.join("a.txt");
+        fs::write(&target, "old\n").unwrap();
+        let previews = plan_replace(&root, &re("old"), "new", &[PathBuf::from("a.txt")]);
+        assert_eq!(previews[0].hunks.len(), 1, "{previews:?}");
+        fs::remove_file(&target).unwrap();
+        mkfifo(&target);
+        let confirmed = [target.clone()];
+        let results = within_2s(move || apply_replace(&previews, &confirmed));
+        let err = results[0].1.as_ref().unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
+        assert!(
+            fs::symlink_metadata(&target).unwrap().file_type().is_fifo(),
+            "the FIFO stays where it was"
+        );
     }
 }

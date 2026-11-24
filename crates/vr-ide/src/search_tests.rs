@@ -1014,8 +1014,8 @@ fn quit_is_refused_while_a_replace_runs() {
 }
 
 /// The exit path (normal or after a terminal error) cancels a running replace, lets the
-/// batch in hand finish and joins the worker: every file has its result and none is
-/// half-written.
+/// batch in hand finish and waits (bounded) for the worker to end: every file has its
+/// result and none is half-written.
 #[test]
 fn shutdown_joins_a_running_replace() {
     let (d, mut app, _hold, names) = held_apply(80, 1);
