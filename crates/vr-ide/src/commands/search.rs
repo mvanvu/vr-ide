@@ -510,9 +510,29 @@ pub fn start(app: &mut App) {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     // Detached: the walk ends when it is done, cancelled or its receiver is dropped.
-    drop(vr_search::search_project(&app.root, &q, cancel.clone(), tx));
+    // Every root, one after the other: results come grouped by root, then by file.
+    drop(vr_search::search_roots(
+        &app.workspace.paths(),
+        &q,
+        cancel.clone(),
+        tx,
+    ));
     attach(app, rx, cancel);
     app.search.query = Some(q);
+}
+
+/// The workspace roots changed: shown results (and a running search) are for the old roots,
+/// so the same query runs again over the new ones; a replace preview built for the old
+/// roots is dropped with them. A replace that is writing files keeps going (its files were
+/// confirmed), and its results stay until it is done.
+pub fn roots_changed(app: &mut App) {
+    if app.search.preview.as_ref().is_some_and(Preview::applying) {
+        return;
+    }
+    let shown = app.search.query.clone();
+    if shown.is_some() && shown == Some(app.search.query()) {
+        start(app);
+    }
 }
 
 /// Takes every message the running search and the preview / replace worker sent so far,
@@ -848,7 +868,7 @@ fn build_preview(app: &mut App) {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let job = Job::new(JobKind::Preview, paths.len(), cancel.clone(), rx);
-    let (root, hold) = (app.root.clone(), app.search.hold.clone());
+    let (roots, hold) = (app.workspace.paths(), app.search.hold.clone());
     let (wq, wr) = (q.clone(), replacement.clone());
     // Never joined: it writes nothing, and stops at the next batch once cancelled or once
     // the receiver is gone; exit does not wait for it.
@@ -866,7 +886,8 @@ fn build_preview(app: &mut App) {
                 .map(|(p, _)| p.clone())
                 .collect();
             // plan_replace answers each path in order: zipped back by position.
-            let mut plans = vr_search::plan_replace(&root, &wq, &wr, &disk).into_iter();
+            // Each file is confined to its own root.
+            let mut plans = vr_search::plan_replace_roots(&roots, &wq, &wr, &disk).into_iter();
             let out: Vec<Planned> = canons
                 .into_iter()
                 .zip(in_tab)

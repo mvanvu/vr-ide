@@ -1158,11 +1158,11 @@ fn tab_opened_during_a_replace_is_never_written() {
 
 /// Renames `rel` in the explorer to `name` (F2 prompt).
 fn explorer_rename(app: &mut App, rel: &str, name: &str) {
-    let target = app.root.join(rel);
+    let target = app.root().join(rel);
     app.explorer.visible = true;
     crate::commands::explorer::ensure_loaded(app);
     for a in target.ancestors().collect::<Vec<_>>().into_iter().rev() {
-        if a.starts_with(&app.root) && a != target && !app.explorer.expanded.contains(a) {
+        if a.starts_with(app.root()) && a != target && !app.explorer.expanded.contains(a) {
             app.explorer.expand(a).unwrap();
         }
     }

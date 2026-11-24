@@ -20,6 +20,7 @@ use crate::commands::{self, CmdArgs};
 use crate::event_loop::{chord_from_key, legacy_unreachable};
 use crate::ui::dialog::{DialogWidget, Outcome};
 use crate::ui::layout::AppLayout;
+use crate::workspace::{Root, Workspace};
 
 /// Which part of the screen receives keys. A dialog is modal and takes every key while
 /// open, whatever the focus.
@@ -116,7 +117,11 @@ pub struct View {
 }
 
 pub struct App {
-    pub root: PathBuf,
+    /// The project folders (roots) of this window (D226); the explorer shows the first.
+    pub workspace: Workspace,
+    /// Recently opened workspaces and the file they are kept in (None: not kept, tests).
+    pub recent_workspaces: vr_config::RecentWorkspaces,
+    pub recent_workspaces_file: Option<PathBuf>,
     /// Open documents, one per tab; `views[i]` belongs to `docs[i]`.
     pub docs: Vec<Document>,
     pub views: Vec<View>,
@@ -127,7 +132,7 @@ pub struct App {
     pub settings: Settings,
     pub clipboard: Box<dyn Clipboard>,
     pub fs_rx: Option<Receiver<FsEvent>>,
-    watcher: Option<Watcher>,
+    pub(crate) watcher: Option<Watcher>,
     /// The terminal reports keys with the kitty protocol (all chords reachable).
     pub keyboard_enhanced: bool,
     pub quit: bool,
@@ -182,19 +187,35 @@ pub struct App {
 }
 
 impl App {
+    /// An app on one project root.
     pub fn new(
         root: PathBuf,
         keymap: Keymap,
         settings: Settings,
         clipboard: Box<dyn Clipboard>,
     ) -> App {
-        let explorer = Explorer::new(&root, settings.show_hidden, settings.show_ignored);
+        App::with_workspace(Workspace::single(root), keymap, settings, clipboard)
+    }
+
+    pub fn with_workspace(
+        workspace: Workspace,
+        keymap: Keymap,
+        settings: Settings,
+        clipboard: Box<dyn Clipboard>,
+    ) -> App {
+        let explorer = Explorer::new(
+            &workspace.primary().path,
+            settings.show_hidden,
+            settings.show_ignored,
+        );
         let terminal = commands::terminal::TerminalPanel::new(
             settings.terminal_height_percent,
             settings.scrollback,
         );
         App {
-            root,
+            workspace,
+            recent_workspaces: Default::default(),
+            recent_workspaces_file: None,
             docs: Vec::new(),
             views: Vec::new(),
             active: 0,
@@ -246,19 +267,46 @@ impl App {
     /// Loads keymap and settings from `config_dir()`; returns the load warnings for
     /// [`App::report_startup`].
     pub fn load(root: PathBuf, clipboard: Box<dyn Clipboard>) -> (App, Vec<ConfigWarning>) {
+        App::load_workspace(Workspace::single(root), clipboard)
+    }
+
+    /// [`App::load`] for a workspace; also reads the recent-workspaces list (a corrupt one
+    /// is a warning and starts fresh).
+    pub fn load_workspace(
+        workspace: Workspace,
+        clipboard: Box<dyn Clipboard>,
+    ) -> (App, Vec<ConfigWarning>) {
         let dir = vr_config::config_dir();
         let (keymap, mut warnings) = Keymap::load(Some(&dir.join("keymap.toml")));
         let (settings, w) = Settings::load(Some(&dir.join("settings.toml")));
         warnings.extend(w);
-        let mut app = App::new(root, keymap, settings, clipboard);
+        let mut app = App::with_workspace(workspace, keymap, settings, clipboard);
         warnings.extend(app.load_languages(Some(&dir.join(vr_config::LANGUAGES_FILE))));
-        app.recovery_dir = Some(vr_config::state_dir().join("recovery"));
+        let state = vr_config::state_dir();
+        app.recovery_dir = Some(state.join("recovery"));
+        let recent = state.join(vr_config::RECENT_FILE);
+        let (list, w) = vr_config::RecentWorkspaces::load(&recent);
+        warnings.extend(w);
+        app.recent_workspaces = list;
+        app.recent_workspaces_file = Some(recent);
         (app, warnings)
     }
 
     /// Terminal title (AC-1).
     pub fn title(&self) -> String {
-        format!("vr-ide — {}", self.root.display())
+        format!("vr-ide — {}", self.workspace.label())
+    }
+
+    /// The first root: the explorer's tree (one root: the project root).
+    pub fn root(&self) -> &Path {
+        &self.workspace.primary().path
+    }
+
+    /// The root of the active file, else the first root (spec W): where a new terminal
+    /// starts and relative paths are taken from.
+    pub fn active_root(&self) -> &Root {
+        let file = self.active_doc().and_then(|d| d.path.as_deref());
+        self.workspace.active_root(file)
     }
 
     /// Startup notice: config warnings, unknown command names in the keymap (AC-5) and,
@@ -379,8 +427,10 @@ impl App {
         if !ex.watching {
             return;
         }
-        let root = self.root.clone();
-        let shown = |p: &PathBuf| *p == root || ex.expanded.contains(p);
+        // Every root's own folder is watched (its top level is always listed), plus each
+        // expanded folder.
+        let roots = self.workspace.paths();
+        let shown = |p: &PathBuf| roots.contains(p) || ex.expanded.contains(p);
         let gone: Vec<PathBuf> = ex.watched.iter().filter(|p| !shown(p)).cloned().collect();
         let mut new: Vec<PathBuf> = ex
             .expanded
@@ -388,8 +438,10 @@ impl App {
             .filter(|p| !ex.watched.contains(*p))
             .cloned()
             .collect();
-        if !ex.watched.contains(&root) && !ex.expanded.contains(&root) {
-            new.push(root);
+        for root in roots {
+            if !ex.watched.contains(&root) && !ex.expanded.contains(&root) {
+                new.push(root);
+            }
         }
         if gone.is_empty() && new.is_empty() {
             return;
@@ -477,28 +529,14 @@ impl App {
         Ok(())
     }
 
-    /// `path` made absolute (relative to the project root) with `.` and `..` removed
+    /// `path` made absolute (relative to the active root) with `.` and `..` removed
     /// lexically, so one file never gets two tabs.
     pub fn resolve(&self, path: &Path) -> PathBuf {
-        use std::path::Component;
-        let joined = if path.is_absolute() {
-            path.to_path_buf()
+        if path.is_absolute() {
+            crate::workspace::normalize(path)
         } else {
-            self.root.join(path)
-        };
-        let mut out = PathBuf::new();
-        for c in joined.components() {
-            match c {
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    if !out.pop() {
-                        out.push(c);
-                    }
-                }
-                other => out.push(other),
-            }
+            crate::workspace::normalize(&self.active_root().path.join(path))
         }
-        out
     }
 
     /// After Save As: the watcher follows the document to its new path.
@@ -771,12 +809,10 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Path relative to the project root when inside it.
+    /// Path relative to the project root when inside it; `root-name/relative` with several
+    /// roots.
     pub fn display_path(&self, p: &Path) -> String {
-        p.strip_prefix(&self.root)
-            .unwrap_or(p)
-            .display()
-            .to_string()
+        self.workspace.display_path(p)
     }
 
     // ---- notices -----------------------------------------------------------------------
@@ -818,7 +854,7 @@ impl App {
         let covered = self.layout.status.height > 0 && self.layout.editor.height == 0;
         let welcome_drawn = self.docs.is_empty() && !covered;
         if self.monitor.tick(now, welcome_drawn) {
-            self.monitor.branch = crate::monitor::git_branch(&self.root);
+            self.monitor.branch = self.active_root().branch();
             self.dirty = true;
         }
         let before = self.notices.len();
@@ -856,7 +892,7 @@ impl App {
         if docs.is_empty() {
             return Ok(Vec::new());
         }
-        let written = crate::recovery::write_docs(&docs, &dir);
+        let written = crate::recovery::write_docs_in(&docs, &self.workspace, &dir);
         if written.len() == docs.len() {
             Ok(written)
         } else {
@@ -1311,8 +1347,14 @@ impl App {
             return;
         }
         let (tx, rx) = mpsc::channel();
+        let roots = self
+            .workspace
+            .roots()
+            .iter()
+            .map(|r| (r.path.clone(), r.name.clone()))
+            .collect();
         // Detached: the walk ends when it is done or when `index_rx` is dropped.
-        drop(vr_fs::FileIndex::build(self.root.clone(), tx));
+        drop(vr_fs::FileIndex::build_roots(roots, tx));
         self.index_rx = Some(rx);
     }
 

@@ -48,7 +48,12 @@ fn main() -> Result<()> {
 
     recovery::install_panic_hook(vr_config::state_dir().join("recovery"), restore_terminal);
 
-    let (mut app, warnings) = App::load(launch.root.clone(), clipboard::system());
+    let cli::Launch {
+        workspace,
+        open_files,
+        notices,
+    } = launch;
+    let (mut app, warnings) = App::load_workspace(workspace, clipboard::system());
     enable_raw_mode()?;
     let setup = execute!(
         io::stdout(),
@@ -63,11 +68,14 @@ fn main() -> Result<()> {
     }
     recovery::GLOBAL.set_tui_active(true);
     app.report_config(warnings);
+    for n in notices {
+        app.warn(n);
+    }
     app.start_watcher();
-    if let Some(file) = &launch.open_file
-        && let Err(e) = app.open_path(file)
-    {
-        app.error(e.to_string());
+    for file in &open_files {
+        if let Err(e) = app.open_path(file) {
+            app.error(e.to_string());
+        }
     }
 
     let result = run(&mut app);
@@ -95,6 +103,7 @@ fn run(app: &mut App) -> Result<()> {
     // watches are one per shown folder.
     app.watch_root();
     app.start_index();
+    app.remember_workspace();
     // Without the kitty protocol, ctrl+shift+<letter>, ctrl+/ and similar chords cannot be
     // told apart; the startup notice lists the affected keys.
     let enhanced = matches!(supports_keyboard_enhancement(), Ok(true))

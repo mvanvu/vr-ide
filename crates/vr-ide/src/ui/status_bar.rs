@@ -144,7 +144,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     }
     let width = usize::from(area.width);
     let Some(doc) = app.active_doc() else {
-        let root = format!(" {}", app.root.display());
+        let root = format!(" {}", app.workspace.label());
         buf.set_stringn(area.x, area.y, root, width, theme.status);
         return;
     };

@@ -184,9 +184,9 @@ fn submit(app: &mut App, s: &str) {
 /// Puts the explorer cursor on the row at `rel` (expanding its folders) with focus.
 fn select(app: &mut App, rel: &str) {
     app.run_command("explorer.focus", crate::commands::CmdArgs::None);
-    let target = app.root.join(rel);
+    let target = app.root().join(rel);
     for a in target.ancestors().collect::<Vec<_>>().into_iter().rev() {
-        if a.starts_with(&app.root) && a != target && !app.explorer.expanded.contains(a) {
+        if a.starts_with(app.root()) && a != target && !app.explorer.expanded.contains(a) {
             app.explorer.expand(a).unwrap();
         }
     }
@@ -729,7 +729,7 @@ fn startup_lists_leftover_temp_files_and_keeps_them() {
     assert!(!n.contains("vr-tmp"), "src is not expanded yet: {n}");
     app.notices.clear();
     select(&mut app, "src/.main.rs.vr-tmp-4242-99-0");
-    let src = app.root.join("src");
+    let src = app.root().join("src");
     app.explorer.collapse(&src);
     app.run_command("explorer.focus", crate::commands::CmdArgs::None);
     let i = app

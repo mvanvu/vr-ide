@@ -21,7 +21,8 @@ pub struct PaletteItem {
     pub name: &'static str,
     /// Command title, or the file name.
     pub title: String,
-    /// Go to file: the root-relative path.
+    /// Go to file: the path as the index lists it (root-relative; `root-name/relative` with
+    /// several roots), made absolute by the index when chosen.
     pub path: Option<PathBuf>,
     /// Shown dimmed after the title: the command name, or the file's folder.
     pub detail: String,
@@ -173,10 +174,16 @@ pub fn accept(app: &mut App) {
     };
     close(app);
     match item.path {
-        Some(rel) => match app.open_path(&rel) {
-            Ok(()) => app.refocus_editor_in_read_mode(),
-            Err(e) => super::search::report_open_error(app, &e),
-        },
+        Some(rel) => {
+            let path = app
+                .file_index
+                .as_ref()
+                .map_or_else(|| rel.clone(), |index| index.absolute(&rel));
+            match app.open_path(&path) {
+                Ok(()) => app.refocus_editor_in_read_mode(),
+                Err(e) => super::search::report_open_error(app, &e),
+            }
+        }
         None => {
             app.run_command(item.name, CmdArgs::None);
         }

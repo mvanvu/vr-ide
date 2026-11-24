@@ -190,6 +190,15 @@ impl Explorer {
         &self.tree.root
     }
 
+    /// A fresh explorer on `root` keeping the panel's state that is not about the old tree:
+    /// shown or not, the hidden / ignored toggles, whether folders are watched.
+    pub fn rerooted(&self, root: &Path) -> Explorer {
+        let mut e = Explorer::new(root, self.tree.show_hidden(), self.tree.show_ignored());
+        e.visible = self.visible;
+        e.watching = self.watching;
+        e
+    }
+
     pub fn is_loaded(&self) -> bool {
         self.loaded
     }
@@ -670,7 +679,7 @@ pub fn note_written(app: &mut App, path: &Path) {
 
 /// `p` confined to the project, as the path to act on.
 fn within(app: &App, p: &Path) -> Result<PathBuf, String> {
-    vr_fs::ensure_within(&app.root, p).map_err(|e| describe(app, &e))
+    vr_fs::ensure_within(app.explorer.root(), p).map_err(|e| describe(app, &e))
 }
 
 /// The folder new entries and pastes go to: the cursor row when it is a folder, else its
@@ -681,8 +690,8 @@ fn target_dir(app: &App) -> PathBuf {
         Some(r) => r
             .path
             .parent()
-            .map_or_else(|| app.root.clone(), Path::to_path_buf),
-        None => app.root.clone(),
+            .map_or_else(|| app.explorer.root().to_path_buf(), Path::to_path_buf),
+        None => app.explorer.root().to_path_buf(),
     }
 }
 
@@ -1326,7 +1335,7 @@ fn reveal(app: &mut App, _: CmdArgs) -> CmdResult {
 
 /// Expands every folder between the root and `path` and selects `path` when it is shown.
 pub fn reveal_path(app: &mut App, path: &Path) {
-    let root = app.root.clone();
+    let root = app.explorer.root().to_path_buf();
     if !path.starts_with(&root) {
         let msg = format!("{} is outside the project", path.display());
         app.info(msg);
@@ -1376,7 +1385,7 @@ fn listed(app: &App, dir: &Path, child: &Path) -> bool {
 fn not_shown_reason(app: &App, path: &Path) -> String {
     let rel = app.display_path(path);
     let names: Vec<String> = path
-        .strip_prefix(&app.root)
+        .strip_prefix(app.explorer.root())
         .unwrap_or(path)
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())

@@ -20,7 +20,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         return;
     }
     let focused = app.focus == Focus::Search && app.dialog.is_none();
-    let root = app.root.clone();
+    let root = app.workspace.clone();
     let s = &mut app.search;
     let buf = frame.buffer_mut();
     let inner = area.width - 1;
@@ -136,8 +136,11 @@ fn scroll(top: &mut usize, selected: usize, rows: usize, len: usize) {
     *top = (*top).min(len.saturating_sub(1));
 }
 
-fn file_label(path: &std::path::Path, root: &std::path::Path) -> (String, String) {
-    let rel = path.strip_prefix(root).unwrap_or(path);
+/// File name and folder of a result; the folder starts with the root's name when the
+/// workspace has several roots.
+fn file_label(path: &std::path::Path, ws: &crate::workspace::Workspace) -> (String, String) {
+    let shown = std::path::PathBuf::from(ws.display_path(path));
+    let rel = shown.as_path();
     let name = rel
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -159,7 +162,7 @@ fn render_results(
     buf: &mut Buffer,
     list: Rect,
     s: &mut SearchPanel,
-    root: &std::path::Path,
+    root: &crate::workspace::Workspace,
     sel: Option<Style>,
     theme: &Theme,
 ) {
@@ -235,7 +238,7 @@ fn render_preview(
     buf: &mut Buffer,
     list: Rect,
     p: &mut Preview,
-    root: &std::path::Path,
+    root: &crate::workspace::Workspace,
     sel: Option<Style>,
     theme: &Theme,
 ) {

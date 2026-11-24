@@ -393,7 +393,7 @@ fn project_line(pen: &mut Pen, row: u16, app: &App, p: &Palette) {
 
 fn recent_rows(pen: &mut Pen, row: u16, app: &App, n: usize, p: &Palette) {
     for (i, path) in app.recent.iter().take(n).enumerate() {
-        let rel = path.strip_prefix(&app.root).unwrap_or(path);
+        let rel = path.strip_prefix(app.root()).unwrap_or(path);
         let shown = clip_left(&rel.display().to_string(), pen.width);
         let cut = shown.rfind('/').map_or(0, |i| i + 1);
         let r = row + i as u16;
@@ -486,7 +486,7 @@ fn columns(buf: &mut Buffer, area: Rect, app: &App, p: &Palette, mode: Mode) {
 
 fn left_column(pen: &mut Pen, app: &App, p: &Palette, mode: Mode) {
     name_line(pen, 0, p);
-    root_line(pen, 1, &app.root, p);
+    root_line(pen, 1, app.root(), p);
     project_line(pen, 2, app, p);
     let keys = hints(app);
     let n = keys.len() as u16;

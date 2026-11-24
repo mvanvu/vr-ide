@@ -15,6 +15,8 @@ use std::time::Duration;
 use vr_core::Document;
 use vr_core::ropey::Rope;
 
+use crate::workspace::Workspace;
+
 /// Bytes of the sanitized path kept in a recovery file name. With the stamp and a counter the
 /// name stays well under the 255-byte limit of common file systems; a smaller limit is caught
 /// by the `untitled` fallback name.
@@ -24,6 +26,8 @@ pub const NAME_BUDGET: usize = 200;
 pub struct Entry {
     pub path: Option<PathBuf>,
     pub text: Rope,
+    /// Name of the workspace root the file belongs to (spec W), recorded in the file name.
+    pub root: Option<String>,
 }
 
 impl Entry {
@@ -31,6 +35,18 @@ impl Entry {
         Entry {
             path: d.path.clone(),
             text: d.buffer.text().clone(),
+            root: None,
+        }
+    }
+
+    fn in_workspace(d: &Document, ws: &Workspace) -> Entry {
+        Entry {
+            root: d
+                .path
+                .as_deref()
+                .and_then(|p| ws.root_of(p))
+                .map(|r| r.name.clone()),
+            ..Entry::of(d)
         }
     }
 }
@@ -92,6 +108,16 @@ impl RecoveryState {
         *self.entries.lock().unwrap_or_else(|p| p.into_inner()) = entries;
     }
 
+    /// [`RecoveryState::publish`] recording each file's workspace root.
+    pub fn publish_in(&self, docs: &[Document], ws: &Workspace) {
+        let entries = docs
+            .iter()
+            .filter(|d| d.is_modified())
+            .map(|d| Entry::in_workspace(d, ws))
+            .collect();
+        *self.entries.lock().unwrap_or_else(|p| p.into_inner()) = entries;
+    }
+
     /// The published entries. Never blocks for long: a panic hook may run while another
     /// thread holds the lock for its short store, or on the thread that holds it.
     pub fn snapshot(&self) -> Vec<Entry> {
@@ -141,9 +167,30 @@ fn sanitize(path: Option<&Path>, budget: usize) -> String {
     let Some(p) = path else {
         return "untitled".to_string();
     };
-    let s: String = p
-        .to_string_lossy()
-        .trim_start_matches('/')
+    clean(p.to_string_lossy().trim_start_matches('/'), budget)
+}
+
+/// Bytes of the root name kept in a recovery file name.
+const ROOT_BUDGET: usize = 40;
+
+/// The file-name base of an entry: `<root name>+<sanitized path>` when the file is in a
+/// workspace root ('+' never comes out of the sanitizer, so the root part is unambiguous),
+/// else the sanitized path, within `budget` bytes.
+fn entry_name(e: &Entry, budget: usize) -> String {
+    match (&e.root, &e.path) {
+        (Some(root), Some(_)) => {
+            let root = clean(root, ROOT_BUDGET.min(budget / 2));
+            let rest = budget.saturating_sub(root.len() + 1);
+            format!("{root}+{}", sanitize(e.path.as_deref(), rest))
+        }
+        _ => sanitize(e.path.as_deref(), budget),
+    }
+}
+
+/// `s` with every char but letters, digits, '.', '-' and '_' replaced by '_', keeping the
+/// last `budget` bytes (cut at a char boundary).
+fn clean(s: &str, budget: usize) -> String {
+    let s: String = s
         .chars()
         .map(|c| {
             if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') {
@@ -171,6 +218,12 @@ pub fn write_docs(docs: &[&Document], dir: &Path) -> Vec<PathBuf> {
     write_entries(&entries, dir, NAME_BUDGET)
 }
 
+/// [`write_docs`] recording each file's workspace root in its recovery file name.
+pub fn write_docs_in(docs: &[&Document], ws: &Workspace, dir: &Path) -> Vec<PathBuf> {
+    let entries: Vec<Entry> = docs.iter().map(|d| Entry::in_workspace(d, ws)).collect();
+    write_entries(&entries, dir, NAME_BUDGET)
+}
+
 /// Writes `entries` to `dir` (created 0700; files 0600, never replacing an existing file)
 /// and returns the files written. A name the file system refuses falls back to
 /// `<stamp>-untitled`. Errors are skipped: a panic hook must not panic again.
@@ -184,10 +237,7 @@ pub fn write_entries(entries: &[Entry], dir: &Path, name_budget: usize) -> Vec<P
     let stamp = utc_stamp(secs);
     let mut written = Vec::new();
     for e in entries {
-        let bases = [
-            sanitize(e.path.as_deref(), name_budget),
-            "untitled".to_string(),
-        ];
+        let bases = [entry_name(e, name_budget), "untitled".to_string()];
         'bases: for base in &bases {
             for n in 0..100 {
                 let name = if n == 0 {

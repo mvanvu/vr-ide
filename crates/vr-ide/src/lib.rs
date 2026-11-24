@@ -4,6 +4,7 @@
 //! commands and rendering can be driven in tests without a terminal.
 
 pub mod app;
+mod app_workspace;
 pub mod cli;
 pub mod clipboard;
 pub mod commands;
@@ -13,6 +14,7 @@ pub mod recovery;
 pub mod syntax;
 pub mod theme;
 pub mod ui;
+pub mod workspace;
 
 #[cfg(test)]
 mod app_tests;
@@ -32,3 +34,5 @@ mod search_tests;
 mod syntax_tests;
 #[cfg(test)]
 mod terminal_tests;
+#[cfg(test)]
+mod workspace_tests;

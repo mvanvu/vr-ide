@@ -84,6 +84,21 @@ pub fn search_project(
     search_project_with(root, q, cancel, tx, Limits::default())
 }
 
+/// [`search_project`] over several roots (a multi-root workspace): one search, the roots
+/// walked one after the other in the given order (each with its own ignore rules), so every
+/// match of a root arrives before those of the next one. A root that cannot be read gives an
+/// `Error` and the others are still searched; one `Done` counts them all.
+pub fn search_roots(
+    roots: &[PathBuf],
+    q: &Query,
+    cancel: Arc<AtomicBool>,
+    tx: Sender<SearchMsg>,
+) -> JoinHandle<()> {
+    let roots = roots.to_vec();
+    let q = q.clone();
+    thread::spawn(move || run_search(roots, &q, cancel, &tx, Limits::default()))
+}
+
 /// Files above this size are not searched or replaced (reported, not silently dropped), so
 /// memory stays bounded by walker threads × this size whatever the project holds.
 pub(crate) const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
@@ -160,16 +175,16 @@ pub(crate) fn search_project_with(
     tx: Sender<SearchMsg>,
     limits: Limits,
 ) -> JoinHandle<()> {
-    let root = root.to_path_buf();
+    let roots = vec![root.to_path_buf()];
     let q = q.clone();
-    thread::spawn(move || run_search(root, &q, cancel, &tx, limits))
+    thread::spawn(move || run_search(roots, &q, cancel, &tx, limits))
 }
 
 /// State shared by the walker threads of one search.
 struct WalkCtx {
     search: FileSearch,
-    /// Canonical root: a link to a file inside it is skipped, the file itself is listed.
-    canon_root: Option<PathBuf>,
+    /// Canonical roots: a link to a file inside one is skipped, the file itself is listed.
+    canon_roots: Vec<PathBuf>,
     cancel: Arc<AtomicBool>,
     limits: Limits,
     files: AtomicUsize,
@@ -179,7 +194,7 @@ struct WalkCtx {
 }
 
 fn run_search(
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     q: &Query,
     cancel: Arc<AtomicBool>,
     tx: &Sender<SearchMsg>,
@@ -201,8 +216,16 @@ fn run_search(
             return done(0, 0);
         }
     };
-    if let Err(e) = fs::read_dir(&root) {
-        let _ = tx.send(SearchMsg::Error(format!("{}: {e}", root.display())));
+    let mut readable = Vec::with_capacity(roots.len());
+    for root in roots {
+        match fs::read_dir(&root) {
+            Ok(_) => readable.push(root),
+            Err(e) => {
+                let _ = tx.send(SearchMsg::Error(format!("{}: {e}", root.display())));
+            }
+        }
+    }
+    if readable.is_empty() {
         return done(0, 0);
     }
     let ctx = Arc::new(WalkCtx {
@@ -210,7 +233,10 @@ fn run_search(
             matcher,
             prefilter: prefilter(q),
         },
-        canon_root: fs::canonicalize(&root).ok(),
+        canon_roots: readable
+            .iter()
+            .filter_map(|r| fs::canonicalize(r).ok())
+            .collect(),
         cancel: cancel.clone(),
         limits,
         files: AtomicUsize::new(0),
@@ -221,7 +247,14 @@ fn run_search(
     let (mtx, mrx) = mpsc::channel();
     let walker = {
         let ctx = ctx.clone();
-        thread::spawn(move || walk(&root, &ctx, &mtx))
+        thread::spawn(move || {
+            for root in &readable {
+                if ctx.cancel.load(Ordering::Relaxed) || ctx.limit_hit.load(Ordering::Relaxed) {
+                    break;
+                }
+                walk(root, &ctx, &mtx);
+            }
+        })
     };
     let sent = forward_batches(&mrx, tx, &cancel, MAX_BATCH, FLUSH_EVERY);
     let _ = walker.join();
@@ -276,11 +309,10 @@ fn visit(
         if !path.is_file() {
             return WalkState::Continue;
         }
-        // The target inside the project is listed under its own name already.
-        let target_inside = ctx
-            .canon_root
-            .as_ref()
-            .is_some_and(|root| fs::canonicalize(path).is_ok_and(|t| t.starts_with(root)));
+        // The target inside the project (any of its roots) is listed under its own name
+        // already.
+        let target_inside = fs::canonicalize(path)
+            .is_ok_and(|t| ctx.canon_roots.iter().any(|root| t.starts_with(root)));
         if target_inside {
             return WalkState::Continue;
         }
@@ -558,6 +590,69 @@ mod tests {
             .collect();
         v.dedup();
         v
+    }
+
+    #[test]
+    fn search_roots_walks_each_root_in_order_with_its_own_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        write(&a, ".gitignore", "*.log\n");
+        write(&a, "x.rs", "needle\n");
+        write(&a, "skip.log", "needle\n");
+        write(&b, "y.log", "needle\n");
+        write(&b, "z.rs", "needle needle\n");
+        for i in 0..50 {
+            write(&a, &format!("many/f{i}.rs"), "needle\n");
+        }
+        let (tx, rx) = mpsc::channel();
+        let roots = [a.clone(), b.clone()];
+        let handle = search_roots(&roots, &q("needle"), Arc::new(AtomicBool::new(false)), tx);
+        let msgs: Vec<SearchMsg> = rx.iter().collect();
+        handle.join().unwrap();
+        // Arrival order: every match of root a before any of root b.
+        let arrived: Vec<PathBuf> = msgs
+            .iter()
+            .filter_map(|m| match m {
+                SearchMsg::Batch(b) => Some(b.iter().map(|m| m.path.clone())),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let first_b = arrived.iter().position(|p| p.starts_with(&b)).unwrap();
+        assert!(arrived[..first_b].iter().all(|p| p.starts_with(&a)));
+        assert!(arrived[first_b..].iter().all(|p| p.starts_with(&b)));
+        let found = matches_of(&msgs);
+        assert!(!found.iter().any(|m| m.path == a.join("skip.log")));
+        assert!(found.iter().any(|m| m.path == b.join("y.log")), "{found:?}");
+        // One Done for the whole search, counting both roots.
+        assert_eq!(
+            msgs.iter()
+                .filter(|m| matches!(m, SearchMsg::Done { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            msgs.last(),
+            Some(SearchMsg::Done {
+                // a: .gitignore, x.rs, 50 in many/; b: y.log, z.rs.
+                files: 54,
+                matches: 54,
+                ..
+            })
+        ));
+
+        // A missing root is reported; the others are still searched.
+        let (tx, rx) = mpsc::channel();
+        let roots = [dir.path().join("gone"), b.clone()];
+        search_roots(&roots, &q("needle"), Arc::new(AtomicBool::new(false)), tx)
+            .join()
+            .unwrap();
+        let msgs: Vec<SearchMsg> = rx.iter().collect();
+        assert!(
+            msgs.iter()
+                .any(|m| matches!(m, SearchMsg::Error(e) if e.contains("gone")))
+        );
+        assert_eq!(matches_of(&msgs).len(), 3);
     }
 
     #[test]

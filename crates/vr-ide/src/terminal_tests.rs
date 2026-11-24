@@ -1126,3 +1126,25 @@ fn the_fast_poll_runs_only_while_a_terminal_is_running() {
     app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
     assert!(poll_interval(&app) < idle);
 }
+
+#[test]
+fn a_new_terminal_starts_in_the_root_of_the_active_file() {
+    let d = tempfile::tempdir().unwrap();
+    let base = d.path().canonicalize().unwrap();
+    let (a, b) = (base.join("rootA"), base.join("rootB"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(b.join("f.txt"), "x\n").unwrap();
+    let (mut app, _) = test_app(&a);
+    use_sh(&mut app);
+    app.keyboard_enhanced = true;
+    app.add_root(&b).unwrap();
+    app.open_path(&b.join("f.txt")).unwrap();
+    draw(&mut app, 120, 30);
+    ctrl_backtick(&mut app);
+    wait_text(&app, "$");
+    typ(&mut app, "pwd\n");
+    let screen = wait_screen(&app, "pwd output", |s| s.contains("/root"));
+    assert!(screen.contains("rootB"), "{screen}");
+    assert!(!screen.contains("rootA"), "{screen}");
+}
