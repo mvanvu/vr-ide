@@ -22,8 +22,6 @@
 
 # ---- global ----------------------------------------------------------------
 "ctrl+shift+p" = "app.palette"
-"ctrl+shift+w" = "app.welcome"
-"ctrl+alt+w" = "app.welcome"
 "f1" = "app.palette"
 "ctrl+q" = "app.quit"
 "ctrl+p" = "file.goto"

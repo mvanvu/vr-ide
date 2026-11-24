@@ -111,18 +111,6 @@ mod tests {
         assert!(line.contains("ctrl+e"), "{line}");
     }
 
-    /// The welcome screen over open tabs (D186): tab bar kept, no tab active, no position.
-    #[test]
-    fn render_welcome_with_tabs() {
-        let (mut app, _) = test_app(std::path::Path::new("/home/user/DEV/shop"));
-        for _ in 0..2 {
-            app.docs.push(Document::untitled());
-            app.views.push(Default::default());
-        }
-        app.run_command("app.welcome", crate::commands::CmdArgs::None);
-        snap("render_welcome_with_tabs", &mut app);
-    }
-
     #[test]
     fn render_file_with_selection() {
         let (_d, _p, mut app, _) =

@@ -163,8 +163,6 @@ pub struct App {
     /// The tab that had the editor focus at the last [`App::sync_mode`] (None: the keys were
     /// elsewhere), to tell when the editor gains the keys on a tab.
     editor_seen: Option<usize>,
-    /// The editor area shows the welcome screen over the open tabs (ctrl+shift+w, D186).
-    pub welcome: bool,
     /// Syntax highlighting of the open documents (M4).
     pub syntax: crate::syntax::Syntax,
 }
@@ -211,7 +209,6 @@ impl App {
             find: Default::default(),
             search: Default::default(),
             editor_seen: None,
-            welcome: false,
             syntax: crate::syntax::Syntax::new(crate::syntax::builtin_registry()),
         }
     }
@@ -504,8 +501,6 @@ impl App {
 
     pub fn set_active(&mut self, i: usize) {
         if i < self.docs.len() {
-            // Any tab switch or file open is a way back from the welcome screen (D186).
-            self.welcome = false;
             if i != self.active
                 && let Some(d) = self.docs.get_mut(self.active)
             {
@@ -585,10 +580,6 @@ impl App {
     /// through here; project replace and reloads from disk do not, so they still update
     /// buffers in read mode. The view follows the cursor afterwards.
     pub fn editable_doc(&mut self) -> Option<&mut Document> {
-        // The document is hidden behind the welcome screen: nothing edits it unseen (D186).
-        if self.welcome {
-            return None;
-        }
         let read_only = self.active_doc()?.read_only;
         if read_only {
             self.read_only_warning();
@@ -852,10 +843,6 @@ impl App {
 
     /// Runs a command by name; errors become notices. Returns false for unknown names.
     pub fn run_command(&mut self, name: &str, args: CmdArgs) -> bool {
-        // One guard for keys, the palette and dialogs: the document is hidden (D191).
-        if self.welcome && !commands::app::allowed_over_welcome(name) {
-            return false;
-        }
         let Some(spec) = commands::find(name) else {
             self.warn(format!("unknown command {name:?}"));
             return false;
@@ -918,15 +905,6 @@ impl App {
         if self.focus == Focus::Search && commands::search::handle_key(self, &key) {
             return;
         }
-        // Esc closes the welcome screen before any other meaning it has in the editor.
-        if self.focus == Focus::Editor
-            && self.welcome
-            && key.code == KeyCode::Esc
-            && key.modifiers.is_empty()
-        {
-            self.welcome = false;
-            return;
-        }
         // The key that leaves edit mode (Esc) does that before it dismisses a notice: the
         // user is typing, the notice can wait for the next press.
         if self.focus == Focus::Editor && self.edit_mode() {
@@ -952,10 +930,7 @@ impl App {
             }
         }
         // Built-in cursor and typing keys come first: the plan keeps them out of the keymap.
-        if self.focus == Focus::Editor
-            && !self.welcome
-            && commands::edit::handle_builtin_key(self, &key)
-        {
+        if self.focus == Focus::Editor && commands::edit::handle_builtin_key(self, &key) {
             return;
         }
         let Some(chord) = chord_from_key(&key, self.keyboard_enhanced) else {
@@ -1061,7 +1036,6 @@ impl App {
                         self.set_active(i);
                     }
                 } else if inside(l.editor)
-                    && !self.welcome
                     && let Some(pos) = self.char_at_screen(ev.column, ev.row)
                 {
                     let extend = ev.modifiers.contains(KeyModifiers::SHIFT);

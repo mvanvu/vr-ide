@@ -18,11 +18,6 @@ pub const COMMANDS: &[CommandSpec] = &[
         title: "Command Palette",
         run: palette,
     },
-    CommandSpec {
-        name: "app.welcome",
-        title: "Welcome",
-        run: welcome,
-    },
 ];
 
 /// With unsaved changes, asks: Save all / Discard / Cancel (the answer is in [`answer_quit`]).
@@ -127,23 +122,4 @@ pub fn answer_quit_stuck(app: &mut App) {
 fn palette(app: &mut App, _: CmdArgs) -> CmdResult {
     super::palette::open(app);
     Ok(())
-}
-
-/// Shows the welcome screen over the open tabs, or hides it again. With no tab open the
-/// welcome screen is already what the editor shows.
-fn welcome(app: &mut App, _: CmdArgs) -> CmdResult {
-    app.welcome = !app.welcome && !app.docs.is_empty();
-    app.dirty = true;
-    Ok(())
-}
-
-/// What may run while the welcome screen hides the document: an allow-list, so a command
-/// added later never reaches a document the user cannot see (D191).
-pub fn allowed_over_welcome(cmd: &str) -> bool {
-    cmd.starts_with("app.")
-        || cmd.starts_with("tab.")
-        || cmd.starts_with("explorer.")
-        || cmd.starts_with("focus.")
-        || cmd.starts_with("search.")
-        || matches!(cmd, "file.open" | "file.goto")
 }

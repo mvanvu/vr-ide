@@ -11,7 +11,6 @@ vr-ide ships VS Code's default Linux keybindings. The list below comes from
 | Command | Title | Keys |
 |---|---|---|
 | `app.palette` | Command Palette | `ctrl+shift+p`, `f1` |
-| `app.welcome` | Welcome | `ctrl+shift+w`, `ctrl+alt+w` |
 | `app.quit` | Quit | `ctrl+q` |
 | `file.goto` | Go to File | `ctrl+p` |
 | `file.open` | Open File | `ctrl+o` |
@@ -159,5 +158,3 @@ A terminal without the kitty keyboard protocol cannot send some chords (for exam
 vr-ide lists those in a startup notice, and `F1` opens the palette there. In such a terminal
 `ctrl+shift+e` arrives as `ctrl+e` and toggles the explorer (a shown explorer hides); use `ctrl+e`
 or `f6` to reach the tree.
-Likewise `ctrl+shift+w` (Welcome) arrives as `ctrl+w` (Close File) there; use `ctrl+alt+w` or the
-palette (`F1`, then "Welcome").

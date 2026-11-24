@@ -190,7 +190,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    if app.docs.is_empty() || app.welcome {
+    if app.docs.is_empty() {
         render_welcome(frame.buffer_mut(), area, app, theme);
         return;
     }
@@ -425,18 +425,13 @@ fn visible_spans(
 /// Shown when no file is open: the project root (AC-1) and the keys to get started,
 /// read from the keymap (USER-1).
 fn render_welcome(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
-    let mut hints = vec![
+    let hints = [
         ("app.palette", "Command palette"),
         ("file.goto", "Go to file"),
         // The explorer starts hidden; this is the way to it.
         ("explorer.toggle_focus", "Toggle explorer"),
         ("app.quit", "Quit"),
     ];
-    // With tabs open the screen is a view of the editor, so the way back is worth naming; only
-    // when every line fits (3 header lines, the top margin and one row for the status bar).
-    if !app.docs.is_empty() && usize::from(area.height) > 4 + hints.len() {
-        hints.push(("app.welcome", "Welcome"));
-    }
     let mut lines = vec![
         (String::from("vr-ide"), theme.text),
         (app.root.display().to_string(), theme.dim),

@@ -66,7 +66,7 @@ mod tests {
     use super::*;
 
     /// The plan's command list (names are used by keymaps and must stay stable).
-    const PLAN: &str = "app.quit, app.palette, app.welcome, file.save, file.save_as, file.close, file.open, \
+    const PLAN: &str = "app.quit, app.palette, file.save, file.save_as, file.close, file.open, \
         tab.next, tab.prev, edit.undo, edit.redo, edit.copy, edit.cut, edit.paste, edit.select_all, \
         edit.delete_line, edit.duplicate_line, edit.move_line_up, edit.move_line_down, edit.indent, \
         edit.outdent, edit.toggle_comment, nav.goto_line, file.reload, explorer.toggle, \
