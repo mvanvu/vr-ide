@@ -112,13 +112,19 @@ impl DiskStamp {
     }
 
     fn from_meta(m: &fs::Metadata) -> Self {
-        Self {
+        let mut stamp = Self {
             len: m.len(),
             mtime: m.modified().ok(),
             ctime: (m.ctime(), m.ctime_nsec()),
             dev: m.dev(),
             ino: m.ino(),
+        };
+        if let Some(t) = hook::frozen_clock() {
+            let since = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+            stamp.mtime = Some(t);
+            stamp.ctime = (since.as_secs() as i64, i64::from(since.subsec_nanos()));
         }
+        stamp
     }
 }
 
@@ -132,17 +138,18 @@ pub(crate) struct Snapshot {
     racy: bool,
 }
 
-impl Snapshot {
-    fn new(stamp: DiskStamp, hash: u64) -> Self {
-        let racy = stamp.mtime.is_none_or(|m| {
-            SystemTime::now()
-                .duration_since(m)
-                .is_ok_and(|age| age < RACY_WINDOW)
-                // An mtime in the future (clock skew) is treated as racy too.
-                || SystemTime::now() < m
-        });
-        Self { stamp, hash, racy }
-    }
+/// A stamp taken now within `RACY_WINDOW` of its mtime: a later same-length write in the same
+/// timestamp tick would leave it unchanged. Ask right after taking the stamp and before reading
+/// the content: a write during a long read hides behind the stamp too, and the window may
+/// have ended by the time the read does.
+fn is_racy(stamp: &DiskStamp) -> bool {
+    stamp.mtime.is_none_or(|m| {
+        SystemTime::now()
+            .duration_since(m)
+            .is_ok_and(|age| age < RACY_WINDOW)
+            // An mtime in the future (clock skew) is treated as racy too.
+            || SystemTime::now() < m
+    })
 }
 
 /// Result of a successful save.
@@ -234,6 +241,12 @@ pub(crate) mod hook {
         AfterRename,
         /// In `disk_version`, between taking the stamp and reading the content.
         ReadingDiskVersion,
+        /// In `disk_version`, after the content was read and before the stamp is taken again.
+        DiskVersionRead,
+        /// After the content was compared with the snapshot (`check_disk`, `save`).
+        SnapshotCompared,
+        /// In `load`, after the content was read.
+        LoadRead,
         /// In `save_as` to another path, right after the version of the target was taken.
         SaveAsVersionTaken,
     }
@@ -271,6 +284,39 @@ pub(crate) mod hook {
     pub(crate) fn take_version_taken() -> Option<super::DiskVersion> {
         TAKEN.with(|t| t.borrow_mut().take())
     }
+
+    thread_local! {
+        static FROZEN_CLOCK: std::cell::Cell<Option<std::time::SystemTime>> =
+            const { std::cell::Cell::new(None) };
+        static NO_EXCHANGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Stamps taken on this thread from now on carry this moment as mtime and ctime: a
+    /// filesystem whose timestamp tick (1 ms jiffies, NFS, FAT's 2 s) outlasts the test, so a
+    /// same-length rewrite in place leaves the stamp as it was.
+    pub(crate) fn freeze_clock() {
+        freeze_clock_at(std::time::SystemTime::now());
+    }
+
+    /// `freeze_clock` with the tick's time chosen, e.g. just inside the racy window so a test
+    /// can let the window pass while a read is running.
+    pub(crate) fn freeze_clock_at(t: std::time::SystemTime) {
+        FROZEN_CLOCK.with(|c| c.set(Some(t)));
+    }
+
+    pub(crate) fn frozen_clock() -> Option<std::time::SystemTime> {
+        FROZEN_CLOCK.with(|c| c.get())
+    }
+
+    /// Saves on this thread find no `RENAME_EXCHANGE` (FUSE, NFS, non-Linux): the commit
+    /// falls back to check + rename.
+    pub(crate) fn no_exchange() {
+        NO_EXCHANGE.with(|c| c.set(true));
+    }
+
+    pub(crate) fn exchange_unsupported() -> bool {
+        NO_EXCHANGE.with(|c| c.get())
+    }
 }
 
 #[cfg(not(test))]
@@ -288,12 +334,28 @@ mod hook {
         AfterRename,
         /// In `disk_version`, between taking the stamp and reading the content.
         ReadingDiskVersion,
+        /// In `disk_version`, after the content was read and before the stamp is taken again.
+        DiskVersionRead,
+        /// After the content was compared with the snapshot (`check_disk`, `save`).
+        SnapshotCompared,
+        /// In `load`, after the content was read.
+        LoadRead,
         /// In `save_as` to another path, right after the version of the target was taken.
         SaveAsVersionTaken,
     }
 
     #[inline(always)]
     pub(crate) fn fire(_stage: Stage) {}
+
+    #[inline(always)]
+    pub(crate) fn frozen_clock() -> Option<std::time::SystemTime> {
+        None
+    }
+
+    #[inline(always)]
+    pub(crate) fn exchange_unsupported() -> bool {
+        false
+    }
 }
 
 #[derive(Debug)]
@@ -525,6 +587,7 @@ impl Document {
         let path = self.path.clone().ok_or(DocError::NoPath)?;
         let expect = if check {
             let cur = DiskStamp::of(&path).map_err(|e| io_error(e, &path))?;
+            let racy = cur.as_ref().is_some_and(is_racy);
             let changed = match cur {
                 // Recreating a deleted file overwrites nobody's content.
                 None => false,
@@ -537,6 +600,7 @@ impl Document {
             Some(Expected {
                 stamp: cur,
                 hash: self.disk.map(|s| s.hash),
+                racy,
             })
         } else {
             None
@@ -549,10 +613,16 @@ impl Document {
             // A file appeared where we never read or wrote one.
             return Ok(true);
         };
+        let racy = is_racy(&cur);
         let same = snapshot_matches(&snap, path, cur).map_err(|e| io_error(e, path))?;
+        hook::fire(hook::Stage::SnapshotCompared);
         // Refreshing also lets a racy snapshot settle once its mtime is old enough.
         if same && (snap.stamp != cur || snap.racy) {
-            self.disk = Some(Snapshot::new(cur, snap.hash));
+            self.disk = Some(Snapshot {
+                stamp: cur,
+                hash: snap.hash,
+                racy,
+            });
         }
         Ok(!same)
     }
@@ -621,16 +691,18 @@ fn load(path: &Path) -> Result<Loaded, DocError> {
     // Stamp before reading: a write racing the read then shows up as a changed stamp and hash.
     let meta = file.metadata().map_err(|e| io_error(e, path))?;
     let stamp = DiskStamp::from_meta(&meta);
+    let racy = is_racy(&stamp);
     let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
     file.read_to_end(&mut bytes)
         .map_err(|e| io_error(e, path))?;
+    hook::fire(hook::Stage::LoadRead);
     let hash = content_hash(&bytes);
     let (text, encoding) = decode(bytes)?;
     Ok(Loaded {
         read_only: matches!(encoding, Encoding::Other(_)),
         text,
         encoding,
-        snapshot: Snapshot::new(stamp, hash),
+        snapshot: Snapshot { stamp, hash, racy },
     })
 }
 
@@ -812,13 +884,17 @@ impl DiskVersion {
                     return Ok(Some(Expected {
                         stamp: None,
                         hash: None,
+                        racy: false,
                     }));
                 };
+                let racy = is_racy(&stamp);
                 hook::fire(hook::Stage::ReadingDiskVersion);
                 let hash = hash_file(path)?;
+                hook::fire(hook::Stage::DiskVersionRead);
                 io::Result::Ok((DiskStamp::of(path)? == Some(stamp)).then_some(Expected {
                     stamp: Some(stamp),
                     hash: Some(hash),
+                    racy,
                 }))
             };
             match read() {
@@ -837,18 +913,31 @@ impl DiskVersion {
 
 /// What the caller's changed-on-disk check saw: the target's stamp (`None`: absent) and the
 /// hash of the content it holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 struct Expected {
     stamp: Option<DiskStamp>,
     hash: Option<u64>,
+    /// The stamp was racy (`is_racy`) when the check saw it: a same-length write in the same
+    /// timestamp tick keeps it, so an equal stamp proves nothing and the content decides.
+    racy: bool,
 }
 
+/// One version of the file: when the stamp was seen does not make it another version.
+impl PartialEq for Expected {
+    fn eq(&self, other: &Self) -> bool {
+        self.stamp == other.stamp && self.hash == other.hash
+    }
+}
+
+impl Eq for Expected {}
+
 /// The target still holds what the caller's check saw. A different stamp with the same
-/// length may be a metadata-only change (chmod, xattr by a sync or backup tool): the content
-/// decides, and the stamp must not move again while it is read.
+/// length may be a metadata-only change (chmod, xattr by a sync or backup tool), and an equal
+/// racy stamp may hide a write in the same tick: the content decides, and the stamp must not
+/// move again while it is read.
 fn still_fresh(target: &Path, expected: &Expected) -> io::Result<bool> {
     let cur = DiskStamp::of(target)?;
-    if cur == expected.stamp {
+    if cur == expected.stamp && !(expected.racy && cur.is_some()) {
         return Ok(true);
     }
     match (cur, expected.stamp, expected.hash) {
@@ -977,7 +1066,12 @@ fn write_atomic(
                             && hash_file(p)? == written_hash)
                     },
                 },
-                &mut safe_replace::exchange_files,
+                &mut |a: &Path, b: &Path| {
+                    if hook::exchange_unsupported() {
+                        return Err(io::ErrorKind::Unsupported.into());
+                    }
+                    safe_replace::exchange_files(a, b)
+                },
                 &mut |step| match step {
                     safe_replace::Step::BeforeSwap => hook::fire(hook::Stage::BeforeSwap),
                     safe_replace::Step::BeforeSwapBack => hook::fire(hook::Stage::BeforeSwapBack),
@@ -1650,10 +1744,12 @@ mod tests {
         let p = dir.path().join("a.txt");
         fs::write(&p, "agent v1\n").unwrap();
         let doc = Document::open(&p, 1 << 20).unwrap();
-        // Same length, written after the stamp was taken and before the content is read.
+        // Written after the stamp was taken and before the content is read, with a new length
+        // so the stamp moves however coarse the timestamp tick is (a same-length write inside
+        // one tick is `disk_version_in_one_tick_is_of_the_bytes_on_disk`).
         let at = p.clone();
         hook::set(hook::Stage::ReadingDiskVersion, move || {
-            fs::write(&at, "agent v2\n").unwrap()
+            fs::write(&at, "agent v22\n").unwrap()
         });
         let seen = doc.disk_version().unwrap();
         assert_eq!(seen, doc.disk_version().unwrap());
@@ -1665,15 +1761,163 @@ mod tests {
         let p = dir.path().join("a.txt");
         fs::write(&p, "agent v0\n").unwrap();
         let doc = Document::open(&p, 1 << 20).unwrap();
+        // A new length on every write: the stamp moves even when the timestamp tick (1 ms
+        // jiffies, NFS, FAT) outlasts all five writes. Same-length writes inside one tick are
+        // `disk_version_in_one_tick_is_of_the_bytes_on_disk`.
         for i in 0..DISK_VERSION_TRIES {
             let at = p.clone();
             hook::set(hook::Stage::ReadingDiskVersion, move || {
-                fs::write(&at, format!("agent w{i}\n")).unwrap()
+                fs::write(&at, format!("agent w{}\n", "+".repeat(i + 2))).unwrap()
             });
         }
         let r = doc.disk_version();
         assert!(matches!(r, Err(DocError::Io(_))), "{r:?}");
         doc.disk_version().unwrap();
+    }
+
+    /// Freezes the tick 500 ms before the end of its racy window, so a read can outlast it.
+    fn freeze_clock_near_window_end() -> SystemTime {
+        let tick = SystemTime::now() - RACY_WINDOW + Duration::from_millis(500);
+        hook::freeze_clock_at(tick);
+        tick
+    }
+
+    /// What a long read (large file, slow NFS) does: the racy window of `tick` ends meanwhile.
+    fn let_racy_window_pass(tick: SystemTime) {
+        let end = tick + RACY_WINDOW + Duration::from_millis(50);
+        std::thread::sleep(end.duration_since(SystemTime::now()).unwrap_or_default());
+    }
+
+    /// During the read: a same-length rewrite in the tick, then the window ends.
+    fn rewrite_during_read(stage: hook::Stage, p: &Path, text: &'static str, tick: SystemTime) {
+        let at = p.to_path_buf();
+        hook::set(stage, move || {
+            rewrite_in_same_tick(&at, text);
+            let_racy_window_pass(tick);
+        });
+    }
+
+    fn assert_racy_now(p: &Path) {
+        let stamp = DiskStamp::of(p).unwrap().unwrap();
+        assert!(is_racy(&stamp), "setup: the stamp must start racy");
+    }
+
+    #[test]
+    fn disk_version_read_racing_the_end_of_the_window_stays_racy() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.txt");
+        let tick = freeze_clock_near_window_end();
+        hook::no_exchange();
+        fs::write(&p, "mine\n").unwrap();
+        let mut doc = Document::open(&p, 1 << 20).unwrap();
+        type_at_end(&mut doc, "edit");
+        fs::write(&p, "agent v1\n").unwrap();
+        assert_racy_now(&p);
+        rewrite_during_read(hook::Stage::DiskVersionRead, &p, "agent v2\n", tick);
+        let seen = doc.disk_version().unwrap();
+        assert!(seen.holds(b"agent v1\n"), "{seen:?}");
+        let r = doc.save_overwrite_seen(&seen);
+        assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "agent v2\n");
+        assert_eq!(dir_names(dir.path()), vec!["a.txt"]);
+    }
+
+    #[test]
+    fn save_as_seen_version_read_racing_the_end_of_the_window_stays_racy() {
+        let (dir, mut doc, p, other) = doc_and_other();
+        let tick = freeze_clock_near_window_end();
+        hook::no_exchange();
+        fs::write(&other, "theirs v1\n").unwrap();
+        assert_racy_now(&other);
+        rewrite_during_read(hook::Stage::DiskVersionRead, &other, "theirs v2\n", tick);
+        let seen = DiskVersion::of_path(&other).unwrap();
+        let r = doc.save_as_seen(&other, &seen);
+        assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+        assert_eq!(fs::read_to_string(&other).unwrap(), "theirs v2\n");
+        assert_untouched_doc(&doc, &p);
+        assert_eq!(dir_names(dir.path()), vec!["a.txt", "other.txt"]);
+    }
+
+    #[test]
+    fn save_check_racing_the_end_of_the_window_stays_racy() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.txt");
+        let tick = freeze_clock_near_window_end();
+        hook::no_exchange();
+        fs::write(&p, "agent v1\n").unwrap();
+        let mut doc = Document::open(&p, 1 << 20).unwrap();
+        type_at_end(&mut doc, "edit");
+        assert_racy_now(&p);
+        rewrite_during_read(hook::Stage::SnapshotCompared, &p, "agent v2\n", tick);
+        let r = doc.save();
+        assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "agent v2\n");
+        assert_eq!(dir_names(dir.path()), vec!["a.txt"]);
+    }
+
+    #[test]
+    fn check_disk_racing_the_end_of_the_window_stays_racy() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.txt");
+        let tick = freeze_clock_near_window_end();
+        hook::no_exchange();
+        fs::write(&p, "agent v1\n").unwrap();
+        let mut doc = Document::open(&p, 1 << 20).unwrap();
+        type_at_end(&mut doc, "edit");
+        assert_racy_now(&p);
+        rewrite_during_read(hook::Stage::SnapshotCompared, &p, "agent v2\n", tick);
+        // The read saw v1; v2 landed while it ran and must not be hidden from later checks.
+        doc.check_disk();
+        assert_eq!(doc.check_disk(), DiskState::ChangedOnDisk);
+        let r = doc.save();
+        assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "agent v2\n");
+    }
+
+    #[test]
+    fn load_racing_the_end_of_the_window_stays_racy() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.txt");
+        let tick = freeze_clock_near_window_end();
+        hook::no_exchange();
+        fs::write(&p, "agent v1\n").unwrap();
+        assert_racy_now(&p);
+        rewrite_during_read(hook::Stage::LoadRead, &p, "agent v2\n", tick);
+        let mut doc = Document::open(&p, 1 << 20).unwrap();
+        assert_eq!(doc.buffer.text().to_string(), "agent v1\n");
+        assert_eq!(doc.check_disk(), DiskState::ChangedOnDisk);
+        type_at_end(&mut doc, "edit");
+        let r = doc.save();
+        assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "agent v2\n");
+    }
+
+    #[test]
+    fn disk_version_in_one_tick_is_of_the_bytes_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.txt");
+        hook::freeze_clock();
+        hook::no_exchange();
+        fs::write(&p, "mine\n").unwrap();
+        let mut doc = Document::open(&p, 1 << 20).unwrap();
+        type_at_end(&mut doc, "edit");
+        fs::write(&p, "agent v1\n").unwrap();
+        // Same length, same tick, after the stamp was taken and before the content is read:
+        // no stamp shows it, so the version must be of the bytes read, never of v1.
+        let at = p.clone();
+        hook::set(hook::Stage::ReadingDiskVersion, move || {
+            rewrite_in_same_tick(&at, "agent v2\n")
+        });
+        let seen = doc.disk_version().unwrap();
+        assert!(seen.holds(b"agent v2\n"), "{seen:?}");
+        // v1 was never what the version describes, so it is not replaced either.
+        rewrite_in_same_tick(&p, "agent v1\n");
+        let r = doc.save_overwrite_seen(&seen);
+        assert!(matches!(r, Err(DocError::ChangedOnDisk)), "{r:?}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "agent v1\n");
+        rewrite_in_same_tick(&p, "agent v2\n");
+        doc.save_overwrite_seen(&seen).unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "mine\nedit");
     }
 
     #[test]
@@ -1730,6 +1974,124 @@ mod tests {
             Document::untitled().disk_version(),
             Err(DocError::NoPath)
         ));
+    }
+
+    /// Writes `text` in place and checks that the stamp did not move: the coarse tick the
+    /// test runs under hides the write from every stamp comparison.
+    fn rewrite_in_same_tick(p: &Path, text: &str) {
+        let before = DiskStamp::of(p).unwrap();
+        fs::write(p, text).unwrap();
+        assert_eq!(
+            DiskStamp::of(p).unwrap(),
+            before,
+            "the write moved the stamp"
+        );
+    }
+
+    #[test]
+    fn save_overwrite_seen_never_replaces_a_write_in_the_same_tick_as_the_version() {
+        for exchange in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("a.txt");
+            fs::write(&p, "mine\n").unwrap();
+            let mut doc = Document::open(&p, 1 << 20).unwrap();
+            type_at_end(&mut doc, "edit");
+            hook::freeze_clock();
+            if !exchange {
+                hook::no_exchange();
+            }
+            fs::write(&p, "agent v1\n").unwrap();
+            // The prompt is shown with v1; the agent writes v2 before the clock ticks.
+            let seen = doc.disk_version().unwrap();
+            rewrite_in_same_tick(&p, "agent v2\n");
+            let r = doc.save_overwrite_seen(&seen);
+            assert!(
+                matches!(r, Err(DocError::ChangedOnDisk)),
+                "{exchange} {r:?}"
+            );
+            assert_eq!(fs::read_to_string(&p).unwrap(), "agent v2\n", "{exchange}");
+            assert_eq!(dir_names(dir.path()), vec!["a.txt"], "{exchange}");
+            // Rewritten with the bytes the user saw: that version may be replaced.
+            rewrite_in_same_tick(&p, "agent v1\n");
+            doc.save_overwrite_seen(&seen).unwrap();
+            assert_eq!(fs::read_to_string(&p).unwrap(), "mine\nedit", "{exchange}");
+        }
+    }
+
+    #[test]
+    fn save_never_replaces_a_write_in_the_same_tick_as_its_check() {
+        for exchange in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("a.txt");
+            hook::freeze_clock();
+            if !exchange {
+                hook::no_exchange();
+            }
+            fs::write(&p, "agent v1\n").unwrap();
+            let mut doc = Document::open(&p, 1 << 20).unwrap();
+            type_at_end(&mut doc, "edit");
+            // Before the check: the snapshot is racy, so the content is compared.
+            rewrite_in_same_tick(&p, "agent v2\n");
+            assert_eq!(doc.check_disk(), DiskState::ChangedOnDisk, "{exchange}");
+            let r = doc.save();
+            assert!(
+                matches!(r, Err(DocError::ChangedOnDisk)),
+                "{exchange} {r:?}"
+            );
+            assert_eq!(fs::read_to_string(&p).unwrap(), "agent v2\n", "{exchange}");
+            doc.reload().unwrap();
+            type_at_end(&mut doc, "edit");
+            // After the check, before the commit.
+            let at = p.clone();
+            hook::set(hook::Stage::BeforeRename, move || {
+                rewrite_in_same_tick(&at, "agent v3\n")
+            });
+            let r = doc.save();
+            assert!(
+                matches!(r, Err(DocError::ChangedOnDisk)),
+                "{exchange} {r:?}"
+            );
+            assert_eq!(fs::read_to_string(&p).unwrap(), "agent v3\n", "{exchange}");
+            assert_eq!(dir_names(dir.path()), vec!["a.txt"], "{exchange}");
+        }
+    }
+
+    #[test]
+    fn save_as_seen_never_replaces_a_write_in_the_same_tick_as_the_version() {
+        for exchange in [true, false] {
+            let (dir, mut doc, p, other) = doc_and_other();
+            hook::freeze_clock();
+            if !exchange {
+                hook::no_exchange();
+            }
+            fs::write(&other, "theirs v1\n").unwrap();
+            // The Replace prompt shows v1; the agent writes v2 before the clock ticks.
+            let seen = DiskVersion::of_path(&other).unwrap();
+            rewrite_in_same_tick(&other, "theirs v2\n");
+            let r = doc.save_as_seen(&other, &seen);
+            assert!(
+                matches!(r, Err(DocError::ChangedOnDisk)),
+                "{exchange} {r:?}"
+            );
+            assert_eq!(
+                fs::read_to_string(&other).unwrap(),
+                "theirs v2\n",
+                "{exchange}"
+            );
+            assert_untouched_doc(&doc, &p);
+            assert_eq!(
+                dir_names(dir.path()),
+                vec!["a.txt", "other.txt"],
+                "{exchange}"
+            );
+            rewrite_in_same_tick(&other, "theirs v1\n");
+            doc.save_as_seen(&other, &seen).unwrap();
+            assert_eq!(
+                fs::read_to_string(&other).unwrap(),
+                "mine\nedit",
+                "{exchange}"
+            );
+        }
     }
 
     #[test]
