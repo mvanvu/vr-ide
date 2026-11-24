@@ -1,7 +1,10 @@
 //! `app.*` commands.
 
+use super::dialog::DialogAction;
+use super::file::{CANCEL, SaveOutcome, save_doc};
 use super::registry::{CmdArgs, CmdResult, CommandSpec};
 use crate::app::App;
+use crate::ui::dialog::{ConfirmDialog, DialogWidget};
 
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
@@ -16,27 +19,76 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
-/// With unsaved changes the first press only warns; pressing quit again (after letting go of
-/// the key) quits, and the unsaved buffers are kept in the recovery directory.
-/// (The save / discard dialog replaces this in T6.)
+/// With unsaved changes, asks: Save all / Discard / Cancel (the answer is in [`answer_quit`]).
 fn quit(app: &mut App, _: CmdArgs) -> CmdResult {
-    let unsaved = app.docs.iter().filter(|d| d.is_modified()).count();
-    if unsaved > 0 {
-        let warning = format!(
-            "{unsaved} unsaved file(s): {} again to quit without saving",
-            app.key_hint("app.quit")
-        );
-        if !app.confirm_twice("app.quit", warning) {
-            return Ok(());
-        }
-        let all: Vec<usize> = (0..app.docs.len()).collect();
-        app.keep_discarded(&all);
+    let unsaved: Vec<String> = app
+        .docs
+        .iter()
+        .filter(|d| d.is_modified())
+        .map(|d| {
+            d.path
+                .as_deref()
+                .map_or_else(|| "untitled".to_string(), |p| app.display_path(p))
+        })
+        .collect();
+    if unsaved.is_empty() {
+        app.quit = true;
+        return Ok(());
     }
-    app.quit = true;
+    let message = format!(
+        "{} unsaved file(s): {}. Discard keeps a copy in the recovery folder.",
+        unsaved.len(),
+        unsaved.join(", ")
+    );
+    app.open_dialog(
+        DialogWidget::Confirm(ConfirmDialog::new(
+            "Quit",
+            message,
+            &[SAVE_ALL, DISCARD, CANCEL],
+        )),
+        DialogAction::Quit,
+    );
     Ok(())
 }
 
+pub const SAVE_ALL: &str = "Save all";
+pub const DISCARD: &str = "Discard";
+
+/// Save all: quits once every modified file is saved (stops at a failure or a prompt).
+/// Discard: quits once the buffers are in the recovery folder (D57), and prints where after
+/// the terminal is restored; when that write fails nothing is discarded.
+pub fn answer_quit(app: &mut App, button: usize) {
+    match button {
+        0 => {
+            for i in 0..app.docs.len() {
+                if app.docs[i].is_modified() && save_doc(app, i) != SaveOutcome::Saved {
+                    return;
+                }
+            }
+            app.quit = true;
+        }
+        1 => {
+            let all: Vec<usize> = (0..app.docs.len()).collect();
+            match app.keep_discarded(&all) {
+                Ok(files) => {
+                    if !files.is_empty() {
+                        let list: Vec<String> =
+                            files.iter().map(|f| f.display().to_string()).collect();
+                        app.exit_messages.push(format!(
+                            "unsaved changes were kept in the recovery folder: {}",
+                            list.join(", ")
+                        ));
+                    }
+                    app.quit = true;
+                }
+                Err(e) => app.error(e),
+            }
+        }
+        _ => {}
+    }
+}
+
 fn palette(app: &mut App, _: CmdArgs) -> CmdResult {
-    app.info("Command palette is not available yet");
+    super::palette::open(app);
     Ok(())
 }

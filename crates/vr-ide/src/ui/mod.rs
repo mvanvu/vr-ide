@@ -1,7 +1,9 @@
 //! Rendering. `render` draws the whole frame from `App` and records the layout it used.
 
+pub mod dialog;
 pub mod editor_view;
 pub mod layout;
+pub mod palette;
 pub mod status_bar;
 pub mod tabs;
 
@@ -20,6 +22,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     editor_view::render(frame, layout.editor, app, &theme);
     status_bar::render_notice(frame.buffer_mut(), layout.notice, app, &theme);
     status_bar::render(frame.buffer_mut(), layout.status, app, &theme);
+    // Overlays last: they draw over the editor and set the cursor.
+    if app.palette.is_some() {
+        palette::render(frame, area, app, &theme);
+    }
+    if let Some(d) = &mut app.dialog {
+        d.widget.render(frame, area, &theme);
+    }
 }
 
 #[cfg(test)]
@@ -130,6 +139,75 @@ mod tests {
         let mut t = draw(&mut app, 40, 12);
         let pos = t.get_cursor_position().unwrap();
         assert!(pos.x < 40 && pos.y == 2, "{pos:?}");
+    }
+
+    #[test]
+    fn render_palette() {
+        let (_d, _p, mut app, _) = app_with_file("fn main() {}\n");
+        app.run_command("app.palette", crate::commands::CmdArgs::None);
+        for c in "sa".chars() {
+            key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        snap("render_palette", &mut app);
+        // The cursor sits in the palette input, after "sa".
+        let mut t = draw(&mut app, 80, 24);
+        let pos = t.get_cursor_position().unwrap();
+        let input = app.palette.as_ref().unwrap().area;
+        assert_eq!(pos.y, input.y + 1, "{pos:?} {input:?}");
+    }
+
+    #[test]
+    fn render_confirm_dialog() {
+        let (d, _p, mut app, _) = app_with_file("one\n");
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        std::fs::write(d.path().join("second.rs"), "fn a() {}\n").unwrap();
+        app.open_path(std::path::Path::new("second.rs")).unwrap();
+        key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        app.run_command("app.quit", crate::commands::CmdArgs::None);
+        snap("render_confirm_dialog", &mut app);
+    }
+
+    #[test]
+    fn palette_and_dialog_answer_the_mouse() {
+        let (d, path, mut app, _) = app_with_file("one\n");
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        let click = |column, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.run_command("app.palette", crate::commands::CmdArgs::None);
+        for c in "save".chars() {
+            key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        draw(&mut app, 40, 12);
+        let list = app.palette.as_ref().unwrap().list_area;
+        assert_eq!(app.palette.as_ref().unwrap().items[0].name, "file.save");
+        app.handle_mouse(click(list.x + 2, list.y));
+        assert!(app.palette.is_none());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "xone\n");
+        // A click outside the palette closes it.
+        app.run_command("app.palette", crate::commands::CmdArgs::None);
+        draw(&mut app, 40, 12);
+        app.handle_mouse(click(0, 11));
+        assert!(app.palette.is_none());
+        // Dialog buttons answer clicks; clicks elsewhere do nothing while it is open.
+        std::fs::write(d.path().join("b.txt"), "b\n").unwrap();
+        key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        app.run_command("app.quit", crate::commands::CmdArgs::None);
+        draw(&mut app, 40, 12);
+        app.handle_mouse(click(0, 0));
+        assert!(app.dialog.is_some());
+        let crate::ui::dialog::DialogWidget::Confirm(c) = &app.dialog.as_ref().unwrap().widget
+        else {
+            panic!("confirm expected")
+        };
+        let save_all = c.button_areas[0];
+        app.handle_mouse(click(save_all.x + 1, save_all.y));
+        assert!(app.quit);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "xyone\n");
     }
 
     #[test]

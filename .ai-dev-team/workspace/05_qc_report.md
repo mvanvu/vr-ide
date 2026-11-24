@@ -322,3 +322,91 @@ Build: worktree `.worktrees/T4r3` (D73-D76, D64 API), `vr-core` and `vr-search` 
 | vr-search racing 2 x 30 | pass | atomic writer: dropped_or_torn 0, 19 Ok, 11 refused; in-place writer: dropped_or_torn 0, 15 Ok, 15 refused; other files clean, 0 extra files. ("unchanged_but_apply_ok" 19 and 15 = writer's own later write of preview-identical content, as in earlier rounds) |
 | D64 `disk_version()` + `save_overwrite_seen` | pass | no external change: Ok, our bytes on disk. External in-place write after `seen`: ChangedOnDisk, newer external content on disk. Same-size external change: ChangedOnDisk. Atomic external replace: ChangedOnDisk, external content kept. Prompt flow (save refused, `seen` taken after the change): Ok. Racing loop, 50 saves with a writer at three offsets: SJ=100 ok 18 / ChangedOnDisk 32; SJ=300 38/12; SJ=1000 46/4; 0 bad: every Err left writer content, every Ok left our bytes or later writer bytes, no Ok after a writer version existed before the call |
 | `.vr-ide-conflict-*` files | pass | 0 appeared in any run (corpus, 8 concurrent loops, D64 loops, both vr-search race runs) |
+
+## QC FR-2 — QC_PASS FR-2
+Build: worktree `.worktrees/FR2` (branch fr2-save-as-seen), `crates/vr-core` by path dependency, release probe with its own target dir. Logs: `qa-artifacts/T4/fr2/`. Fixtures and target dir removed afterwards.
+| Check | Result | Evidence |
+|---|---|---|
+| (a) seen existing B, external write, `save_as_seen(B, seen)` | pass | Err(ChangedOnDisk); B keeps "b external"; document path unchanged |
+| (b) seen absent C, C created externally, `save_as_seen(C, seen)` | pass | Err(ChangedOnDisk); C untouched ("c external") |
+| Own path | pass | external change then `save_as(same path)`: ChangedOnDisk, external content kept; `save_as_seen(own, stale seen)`: ChangedOnDisk; own path spelled `dir/./name`: ChangedOnDisk |
+| No change | pass | existing target Ok, absent target Ok, own path `save_as` Ok, own path `save_as_seen` Ok; each wrote exactly our bytes and set the document path (own path unchanged) |
+| Concurrent writer on `save_as_seen`, 2 x 50 for an existing other file and 2 x 50 for an absent name (in-place writer step 300 us; temp+rename writer step 1000 us) | pass | existing: Ok/ChangedOnDisk 39/11 and 47/3; absent: 39/11 and 46/4. Ok after a writer version existed before the call: 0 of 200 saves. Ok with our bytes although a write landed during the call: 0. Every Err left the writer's content and the document path unchanged; every Ok left our bytes or later writer bytes; 0 bad contents |
+| Temp and conflict files | pass | none after the fixed cases and after all 200 racing saves (0 `.vr-ide-conflict-*` files, so none needed to be named in an error) |
+| AC-3 corpus regression | pass | 46 PASS, 0 FAIL |
+
+## QC T6 — QC_PASS
+Build: release binary from commit 663b515 plus a dirty working tree (T6 changes uncommitted; FR-1 may touch vr-core testutil.rs, test-only). Script: `qa-artifacts/T6/qc_flows.py` (reuses the T5 pty harness, one result line per flow), run under a pty at 80x24 and 40x12 with `VR_IDE_CONFIG_DIR` and `VR_IDE_STATE_DIR` in fixture dirs; the work dirs were removed afterwards.
+Engine: pty with a VT emulator; no browser.
+
+| AC / check | Status | Evidence |
+|---|---|---|
+| AC-6 F1 opens; "sav" lists Save with ctrl+s; Enter saves; Esc closes; Down/Up; click on a row; kitty ctrl+shift+p | pass | FLOW AC-6 (8 steps true). Down,Down,Enter opens Save As; Down,Down,Up,Enter does not |
+| AC-6 go to line | pass | "5:3" -> status Ln 5, Col 3. "999" -> Ln 11, the last line of a 10-line file with a trailing newline. "abc" -> the dialog stays open with the message "Line (1-11), optionally :column" and the cursor does not move |
+| AC-7 modified buffer, external write | pass | the prompt shows Reload / Keep mine. Reload shows the disk text and ctrl+z brings back "Xbase". Keep mine writes only after the save prompt: disk = our bytes |
+| AC-7 newer write after the prompt opened | pass | re-prompt "changed again on disk; nothing was replaced"; disk keeps the newer external content |
+| AC-7 deleted on disk | pass | Save (recreate) recreates the file with our bytes. Close writes a recovery copy with mode 0600 and the file is not recreated |
+| AC-7 quit with 2 modified buffers | pass | Save all / Discard / Cancel. Cancel by click and by Esc leaves the app running. Discard exits 0, stderr names both recovery files (0600, correct bytes), disk untouched. Save all exits 0 with both files written. Held Enter for 1 s (kitty repeat events) chooses nothing |
+| Save As onto an existing file | pass | Replace dialog; Cancel by click, by Enter (default) and by Esc leaves other.txt byte-identical. Replace writes the file |
+| Concurrent writer (ledger rule) | pass | 120 Keep-mine choices with a writer rewriting every 1 ms. Writer started 50 ms before the click: 30/30 refused with re-prompt. Writer racing the click (0-4 ms jitter): 30/30 refused with re-prompt. Writer started after the click (60 runs): 58 refused with re-prompt, 1 Ok applied before the writer wrote anything (no writer version lost), 1 refused with no re-prompt visible, disk not overwritten. Violations: 0/120 |
+| 40x12 snapshots | pass | the palette and the quit dialog render without panic and all three buttons are visible (`qa-artifacts/T6/tiny_snapshots.txt`) |
+
+Observations, not defects:
+- The default button of the quit dialog is Save all, so one real Enter press saves both files and exits (control flow `AC-7-quit-enter-control`).
+- Held-Enter protection depends on the terminal reporting auto-repeat events (kitty protocol). A legacy terminal sends plain Enter presses, which the app cannot tell from a real press.
+- The shell command that checks the race window outside the app (between the version re-check and the rename) cannot be hit from outside. The developer's notes say this is the interim adapter, and the swap to vr-core `save_overwrite_seen` is still pending. The racing-writer test belongs with that swap (T12). 0 violations in 120 runs does not prove the window is closed.
+
+## Rule check T6
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-9 / ledger concurrent-writer check | pass | the 3 race modes above, 0 violations in 120 |
+| BASE-23 entry paths | pass | palette by F1, by kitty ctrl+shift+p and by mouse; dialogs by keyboard and by mouse |
+| BASE-32 decisions honoured (D57, D64, D65) | pass | no press-twice flow; the seen-version re-check re-prompts |
+| BASE-35 / USER-1 palette keys come from the keymap | pass | the palette shows ctrl+s, ctrl+shift+s, ctrl+g from keymap.toml |
+| BASE-46 commit named | pass | 663b515, dirty tree |
+| BASE-3, BASE-4, BASE-25 (developer evidence) | pass | notes `04_dev_T6.md` hold red lines, test output and guard output |
+| BASE-17 (probe cleanup) | pass | work dirs removed, no vr-ide process left (0) |
+
+## QC FR-2 re-check (round 1) — QC_PASS FR-2 R1
+Build: worktree `.worktrees/FR2` (D89), `crates/vr-core` by path dependency, release probe, own target dir. Logs: `qa-artifacts/T4/fr2r1/`. Fixtures (FIFO, directory, race dirs) and target dir removed afterwards.
+| Check | Result | Evidence |
+|---|---|---|
+| Plain `save_as` (unprompted) to another existing file, writer racing, 2 x 50 | pass | in-place writer step 300 us: Ok/ChangedOnDisk 40/10; temp+rename writer step 1000 us: 47/3. Ok saves that replaced a writer version written during the call: 0 of 100; Ok saves that replaced a version existing before the call: 0 (the plain call refuses those too); every Err left the writer's content and kept the document path; every Ok left our bytes or later writer bytes; no extra files |
+| `DiskVersion::of_path` on `/dev/zero`, a FIFO, a directory | pass | each returns Err "not a regular file" in about 0.1 ms (limit 1 s) |
+| Save As to a FIFO / directory / `/dev/zero` (`save_as` and `save_as_seen`) | pass | every call returns an error within 0.2 ms, none blocks, document path kept |
+| FR-2 regression: `save_as_seen` races (existing and absent, 2 x 50 each) and the fixed cases | pass | Ok/ChangedOnDisk 41/9, 47/3, 41/9, 47/3; 0 Ok after a writer version existed, 0 conflict files |
+| AC-3 corpus smoke | pass | 46 PASS, 0 FAIL |
+
+## QC T6 re-check (round 1) — QC_PASS T6 R1
+Build: release binary rebuilt from commit e4c7cf2 plus a dirty tree (31 changed paths). Script: `qa-artifacts/T6/qc_flows.py` (all T6 flows plus the R1 flows, one result line per flow). All earlier T6 flows were re-run and still pass (AC-6, goto, reload, keepmine, newer-write, deleted, quit incl. held Enter, Save As, 40x12, Keep-mine race 120 runs).
+
+| Check | Result | Evidence |
+|---|---|---|
+| Own-path Save As after an external change | pass | prefilled name + Enter gives the Keep mine / Reload prompt; disk keeps the external content |
+| Replace on B changed externally | pass | "changed on disk; nothing was replaced", Replace File re-prompt, B keeps the external content |
+| Save As to an absent name while a writer creates it (30 runs) | pass | 30/30 writer created the file first; writer content kept; Replace File asked. The sub-millisecond window where the app wins the race first was not reached (0 runs), so only the writer-first order is proven |
+| Reload with unsaved edits | pass | exactly one recovery copy, mode 0600, content = our edit; buffer shows the disk text |
+| Legacy terminal, held Enter 1 s while an external change opens the prompt | pass | the prompt appears 0.25 s after the write and is still open after 1 s; nothing chosen, disk keeps the external content |
+| Deliberate single Enter after the prompt is visible (legacy) | observed | Enter at 0.1, 0.3, 0.45 s is ignored and a second press 0.8 s later acts; at 0.6 s and 0.9 s the first press acts. Consistent with the 500 ms settle |
+| Deleted-on-disk prompt default | pass | buttons Save (recreate) / Close / Keep; Enter 1 s after the prompt closes it, file not recreated, tab still modified |
+| Save As onto a file open in another tab | pass | unmodified other tab: Replace, then one tab (b.txt) with our bytes. Modified other tab: refused ("is open with unsaved changes"), b.txt unchanged |
+| Save As to /dev/null | pass | error "/dev/null: not a regular file"; /dev/null is still a character device with size 0; a.txt unchanged, tab still modified |
+| Concurrent writer on Replace, 30 + 30 runs | pass | writer racing the click: refused+re-prompt 30/30. Writer started after the click: refused+re-prompt 29, replaced before any writer write 1. Violations 0/60 |
+
+Observation: because of the 500 ms / 700 ms Enter rules, a scripted or fast-typed Enter inside a prompt (open, type, Enter within 0.5 s of opening) is ignored, so the flows wait 0.8 s before Enter. A real typist is unlikely to hit this, but the script had to account for it.
+
+Cleanup: work dirs removed, no vr-ide process left.
+
+## QC T6 re-check (round 2) — QC_PASS T6 R2
+Build: release binary rebuilt from commit e4c7cf2 plus a dirty tree (31 changed paths). Script: `qa-artifacts/T6/qc_flows.py`. The race flows now count a refusal as correct only when a prompt stays open AND the reason ("nothing was replaced" / "read again") is read inside the dialog box.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Replace race, 30 + 30 runs (writer racing the click / started after it) | pass | 60/60 refused, prompt open with the reason in the box; 0 violations |
+| Keep-mine race, 30 + 30 + 60 runs (writer started 50 ms before / racing / after the click) | pass | 118 refused with prompt and reason; 2 Ok applied before any writer write (no writer version lost); 0 violations |
+| Own-path Save As after an external change | pass | Keep mine / Reload prompt, external content stays on disk |
+| Keep mine after a newer write | pass | the box shows "changed again on disk; nothing was replaced" and the external content stays on disk |
+| Replace while a writer rewrites the target every ~1 ms for 3 s | pass | 2629 writer versions; 5 Replace clicks, 5 refused with the prompt open and "changed on disk; nothing was replaced" in the box; our bytes were never written; final disk content is the writer's last version |
+| New-name Save As with a writer creating it (30 runs) | pass | 30/30 writer first, its content kept, Replace asked |
+
+Cleanup: work dirs removed, no vr-ide process left.

@@ -21,6 +21,16 @@ pub struct Theme {
     pub warning: Style,
     pub error: Style,
     pub dim: Style,
+    /// Dialogs and the palette.
+    pub popup: Style,
+    pub popup_border: Style,
+    pub input: Style,
+    pub button: Style,
+    pub button_selected: Style,
+    /// Selected palette row.
+    pub list_selected: Style,
+    /// Matched characters in palette rows.
+    pub matched: Style,
 }
 
 impl Theme {
@@ -58,6 +68,18 @@ impl Theme {
             warning: Style::default().fg(Color::Yellow),
             error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             dim: Style::default().fg(Color::DarkGray),
+            popup: Style::default().bg(Color::Indexed(236)).fg(Color::White),
+            popup_border: Style::default().fg(Color::Cyan),
+            input: Style::default().bg(Color::Indexed(238)).fg(Color::White),
+            button: Style::default().fg(Color::Gray),
+            button_selected: Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            list_selected: Style::default().bg(Color::Indexed(24)).fg(Color::White),
+            matched: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         }
     }
 
@@ -81,6 +103,18 @@ impl Theme {
             warning: Style::default().fg(Color::Indexed(130)),
             error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             dim: Style::default().fg(Color::Gray),
+            popup: Style::default().bg(Color::Indexed(254)).fg(Color::Black),
+            popup_border: Style::default().fg(Color::Blue),
+            input: Style::default().bg(Color::White).fg(Color::Black),
+            button: Style::default().fg(Color::DarkGray),
+            button_selected: Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            list_selected: Style::default().bg(Color::Indexed(153)).fg(Color::Black),
+            matched: Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
         }
     }
 }

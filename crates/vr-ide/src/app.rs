@@ -13,22 +13,35 @@ use vr_config::{ConfigWarning, Context, Keymap, Settings};
 use vr_core::{BufferOptions, DiskState, Document, FsEvent, Selection, Watcher};
 
 use crate::clipboard::Clipboard;
+use crate::commands::dialog::DialogAction;
+use crate::commands::palette::Palette;
 use crate::commands::{self, CmdArgs};
 use crate::event_loop::{chord_from_key, legacy_unreachable};
+use crate::ui::dialog::{DialogWidget, Outcome};
 use crate::ui::layout::AppLayout;
 
-/// Which part of the screen receives keys. T6/T8/T10 add palette, explorer, find bar.
+/// Which part of the screen receives keys. T8/T10 add explorer, find bar. A dialog is modal
+/// and takes every key while open, whatever the focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Editor,
+    Palette,
 }
 
 impl Focus {
     pub fn context(self) -> Context {
         match self {
             Focus::Editor => Context::Editor,
+            Focus::Palette => Context::Palette,
         }
     }
+}
+
+/// An open modal dialog: the widget and what its answer does.
+#[derive(Debug, Clone)]
+pub struct Dialog {
+    pub widget: DialogWidget,
+    pub action: DialogAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -50,19 +63,19 @@ pub struct Notice {
 
 pub const INFO_NOTICE_TTL: Duration = Duration::from_secs(5);
 
+/// Enter is not taken by a dialog or the palette for this long after it opened: an Enter
+/// typed for the editor just as a prompt appears must not answer it (D80).
+pub const ENTER_SETTLE: Duration = Duration::from_millis(500);
+
+/// An Enter press this soon after the previous one is taken as auto-repeat: legacy terminals
+/// report a held key's repeats as presses (initial delay up to ~660 ms on X11), D65/D80.
+pub const ENTER_REPEAT_GAP: Duration = Duration::from_millis(700);
+
 /// How long the legacy-keyboard startup hint stays when nothing else is shown.
 pub const KEYBOARD_NOTICE_TTL: Duration = Duration::from_secs(15);
 
-/// A second press of a "press again" key counts only after this much quiet since the previous
-/// press of it: legacy terminals report auto-repeat of a held key as more presses, every
-/// 25-50 ms after a first delay of 250-660 ms on common systems.
-pub const CONFIRM_REPEAT_GAP: Duration = Duration::from_millis(700);
-
-/// A pending "press again" confirmation is forgotten after this long.
-pub const CONFIRM_TTL: Duration = Duration::from_secs(30);
-
-/// The key that dismisses a notice or cancels a pending confirmation. Built in like the cursor
-/// keys (the plan keeps those out of the keymap); see decisions.md.
+/// The key that dismisses a notice. Built in like the cursor keys (the plan keeps those out
+/// of the keymap); see decisions.md.
 pub const DISMISS_KEY: KeyCode = KeyCode::Esc;
 
 /// Lines one wheel notch scrolls.
@@ -78,17 +91,6 @@ pub struct View {
     /// Scroll so the cursor is visible on the next render (set by edits and cursor moves,
     /// not by wheel scrolling).
     pub follow_cursor: bool,
-}
-
-/// A pending "press again" confirmation.
-#[derive(Debug, Clone)]
-struct Confirm {
-    cmd: &'static str,
-    started: Instant,
-    /// Last press of the key, auto-repeat included.
-    last: Instant,
-    /// Text of the warning it showed, removed when the confirmation ends.
-    notice: String,
 }
 
 pub struct App {
@@ -111,15 +113,25 @@ pub struct App {
     pub dirty: bool,
     /// Areas of the last frame, for mouse hit tests and paging.
     pub layout: AppLayout,
-    /// A command that asked "press again to confirm"; any other input clears it.
-    confirm: Option<Confirm>,
-    /// Time and auto-repeat flag of the key being handled.
-    input_at: Instant,
-    input_repeat: bool,
     /// Mouse drag in the editor extends the selection.
     pub(crate) dragging: bool,
     /// Where unsaved buffers go when the user discards them (None: not kept).
     pub recovery_dir: Option<PathBuf>,
+    /// The open modal dialog (takes all input).
+    pub dialog: Option<Dialog>,
+    /// The command palette while open (`Focus::Palette`).
+    pub palette: Option<Palette>,
+    /// Printed to stderr after the terminal is restored (e.g. where discarded buffers went).
+    pub exit_messages: Vec<String>,
+    /// [`ENTER_SETTLE`] and [`ENTER_REPEAT_GAP`]; tests that do not exercise timing set zero.
+    pub enter_settle: Duration,
+    pub enter_repeat_gap: Duration,
+    /// When the open dialog or the palette appeared.
+    pub(crate) modal_since: Option<Instant>,
+    /// Time of the last Enter press or repeat, in any context.
+    last_enter: Option<Instant>,
+    /// Time of the key event being handled (injectable clock for tests).
+    event_time: Option<Instant>,
 }
 
 impl App {
@@ -145,11 +157,16 @@ impl App {
             quit: false,
             dirty: true,
             layout: AppLayout::default(),
-            confirm: None,
-            input_at: Instant::now(),
-            input_repeat: false,
             dragging: false,
             recovery_dir: None,
+            dialog: None,
+            palette: None,
+            exit_messages: Vec::new(),
+            enter_settle: ENTER_SETTLE,
+            enter_repeat_gap: ENTER_REPEAT_GAP,
+            modal_since: None,
+            last_enter: None,
+            event_time: None,
         }
     }
 
@@ -327,6 +344,30 @@ impl App {
         out
     }
 
+    /// After Save As: the watcher follows the document to its new path.
+    pub fn rewatch(&mut self, old: Option<&Path>, new: &Path) {
+        if old == Some(new) {
+            return;
+        }
+        let still_open = |p: &Path| {
+            self.docs
+                .iter()
+                .filter(|d| d.path.as_deref() == Some(p))
+                .count()
+        };
+        let drop_old = old.filter(|p| still_open(p) == 0).map(Path::to_path_buf);
+        let Some(w) = &mut self.watcher else {
+            return;
+        };
+        if let Some(p) = drop_old {
+            w.unwatch(&p);
+        }
+        if let Err(e) = w.watch(new) {
+            let msg = format!("file watching: {e}");
+            self.warn(msg);
+        }
+    }
+
     pub fn buffer_options(&self) -> BufferOptions {
         let tab_width = self.settings.tab_width.max(1);
         BufferOptions {
@@ -467,51 +508,12 @@ impl App {
         }
     }
 
-    /// "Press again to confirm" for `cmd`: true on a deliberate second press, false after
-    /// showing `warning`. Auto-repeat of a held key never confirms, and a confirmation older
-    /// than [`CONFIRM_TTL`] starts over.
-    pub fn confirm_twice(&mut self, cmd: &'static str, warning: String) -> bool {
-        let now = self.input_at;
-        if let Some(c) = &mut self.confirm
-            && c.cmd == cmd
-            && now.saturating_duration_since(c.started) <= CONFIRM_TTL
-        {
-            if self.input_repeat || now.saturating_duration_since(c.last) < CONFIRM_REPEAT_GAP {
-                c.last = now;
-                return false;
-            }
-            self.cancel_confirm();
-            return true;
-        }
-        self.cancel_confirm();
-        self.warn(warning.clone());
-        self.confirm = Some(Confirm {
-            cmd,
-            started: now,
-            last: now,
-            notice: warning,
-        });
-        false
-    }
-
-    /// Forgets a pending confirmation and removes its warning.
-    pub fn cancel_confirm(&mut self) {
-        if let Some(c) = self.confirm.take()
-            && let Some(i) = self
-                .notices
-                .iter()
-                .position(|n| n.level == NoticeLevel::Warning && n.text == c.notice)
-        {
-            self.notices.remove(i);
-            self.dirty = true;
-        }
-    }
-
     /// Writes the unsaved buffers of `idxs` to the recovery directory before they are
-    /// discarded, and says where.
-    pub fn keep_discarded(&mut self, idxs: &[usize]) {
+    /// discarded. Returns the files written; `Err` (with the message to show) when any buffer
+    /// could not be written, and then the caller must not discard anything.
+    pub fn keep_discarded(&mut self, idxs: &[usize]) -> Result<Vec<PathBuf>, String> {
         let Some(dir) = self.recovery_dir.clone() else {
-            return;
+            return Ok(Vec::new());
         };
         let docs: Vec<&Document> = idxs
             .iter()
@@ -519,16 +521,36 @@ impl App {
             .filter(|d| d.is_modified())
             .collect();
         if docs.is_empty() {
-            return;
+            return Ok(Vec::new());
         }
         let written = crate::recovery::write_docs(&docs, &dir);
         if written.len() == docs.len() {
-            self.info(format!("unsaved changes kept in {}", dir.display()));
+            Ok(written)
         } else {
-            self.error(format!(
-                "could not write every unsaved buffer to recovery ({})",
+            Err(format!(
+                "could not write the unsaved changes to {}; nothing was discarded",
                 dir.display()
-            ));
+            ))
+        }
+    }
+
+    // ---- dialogs -----------------------------------------------------------------------
+
+    /// Opens a modal dialog; it replaces any open one and closes the palette.
+    pub fn open_dialog(&mut self, widget: DialogWidget, action: DialogAction) {
+        commands::palette::close(self);
+        self.dialog = Some(Dialog { widget, action });
+        self.modal_since = Some(self.now());
+        self.dirty = true;
+    }
+
+    /// Hands a dialog's answer to its action (which may open the next dialog).
+    fn answer_dialog(&mut self, outcome: Outcome) {
+        if outcome == Outcome::Pending {
+            return;
+        }
+        if let Some(d) = self.dialog.take() {
+            commands::dialog::answer(self, d, outcome);
         }
     }
 
@@ -540,9 +562,6 @@ impl App {
             self.warn(format!("unknown command {name:?}"));
             return false;
         };
-        if self.confirm.as_ref().is_some_and(|c| c.cmd != spec.name) {
-            self.cancel_confirm();
-        }
         if let Err(e) = (spec.run)(self, args) {
             self.error(format!("{}: {e}", spec.title));
         }
@@ -550,50 +569,86 @@ impl App {
         true
     }
 
+    /// Routing: an open dialog takes every key; then the palette's built-in keys; Esc
+    /// dismisses a notice; the editor's built-in keys; finally the keymap for the focus.
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.handle_key_at(key, Instant::now());
     }
 
-    /// [`App::handle_key`] with the time the key arrived (confirmations compare times).
+    /// [`App::handle_key`] at time `now`.
     pub fn handle_key_at(&mut self, key: KeyEvent, now: Instant) {
+        self.event_time = Some(now);
+        self.route_key(key, now);
+        self.event_time = None;
+    }
+
+    fn route_key(&mut self, key: KeyEvent, now: Instant) {
         if key.kind == KeyEventKind::Release {
             return;
         }
-        self.input_at = now;
-        self.input_repeat = key.kind == KeyEventKind::Repeat;
         self.dirty = true;
-        if key.code == DISMISS_KEY && key.modifiers.is_empty() {
-            if self.confirm.is_some() {
-                self.cancel_confirm();
-                return;
-            }
-            if !self.notices.is_empty() {
-                self.notices.pop_front();
-                return;
-            }
+        let enter_ignored = key.code == KeyCode::Enter && self.enter_is_not_deliberate(&key, now);
+        if key.code == KeyCode::Enter {
+            self.last_enter = Some(now);
+        }
+        let modal = self.dialog.is_some() || self.focus == Focus::Palette;
+        if modal && enter_ignored {
+            return;
+        }
+        if let Some(d) = &mut self.dialog {
+            let outcome = d.widget.handle_key(&key);
+            self.answer_dialog(outcome);
+            return;
+        }
+        if self.focus == Focus::Palette && commands::palette::handle_key(self, &key) {
+            return;
+        }
+        if key.code == DISMISS_KEY && key.modifiers.is_empty() && !self.notices.is_empty() {
+            self.notices.pop_front();
+            return;
         }
         // Built-in cursor and typing keys come first: the plan keeps them out of the keymap.
         if self.focus == Focus::Editor && commands::edit::handle_builtin_key(self, &key) {
-            self.cancel_confirm();
             return;
         }
         let Some(chord) = chord_from_key(&key, self.keyboard_enhanced) else {
             return;
         };
-        match self.keymap.command_for_in(self.focus.context(), &chord) {
-            Some(cmd) => {
-                let cmd = cmd.to_owned();
-                self.run_command(&cmd, CmdArgs::None);
-            }
-            None => self.cancel_confirm(),
+        if let Some(cmd) = self.keymap.command_for_in(self.focus.context(), &chord) {
+            let cmd = cmd.to_owned();
+            // A command started from the palette's context acts on the editor.
+            commands::palette::close(self);
+            self.run_command(&cmd, CmdArgs::None);
         }
+    }
+
+    /// An Enter that a dialog or the palette must not take: a labelled repeat, one within
+    /// [`ENTER_SETTLE`] of the dialog opening (typed for what was there before), or one within
+    /// [`ENTER_REPEAT_GAP`] of the previous Enter (legacy auto-repeat of a held key).
+    fn enter_is_not_deliberate(&self, key: &KeyEvent, now: Instant) -> bool {
+        let within = |t: Option<Instant>, d: Duration| {
+            t.is_some_and(|t| now.saturating_duration_since(t) < d)
+        };
+        key.kind == KeyEventKind::Repeat
+            || within(self.modal_since, self.enter_settle)
+            || within(self.last_enter, self.enter_repeat_gap)
+    }
+
+    /// Time of the event being handled.
+    pub(crate) fn now(&self) -> Instant {
+        self.event_time.unwrap_or_else(Instant::now)
     }
 
     /// Bracketed paste from the terminal.
     pub fn handle_paste(&mut self, text: &str) {
-        self.cancel_confirm();
-        if self.focus == Focus::Editor {
-            commands::edit::insert_pasted(self, text);
+        self.dirty = true;
+        if let Some(d) = &mut self.dialog {
+            d.widget.handle_paste(text);
+            return;
+        }
+        match self.focus {
+            Focus::Palette => commands::palette::paste(self, text),
+            Focus::Editor => commands::edit::insert_pasted(self, text),
         }
     }
 
@@ -606,10 +661,19 @@ impl App {
                 && ev.row >= r.y
                 && ev.row < r.y + r.height
         };
+        self.dirty = true;
+        if let Some(d) = &mut self.dialog {
+            let outcome = d.widget.handle_mouse(&ev);
+            self.answer_dialog(outcome);
+            return;
+        }
+        if self.palette.is_some() {
+            commands::palette::handle_mouse(self, &ev);
+            return;
+        }
         let l = self.layout;
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                self.cancel_confirm();
                 if inside(l.tabs) {
                     if let Some(i) = crate::ui::tabs::hit(self, ev.column - l.tabs.x, l.tabs.width)
                     {
@@ -681,7 +745,7 @@ impl App {
     }
 
     /// Applies a watcher event (AC-7): an unmodified document reloads; a modified one keeps
-    /// the buffer and its tab is marked (T6 adds the reload / keep prompt).
+    /// the buffer, its tab is marked and the Reload / Keep mine prompt opens.
     pub fn handle_fs_event(&mut self, ev: FsEvent) {
         match ev {
             FsEvent::Modified(p) | FsEvent::Created(p) | FsEvent::Removed(p) => self.recheck(&p),
@@ -720,8 +784,25 @@ impl App {
         let doc = &mut self.docs[i];
         let before = doc.disk_state;
         let state = doc.check_disk();
+        let modified = doc.is_modified();
+        // A modified buffer asks (AC-7) unless another dialog is open; then the tab mark and
+        // the notice tell, and saving asks.
+        if modified && before != state && self.dialog.is_none() {
+            match state {
+                DiskState::ChangedOnDisk => {
+                    commands::file::prompt_external_change(self, i, false);
+                    return;
+                }
+                DiskState::DeletedOnDisk => {
+                    commands::file::prompt_deleted(self, i);
+                    return;
+                }
+                DiskState::InSync => {}
+            }
+        }
+        let doc = &mut self.docs[i];
         let msg = match state {
-            DiskState::ChangedOnDisk if !doc.is_modified() => match doc.reload() {
+            DiskState::ChangedOnDisk if !modified => match doc.reload() {
                 Ok(()) => None,
                 Err(e) => Some((NoticeLevel::Error, format!("{name}: reload failed: {e}"))),
             },

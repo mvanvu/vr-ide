@@ -11,12 +11,15 @@ use crate::commands::CmdArgs;
 
 pub(crate) fn test_app(root: &Path) -> (App, MemoryClipboard) {
     let clip = MemoryClipboard::new();
-    let app = App::new(
+    let mut app = App::new(
         root.to_path_buf(),
         Keymap::load(None).0,
         Settings::default(),
         Box::new(clip.clone()),
     );
+    // Timing of Enter is tested on its own (held_or_in_flight_enter_never_answers_a_dialog).
+    app.enter_settle = std::time::Duration::ZERO;
+    app.enter_repeat_gap = std::time::Duration::ZERO;
     (app, clip)
 }
 
@@ -207,14 +210,6 @@ fn external_modify_modified_doc_keeps_buffer_and_marks_tab() {
     assert_eq!(text(&app), "mine old\n");
     let doc = app.active_doc().unwrap();
     assert_eq!(doc.disk_state, vr_core::DiskState::ChangedOnDisk);
-    assert!(notices(&app).iter().any(|n| n.contains("changed on disk")));
-    // Save refuses (never overwrites the other writer) and says how to keep mine.
-    app.handle_key(ctrl('s'));
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
-    assert!(notices(&app).iter().any(|n| n.contains("Save (overwrite)")));
-    app.run_command("file.save_overwrite", CmdArgs::None);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine old\n");
-    assert!(!app.active_doc().unwrap().is_modified());
 }
 
 #[test]
@@ -263,42 +258,6 @@ fn external_modify_reloads_within_one_second_with_real_watcher() {
 }
 
 #[test]
-fn quit_and_close_with_unsaved_need_a_second_press() {
-    use std::time::{Duration as D, Instant};
-    let t0 = Instant::now();
-    let (_d, _p, mut app, _) = app_with_file("a\n");
-    typ(&mut app, "x");
-    at(&mut app, ctrl('q'), t0);
-    assert!(!app.quit);
-    assert!(notices(&app).iter().any(|n| n.contains("ctrl+q")));
-    // Any other input cancels the pending confirmation (and its warning).
-    at(
-        &mut app,
-        key(KeyCode::Char('y'), KeyModifiers::NONE),
-        t0 + D::from_secs(1),
-    );
-    assert!(!notices(&app).iter().any(|n| n.contains("ctrl+q")));
-    at(&mut app, ctrl('q'), t0 + D::from_secs(2));
-    assert!(!app.quit);
-    at(&mut app, ctrl('q'), t0 + D::from_secs(3));
-    assert!(app.quit);
-
-    let (_d, _p, mut app, _) = app_with_file("a\n");
-    typ(&mut app, "x");
-    at(&mut app, ctrl('w'), t0);
-    assert_eq!(app.docs.len(), 1);
-    at(&mut app, ctrl('w'), t0 + D::from_secs(1));
-    assert!(app.docs.is_empty());
-
-    // Nothing unsaved: one press.
-    let (_d, _p, mut app, _) = app_with_file("a\n");
-    app.handle_key(ctrl('w'));
-    assert!(app.docs.is_empty());
-    app.handle_key(ctrl('q'));
-    assert!(app.quit);
-}
-
-#[test]
 fn open_tabs_switch_and_reopen_activates() {
     let dir = tempfile::tempdir().unwrap();
     for n in ["a.txt", "b.txt", "c.txt"] {
@@ -336,9 +295,6 @@ fn save_as_with_path_and_reload() {
         app.active_doc().unwrap().path.as_deref(),
         Some(target.as_path())
     );
-    // Without a path argument (no prompt until T6) it reports instead of guessing.
-    app.run_command("file.save_as", CmdArgs::None);
-    assert!(app.notices.iter().any(|n| n.text.contains("Save As")));
     typ(&mut app, "y");
     app.run_command("file.reload", CmdArgs::None);
     assert_eq!(text(&app), "xone\n");
@@ -372,11 +328,9 @@ fn bracketed_paste_is_one_undo_step() {
 }
 
 #[test]
-fn pending_and_palette_commands_show_a_notice() {
+fn pending_commands_show_a_notice() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = test_app(dir.path());
-    app.handle_key(key(KeyCode::F(1), KeyModifiers::NONE));
-    assert!(notices(&app).iter().any(|n| n.contains("palette")));
     app.handle_key(ctrl('f'));
     assert!(
         notices(&app)
@@ -412,89 +366,6 @@ fn legacy_terminal_notice_lists_unreachable_default_keys() {
 }
 
 // ---- fix round 1 -------------------------------------------------------------------------
-
-fn at(app: &mut App, k: KeyEvent, t: std::time::Instant) {
-    app.handle_key_at(k, t);
-}
-
-fn repeat(mut k: KeyEvent) -> KeyEvent {
-    k.kind = crossterm::event::KeyEventKind::Repeat;
-    k
-}
-
-#[test]
-fn held_quit_or_close_key_never_confirms() {
-    use std::time::{Duration as D, Instant};
-    let (_d, _p, mut app, _) = app_with_file("a\n");
-    typ(&mut app, "x");
-    let t0 = Instant::now();
-    at(&mut app, ctrl('q'), t0);
-    // Kitty protocol with event types: the terminal labels auto-repeat.
-    at(&mut app, repeat(ctrl('q')), t0 + D::from_millis(500));
-    assert!(!app.quit, "a Repeat event confirmed quit");
-    // Legacy terminal: auto-repeat arrives as more presses, the first after the repeat delay.
-    let mut t = t0 + D::from_millis(500);
-    for _ in 0..40 {
-        t += D::from_millis(33);
-        at(&mut app, ctrl('q'), t);
-    }
-    assert!(!app.quit, "a held ctrl+q quit with unsaved changes");
-    // Released, then pressed again on purpose.
-    at(&mut app, ctrl('q'), t + D::from_secs(1));
-    assert!(app.quit);
-
-    let (_d, _p, mut app, _) = app_with_file("a\n");
-    typ(&mut app, "x");
-    let t0 = Instant::now();
-    at(&mut app, ctrl('w'), t0);
-    let mut t = t0 + D::from_millis(450);
-    for _ in 0..40 {
-        at(&mut app, ctrl('w'), t);
-        t += D::from_millis(33);
-    }
-    assert_eq!(app.docs.len(), 1, "a held ctrl+w closed a modified tab");
-}
-
-#[test]
-fn escape_or_time_cancels_a_pending_confirmation() {
-    use std::time::{Duration as D, Instant};
-    let (_d, _p, mut app, _) = app_with_file("a\n");
-    typ(&mut app, "x");
-    let t0 = Instant::now();
-    at(&mut app, ctrl('q'), t0);
-    at(
-        &mut app,
-        key(KeyCode::Esc, KeyModifiers::NONE),
-        t0 + D::from_secs(1),
-    );
-    at(&mut app, ctrl('q'), t0 + D::from_secs(2));
-    assert!(!app.quit, "Esc did not cancel the pending quit");
-    // A confirmation left alone goes stale.
-    at(&mut app, ctrl('q'), t0 + D::from_secs(120));
-    assert!(!app.quit, "a stale confirmation quit");
-    at(&mut app, ctrl('q'), t0 + D::from_secs(121));
-    assert!(app.quit);
-}
-
-#[test]
-fn discarded_buffers_are_kept_in_recovery() {
-    use std::time::{Duration as D, Instant};
-    let state = tempfile::tempdir().unwrap();
-    let (_d, _p, mut app, _) = app_with_file("a\n");
-    app.recovery_dir = Some(state.path().join("recovery"));
-    typ(&mut app, "lost? ");
-    let t0 = Instant::now();
-    at(&mut app, ctrl('w'), t0);
-    at(&mut app, ctrl('w'), t0 + D::from_secs(1));
-    assert!(app.docs.is_empty());
-    let files: Vec<_> = std::fs::read_dir(state.path().join("recovery"))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .collect();
-    assert_eq!(files.len(), 1, "{files:?}");
-    assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), "lost? a\n");
-    assert!(notices(&app).iter().any(|n| n.contains("recovery")));
-}
 
 #[test]
 fn paste_uses_the_document_line_ending() {
@@ -552,32 +423,6 @@ fn rescan_renamed_and_error_events() {
         n.contains("inotify watch limit") && n.contains("missed"),
         "{n}"
     );
-}
-
-#[test]
-fn changed_on_disk_notice_names_the_overwrite_key() {
-    let (d, path, _app, _) = app_with_file("old\n");
-    let km_file = d.path().join("keymap.toml");
-    std::fs::write(&km_file, "\"ctrl+u\" = \"file.save_overwrite\"\n").unwrap();
-    for (keymap, want, not) in [
-        (Keymap::load(Some(&km_file)).0, "ctrl+u", "palette"),
-        (Keymap::load(None).0, "file.save_overwrite", "palette"),
-    ] {
-        std::fs::write(&path, "old\n").unwrap();
-        let mut app = App::new(
-            d.path().to_path_buf(),
-            keymap,
-            Settings::default(),
-            Box::new(MemoryClipboard::new()),
-        );
-        app.open_path(&path).unwrap();
-        typ(&mut app, "mine ");
-        std::fs::write(&path, "theirs\n").unwrap();
-        app.notices.clear();
-        app.handle_key(ctrl('s'));
-        let n = notices(&app).join("\n");
-        assert!(n.contains(want) && !n.contains(not), "{n}");
-    }
 }
 
 #[test]

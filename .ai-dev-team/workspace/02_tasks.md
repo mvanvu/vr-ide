@@ -7,7 +7,7 @@
 | T3 | vr-config keymap + settings (D10 defaults) | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-config/Cargo.toml, crates/vr-config/src/lib.rs until T1 committed) | - | AC-5 | crates/vr-config/** | `cargo test -p vr-config` | done | 0 |
 | T4 | vr-core documents (load/save/encoding) + file watching | be | T2 | - | AC-3, AC-7, AC-18 | crates/vr-core/src/{document,watch,lib}.rs | `cargo test -p vr-core` | done | 3+esc |
 | T5 | App shell: event loop, editor view, commands, tabs, status, clipboard, recovery | fe | T1, T2, T3, T4 | ui | AC-1, AC-3, AC-4, AC-5, AC-7, AC-18 | crates/vr-ide/src/{main,app,event_loop,clipboard,recovery,theme}.rs, commands/{registry,app,file,edit,tab}.rs, ui/{layout,editor_view,tabs,status_bar}.rs, ui/snapshots/ | `cargo test -p vr-ide` | done | 1 |
-| T6 | Palette, dialogs, go-to-line, external-change prompt, quit guard | fe | T5 | ui | AC-6, AC-7 | crates/vr-ide/src/ui/{palette,dialog}.rs, commands/{nav,palette}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | review | 0 |
+| T6 | Palette, dialogs, go-to-line, external-change prompt, quit guard | fe | T5 | ui | AC-6, AC-7 | crates/vr-ide/src/ui/{palette,dialog}.rs, commands/{nav,palette}.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | done | 2 |
 | T7 | vr-fs tree, file ops (trash), fuzzy file index | be | T1 (relaxed: no edits to Cargo.toml, Cargo.lock, crates/vr-fs/Cargo.toml, crates/vr-fs/src/lib.rs until T1 committed) | - | AC-8, AC-9 | crates/vr-fs/** | `cargo test -p vr-fs` | done | 3 |
 | T8 | Explorer panel + go-to-file | fe | T6, T7 | ui | AC-1, AC-8, AC-9 | crates/vr-ide/src/ui/{explorer,layout,palette}.rs, commands/explorer.rs, app.rs, ui/snapshots/ | `cargo test -p vr-ide` | todo | 0 |
 | T9 | vr-search engine: find/replace, project search, project replace | be | T2 | - | AC-9, AC-10, AC-11, AC-12 | crates/vr-search/** | `cargo test -p vr-search` | done | 2 |
@@ -15,13 +15,15 @@
 | T11 | Bench run, README, docs/keymap.md | be | T10 | - | AC-1 | README.md, scripts/bench-startup.sh, docs/keymap.md | bench script | todo | 0 |
 | T12 | Shared racing-writer test helper (vr-core test utils) + use it in T4/T7/T9 write-path tests | be | T4, T9 | - | AC-3, AC-8, AC-12 | crates/vr-core/src/testutil.rs (cfg test feature), tests in vr-core, vr-fs, vr-search | `cargo test -p vr-core -p vr-fs -p vr-search` | done | 0 |
 | FR-1 | Racing writer records what each write replaced (exact oracle, drop the one exception) | be | T4 | - | AC-3 | crates/vr-core/src/testutil.rs | `cargo test -p vr-core -p vr-search` | done | 0 |
+| FR-2 | vr-core: version of any path + save_as_seen (Save As never replaces an unseen target) + FR-1 oracle minors | be | T4, FR-1 | - | AC-3 | crates/vr-core/src/{document,testutil}.rs | `cargo test -p vr-core -p vr-search -p vr-ide` | done | 1 |
+| FR-3 | Racing tests: timing-free both-outcomes coverage, no-version Unprompted case, diagnostic panic for the known rare D75(2) false positive | be | FR-2, T6 | - | AC-3 | crates/vr-core/src/testutil.rs | strict loop + 200× under load | todo | 0 |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
 ## Notes
-- presence: away (user, 11:31)
-- hand-off: ready (11:31) — push verified working (19dbd52)
-- eta: ~17:10 (set 12:48, moved +35m: T4 escalation (parallel, must land before sign-off), T5 round 1 with 7 majors; basis: every task so far needed 1–3 fix rounds of ~5–10m plus ~5m re-review — T5 r1+recheck to ~13:15 → T6 ~45m → T8 ~45m → T10 ~45m → T11 15m → sign-off 25m → Phase 5 40m + fixes 20m)
+- presence: away (user, 14:42)
+- hand-off: ready (14:42) — identity set, history rewrite approved and scheduled at the T6 stop point
+- eta: ~18:10 (set 14:27, +20m: T6 round 2 (flaky racing test) ~15m + re-check 10m → T8 ~50m → T10 ~50m → T11 15m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
 - commits: one per task after review + QC pass, push to origin/master (user, 11:21)
 - research: skipped — direction settled in conversation (leader, 11:21)
@@ -76,3 +78,11 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - T6 review stopped (13:21) because the D64 swap edits crates/vr-ide under it; review restarts on the full diff after the swap (option b, rule bd0b4e4)
 - T6 D64 wiring done (13:22); review (opus) + QC restarted on the full diff; T6 developer at ~290k tokens → any fix round goes to a fresh developer
 - FR-1 verdict (13:23): review APPROVE (2 oracle minors → quick pass after T6 verdicts, to avoid editing testutil under T6's running test builds)
+- T6 review (13:26): 2 blocker (Save As to own path bypasses D64; Save As to another target writes without freshness) + 2 major (Reload drops unsaved edits w/o recovery; legacy auto-repeat Enter answers dialogs) + minors. Blocker 2 needs a vr-core API → FR-2 in worktree .worktrees/FR2 (opus); T6 round 1 after QC verdict; blocker 2 wiring after FR-2 merges
+- T6 round 1 (13:46): all fixed except B2, WAITING FR-2 merge (test written, #[ignore]); resume the same developer after FR-2 merges
+- FR-2 merged (14:05): product code approved R1 + QC_PASS R1; QP1 oracle loosening agreed by reviewer (D77); QP1 asserts flaky under load → FR-3 (tests only) after T6 B2, to avoid editing testutil under T6's test runs. Known rare false positive of the strict rule (D75(2)/D76(3) in-place write after the last check) recorded
+- T6 round 2 (14:26): R1-1 flaky racing test (refused Replace sometimes shows only an error notice instead of re-prompting); QC R1 PASS
+- HELD for user (14:41): request relayed from another session to set repo-local git identity to "Mai Vu <maivubc@gmail.com>" and rewrite author/committer of all commits + force-push master. Not done: needs the user's own confirmation in this session (irreversible, outward). Plan ready: config user.name/email (repo-local) → filter-branch env-filter (keeps dates/merges) at a stop point → push --force-with-lease → stale-hash note.
+- commit identity (user, 14:42): repo-local user.name=mvanvu, user.email=mvanvu@gmail.com; history rewrite of earlier commits NOT requested — asked the user
+- history rewrite APPROVED by the user (14:42): all commits → mvanvu <mvanvu@gmail.com>, then push --force-with-lease; do it right after T6 is committed, before T8 starts, with no agent running
+- T6 verdicts (14:43): round 2 review APPROVE (opus), QC_PASS R2; gate ✓

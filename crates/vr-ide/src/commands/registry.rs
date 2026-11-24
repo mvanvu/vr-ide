@@ -31,6 +31,7 @@ const GROUPS: &[&[CommandSpec]] = &[
     super::file::COMMANDS,
     super::edit::COMMANDS,
     super::tab::COMMANDS,
+    super::nav::COMMANDS,
     PENDING,
 ];
 
@@ -48,6 +49,11 @@ pub fn command_names() -> Vec<&'static str> {
     all_commands().iter().map(|c| c.name).collect()
 }
 
+/// True for a placeholder of a later task (not offered in the palette).
+pub fn is_pending(name: &str) -> bool {
+    PENDING.iter().any(|c| c.name == name)
+}
+
 /// Message of the error a pending command returns.
 pub const NOT_AVAILABLE: &str = "not available yet";
 
@@ -63,10 +69,9 @@ const fn pending(name: &'static str, title: &'static str) -> CommandSpec {
     }
 }
 
-/// Plan commands built by later tasks (T6, T8, T10). Registered now so the default keymap
+/// Plan commands built by later tasks (T8, T10). Registered now so the default keymap
 /// validates cleanly and the keys report "not available yet" instead of doing nothing.
 const PENDING: &[CommandSpec] = &[
-    pending("nav.goto_line", "Go to Line"),
     pending("file.goto", "Go to File"),
     pending("focus.cycle", "Focus Next Part"),
     pending("explorer.toggle", "Explorer: Toggle"),

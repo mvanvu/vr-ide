@@ -69,6 +69,10 @@ fn main() -> Result<()> {
 
     let result = run(&mut app);
     restore_terminal();
+    // Only now can the user read them (the alternate screen is gone).
+    for m in &app.exit_messages {
+        eprintln!("vr-ide: {m}");
+    }
     event_loop::finish(result, &app, &vr_config::state_dir().join("recovery"))
 }
 

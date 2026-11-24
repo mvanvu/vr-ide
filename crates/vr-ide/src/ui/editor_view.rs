@@ -310,6 +310,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     }
 
     if app.focus == Focus::Editor
+        && app.dialog.is_none()
         && head_line >= top
         && head_line < top + rows
         && cursor_x < text_w.max(1)

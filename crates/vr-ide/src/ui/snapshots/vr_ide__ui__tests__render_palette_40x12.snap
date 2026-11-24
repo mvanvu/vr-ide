@@ -1,0 +1,16 @@
+---
+source: crates/vr-ide/src/ui/mod.rs
+expression: t.backend()
+---
+" a.txt                                  "
+"  ┌ Command Palette ─────────────────┐  "
+"  │> sa                              │  "
+"  │ Save  file.save           ctrl+s │  "
+"  │ Save (overwrite)                 │  "
+"  │ Save As             ctrl+shift+s │  "
+"  │ Select All                ctrl+a │  "
+"  │ Previous Tab         ctrl+pageup │  "
+"  └──────────────────────────────────┘  "
+"                                        "
+"                                        "
+" a.txt · Ln 1, Col 1 · LF · UTF-8       "
