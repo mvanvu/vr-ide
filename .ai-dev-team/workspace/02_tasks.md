@@ -22,7 +22,7 @@
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
 
 ## Notes
-- presence: away (user, 15:52)
+- presence: present (user typed, 17:57)
 - hand-off: ready (15:52) — attribution removal approved; message rewrite scheduled after the T10 commit
 - eta: ~19:00 (set 17:19, +25m: T10 needed rounds 2 and 3; r3 ~25m + recheck 15m → merge + message rewrite 10m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
@@ -95,7 +95,7 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - FR-4 verdict (15:19): review APPROVE + QP1 re-check APPROVE; QC n-a (library API, covered by tests and by T8's QC after wiring); merged
 - T10 brief must include (T8 R1 minor): the >200k-files go-to-file notice shows once per session, not on every ctrl+p
 - T8 verdicts (15:49): R1 review APPROVE (opus), QC_PASS R1. Side observation: inherited T6 flow R1-replace-race-late gave 1 'no prompt' in 30 → replay by T6's QC
-- HELD for user (15:52): relayed request — no AI attribution in this repo (.claude/settings.json attribution off + CLAUDE.md line) and rewrite all commit messages to drop the Co-Authored-By trailer + force-push. Not done: needs the user's own confirmation in this session (settings edit, history rewrite, force push). Trailer kept on new commits until then.
+- DONE (was held 15:52): no AI attribution in this repo (.claude/settings.json attribution off + CLAUDE.md line) and rewrite all commit messages to drop the Co-Authored-By trailer + force-push. Not done: needs the user's own confirmation in this session (settings edit, history rewrite, force push). Trailer kept on new commits until then.
 - AI attribution removal APPROVED by the user (15:52): .claude/settings.json + CLAUDE.md written; new commits carry no trailer; history rewrite of messages + force-push at the next stop point (after T10 commit)
 - T6 replay (16:02): WITHDRAWN — the 'no prompt' was a Replace applied first then overwritten by the late writer (harness classification); D98 holds, 0 refusals without prompt in 160 runs
 - T11 (16:18): docs review CHANGES (2 doc majors, 2 minors) fixed by the leader as one-line text fixes with the reviewer's wording; bench 22 ms / 6 MB (5k files), 145 ms / 210 MB (100 MB file)
@@ -106,3 +106,14 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - T10 QC R2 PASS (17:27); worktree T10r1 removed (its state is snapshotted in t10-round3 9cb9b00)
 - T10 R3 review APPROVE (17:31). Minors: 'Quit anyway' confirm must default to Cancel (quick pass after QC); UI-thread tab-path resolve on preview start = follow-up (report). Flaky under load: app_tests::external_modify_reloads_within_one_second_with_real_watcher (1 s wall clock) — watch at sign-off
 - T10 verdicts (17:56): R3 review APPROVE + QP1 APPROVE (opus), QC_PASS R3; merged via plumbing (master had T10 round-0 files uncommitted, identical to the snapshot)
+- history rewritten 17:57: Co-Authored-By trailers removed from all commit messages (filter-branch msg-filter; author mvanvu, dates, merges kept); force-pushed with lease (b787ff1 → 2722c7c); hashes in notes before this line are pre-rewrite
+
+## Resume point (17:57, stopped by the user)
+- State: all planned tasks T1–T11 done; fix-born T12, FR-1…FR-4 done; master = origin/master, tree clean, no worktrees, no agents running.
+- History: authors rewritten to mvanvu <mvanvu@gmail.com>; AI trailers removed; this repo has no AI attribution (CLAUDE.md, .claude/settings.json) — new commits carry no trailer.
+- Next steps for the next session (restart `claude` in /home/vu-dev/DEV/vr-ide so the guard hook works):
+  1. Sign-off QC (sonnet): full suite once (`run-heavy.sh cargo test --workspace -j 4` + ignored/release timing tests), fmt + clippy, release-binary walk of AC-1…AC-12 and AC-18, one concurrent-writer save run, bench. Known flaky under load: app_tests::external_modify_reloads_within_one_second_with_real_watcher.
+  2. Phase 5 final review (board has 4+ tasks): dimensions correctness + ui (opus), cross-task interactions, scope = whole history.
+  3. Phase 6 report to the user (Vietnamese): decisions taken while away first, Fable use (T4 escalation, case 1), rule violations ledger, open follow-ups below.
+- Open follow-ups (minor, not started): UI thread canonicalizes open-tab paths when a replace preview starts (T10 R3 review); main-thread panic during a replace exits without joining the worker (D128, accepted); racing-oracle known false positive signature (D99).
+- confirm-on-return decisions for the user: D24, D32, D46, D48, D64, D76, D99, D109.
