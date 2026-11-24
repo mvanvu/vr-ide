@@ -158,20 +158,16 @@ fn tab_switch_returns_to_read_mode() {
     app.handle_key(ctrl_i());
     typ(&mut app, "1");
     assert_eq!(text(&app), "1b\n");
-    app.handle_key(ctrl_pg(KeyCode::PageUp));
+    crate::app_tests::press(&mut app, "shift+f9");
     typ(&mut app, "2");
     assert_eq!(text(&app), "a\n", "the other tab is in read mode");
-    app.handle_key(ctrl_pg(KeyCode::PageDown));
+    crate::app_tests::press(&mut app, "f9");
     typ(&mut app, "3");
     assert_eq!(
         text(&app),
         "1b\n",
         "back on the edited tab: read mode again"
     );
-}
-
-fn ctrl_pg(code: KeyCode) -> KeyEvent {
-    with(code, KeyModifiers::CONTROL)
 }
 
 #[test]
@@ -300,19 +296,6 @@ fn read_mode_blocks_every_text_changing_key_and_command() {
         ("ctrl+y", ctrl('y')),
         ("ctrl+]", ctrl(']')),
         ("shift+tab", with(KeyCode::BackTab, KeyModifiers::SHIFT)),
-        (
-            "ctrl+shift+k",
-            with(
-                KeyCode::Char('K'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            ),
-        ),
-        ("alt+down", with(KeyCode::Down, KeyModifiers::ALT)),
-        (
-            "shift+alt+down",
-            with(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT),
-        ),
-        ("ctrl+/", ctrl('/')),
     ];
     for (name, k) in blocked {
         // Start every key on the second line so Backspace / Delete have something to remove.
@@ -322,6 +305,14 @@ fn read_mode_blocks_every_text_changing_key_and_command() {
         app.handle_key(k);
         assert_eq!(text(&app), body, "{name} changed the text in read mode");
         assert_eq!(hints(&app), 1, "{name}: no hint {:?}", app.notices);
+    }
+    // The line keys that change text are refused with the same hint (D250).
+    for k in ["ctrl+d", "ctrl+l", "ctrl+/", "ctrl+up", "ctrl+down"] {
+        app.handle_key(key(KeyCode::Down));
+        app.notices.clear();
+        crate::app_tests::press(&mut app, k);
+        assert_eq!(text(&app), body, "{k} changed the text in read mode");
+        assert_eq!(hints(&app), 1, "{k}: {:?}", app.notices);
     }
     assert_eq!(
         clip.get().as_deref(),
@@ -346,24 +337,18 @@ fn find_works_in_read_mode_and_replace_is_refused() {
     assert_eq!(app.focus, Focus::Editor, "Esc closes the bar");
     assert!(!app.find.open);
     // Replace: field switch and typing in the bar still work, the replace itself is refused.
-    // With a query already typed, ctrl+h puts the keys in the replace field.
-    app.handle_key(ctrl('h'));
+    // With a query already typed, ctrl+u puts the keys in the replace field.
+    crate::app_tests::press(&mut app, "ctrl+u");
     typ(&mut app, "X");
     app.notices.clear();
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(text(&app), "foo bar foo\n", "replace one in read mode");
-    app.handle_key(with(
-        KeyCode::Enter,
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
-    ));
+    crate::app_tests::press(&mut app, "shift+f7");
     assert_eq!(text(&app), "foo bar foo\n", "replace all in read mode");
     assert!(hints(&app) >= 1, "{:?}", app.notices);
     // ctrl+i from the bar enters edit mode; the replace then works.
     app.handle_key(ctrl_i());
-    app.handle_key(with(
-        KeyCode::Enter,
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
-    ));
+    crate::app_tests::press(&mut app, "shift+f7");
     assert_eq!(text(&app), "foo X foo\n");
 }
 
@@ -527,10 +512,7 @@ fn save_as_and_the_external_change_prompt_return_in_read_mode_and_keep_the_edits
     typ(&mut app, "x");
     assert_eq!(text(&app), "mine old\n", "back from the dialog: read mode");
     // Save As from read mode writes the buffer and returns in read mode.
-    app.handle_key(with(
-        KeyCode::Char('S'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    ));
+    crate::app_tests::press(&mut app, "f12");
     assert!(app.dialog.is_some(), "save as prompt");
     for _ in 0..10 {
         app.handle_key(key(KeyCode::Backspace));

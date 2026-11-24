@@ -1,6 +1,6 @@
 # vr-ide
 
-A lightweight, non-modal terminal IDE written in Rust: no modes, VS Code's default keys, and a
+A lightweight, non-modal terminal IDE written in Rust: no modes, one key per command, and a
 small memory footprint. It edits files in a tabbed editor next to a file explorer, with find,
 replace, project search and a command palette.
 
@@ -32,9 +32,8 @@ Contents: [Requirements](#requirements) · [Install](#install) · [Quick start](
   Check with `cargo --version`.
 - **git** to fetch the source.
 - **A terminal** with keyboard-enhancement support (the kitty keyboard protocol: kitty, WezTerm,
-  foot, Ghostty, recent Alacritty and others) is recommended. Without it vr-ide still works, but a
-  few default chords cannot be sent (for example `ctrl+shift+p`); `F1` opens the command palette
-  there and every command can be run from it. See [Terminal notes](#terminal-notes).
+  foot, Ghostty, recent Alacritty and others) is not required: every default key works without it.
+  See [Terminal notes](#terminal-notes).
 
 ## Install
 
@@ -100,15 +99,17 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
   paths and fail. A missing path or a second argument prints a message and exits with status 2.
 - It needs an interactive terminal; it cannot run with its input or output redirected.
 
-Press `ctrl+shift+p` (or `F1`) to open the command palette, which lists every command with its
+Press `F1` to open the command palette, which lists every command with its
 key. Press `ctrl+q` to quit. If any file has unsaved changes, vr-ide asks first (see
 [Quit guard](#quit-guard)).
 
 ## Using vr-ide
 
-The keys below are VS Code's defaults on Linux. The complete list, with command names and the keys
-that cannot be changed, is in [docs/keymap.md](docs/keymap.md); every key can be overridden
-([Configuration](#configuration)). Commands without a default key can be run from the palette.
+vr-ide has its own key set: one key per command, each a single key: `ctrl` with a letter, or an F
+key alone, with `ctrl` or with `shift` (no `alt`, no `ctrl+shift`, no key sequences), and every key
+works in any terminal. The complete list, with command names, is in
+[docs/keymap.md](docs/keymap.md); every key can be overridden ([Configuration](#configuration)).
+Commands without a default key can be run from the palette (`F1`).
 
 ### Files and tabs
 
@@ -118,10 +119,11 @@ that cannot be changed, is in [docs/keymap.md](docs/keymap.md); every key can be
 | Go to File (fuzzy search by name) | `ctrl+p` |
 | New file (created on disk at once; there are no untitled buffers) | `ctrl+n` |
 | Save | `ctrl+s` |
-| Save As (a new file name, relative to the project root) | `ctrl+shift+s` or `ctrl+alt+s` |
-| Close the tab | `ctrl+w` or `ctrl+f4` |
-| Next / previous tab | `ctrl+pagedown` / `ctrl+pageup` |
-| Command palette | `ctrl+shift+p` or `F1` |
+| Save As (a new file name, relative to the project root) | `f12` |
+| Reload the file from disk | `f5` |
+| Close the tab | `ctrl+w` |
+| Next / previous tab | `f9` / `shift+f9` |
+| Command palette | `F1` |
 
 Closing a tab with unsaved changes asks: Save, Discard or Cancel. Discard keeps a copy of your
 changes in the [recovery folder](#recovery).
@@ -140,30 +142,30 @@ from disk still update open files in either mode.
 | Task | Keys |
 |---|---|
 | Edit mode / read mode | `ctrl+i` / `esc` |
-| Undo / redo | `ctrl+z` / `ctrl+shift+z` or `ctrl+y` |
+| Undo / redo | `ctrl+z` / `ctrl+y` |
 | Copy / cut / paste | `ctrl+c` / `ctrl+x` / `ctrl+v` |
 | Select all | `ctrl+a` |
 | Extend the selection | hold `shift` with the arrows, `home`, `end`, `pageup`, `pagedown` |
 | Move by word / to start or end of the file | `ctrl+left` `ctrl+right` / `ctrl+home` `ctrl+end` |
-| Delete line / duplicate line | `ctrl+shift+k` or `ctrl+alt+k` / `shift+alt+up` or `shift+alt+down` |
-| Move line up / down | `alt+up` / `alt+down` |
-| Indent / outdent | `ctrl+]` / `ctrl+[` or `shift+tab` |
+| Delete line / duplicate line | `ctrl+d` / `ctrl+l` |
+| Move line up / down | `ctrl+up` / `ctrl+down` |
+| Indent / outdent | `ctrl+]` / `shift+tab` |
 | Toggle line comment | `ctrl+/` |
 | Go to Line | `ctrl+g` |
 
 Go to Line asks for `line` or `line:column` (1-based, for example `42` or `42:7`).
 
-Most terminals send `ctrl+[` as `Esc`; use `shift+tab` to outdent there.
+Terminals send `ctrl+[` as `Esc`, so outdent is `shift+tab`.
 
 ### Find and replace in the file
 
 | Task | Keys |
 |---|---|
 | Find | `ctrl+f` |
-| Replace | `ctrl+h` |
+| Replace | `ctrl+u` |
 | Next / previous match | `enter` / `shift+enter` in the find bar, or `f3` / `shift+f3` |
-| Replace one / replace all (edit mode only; find works in read mode) | `ctrl+shift+1` or `ctrl+alt+1` / `ctrl+alt+enter` (or `enter` in the replace field to replace one) |
-| Match case / whole word / regex | `alt+c` / `alt+w` / `alt+r` |
+| Replace one / replace all (edit mode only; find works in read mode) | `f7` / `shift+f7` (or `enter` in the replace field to replace one) |
+| Match case / whole word / regex (while the bar is open; in the explorer `ctrl+f2` is New Folder) | `ctrl+f1` / `ctrl+f2` / `ctrl+f3` |
 | Switch between the find and replace fields | `tab` / `shift+tab` |
 | Close the bar | `esc` |
 
@@ -171,18 +173,19 @@ Most terminals send `ctrl+[` as `Esc`; use `shift+tab` to outdent there.
 
 | Task | Keys |
 |---|---|
-| Search in Project | `ctrl+shift+f` or `ctrl+alt+f` |
-| Replace in Project | `ctrl+shift+h` or `ctrl+alt+h` |
+| Search in Project | `ctrl+t` |
+| Replace in Project | `ctrl+r` |
 | Next / previous result | `f4` / `shift+f4` |
+| Match case / whole word / regex (while the panel is shown and no find bar is open) | `ctrl+f1` / `ctrl+f2` / `ctrl+f3` |
 
 In the panel, type in the search field and press `enter` to search; results stream in as the files
-are scanned. `alt+c`, `alt+w`, `alt+r` toggle case, whole word and regex. `down` moves into the
+are scanned. `ctrl+f1`, `ctrl+f2`, `ctrl+f3` toggle case, whole word and regex. `down` moves into the
 results; `enter` on a result opens it. Files matched by `.gitignore` are not searched; hidden
 files are. `esc` leaves the panel.
 
 Replacing across files is always previewed first:
 
-1. Press `ctrl+shift+h` (or `ctrl+alt+h`), fill in the search and the replace field.
+1. Press `ctrl+r`, fill in the search and the replace field.
 2. Press `enter` in the replace field: the panel shows a preview per file. Nothing is written yet.
 3. Move through the preview; `space` checks or unchecks a file (unchecked files are left alone).
 4. Press `enter` to confirm. A dialog asks Replace or Cancel; Cancel is the default button.
@@ -199,21 +202,22 @@ not overwritten.
 | Task | Keys |
 |---|---|
 | Show the explorer and focus it / hide it (the editor gets the keys) | `ctrl+e` |
-| Show / hide the explorer (focus stays where it is) | `ctrl+b` |
-| Focus the explorer | `ctrl+shift+e` or `ctrl+alt+e` |
+| Focus the explorer | `ctrl+b` |
+| Reveal the active file in the tree | `ctrl+k` |
 | Cycle focus between the parts | `f6` |
 | Back to the editor | `esc` |
 | Move, expand, collapse | `up` `down` `pageup` `pagedown` `home` `end`; `right` expands, `left` collapses or goes to the parent |
 | Open a file / toggle a folder | `enter` |
 | New file | `ctrl+n` |
+| New folder | `ctrl+f2` |
 | Rename | `f2` |
 | Delete (asks first, moves to the system trash) | `delete` |
 | Copy / cut / paste | `ctrl+c` / `ctrl+x` / `ctrl+v` |
+| Show / hide hidden files, ignored files | `ctrl+f5` / `ctrl+f6` |
 
-Commands from the palette (no default key): `Explorer: New Folder`, `Explorer: Move` (asks for the
-destination folder, relative to the project root), `Explorer: Reveal Active File` (expands the tree
-down to the file in the active tab), `Explorer: Toggle Hidden Files` and `Explorer: Toggle Ignored
-Files`.
+`Explorer: Reveal Active File` expands the tree down to the file in the active tab.
+`Explorer: Toggle` (show or hide, focus stays where it is) and `Explorer: Move` (asks for the
+destination folder, relative to the project root) are palette only.
 
 By default dotfiles are shown and paths matched by `.gitignore` are hidden. Copy, move and rename
 never overwrite an existing item. Mouse clicks and the wheel work in the explorer.
@@ -246,14 +250,16 @@ SIGKILL for a program that ignores it).
 
 ``ctrl+` `` opens a terminal panel under the editor, running your `$SHELL` (`/bin/sh` if it is
 unset or does not start) in the project root with `TERM=xterm-256color`. Press it again in the
-terminal to hide the panel (the shells keep running); from the editor or explorer it focuses the
-shown panel. No terminal starts until you open one.
+terminal to give the keys back to the editor (the panel stays shown); from the editor or explorer it
+focuses a shown panel. `shift+f12` hides the panel (the shells keep running). In a window so short
+that the panel covers the whole editor, ``ctrl+` `` in the terminal hides the panel instead (the
+hint says ``ctrl+` hide``). No terminal starts until you open one.
 
 - A focused terminal receives every key, `ctrl+s`, `ctrl+w` and `ctrl+p` included, so `vim`, `htop`
-  or `lazygit` work as in any terminal. `alt+q` gives the keys back to the editor; the status bar
-  shows `TERM` while the terminal has them (read and edit mode do not apply there).
-- ``ctrl+shift+` `` opens another terminal tab; the palette has Close, Next, Previous and the panel
-  height commands (Increase / Decrease Panel Height). The tab bar shows each terminal's title (set
+  or `lazygit` work as in any terminal; ``ctrl+` `` is the only key vr-ide keeps. The status bar
+  shows `TERM` while the terminal has the keys (read and edit mode do not apply there).
+- `ctrl+f12` opens another terminal tab; `ctrl+f4` closes it, `f8` / `shift+f8` move to the next /
+  previous one and `ctrl+f8` / `ctrl+f9` grow / shrink the panel. The tab bar shows each terminal's title (set
   by the program, or the shell's name) and `[N]` once it exited. Long titles such as bash's
   `user@host: ~/dir` are cut from the left so the directory stays; when the tabs do not fit, the
   active one stays in view and `+N` counts the others. Click a tab to switch; drag the tab bar to
@@ -269,15 +275,13 @@ shown panel. No terminal starts until you open one.
   program asked for it), as does your terminal's own paste.
 - Colours: `synthwave` and `dracula` give programs their own 16 ANSI colours and background;
   `dark` and `light` leave your terminal's colours.
-- With the kitty keyboard protocol ``ctrl+` `` toggles the panel everywhere and `ctrl+space` is a
-  separate key that reaches the program.
+- With the kitty keyboard protocol `ctrl+space` is a separate key that reaches the program.
 - Without it your terminal sends ``ctrl+` `` as NUL, the same byte as `ctrl+space` and `ctrl+@`.
-  vr-ide takes NUL as ``ctrl+` `` everywhere, so it hides the panel from inside a terminal too, and
-  programs never get `ctrl+space`. If a program needs it (Emacs's mark, a shell binding), set
-  `terminal_pass_nul = true`: NUL then goes to the program, `alt+q` leaves the terminal, ``ctrl+` ``
-  from the editor focuses the panel again, and the panel is hidden only by closing its terminals
-  (palette: Close Terminal). The tab bar's hint shows the keys that work in your setup.
-  ``ctrl+shift+` `` needs the kitty protocol (or use the palette).
+  vr-ide takes NUL as ``ctrl+` `` everywhere, so it gives the keys back from inside a terminal too,
+  and programs never get `ctrl+space`. If a program needs it (Emacs's mark, a shell binding), set
+  `terminal_pass_nul = true`: NUL then goes to the program, a click on the editor leaves the terminal, ``ctrl+` ``
+  from the editor focuses the panel again, and `shift+f12` from the editor hides it. The tab bar's
+  hint shows the way out that works in your setup.
 
 ### Clipboard
 
@@ -292,7 +296,7 @@ with your terminal's own paste shortcut (bracketed paste is supported).
 | File | Purpose |
 |---|---|
 | `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit, terminal scrollback (`scrollback`), panel height (`terminal_height_percent`) and whether NUL reaches terminal programs in a terminal without the kitty protocol (`terminal_pass_nul`, off). Built-in values: `crates/vr-config/defaults/settings.toml` |
-| `~/.config/vr-ide/keymap.toml` | Key overrides on top of the VS Code defaults; see [docs/keymap.md](docs/keymap.md) |
+| `~/.config/vr-ide/keymap.toml` | Key overrides on top of the defaults; see [docs/keymap.md](docs/keymap.md) |
 | `~/.config/vr-ide/languages.toml` | File patterns → language for syntax highlighting; see [Syntax highlighting](#syntax-highlighting). Built-in table: `crates/vr-config/defaults/languages.toml` |
 
 These files are optional; a missing key keeps its default. A bad entry is reported in a startup notice
@@ -307,9 +311,8 @@ show_ignored = true
 
 ```toml
 # ~/.config/vr-ide/keymap.toml
-"ctrl+shift+d" = "edit.duplicate_line"   # add a key
+"f2" = "file.reload"                     # add a key (one key per binding)
 "ctrl+q" = ""                            # remove a built-in binding
-"ctrl+alt+r" = "file.reload"             # bind a palette-only command
 ```
 
 The key spelling, context tables (`[editor]`, `[explorer]`) and every command name are in
@@ -354,13 +357,9 @@ Environment overrides:
 
 ## Troubleshooting
 
-- **A key does nothing.** Your terminal probably cannot send it (no keyboard-enhancement support).
-  At start-up vr-ide shows a notice listing the keys it cannot receive. Use the palette (`F1`), a
-  terminal with the kitty keyboard protocol, or rebind the command in `keymap.toml` to a chord your
-  terminal sends. Some chords are also taken by the terminal itself or by your window manager.
-- **`ctrl+shift+e` hides the explorer instead of focusing it.** Without the kitty keyboard
-  protocol the terminal sends `ctrl+shift+e` as `ctrl+e`, which toggles the explorer (shows and
-  focuses it when hidden, hides it when shown). Use `ctrl+alt+e`, `ctrl+e` or `F6` to reach the tree there.
+- **A key does nothing.** The default keys work in every terminal, but your window manager or
+  terminal may take one (rebind it in `keymap.toml`). If your own keymap binds a key the terminal
+  cannot send, vr-ide shows a notice at start-up; use the palette (`F1`) or rebind it.
 - **Typing does nothing and "Read mode: ctrl+i to edit" appears.** The tab is in read mode;
   press `ctrl+i` (or `tab`, which is what `ctrl+i` arrives as in a terminal without the kitty
   keyboard protocol) to edit.
@@ -401,9 +400,10 @@ are never written into your project.
 ## Terminal notes
 
 - A terminal with the kitty keyboard protocol (kitty, WezTerm, foot, Ghostty, recent Alacritty and
-  others) is recommended: it can send every default key, such as `ctrl+shift+p` and `ctrl+alt+enter`.
-- Terminals without it cannot send some chords. vr-ide lists the unreachable default keys in a startup
-  notice; `F1` always opens the palette, from which every command can be run.
+  others) is not required: the default keys are all `ctrl` keys and `F` keys (alone, with `ctrl` or
+  with `shift`), which any terminal can send.
+- A key you add that a terminal without it cannot send is listed in a startup notice; `F1` always
+  opens the palette, from which every command can be run.
 
 ## Scope and roadmap
 

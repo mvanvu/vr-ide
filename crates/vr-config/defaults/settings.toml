@@ -19,9 +19,10 @@ scrollback = 10000
 # terminal.shrink and dragging the panel's tab bar change it for the session.
 terminal_height_percent = 40
 # Terminals without the kitty keyboard protocol send ctrl+` as NUL, the same byte as ctrl+space.
-# false: NUL in a focused terminal hides the panel, as ctrl+` does. true: NUL goes to the program
-# (ctrl+space / ctrl+@ in shells and editors); alt+q then leaves the terminal, and the panel is
-# hidden by closing its terminals. With the kitty protocol ctrl+` and ctrl+space always differ.
+# false: NUL in a focused terminal does what ctrl+` does there: the editor gets the keys back and
+# the panel stays shown (terminal.hide hides it). true: NUL goes to the program (ctrl+space /
+# ctrl+@ in shells and editors); a click on the editor then leaves the terminal. With the kitty
+# protocol ctrl+` and ctrl+space always differ.
 terminal_pass_nul = false
 
 # AI agent CLIs opened in a terminal tab in the project root (M6).

@@ -34,6 +34,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         run: toggle,
     },
     CommandSpec {
+        name: "terminal.hide",
+        title: "Terminal: Hide Terminal",
+        run: hide_terminal,
+    },
+    CommandSpec {
         name: "terminal.new",
         title: "Terminal: New Terminal",
         run: new_terminal,
@@ -265,14 +270,27 @@ impl TerminalPanel {
 
 // ---- commands ------------------------------------------------------------------------------
 
-/// Hidden: show and focus (a terminal starts when there is none); shown and focused: hide, the
-/// editor gets the keys; shown elsewhere: focus it (D185).
-fn toggle(app: &mut App, _: CmdArgs) -> CmdResult {
+/// ctrl+`, the one key a focused terminal keeps (D230). Hidden: show and focus (a terminal
+/// starts when there is none); shown elsewhere: focus it; focused: the editor gets the keys and
+/// the panel stays shown. When the panel covers the whole editor there is nothing to give the
+/// keys to, so it hides the panel instead: otherwise a keyboard user could not leave.
+fn toggle(app: &mut App, args: CmdArgs) -> CmdResult {
     if app.terminal.visible && app.focus == Focus::Terminal {
-        hide(app);
+        if editor_covered(app) {
+            hide(app);
+            Ok(())
+        } else {
+            focus_editor(app, args)
+        }
     } else {
         show(app);
+        Ok(())
     }
+}
+
+/// Hides the panel (shift+f12); the terminals keep running.
+fn hide_terminal(app: &mut App, _: CmdArgs) -> CmdResult {
+    hide(app);
     Ok(())
 }
 
@@ -310,14 +328,20 @@ fn shrink(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
-/// alt+q in a focused terminal (D8): the editor gets the keys; the panel stays.
+/// The editor gets the keys; the panel stays (ctrl+` in a focused terminal, D230).
 fn focus_editor(app: &mut App, _: CmdArgs) -> CmdResult {
     // A panel that covers the whole editor keeps the keys: nothing would show them.
-    if app.layout.status.height > 0 && app.layout.editor.height == 0 && has_keys(app) {
+    if editor_covered(app) && has_keys(app) {
         return Ok(());
     }
     super::search::focus_editor(app);
     Ok(())
+}
+
+/// The last frame left the editor no rows (a window too short for both editor and panel).
+/// Before the first frame nothing is known and the editor counts as shown.
+pub fn editor_covered(app: &App) -> bool {
+    app.layout.status.height > 0 && app.layout.editor.height == 0
 }
 
 /// Shows the panel with the keys on it, starting a terminal when there is none.
@@ -715,8 +739,10 @@ fn is_nul(key: &KeyEvent) -> bool {
 
 /// Inside a focused terminal NUL stands for ctrl+` too: only without the kitty protocol (there
 /// ctrl+` arrives as itself) and unless `terminal_pass_nul` gives NUL to the program (D214).
+/// A panel that covers the whole editor leaves no editor to click, so there NUL always hides
+/// the panel: it is the only way out from the keyboard.
 pub fn nul_toggles_in_terminal(app: &App) -> bool {
-    !app.keyboard_enhanced && !app.settings.terminal_pass_nul
+    !app.keyboard_enhanced && (!app.settings.terminal_pass_nul || editor_covered(app))
 }
 
 /// A focused terminal's toggle key can hide the panel: always with the kitty protocol, and in a

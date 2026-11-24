@@ -306,7 +306,7 @@ struct Hint {
     priority: u8,
 }
 
-/// The keys that start things, from the keymap (USER-1); a command without a key is left out.
+/// The keys that start things, from the keymap (USER-5); a command without a key is left out.
 fn hints(app: &App) -> Vec<Hint> {
     const ALL: [(&str, &str, u8); 6] = [
         ("file.goto", "Go to file", 0),
@@ -318,14 +318,16 @@ fn hints(app: &App) -> Vec<Hint> {
     ];
     ALL.iter()
         .filter_map(|&(cmd, title, priority)| {
-            // Without the kitty protocol a key the terminal cannot send is not recommended.
-            let key = app
-                .keymap
-                .keys_for(cmd)
-                .iter()
-                .filter(|k| app.keyboard_enhanced || !crate::event_loop::legacy_unreachable(k))
-                .map(ToString::to_string)
-                .min_by_key(String::len)?;
+            // The display key (D250); without the kitty protocol a key the terminal cannot send
+            // is not recommended, so a command with only such keys is left out (D223).
+            let key = app.display_key(cmd)?;
+            if !app.keyboard_enhanced
+                && key
+                    .parse::<vr_config::KeyChord>()
+                    .is_ok_and(|k| crate::event_loop::legacy_unreachable(&k))
+            {
+                return None;
+            }
             Some(Hint {
                 key,
                 title,

@@ -147,13 +147,8 @@ fn command_items(app: &App, query: &str) -> Vec<PaletteItem> {
                 title: c.title.to_string(),
                 path: None,
                 detail: c.name.to_string(),
-                keys: app
-                    .keymap
-                    .keys_for(c.name)
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" / "),
+                // The command's one key (USER-5, D250).
+                keys: app.display_key(c.name).unwrap_or_default(),
                 hits,
             }
         })

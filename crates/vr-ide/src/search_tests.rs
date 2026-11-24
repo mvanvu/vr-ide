@@ -24,12 +24,7 @@ fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-fn ctrl_shift(c: char) -> KeyEvent {
-    KeyEvent::new(
-        KeyCode::Char(c.to_ascii_uppercase()),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    )
-}
+use crate::app_tests::press;
 
 fn typ(app: &mut App, s: &str) {
     for c in s.chars() {
@@ -65,7 +60,7 @@ fn wait_search(app: &mut App) {
 
 /// Opens the panel, types `query` and runs it to the end.
 fn search_for(app: &mut App, query: &str) {
-    app.handle_key(ctrl_shift('f'));
+    press(app, "ctrl+t");
     typ(app, query);
     app.handle_key(key(KeyCode::Enter));
     wait_search(app);
@@ -133,7 +128,7 @@ fn project_search_lists_results_grouped_by_file() {
         ("src/b/c.rs", "// needle\n"),
         ("d.txt", "nothing\n"),
     ]);
-    app.handle_key(ctrl_shift('f'));
+    press(&mut app, "ctrl+t");
     assert!(app.search.visible);
     assert_eq!(app.focus, Focus::Search);
     assert_eq!(app.search.field, Field::Query);
@@ -160,7 +155,7 @@ fn project_search_lists_results_grouped_by_file() {
 fn project_search_streams_batches() {
     let (d, mut app) = project(&[]);
     let root = d.path().to_path_buf();
-    app.handle_key(ctrl_shift('f'));
+    press(&mut app, "ctrl+t");
     let (tx, rx) = mpsc::channel();
     search::attach(&mut app, rx, Arc::new(AtomicBool::new(false)));
     assert_eq!(app.search.status, Status::Running);
@@ -243,7 +238,7 @@ fn search_panel_cancel_on_new_query() {
     // Through the channel: a new search drops what the old one still sends.
     let (d, mut app) = project(&[]);
     let root = d.path().to_path_buf();
-    app.handle_key(ctrl_shift('f'));
+    press(&mut app, "ctrl+t");
     let (tx1, rx1) = mpsc::channel();
     let cancel1 = Arc::new(AtomicBool::new(false));
     search::attach(&mut app, rx1, cancel1.clone());
@@ -271,7 +266,7 @@ fn search_panel_cancel_on_new_query() {
         .map(|(a, b)| (a.as_str(), b.as_str()))
         .collect();
     let (_d, mut app) = project(&refs);
-    app.handle_key(ctrl_shift('f'));
+    press(&mut app, "ctrl+t");
     typ(&mut app, "aaa");
     app.handle_key(key(KeyCode::Enter));
     let first = app.search.run.as_ref().unwrap().cancel.clone();
@@ -298,7 +293,7 @@ fn search_panel_cancel_on_new_query() {
 #[test]
 fn search_errors_are_shown() {
     let (_d, mut app) = project(&[]);
-    app.handle_key(ctrl_shift('f'));
+    press(&mut app, "ctrl+t");
     let (tx, rx) = mpsc::channel();
     search::attach(&mut app, rx, Arc::new(AtomicBool::new(false)));
     for e in [
@@ -341,7 +336,7 @@ fn search_errors_are_shown() {
 /// Opens the replace panel, searches `query`, types `replacement` and asks for the
 /// preview (Enter in the replace field); waits for it.
 fn preview(app: &mut App, query: &str, replacement: &str) {
-    app.handle_key(ctrl_shift('h'));
+    press(app, "ctrl+r");
     assert!(app.search.visible && app.search.replace_mode);
     typ(app, query);
     app.handle_key(key(KeyCode::Tab));
@@ -619,7 +614,7 @@ fn project_replace_never_loses_a_concurrent_write() {
 fn search_panel_takes_the_side_column() {
     let (_d, mut app) = project(&[("a.txt", "x\n")]);
     app.explorer.visible = true;
-    app.handle_key(ctrl_shift('f'));
+    press(&mut app, "ctrl+t");
     draw(&mut app, 80, 24);
     assert!(app.layout.search.width > 0);
     assert_eq!(app.layout.explorer.width, 0);
@@ -629,13 +624,13 @@ fn search_panel_takes_the_side_column() {
     assert_eq!(app.focus, Focus::Editor);
     assert!(app.search.visible);
     // Explorer: Focus brings the explorer back in the column.
-    app.handle_key(ctrl_shift('e'));
+    press(&mut app, "ctrl+b");
     assert!(!app.search.visible);
     assert_eq!(app.focus, Focus::Explorer);
     draw(&mut app, 80, 24);
     assert!(app.layout.explorer.width > 0);
     // f6 cycles editor -> side panel -> editor with the search panel too.
-    app.handle_key(ctrl_shift('f'));
+    press(&mut app, "ctrl+t");
     app.handle_key(key(KeyCode::Esc));
     app.handle_key(key(KeyCode::F(6)));
     assert_eq!(app.focus, Focus::Search);
@@ -660,7 +655,7 @@ fn project_replace_preview_dropped_when_fields_change() {
             app.handle_paste("zz");
         }),
         ("option", |app| {
-            app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT));
+            press(app, "ctrl+f1");
         }),
     ];
     for (what, edit) in edits {
@@ -737,7 +732,7 @@ fn pending_preview_cleared_by_esc_and_new_search() {
     for how in ["esc", "new search"] {
         let (d, mut app) = project(&[]);
         let root = d.path().to_path_buf();
-        app.handle_key(ctrl_shift('h'));
+        press(&mut app, "ctrl+r");
         typ(&mut app, "foo");
         app.handle_key(key(KeyCode::Tab));
         typ(&mut app, "bar");
@@ -775,7 +770,7 @@ fn pending_preview_cleared_by_esc_and_new_search() {
 fn confirm_names_a_truncated_search() {
     let (d, mut app) = project(&[("a.txt", "foo\n")]);
     let root = d.path().to_path_buf();
-    app.handle_key(ctrl_shift('h'));
+    press(&mut app, "ctrl+r");
     typ(&mut app, "foo");
     app.handle_key(key(KeyCode::Tab));
     typ(&mut app, "bar");
@@ -842,7 +837,7 @@ fn project_replace_preview_runs_on_a_worker_with_progress_and_cancel() {
         let (_d, mut app) = project(&refs);
         let hold = Arc::new(AtomicUsize::new(0));
         app.search.hold = Some(hold.clone());
-        app.handle_key(ctrl_shift('h'));
+        press(&mut app, "ctrl+r");
         typ(&mut app, "foo");
         app.handle_key(key(KeyCode::Tab));
         typ(&mut app, "bar");
@@ -1071,8 +1066,8 @@ fn requests_are_refused_while_replacing() {
         app.search.regex,
         app.search.whole_word,
     );
-    for c in ['c', 'r', 'w'] {
-        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT));
+    for k in ["ctrl+f1", "ctrl+f3", "ctrl+f2"] {
+        press(&mut app, k);
     }
     assert_eq!(
         (
@@ -1312,19 +1307,14 @@ fn rename_during_a_running_search_says_search_again() {
     assert!(shown.contains("search again"), "{shown}");
 }
 
-/// D220: ctrl+alt+f opens the project search where the emulator keeps ctrl+shift+f. A legacy
-/// terminal sends ESC + ^F, which crossterm reports as this same event (ctrl+alt+f).
+/// D250: ctrl+t opens the project search with and without the kitty protocol.
 #[test]
-fn ctrl_alt_f_opens_the_project_search_panel() {
-    let ev = KeyEvent::new(
-        KeyCode::Char('f'),
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
-    );
+fn ctrl_t_opens_the_project_search_panel() {
     for enhanced in [true, false] {
         let (_d, mut app) = project(&[("a.txt", "x\n")]);
         app.keyboard_enhanced = enhanced;
         assert!(!app.search.visible);
-        app.handle_key(ev);
+        press(&mut app, "ctrl+t");
         assert!(app.search.visible, "enhanced={enhanced}");
         assert_eq!(app.focus, Focus::Search, "enhanced={enhanced}");
     }

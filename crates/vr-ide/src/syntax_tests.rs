@@ -160,7 +160,7 @@ fn replace_all_hands_its_changes_to_the_highlighter() {
     let (_d, _p, mut app) = open("a.rs", "fn a() { b(); }\nfn b() {}\nfn c() { b(); }\n");
     edit_mode(&mut app);
     draw_settled(&mut app);
-    key(&mut app, KeyCode::Char('h'), KeyModifiers::CONTROL);
+    crate::app_tests::press(&mut app, "ctrl+u");
     typ(&mut app, "fn");
     key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     typ(&mut app, "// fn");

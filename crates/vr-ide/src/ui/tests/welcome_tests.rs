@@ -110,13 +110,13 @@ fn welcome_shows_the_dashboard_parts_at_120x40() {
         "Command palette",
         "ctrl+e",
         "Explorer",
-        "ctrl+alt+f",
         "Search",
         "ctrl+q",
         "Quit",
     ] {
         assert!(screen.contains(needle), "{needle:?} missing:\n{screen}");
     }
+    assert!(screen.contains("ctrl+t"), "ctrl+t missing:\n{screen}");
 }
 
 #[test]
@@ -384,26 +384,21 @@ fn history_label_matches_the_graph_width() {
 }
 
 #[test]
-fn legacy_keyboard_welcome_never_shows_an_unreachable_key() {
+fn legacy_keyboard_welcome_shows_the_same_reachable_keys() {
     let mut app = welcome_app();
     app.keyboard_enhanced = false;
     let screen = lines(&mut app, 120, 40).join("\n");
-    assert!(!screen.contains("ctrl+shift+f"), "{screen}");
-    // The reachable second key takes its place (D220).
+    // Every default key is deliverable by a legacy terminal (USER-5): nothing is left out.
     let search = screen
         .lines()
         .find(|l| l.contains("Search"))
         .expect("Search hint");
-    assert!(search.contains("ctrl+alt+f"), "{search}");
-    assert!(
-        app.keymap
-            .keys_for("search.project")
-            .iter()
-            .any(crate::event_loop::legacy_unreachable)
-    );
-    // The other hints stay.
-    for kept in ["ctrl+p", "f1", "ctrl+e", "ctrl+q"] {
+    assert!(search.contains("ctrl+t"), "{search}");
+    for kept in ["ctrl+p", "f1", "ctrl+e", "ctrl+q", "ctrl+`"] {
         assert!(screen.contains(kept), "{kept}:\n{screen}");
+    }
+    for gone in ["alt+", "ctrl+shift", "ctrl+alt"] {
+        assert!(!screen.contains(gone), "{gone}:\n{screen}");
     }
     let t = draw(&mut app, 120, 40);
     insta::assert_snapshot!("welcome_legacy_keyboard_120x40", t.backend());

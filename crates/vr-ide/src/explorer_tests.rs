@@ -625,20 +625,19 @@ fn focus_cycle_editor_explorer() {
     assert_eq!(app.focus, Focus::Explorer);
     app.handle_key(key(KeyCode::F(6)));
     assert_eq!(app.focus, Focus::Editor);
-    // ctrl+shift+e focuses the explorer, ctrl+b hides it and the editor gets the keys back.
-    app.handle_key(KeyEvent::new(
-        KeyCode::Char('E'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    ));
+    // ctrl+b focuses the explorer, ctrl+e hides it and the editor gets the keys back.
+    crate::app_tests::press(&mut app, "ctrl+b");
     assert_eq!(app.focus, Focus::Explorer);
-    app.handle_key(ctrl('b'));
+    crate::app_tests::press(&mut app, "ctrl+e");
     assert!(!app.explorer.visible);
     assert_eq!(app.focus, Focus::Editor);
-    // Hidden: focus.cycle stays in the editor; ctrl+b shows the panel again.
+    // Hidden: focus.cycle stays in the editor; ctrl+e shows the panel again (and focuses it).
     app.handle_key(key(KeyCode::F(6)));
     assert_eq!(app.focus, Focus::Editor);
-    app.handle_key(ctrl('b'));
+    crate::app_tests::press(&mut app, "ctrl+e");
     assert!(app.explorer.visible);
+    assert_eq!(app.focus, Focus::Explorer);
+    app.handle_key(key(KeyCode::Esc));
     // Esc in the explorer returns to the editor.
     app.handle_key(key(KeyCode::F(6)));
     app.handle_key(key(KeyCode::Esc));
@@ -1460,12 +1459,8 @@ fn reveal_of_a_hidden_or_ignored_file_says_how_to_show_it() {
     app.run_command("explorer.toggle_hidden", crate::commands::CmdArgs::None);
     assert!(!app.explorer.tree.show_hidden());
     for (file, dir, hint) in [
-        (
-            ".github/workflows/ci.yml",
-            ".github",
-            "explorer.toggle_hidden",
-        ),
-        ("build/out.txt", "build", "explorer.toggle_ignored"),
+        (".github/workflows/ci.yml", ".github", "ctrl+f5"),
+        ("build/out.txt", "build", "ctrl+f6"),
     ] {
         app.notices.clear();
         app.open_path(Path::new(file)).unwrap();

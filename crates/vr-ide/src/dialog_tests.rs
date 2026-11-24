@@ -112,11 +112,8 @@ fn palette_enter_runs_command() {
 #[test]
 fn palette_escape_closes() {
     let (_d, _p, mut app, _) = app_with_file("a\n");
-    app.handle_key(KeyEvent::new(
-        KeyCode::Char('p'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    ));
-    assert!(app.palette.is_some(), "ctrl+shift+p opens the palette");
+    app.handle_key(key(KeyCode::F(1)));
+    assert!(app.palette.is_some(), "f1 opens the palette");
     typ(&mut app, "zz");
     app.handle_key(key(KeyCode::Esc));
     assert!(app.palette.is_none());
@@ -343,10 +340,7 @@ fn prompt_error(app: &App) -> Option<String> {
 fn save_as_prompt() {
     let (d, path, mut app, _) = app_with_file("one\n");
     typ(&mut app, "x");
-    app.handle_key(KeyEvent::new(
-        KeyCode::Char('s'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    ));
+    crate::app_tests::press(&mut app, "f12");
     assert_eq!(
         prompt_text(&app).as_deref(),
         Some("a.txt"),
@@ -1163,4 +1157,30 @@ fn keep_mine_recreating_a_deleted_file_brings_its_row_back() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine old\n");
     assert!(listed(&app), "no row after Keep mine recreated the file");
     drop(d);
+}
+
+/// D250: the palette's key column shows each command's one key, in both keyboard modes;
+/// palette-only commands show none.
+#[test]
+fn palette_key_column_shows_the_one_key() {
+    for enhanced in [true, false] {
+        let (mut app, _) = test_app(Path::new("/p"));
+        app.keyboard_enhanced = enhanced;
+        app.run_command("app.palette", CmdArgs::None);
+        let items = app.palette.as_ref().unwrap().items.clone();
+        let keys = |name: &str| items.iter().find(|i| i.name == name).unwrap().keys.clone();
+        // The palette does not list itself.
+        for &(_, k, cmd) in crate::app_tests::D250
+            .iter()
+            .filter(|e| e.2 != "app.palette")
+        {
+            assert_eq!(keys(cmd), k, "{cmd} {enhanced}");
+        }
+        assert_eq!(keys("explorer.toggle"), "", "{enhanced}");
+        assert_eq!(keys("terminal.toggle"), "ctrl+`", "{enhanced}");
+        assert_eq!(keys("edit.redo"), "ctrl+y", "{enhanced}");
+        assert_eq!(keys("file.save"), "ctrl+s", "{enhanced}");
+        assert!(items.iter().all(|i| !i.keys.contains(" / ")));
+        assert!(items.iter().all(|i| !i.keys.contains("alt")));
+    }
 }

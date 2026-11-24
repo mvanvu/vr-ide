@@ -56,8 +56,18 @@ fn nul(app: &mut App) {
     key(app, KeyCode::Char(' '), KeyModifiers::CONTROL);
 }
 
-fn alt_q(app: &mut App) {
-    key(app, KeyCode::Char('q'), KeyModifiers::ALT);
+/// The one key a focused terminal keeps: ctrl+` (NUL for a legacy terminal) gives the keys back (D230).
+fn leave(app: &mut App) {
+    if app.keyboard_enhanced {
+        ctrl_backtick(app);
+    } else {
+        nul(app);
+    }
+}
+
+/// Hides the panel from the editor: shift+f12 (D250).
+fn hide_panel(app: &mut App) {
+    crate::app_tests::press(app, "shift+f12");
 }
 
 fn typ(app: &mut App, s: &str) {
@@ -153,8 +163,13 @@ fn ctrl_backtick_shows_hides_and_focuses_the_panel() {
     assert_eq!(app.focus, Focus::Terminal);
     assert_eq!(app.terminal.tabs.len(), 1);
     let pid = tab(&app).pid().expect("running shell");
-    // Shown and focused → hidden, editor focus; the shell keeps running.
+    // Shown and focused → the editor gets the keys, the panel stays (D230).
     ctrl_backtick(&mut app);
+    assert!(app.terminal.visible);
+    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(tab(&app).pid(), Some(pid));
+    // shift+f12 hides it; the shell keeps running.
+    hide_panel(&mut app);
     assert!(!app.terminal.visible);
     assert_eq!(app.focus, Focus::Editor);
     assert_eq!(tab(&app).pid(), Some(pid));
@@ -164,8 +179,7 @@ fn ctrl_backtick_shows_hides_and_focuses_the_panel() {
     assert_eq!(app.focus, Focus::Terminal);
     assert_eq!(app.terminal.tabs.len(), 1);
     assert_eq!(tab(&app).pid(), Some(pid));
-    // alt+q (D8) gives the keys back to the editor; the panel stays.
-    alt_q(&mut app);
+    leave(&mut app);
     assert_eq!(app.focus, Focus::Editor);
     assert!(app.terminal.visible);
     // Shown but not focused → focused.
@@ -186,7 +200,7 @@ fn panel_bar(app: &mut App) -> String {
 }
 
 #[test]
-fn legacy_nul_toggles_everywhere_and_hides_from_inside_a_terminal() {
+fn legacy_nul_toggles_everywhere_and_gives_the_keys_back_from_a_terminal() {
     let (_d, mut app, _) = term_app();
     app.keyboard_enhanced = false;
     draw(&mut app, 80, 24);
@@ -197,30 +211,29 @@ fn legacy_nul_toggles_everywhere_and_hides_from_inside_a_terminal() {
     let pid = tab(&app).pid().expect("running shell");
     // The hint promises what NUL does in here.
     let bar = panel_bar(&mut app);
-    assert!(bar.contains("alt+q editor · ctrl+` hide"), "{bar}");
-    // D214: inside a focused terminal NUL hides the panel; the shell keeps running.
+    assert!(bar.contains("ctrl+` editor"), "{bar}");
+    // D230: inside a focused terminal NUL gives the keys back; the panel stays, the shell runs.
     nul(&mut app);
-    assert!(!app.terminal.visible);
+    assert!(app.terminal.visible);
     assert_eq!(app.focus, Focus::Editor);
     assert_eq!(tab(&app).pid(), Some(pid));
-    // Shown again, alt+q leaves; NUL from the editor focuses the shown panel (palette alike).
-    nul(&mut app);
-    alt_q(&mut app);
-    assert_eq!(app.focus, Focus::Editor);
     assert!(panel_bar(&mut app).contains("ctrl+` focus"));
+    // NUL from the editor focuses the shown panel (palette alike).
     nul(&mut app);
     assert_eq!(app.focus, Focus::Terminal);
-    alt_q(&mut app);
+    leave(&mut app);
     app.run_command("terminal.toggle", CmdArgs::None);
     assert_eq!(app.focus, Focus::Terminal);
     assert!(app.terminal.visible);
     // From the explorer, NUL focuses the shown panel too.
-    alt_q(&mut app);
+    leave(&mut app);
     app.focus = Focus::Explorer;
     nul(&mut app);
     assert_eq!(app.focus, Focus::Terminal);
-    // ...and hides it from there.
+    // ...and gives the keys back from there; shift+f12 hides the panel.
     nul(&mut app);
+    assert!(app.terminal.visible);
+    hide_panel(&mut app);
     assert!(!app.terminal.visible);
     assert_eq!(tab(&app).pid(), Some(pid));
 }
@@ -244,12 +257,12 @@ fn terminal_pass_nul_sends_nul_to_the_program() {
     assert_eq!(app.focus, Focus::Terminal);
     // The hint does not promise a hide key that would not work here.
     let bar = panel_bar(&mut app);
-    assert!(bar.contains("alt+q editor"), "{bar}");
+    assert!(bar.contains("click editor"), "{bar}");
     assert!(!bar.contains("hide"), "{bar}");
 }
 
 #[test]
-fn kitty_ctrl_backtick_hides_and_ctrl_space_reaches_the_program() {
+fn kitty_ctrl_backtick_leaves_and_ctrl_space_reaches_the_program() {
     let (_d, mut app, _) = term_app();
     app.keyboard_enhanced = true;
     draw(&mut app, 80, 24);
@@ -262,9 +275,9 @@ fn kitty_ctrl_backtick_hides_and_ctrl_space_reaches_the_program() {
     typ(&mut app, "y\n");
     wait_text(&app, "^@y");
     assert!(app.terminal.visible);
-    assert!(panel_bar(&mut app).contains("alt+q editor · ctrl+` hide"));
+    assert!(panel_bar(&mut app).contains("ctrl+` editor"));
     ctrl_backtick(&mut app);
-    assert!(!app.terminal.visible);
+    assert!(app.terminal.visible, "the panel stays shown");
     assert_eq!(app.focus, Focus::Editor);
 }
 
@@ -303,7 +316,7 @@ fn keys_typed_into_a_focused_terminal_never_reach_the_editor() {
     assert!(!doc.is_modified());
     assert_eq!(std::fs::read_to_string(path).unwrap(), "abc\n");
     // Read mode (T14) does not apply inside the terminal: back in the editor the tab is read.
-    alt_q(&mut app);
+    leave(&mut app);
     assert!(!app.edit_mode());
 }
 
@@ -395,13 +408,13 @@ fn new_close_next_and_previous_terminal() {
     let (_d, mut app, _) = term_app();
     app.keyboard_enhanced = true;
     draw(&mut app, 80, 24);
-    let new = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
-    key(&mut app, KeyCode::Char('~'), new);
+    crate::app_tests::press(&mut app, "ctrl+f12");
     assert!(app.terminal.visible);
     assert_eq!(app.focus, Focus::Terminal);
     assert_eq!(app.terminal.tabs.len(), 1);
-    // ctrl+shift+` inside a focused terminal opens another one (VS Code).
-    key(&mut app, KeyCode::Char('~'), new);
+    // ctrl+f12 from the editor opens another one (a focused terminal keeps every key).
+    leave(&mut app);
+    crate::app_tests::press(&mut app, "ctrl+f12");
     assert_eq!(app.terminal.tabs.len(), 2);
     assert_eq!(app.terminal.active, 1);
     let t = draw(&mut app, 80, 24);
@@ -452,7 +465,8 @@ fn inactive_tab_titles_are_fresh_when_the_panel_is_shown_again() {
     // Tab 1 sets its title a moment later, while tab 2 is active and the panel is hidden.
     typ(&mut app, "sleep 0.3; printf '\\033]2;late-title\\007'\n");
     app.run_command("terminal.new", CmdArgs::None);
-    ctrl_backtick(&mut app);
+    leave(&mut app);
+    hide_panel(&mut app);
     assert!(!app.terminal.visible);
     let deadline = Instant::now() + WAIT;
     while app.terminal.tabs[0].grid_now().title.as_deref() != Some("late-title") {
@@ -527,7 +541,7 @@ fn quit_asks_while_terminals_run_and_quitting_kills_them() {
             std::thread::sleep(Duration::from_millis(10));
         }
     };
-    alt_q(&mut app);
+    leave(&mut app);
     key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
     let d = app.dialog.as_ref().expect("quit guard");
     let crate::ui::dialog::DialogWidget::Confirm(c) = &d.widget else {
@@ -571,7 +585,7 @@ fn quit_guard_then_unsaved_files_still_ask() {
     app.keyboard_enhanced = true;
     typ(&mut app, "x");
     ctrl_backtick(&mut app);
-    alt_q(&mut app);
+    leave(&mut app);
     key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
     key(&mut app, KeyCode::Left, KeyModifiers::NONE);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -604,7 +618,7 @@ fn the_status_bar_shows_term_while_the_terminal_has_the_keys() {
     let status = row_text(&t, 23);
     assert!(status.starts_with(" TERM "), "{status}");
     assert!(!status.contains("READ") && !status.contains("EDIT"));
-    alt_q(&mut app);
+    leave(&mut app);
     let t = draw(&mut app, 80, 24);
     assert!(row_text(&t, 23).starts_with(" READ "));
 }
@@ -746,7 +760,7 @@ fn long_titles_keep_the_active_tab_the_hint_and_the_status_in_view() {
     for dir in ["alpha", "beta", "gamma", "delta"] {
         assert!(bar.contains(dir), "{dir} missing: {bar}");
     }
-    assert!(bar.contains("alt+q editor"), "hint dropped: {bar}");
+    assert!(bar.contains("ctrl+` editor"), "hint dropped: {bar}");
     let status = row_text(&t, 23);
     assert!(status.contains(" 4/4 · 80×9 "), "{status}");
     // A click on a label activates that tab (hit test matches the drawing).
@@ -1041,7 +1055,7 @@ fn the_status_bar_names_the_way_out_before_the_size() {
     for w in [30, 36, 40, 80] {
         let t = draw(&mut app, w, 12);
         let status = row_text(&t, 11);
-        assert!(status.contains("alt+q editor"), "{w}: {status}");
+        assert!(status.contains("ctrl+` editor"), "{w}: {status}");
         if w <= 36 {
             assert!(!status.contains('×'), "{w}: {status}");
         }
@@ -1069,17 +1083,59 @@ fn a_zero_row_editor_never_gets_the_keys_or_a_monitor() {
     app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
     app.terminal.visible = true;
     app.focus = Focus::Terminal;
-    draw(&mut app, 80, 7);
+    let t = draw(&mut app, 80, 7);
     assert_eq!(app.layout.editor.height, 0, "{:?}", app.layout);
-    alt_q(&mut app);
-    assert_eq!(app.focus, Focus::Terminal);
+    // No editor row to give the keys to: ctrl+` hides the panel instead, and the hint says so.
+    let screen = frame_text(&t);
+    assert!(screen.contains("ctrl+` hide"), "{screen}");
+    assert!(!screen.contains("ctrl+` editor"), "{screen}");
     let now = std::time::Instant::now();
+    app.tick(now);
+    assert!(!app.monitor.running());
+    for enhanced in [false, true] {
+        app.keyboard_enhanced = enhanced;
+        app.terminal.visible = true;
+        app.focus = Focus::Terminal;
+        draw(&mut app, 80, 7);
+        leave(&mut app);
+        assert!(!app.terminal.visible, "kitty {enhanced}");
+        assert_eq!(app.focus, Focus::Editor, "kitty {enhanced}");
+    }
+    app.keyboard_enhanced = false;
+    app.terminal.visible = true;
+    app.focus = Focus::Terminal;
+    draw(&mut app, 80, 7);
     app.tick(now);
     assert!(!app.monitor.running());
     // With rows for the editor the welcome is drawn and sampled.
     draw(&mut app, 80, 24);
     app.tick(now + std::time::Duration::from_secs(2));
     assert_eq!(app.monitor.running(), app.monitor.supported());
+}
+
+/// terminal_pass_nul = true gives NUL to the program, and a click on the editor leaves the
+/// terminal; with no editor row to click, NUL hides the panel so the keyboard can still leave.
+#[test]
+fn a_zero_row_editor_hides_the_panel_on_nul_even_with_pass_nul() {
+    let (_d, mut app, _) = term_app();
+    app.settings.terminal_pass_nul = true;
+    app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
+    app.terminal.visible = true;
+    app.focus = Focus::Terminal;
+    let t = draw(&mut app, 80, 7);
+    assert_eq!(app.layout.editor.height, 0, "{:?}", app.layout);
+    let screen = frame_text(&t);
+    assert!(screen.contains("ctrl+` hide"), "{screen}");
+    nul(&mut app);
+    assert!(!app.terminal.visible);
+    assert_eq!(app.focus, Focus::Editor);
+    // With editor rows NUL goes to the program again.
+    app.terminal.visible = true;
+    app.focus = Focus::Terminal;
+    draw(&mut app, 80, 24);
+    nul(&mut app);
+    assert!(app.terminal.visible);
+    assert_eq!(app.focus, Focus::Terminal);
 }
 
 /// A side column that takes the whole width (search below 40 columns) must not leave a

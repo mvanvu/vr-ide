@@ -37,9 +37,9 @@ pub enum Focus {
 }
 
 impl Focus {
-    /// Keymap context. The find bar sits on the editor, so the editor's chords (f3, ctrl+h,
-    /// ctrl+alt+enter) work in it; the search panel has no table of its own and gets the
-    /// global keys (f4, ctrl+shift+f).
+    /// Keymap context. The find bar sits on the editor, so the editor's keys (f3, ctrl+u, f7)
+    /// work in it; the search panel has no table of its own and gets the global keys (f4,
+    /// ctrl+t, ctrl+f1).
     pub fn context(self) -> Context {
         match self {
             Focus::Editor | Focus::FindBar => Context::Editor,
@@ -130,6 +130,9 @@ pub struct App {
     watcher: Option<Watcher>,
     /// The terminal reports keys with the kitty protocol (all chords reachable).
     pub keyboard_enhanced: bool,
+    /// Commands run, by name, in order (tests check which command a key ran).
+    #[cfg(test)]
+    pub ran: Vec<String>,
     pub quit: bool,
     /// Something changed since the last frame.
     pub dirty: bool,
@@ -206,6 +209,8 @@ impl App {
             fs_rx: None,
             watcher: None,
             keyboard_enhanced: false,
+            #[cfg(test)]
+            ran: Vec::new(),
             quit: false,
             dirty: true,
             layout: AppLayout::default(),
@@ -294,7 +299,8 @@ impl App {
         self.keyboard_enhanced = keyboard_enhanced;
         let names = commands::command_names();
         if !keyboard_enhanced {
-            // A command with a reachable alternative key (ctrl+alt+<key>) is not lost.
+            // The default keymap is deliverable everywhere (USER-5); this lists the keys a user
+            // keymap binds that this terminal cannot send, unless the command has another one.
             let mut lost: Vec<String> = Vec::new();
             for (_, k, c) in self.keymap.bindings() {
                 let has_reachable = self
@@ -312,17 +318,12 @@ impl App {
                 }
             }
             if !lost.is_empty() {
-                let palette: Vec<String> = self
-                    .keymap
-                    .keys_for("app.palette")
-                    .iter()
-                    .filter(|k| !legacy_unreachable(k))
-                    .map(ToString::to_string)
-                    .collect();
-                let remedy = if palette.is_empty() {
-                    "run them from the command palette".to_string()
-                } else {
-                    format!("use the command palette ({})", palette.join(" / "))
+                let palette = self
+                    .display_key("app.palette")
+                    .filter(|s| s.parse().is_ok_and(|k| !legacy_unreachable(&k)));
+                let remedy = match palette {
+                    Some(key) => format!("use the command palette ({key})"),
+                    None => "run them from the command palette".to_string(),
                 };
                 self.push_notice(Notice {
                     level: NoticeLevel::Warning,
@@ -755,6 +756,11 @@ impl App {
         !reading
     }
 
+    /// The terminal was resized: redraw.
+    pub fn on_resize(&mut self) {
+        self.cursor_moved();
+    }
+
     /// Marks the frame dirty and scrolls to the cursor on the next render.
     pub fn cursor_moved(&mut self) {
         if let Some(v) = self.views.get_mut(self.active) {
@@ -828,17 +834,30 @@ impl App {
         }
     }
 
-    /// The keys bound to `cmd`, for hints in notices ("F1"), never hard-coded (USER-1).
-    pub fn key_hint(&self, cmd: &str) -> String {
-        let keys = self.keymap.keys_for(cmd);
-        if keys.is_empty() {
-            format!("run {cmd}")
-        } else {
+    /// The one key every place shows for `cmd` (USER-5, D250). The default keymap has one key
+    /// per command; with a user keymap that adds more, the shortest key this terminal can send
+    /// wins (a key it cannot send only when nothing else is bound). `None` when unbound.
+    pub fn display_key(&self, cmd: &str) -> Option<String> {
+        // Each key with whether a legacy terminal sends it.
+        let keys: Vec<(bool, String)> = self
+            .keymap
+            .keys_for(cmd)
+            .iter()
+            .map(|k| (!legacy_unreachable(k), k.to_string()))
+            .collect();
+        let pick = |only_reachable: bool| {
             keys.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" / ")
-        }
+                .filter(|(ok, _)| !only_reachable || *ok)
+                .map(|(_, s)| s.clone())
+                .min_by_key(String::len)
+        };
+        pick(!self.keyboard_enhanced).or_else(|| pick(false))
+    }
+
+    /// The key to name in a notice or hint for `cmd` (never hard-coded, USER-1).
+    pub fn key_hint(&self, cmd: &str) -> String {
+        self.display_key(cmd)
+            .unwrap_or_else(|| format!("run {cmd}"))
     }
 
     /// Writes the unsaved buffers of `idxs` to the recovery directory before they are
@@ -895,6 +914,8 @@ impl App {
             self.warn(format!("unknown command {name:?}"));
             return false;
         };
+        #[cfg(test)]
+        self.ran.push(name.to_owned());
         if let Err(e) = (spec.run)(self, args) {
             self.error(format!("{}: {e}", spec.title));
         }

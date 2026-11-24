@@ -243,7 +243,7 @@ where
                     Event::Key(k) => app.handle_key(k),
                     Event::Paste(s) => app.handle_paste(&s),
                     Event::Mouse(m) => app.handle_mouse(m),
-                    Event::Resize(..) => app.cursor_moved(),
+                    Event::Resize(..) => app.on_resize(),
                     _ => {}
                 }
                 if app.quit || !event::poll(Duration::ZERO)? {

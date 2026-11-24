@@ -1382,7 +1382,7 @@ fn not_shown_reason(app: &App, path: &Path) -> String {
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect();
     let how = |cmd: &str| {
-        if app.keymap.keys_for(cmd).is_empty() {
+        if app.display_key(cmd).is_none() {
             format!("the command {cmd}")
         } else {
             app.key_hint(cmd)

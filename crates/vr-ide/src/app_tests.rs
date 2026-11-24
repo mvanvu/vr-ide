@@ -43,6 +43,45 @@ fn ctrl(c: char) -> KeyEvent {
     key(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
+/// The crossterm event for a key written as in the keymap ("ctrl+t", "shift+f7", "ctrl+up"),
+/// as crossterm reports it from a legacy terminal: ctrl+/ arrives as the byte 0x1f, which
+/// crossterm reports as ctrl+7; every other key used here arrives as itself.
+pub(crate) fn key_event(text: &str) -> KeyEvent {
+    use vr_config::KeyCode as C;
+    let chord: vr_config::KeyChord = text.parse().unwrap();
+    let mut mods = KeyModifiers::NONE;
+    if chord.mods.ctrl {
+        mods |= KeyModifiers::CONTROL;
+    }
+    if chord.mods.shift {
+        mods |= KeyModifiers::SHIFT;
+    }
+    if chord.mods.alt {
+        mods |= KeyModifiers::ALT;
+    }
+    let code = match chord.code {
+        C::Char('/') if chord.mods.ctrl => KeyCode::Char('7'),
+        C::Char(c) => KeyCode::Char(c),
+        C::F(n) => KeyCode::F(n),
+        C::Up => KeyCode::Up,
+        C::Down => KeyCode::Down,
+        C::Left => KeyCode::Left,
+        C::Right => KeyCode::Right,
+        C::Delete => KeyCode::Delete,
+        C::Esc => KeyCode::Esc,
+        C::Tab if chord.mods.shift => KeyCode::BackTab,
+        C::Tab => KeyCode::Tab,
+        C::Enter => KeyCode::Enter,
+        other => panic!("the test helper cannot send {other:?}"),
+    };
+    key(code, mods)
+}
+
+/// Presses the key written as in the keymap ("ctrl+t", "shift+f12").
+pub(crate) fn press(app: &mut App, text: &str) {
+    app.handle_key(key_event(text));
+}
+
 fn typ(app: &mut App, s: &str) {
     for c in s.chars() {
         let k = if c == '\n' {
@@ -102,19 +141,15 @@ fn undo_redo_via_commands() {
     assert!(!app.active_doc().unwrap().is_modified());
     app.handle_key(ctrl('y'));
     assert_eq!(text(&app), "abone\n");
-    // ctrl+shift+z as an enhanced terminal reports it (uppercase letter).
-    app.handle_key(key(
-        KeyCode::Char('Z'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    ));
-    assert_eq!(text(&app), "ab\none\n");
+    app.handle_key(ctrl('z'));
+    assert_eq!(text(&app), "one\n");
 }
 
 #[test]
 fn unknown_command_in_keymap_shows_notice_not_crash() {
     let dir = tempfile::tempdir().unwrap();
     let km = dir.path().join("keymap.toml");
-    std::fs::write(&km, "ctrl+s = \"file.save\"\n\"ctrl+k\" = \"nope.cmd\"\n").unwrap();
+    std::fs::write(&km, "ctrl+s = \"file.save\"\n\"f10\" = \"nope.cmd\"\n").unwrap();
     let (keymap, warnings) = Keymap::load(Some(&km));
     let mut app = App::new(
         dir.path().to_path_buf(),
@@ -130,7 +165,7 @@ fn unknown_command_in_keymap_shows_notice_not_crash() {
     std::fs::write(dir.path().join("f.txt"), "1").unwrap();
     app.open_path(Path::new("f.txt")).unwrap();
     app.handle_key(ctrl('i'));
-    app.handle_key(ctrl('k'));
+    app.handle_key(key(KeyCode::F(10), KeyModifiers::NONE));
     typ(&mut app, "x");
     app.handle_key(ctrl('s'));
     assert_eq!(
@@ -272,9 +307,9 @@ fn open_tabs_switch_and_reopen_activates() {
     }
     assert_eq!(app.docs.len(), 3);
     assert_eq!(app.active, 2);
-    app.handle_key(key(KeyCode::PageDown, KeyModifiers::CONTROL));
+    press(&mut app, "f9");
     assert_eq!(app.active, 0);
-    app.handle_key(key(KeyCode::PageUp, KeyModifiers::CONTROL));
+    press(&mut app, "shift+f9");
     assert_eq!(app.active, 2);
     app.run_command("tab.prev", CmdArgs::None);
     assert_eq!(app.active, 1);
@@ -390,27 +425,46 @@ fn title_shows_project_root() {
 }
 
 #[test]
-fn legacy_terminal_notice_lists_unreachable_default_keys() {
+fn legacy_terminal_notice_lists_only_unreachable_user_keys() {
     let dir = tempfile::tempdir().unwrap();
+    // The default keymap is deliverable by every terminal (USER-5): no notice.
     let (mut app, _) = test_app(dir.path());
     app.report_startup(Vec::new(), false);
+    assert!(app.notices.is_empty(), "{:?}", notices(&app));
+    // A user key that needs the kitty protocol is listed, with the palette as the way out.
+    let app = legacy_notice_app(dir.path());
     let all = format!(
         "{}\n{}",
         notices(&app).join("\n"),
         app.notices[0].detail.as_deref().unwrap_or("")
     );
-    // Chords with a reachable key (f1, shift+tab, ctrl+alt+<key>) are not lost.
-    assert!(all.contains("ctrl+alt+enter"), "{all}");
-    assert!(
-        !all.contains("ctrl+shift+p") && !all.contains("ctrl+["),
-        "{all}"
-    );
+    assert!(all.contains("ctrl+shift+m"), "{all}");
+    assert!(all.contains("(f1)"), "palette key: {all}");
+    assert!(!all.contains("ctrl+shift+p"), "has f1: {all}");
     assert!(!all.contains("(app.palette)"), "key names only: {all}");
-    assert!(all.contains("f1"), "palette fallback: {all}");
-    assert!(!all.contains("ctrl+s (file.save)"), "{all}");
     let (mut app, _) = test_app(dir.path());
     app.report_startup(Vec::new(), true);
     assert!(app.notices.is_empty(), "{:?}", notices(&app));
+}
+
+/// An app whose user keymap binds keys a legacy terminal cannot send: one that is the only key
+/// of its command, and one whose command also has a reachable key. The startup notice is up.
+pub(crate) fn legacy_notice_app(root: &Path) -> App {
+    let km = root.join("keymap.toml");
+    std::fs::write(
+        &km,
+        "\"ctrl+shift+m\" = \"file.save_overwrite\"\n\"ctrl+shift+p\" = \"app.palette\"\n",
+    )
+    .unwrap();
+    let (keymap, warnings) = Keymap::load(Some(&km));
+    let mut app = App::new(
+        root.to_path_buf(),
+        keymap,
+        Settings::default(),
+        Box::new(MemoryClipboard::new()),
+    );
+    app.report_startup(warnings, false);
+    app
 }
 
 // ---- fix round 1 -------------------------------------------------------------------------
@@ -491,8 +545,7 @@ fn dotdot_path_opens_the_same_tab() {
 #[test]
 fn legacy_keyboard_notice_does_not_hide_later_notices() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut app, _) = test_app(dir.path());
-    app.report_startup(Vec::new(), false);
+    let mut app = legacy_notice_app(dir.path());
     assert!(!app.notices.is_empty());
     app.warn("a.txt changed on disk; not saved");
     assert_eq!(
@@ -500,8 +553,7 @@ fn legacy_keyboard_notice_does_not_hide_later_notices() {
         "a.txt changed on disk; not saved"
     );
     // Alone, it goes away by itself.
-    let (mut app, _) = test_app(dir.path());
-    app.report_startup(Vec::new(), false);
+    let mut app = legacy_notice_app(dir.path());
     app.tick(std::time::Instant::now() + std::time::Duration::from_secs(60));
     assert!(app.notices.is_empty(), "{:?}", notices(&app));
 }
@@ -552,61 +604,170 @@ fn recent_files_are_most_recent_first_unique_and_bounded() {
     assert!(!app.recent.iter().any(|p| p.ends_with("missing.txt")));
 }
 
-/// D220 / D221: every chord a legacy terminal cannot send or an emulator keeps has a
-/// ctrl+alt alternative. The legacy byte form ESC + ctrl-letter is reported by crossterm as
-/// the very same event (letter + CONTROL + ALT), so one event covers both.
+/// USER-5 / D250: the default keymap is one separate key set. One key per command (no
+/// exception), every key a single key deliverable by a legacy terminal, none taken by GNOME
+/// Terminal or the desktop, none that shares a byte with another key, no alt and no ctrl+shift
+/// anywhere; F keys alone or with ctrl or shift.
 #[test]
-fn ctrl_alt_alternatives_run_the_same_commands() {
-    use crate::event_loop::{chord_from_key, legacy_unreachable};
+fn default_keymap_obeys_user_5() {
+    use crate::event_loop::legacy_unreachable;
+    use std::collections::BTreeMap;
+    use vr_config::{KeyChord, KeyCode as C};
+    const FORBIDDEN: [&str; 14] = [
+        "ctrl+pageup",
+        "ctrl+pagedown",
+        "ctrl+plus",
+        "ctrl+-",
+        "ctrl+0",
+        "f10",
+        "f11",
+        "alt+f1",
+        "alt+f2",
+        "alt+f4",
+        "alt+f6",
+        "alt+f7",
+        "alt+f8",
+        "alt+space",
+    ];
+    // Share a byte with Tab, Enter, Escape, Backspace, Enter (ctrl+j) or NUL. ctrl+i is allowed
+    // (D249): Tab in read mode enters edit mode too (D145).
+    const AMBIGUOUS: [&str; 7] = [
+        "ctrl+m",
+        "ctrl+[",
+        "ctrl+h",
+        "ctrl+j",
+        "ctrl+2",
+        "ctrl+space",
+        "ctrl+@",
+    ];
+    let check_first = |k: &KeyChord, what: &str| {
+        let s = k.to_string();
+        assert!(!k.mods.alt, "{s} ({what}) uses alt");
+        assert!(
+            !legacy_unreachable(k),
+            "{s} ({what}) is not legacy-deliverable"
+        );
+        assert!(
+            !FORBIDDEN.contains(&s.as_str()),
+            "{s} ({what}) is forbidden"
+        );
+        assert!(
+            !AMBIGUOUS.contains(&s.as_str()),
+            "{s} ({what}) is ambiguous"
+        );
+        assert!(
+            !(k.mods.ctrl && k.mods.shift),
+            "{s} ({what}) is a ctrl+shift chord"
+        );
+        if let C::F(n) = k.code {
+            assert!(n != 10 && n != 11, "{s} ({what}): F10/F11 belong to GNOME");
+        }
+    };
     let dir = tempfile::tempdir().unwrap();
     let (app, _) = test_app(dir.path());
-    let ca = KeyModifiers::CONTROL | KeyModifiers::ALT;
-    let cases = [
-        ('f', "search.project", "ctrl+shift+f"),
-        ('h', "search.replace_project", "ctrl+shift+h"),
-        ('s', "file.save_as", "ctrl+shift+s"),
-        ('e', "explorer.focus", "ctrl+shift+e"),
-        ('k', "edit.delete_line", "ctrl+shift+k"),
-        ('`', "terminal.new", "ctrl+shift+`"),
-        ('1', "find.replace_one", "ctrl+shift+1"),
-    ];
-    for (c, cmd, original) in cases {
-        for enhanced in [true, false] {
-            let ev = KeyEvent::new(KeyCode::Char(c), ca);
-            let chord = chord_from_key(&ev, enhanced).unwrap();
-            assert_eq!(app.keymap.command_for(&chord), Some(cmd), "{chord}");
+    let mut per_cmd: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (_, k, cmd) in app.keymap.bindings() {
+        check_first(k, cmd);
+        let keys = per_cmd.entry(cmd.to_string()).or_default();
+        if !keys.contains(&k.to_string()) {
+            keys.push(k.to_string());
         }
-        // The original chord stays, and the command now has two keys.
-        let keys = app.keymap.keys_for(cmd);
-        assert!(keys.iter().any(|k| k.to_string() == original), "{cmd}");
-        assert_eq!(keys.len(), 2, "{cmd}: {keys:?}");
-        // Letters are reachable on a legacy keyboard; ctrl+alt+1 and ctrl+alt+` are not (a
-        // legacy terminal sends ESC 1 and ESC NUL).
-        let reachable = c.is_ascii_lowercase();
-        let k = keys
-            .iter()
-            .find(|k| k.to_string() == format!("ctrl+alt+{c}"));
-        assert_eq!(!legacy_unreachable(k.unwrap()), reachable, "{c}");
+    }
+    for (cmd, keys) in &per_cmd {
+        assert_eq!(keys.len(), 1, "{cmd} has {keys:?}");
     }
 }
 
-/// The legacy notice lists only the chords that stay unreachable once their alternative exists.
+/// D250: the approved table, (context, key, command). Every entry is the command's one key.
+pub(crate) const D250: &[(&str, &str, &str)] = &[
+    ("global", "ctrl+t", "search.project"),
+    ("global", "ctrl+r", "search.replace_project"),
+    ("editor", "ctrl+u", "find.replace_open"),
+    ("editor", "f7", "find.replace_one"),
+    ("editor", "shift+f7", "find.replace_all"),
+    ("global", "ctrl+b", "explorer.focus"),
+    ("global", "ctrl+e", "explorer.toggle_focus"),
+    ("global", "f12", "file.save_as"),
+    ("global", "f5", "file.reload"),
+    ("editor", "ctrl+d", "edit.delete_line"),
+    ("editor", "ctrl+l", "edit.duplicate_line"),
+    ("editor", "ctrl+up", "edit.move_line_up"),
+    ("editor", "ctrl+down", "edit.move_line_down"),
+    ("editor", "ctrl+/", "edit.toggle_comment"),
+    ("global", "f9", "tab.next"),
+    ("global", "shift+f9", "tab.prev"),
+    ("editor", "ctrl+g", "nav.goto_line"),
+    ("global", "ctrl+f12", "terminal.new"),
+    ("global", "shift+f12", "terminal.hide"),
+    ("global", "ctrl+f4", "terminal.close"),
+    ("global", "f8", "terminal.next"),
+    ("global", "shift+f8", "terminal.prev"),
+    ("global", "ctrl+f8", "terminal.grow"),
+    ("global", "ctrl+f9", "terminal.shrink"),
+    ("global", "ctrl+k", "explorer.reveal"),
+    ("explorer", "ctrl+f2", "explorer.new_folder"),
+    ("explorer", "f2", "explorer.rename"),
+    ("global", "ctrl+f5", "explorer.toggle_hidden"),
+    ("global", "ctrl+f6", "explorer.toggle_ignored"),
+    ("global", "ctrl+f1", "find.toggle_case"),
+    ("global", "ctrl+f2", "find.toggle_word"),
+    ("global", "ctrl+f3", "find.toggle_regex"),
+    ("global", "f1", "app.palette"),
+];
+
+/// D250: each key of the table, pressed as crossterm reports it from a legacy terminal, runs
+/// its command (global keys from the editor, the editor's in edit mode, the explorer's with the
+/// explorer focused); the same with the kitty protocol.
 #[test]
-fn legacy_notice_lists_only_chords_without_a_reachable_alternative() {
+fn every_d250_key_runs_its_command() {
+    for enhanced in [false, true] {
+        for &(ctx, k, cmd) in D250 {
+            let (_d, _p, mut app, _) = app_with_file("one\ntwo\n");
+            app.terminal.shell = Some(PathBuf::from("/bin/sh"));
+            app.terminal.env = vec![("ENV".into(), "/dev/null".into())];
+            app.keyboard_enhanced = enhanced;
+            if ctx == "explorer" {
+                app.explorer.visible = true;
+                app.focus = crate::app::Focus::Explorer;
+            }
+            app.ran.clear();
+            let mut ev = key_event(k);
+            if enhanced && k == "ctrl+/" {
+                ev = key(KeyCode::Char('/'), KeyModifiers::CONTROL);
+            }
+            app.handle_key(ev);
+            assert_eq!(
+                app.ran.first().map(String::as_str),
+                Some(cmd),
+                "{ctx} {k} (kitty {enhanced}): ran {:?}",
+                app.ran
+            );
+        }
+    }
+}
+
+/// D250: every place shows a command's one key.
+#[test]
+fn display_key_is_the_one_key_of_a_command() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = test_app(dir.path());
-    app.report_startup(Vec::new(), false);
-    let detail = app.notices[0].detail.clone().unwrap();
-    for gone in [
-        "ctrl+shift+f",
-        "ctrl+shift+h",
-        "ctrl+shift+s",
-        "ctrl+shift+e",
-        "ctrl+shift+k",
-    ] {
-        assert!(!detail.contains(gone), "{gone} has ctrl+alt: {detail}");
+    let mut cases: Vec<(&str, &str)> = D250.iter().map(|&(_, k, c)| (c, k)).collect();
+    cases.extend([
+        ("file.save", "ctrl+s"),
+        ("edit.redo", "ctrl+y"),
+        ("terminal.toggle", "ctrl+`"),
+    ]);
+    for enhanced in [true, false] {
+        app.keyboard_enhanced = enhanced;
+        for (cmd, key) in &cases {
+            assert_eq!(
+                app.display_key(cmd).as_deref(),
+                Some(*key),
+                "{cmd} {enhanced}"
+            );
+        }
     }
-    for kept in ["ctrl+shift+1", "ctrl+shift+`", "ctrl+alt+enter"] {
-        assert!(detail.contains(kept), "{kept}: {detail}");
-    }
+    assert_eq!(app.display_key("explorer.toggle"), None, "palette only");
+    assert_eq!(app.display_key("no.such"), None);
+    assert_eq!(app.key_hint("no.such"), "run no.such");
 }

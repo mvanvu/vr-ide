@@ -14,8 +14,9 @@
 //! and line editing in the fields, Tab / shift+Tab move between the fields and the list,
 //! Up/Down/PageUp/PageDown/Home/End move in the list (Down leaves a field for the list),
 //! Enter searches / previews / opens the result, Space checks a preview file, Esc returns to
-//! the editor (closes a preview first), alt+c / alt+r / alt+w toggle case, regex and whole
-//! word. A chord the keymap binds globally (f4, ctrl+shift+f) runs its command first.
+//! the editor (closes a preview first). Case, whole word and regex are the `find.toggle_*`
+//! commands (ctrl+f1 / ctrl+f2 / ctrl+f3, D250). A key the keymap binds globally (f4, ctrl+t)
+//! runs its command first.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1542,9 +1543,9 @@ fn toggle_checked(app: &mut App) {
     }
 }
 
-/// alt+c / alt+r / alt+w. Refused while a replace runs, so the toggles always show what
-/// the results were searched with (a new search would be refused too).
-fn toggle_option(app: &mut App, c: char) {
+/// The option toggles (`find.toggle_*`). Refused while a replace runs, so the toggles always
+/// show what the results were searched with (a new search would be refused too).
+pub(crate) fn toggle_option(app: &mut App, c: char) {
     if replacing(app) {
         app.info("Replace in Project: the replace is running; Esc cancels it");
         return;
@@ -1617,7 +1618,6 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     let in_list = app.search.field == Field::Results;
     match key.code {
         KeyCode::Esc if plain => escape(app),
-        KeyCode::Char(c @ ('c' | 'r' | 'w')) if m == KeyModifiers::ALT => toggle_option(app, c),
         KeyCode::Tab | KeyCode::BackTab if m.difference(KeyModifiers::SHIFT).is_empty() => {
             let back = key.code == KeyCode::BackTab || m.contains(KeyModifiers::SHIFT);
             next_field(app, !back);

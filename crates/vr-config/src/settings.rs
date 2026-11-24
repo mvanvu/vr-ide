@@ -31,7 +31,7 @@ pub struct Settings {
     /// Height of the terminal panel in percent of the screen, 10..=90 (M5).
     pub terminal_height_percent: u16,
     /// Without the kitty protocol, NUL (what ctrl+` sends) in a focused terminal goes to the
-    /// program instead of hiding the panel (D214).
+    /// program instead of giving the keys back to the editor (D214, D230).
     pub terminal_pass_nul: bool,
     pub ai_presets: Vec<AiPreset>,
 }

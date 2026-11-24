@@ -15,6 +15,43 @@ fn write_user(contents: &str) -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
+/// D250: the approved direct-key table, one key per command, by context.
+const D250: &[(&str, &str, &str)] = &[
+    ("global", "ctrl+t", "search.project"),
+    ("global", "ctrl+r", "search.replace_project"),
+    ("editor", "ctrl+u", "find.replace_open"),
+    ("editor", "f7", "find.replace_one"),
+    ("editor", "shift+f7", "find.replace_all"),
+    ("global", "ctrl+b", "explorer.focus"),
+    ("global", "ctrl+e", "explorer.toggle_focus"),
+    ("global", "f12", "file.save_as"),
+    ("global", "f5", "file.reload"),
+    ("editor", "ctrl+d", "edit.delete_line"),
+    ("editor", "ctrl+l", "edit.duplicate_line"),
+    ("editor", "ctrl+up", "edit.move_line_up"),
+    ("editor", "ctrl+down", "edit.move_line_down"),
+    ("editor", "ctrl+/", "edit.toggle_comment"),
+    ("global", "f9", "tab.next"),
+    ("global", "shift+f9", "tab.prev"),
+    ("editor", "ctrl+g", "nav.goto_line"),
+    ("global", "ctrl+f12", "terminal.new"),
+    ("global", "shift+f12", "terminal.hide"),
+    ("global", "ctrl+f4", "terminal.close"),
+    ("global", "f8", "terminal.next"),
+    ("global", "shift+f8", "terminal.prev"),
+    ("global", "ctrl+f8", "terminal.grow"),
+    ("global", "ctrl+f9", "terminal.shrink"),
+    ("global", "ctrl+k", "explorer.reveal"),
+    ("explorer", "ctrl+f2", "explorer.new_folder"),
+    ("explorer", "f2", "explorer.rename"),
+    ("global", "ctrl+f5", "explorer.toggle_hidden"),
+    ("global", "ctrl+f6", "explorer.toggle_ignored"),
+    ("global", "ctrl+f1", "find.toggle_case"),
+    ("global", "ctrl+f2", "find.toggle_word"),
+    ("global", "ctrl+f3", "find.toggle_regex"),
+    ("global", "f1", "app.palette"),
+];
+
 /// Every command name the plan's registry lists, plus the M5 reserved one.
 const KNOWN: &[&str] = &[
     "app.quit",
@@ -75,6 +112,10 @@ const KNOWN: &[&str] = &[
     "terminal.next",
     "terminal.prev",
     "terminal.grow",
+    "terminal.hide",
+    "find.toggle_case",
+    "find.toggle_word",
+    "find.toggle_regex",
     "terminal.shrink",
 ];
 
@@ -200,32 +241,27 @@ fn defaults_load_without_user_file() {
     assert!(warnings.is_empty(), "{warnings:?}");
     let expect = [
         ("ctrl+s", "file.save"),
-        ("ctrl+shift+s", "file.save_as"),
-        ("ctrl+shift+p", "app.palette"),
         ("f1", "app.palette"),
         ("ctrl+p", "file.goto"),
-        ("ctrl+shift+f", "search.project"),
-        ("ctrl+shift+h", "search.replace_project"),
         ("ctrl+q", "app.quit"),
         ("ctrl+w", "file.close"),
-        ("ctrl+pagedown", "tab.next"),
-        ("ctrl+pageup", "tab.prev"),
-        ("ctrl+b", "explorer.toggle"),
-        ("ctrl+shift+e", "explorer.focus"),
+        ("ctrl+e", "explorer.toggle_focus"),
         ("ctrl+z", "edit.undo"),
-        ("ctrl+shift+z", "edit.redo"),
         ("ctrl+y", "edit.redo"),
         ("f3", "find.next"),
         ("shift+f3", "find.prev"),
         ("ctrl+]", "edit.indent"),
-        ("ctrl+[", "edit.outdent"),
-        ("shift+alt+down", "edit.duplicate_line"),
-        ("ctrl+shift+k", "edit.delete_line"),
-        ("ctrl+/", "edit.toggle_comment"),
+        ("shift+tab", "edit.outdent"),
         ("ctrl+g", "nav.goto_line"),
     ];
     for (k, cmd) in expect {
         assert_eq!(km.command_for(&chord(k)), Some(cmd), "{k}");
+    }
+    // D250: each command has exactly this one key, in this context.
+    for &(ctx, k, cmd) in D250 {
+        let ctx = Context::from_name(ctx).unwrap();
+        assert_eq!(km.command_for_in(ctx, &chord(k)), Some(cmd), "{ctx} {k}");
+        assert_eq!(km.keys_for(cmd), [chord(k)], "{cmd} has one key");
     }
     // Explorer-only keys act in the explorer and not in the editor.
     assert_eq!(
@@ -254,24 +290,18 @@ fn defaults_load_without_user_file() {
         km.command_for_in(Context::Explorer, &chord("ctrl+s")),
         Some("file.save")
     );
-    // D8: a focused terminal gets every key except alt+q.
-    assert_eq!(
-        km.command_for_in(Context::Terminal, &chord("alt+q")),
-        Some("focus.editor")
-    );
+    // D8/D230: a focused terminal gets every key except ctrl+`.
+    assert_eq!(km.command_for_in(Context::Terminal, &chord("alt+q")), None);
     assert_eq!(km.command_for_in(Context::Terminal, &chord("ctrl+s")), None);
-    // M5 (D185): ctrl+` toggles the panel everywhere, ctrl+shift+` opens a new terminal (VS Code),
-    // in a focused terminal too; ctrl+space (the legacy NUL) is not bound in the terminal.
+    // M5 (D185): ctrl+` toggles the panel everywhere, in a focused terminal too; ctrl+space
+    // (the legacy NUL) is not bound in the terminal. Only ctrl+` is reserved there.
     for ctx in [Context::Editor, Context::Explorer, Context::Terminal] {
         assert_eq!(
             km.command_for_in(ctx, &chord("ctrl+`")),
             Some("terminal.toggle")
         );
-        assert_eq!(
-            km.command_for_in(ctx, &chord("ctrl+shift+`")),
-            Some("terminal.new")
-        );
     }
+    assert_eq!(km.command_for_in(Context::Terminal, &chord("alt+t")), None);
     assert_eq!(
         km.command_for_in(Context::Terminal, &chord("ctrl+space")),
         None
@@ -432,13 +462,13 @@ fn keys_for_lists_all_bindings() {
         .map(ToString::to_string)
         .collect();
     palette.sort();
-    assert_eq!(palette, ["ctrl+shift+p", "f1"]);
+    assert_eq!(palette, ["f1"]);
     let redo: Vec<String> = km
         .keys_for("edit.redo")
         .iter()
         .map(ToString::to_string)
         .collect();
-    assert!(redo.contains(&"ctrl+shift+z".to_owned()) && redo.contains(&"ctrl+y".to_owned()));
+    assert_eq!(redo, ["ctrl+y"]);
     assert!(km.keys_for("no.such").is_empty());
 }
 
@@ -543,4 +573,67 @@ fn same_chord_twice_in_one_context_is_reported() {
     let global = km.command_for_in(Context::Global, &chord("ctrl+s"));
     assert!(matches!(global, Some("file.save") | Some("file.save_as")));
     assert_eq!(km.command_for(&chord("ctrl+s")), Some("file.save"));
+}
+
+/// D250: keys are single keys; there are no sequences and no leader. A key with a space in it
+/// ("ctrl+d f", "leader f") is an invalid key, reported and skipped.
+#[test]
+fn a_key_sequence_is_an_invalid_key() {
+    let (_d, path) = write_user(
+        "\"leader f\" = \"file.reload\"\n\"ctrl+d f\" = \"file.save\"\n\"f5\" = \"file.reload\"\n",
+    );
+    let (km, w) = Keymap::load(Some(&path));
+    let mut invalid: Vec<&String> = w
+        .iter()
+        .filter_map(|w| match w {
+            ConfigWarning::InvalidKey { key, .. } => Some(key),
+            _ => None,
+        })
+        .collect();
+    invalid.sort();
+    assert_eq!(invalid, ["ctrl+d f", "leader f"], "{w:?}");
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert_eq!(km.command_for(&chord("f5")), Some("file.reload"));
+    assert_eq!(km.command_for(&chord("ctrl+d")), Some("edit.delete_line"));
+}
+
+/// D250: the leader_key setting is gone; a user file that still sets it gets the usual
+/// unknown-setting warning.
+#[test]
+fn leader_key_is_not_a_setting() {
+    let (_d, path) = write_user("leader_key = \"ctrl+d\"\n");
+    let (_, w) = Settings::load(Some(&path));
+    assert!(
+        matches!(w.as_slice(), [ConfigWarning::UnknownSetting { key, .. }] if key == "leader_key"),
+        "{w:?}"
+    );
+}
+
+/// The keymap examples in docs/keymap.md and the README parse without a warning and name real
+/// commands (review: documented syntax must be valid).
+#[test]
+fn documented_keymap_examples_are_valid() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let mut blocks = Vec::new();
+    for doc in ["docs/keymap.md", "README.md"] {
+        let text = fs::read_to_string(format!("{root}/{doc}")).unwrap();
+        let mut rest = text.as_str();
+        while let Some(start) = rest.find("```toml\n") {
+            let body = &rest[start + 8..];
+            let end = body.find("```").unwrap();
+            let block = &body[..end];
+            let is_keymap = doc == "docs/keymap.md" || block.contains("keymap.toml");
+            if is_keymap {
+                blocks.push((doc, block.to_string()));
+            }
+            rest = &body[end + 3..];
+        }
+    }
+    assert!(blocks.len() >= 2, "{blocks:?}");
+    for (doc, block) in blocks {
+        let (_d, path) = write_user(&block);
+        let (km, w) = Keymap::load(Some(&path));
+        assert!(w.is_empty(), "{doc}: {w:?}\n{block}");
+        assert!(km.validate(KNOWN).is_empty(), "{doc}: {block}");
+    }
 }

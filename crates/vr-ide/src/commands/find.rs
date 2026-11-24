@@ -2,9 +2,10 @@
 //!
 //! Built-in keys while the bar has focus (like the palette's, not in the keymap): typing and
 //! line editing, Enter = next match (in the replace field: replace one), shift+Enter =
-//! previous, Tab / shift+Tab switch between the fields, Esc closes the bar, alt+c / alt+r /
-//! alt+w toggle match case, regex and whole word (VS Code's defaults). A chord the keymap
-//! binds for the editor runs its command first (f3, ctrl+h, ctrl+alt+enter, D111), except
+//! previous, Tab / shift+Tab switch between the fields, Esc closes the bar. Match case, whole
+//! word and regex are the `find.toggle_*` commands (ctrl+f1 / ctrl+f2 / ctrl+f3, D250), which act
+//! on the open bar wherever the keys are. A key the keymap binds for the editor runs its command
+//! first (f3, ctrl+u, f7, shift+f7, D111), except
 //! the `edit.*` commands, which would change the file behind the bar: there ctrl+v pastes
 //! into the field and the others do nothing.
 
@@ -24,6 +25,21 @@ use crate::event_loop::chord_from_key;
 use crate::ui::dialog::LineInput;
 
 pub const COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "find.toggle_case",
+        title: "Find: Toggle Match Case",
+        run: toggle_case,
+    },
+    CommandSpec {
+        name: "find.toggle_word",
+        title: "Find: Toggle Whole Word",
+        run: toggle_word,
+    },
+    CommandSpec {
+        name: "find.toggle_regex",
+        title: "Find: Toggle Regular Expression",
+        run: toggle_regex,
+    },
     CommandSpec {
         name: "find.open",
         title: "Find",
@@ -514,7 +530,37 @@ fn pick_from_origin(app: &mut App) {
     }
 }
 
-fn toggle(app: &mut App, c: char) {
+/// The option toggles (ctrl+f1 / ctrl+f2 / ctrl+f3, D250) act on the panel that has the keys;
+/// from elsewhere on the open find bar, else on the shown project search panel. With neither,
+/// a hint names the key that opens Find.
+fn toggle_option_key(app: &mut App, c: char) -> CmdResult {
+    let search_shown = app.search.visible;
+    match app.focus {
+        Focus::FindBar => toggle(app, c),
+        Focus::Search if search_shown => super::search::toggle_option(app, c),
+        _ if app.find.open => toggle(app, c),
+        _ if search_shown => super::search::toggle_option(app, c),
+        _ => {
+            let key = app.key_hint("find.open");
+            app.info(format!("Open Find ({key}) or the project search first"));
+        }
+    }
+    Ok(())
+}
+
+fn toggle_case(app: &mut App, _: CmdArgs) -> CmdResult {
+    toggle_option_key(app, 'c')
+}
+
+fn toggle_word(app: &mut App, _: CmdArgs) -> CmdResult {
+    toggle_option_key(app, 'w')
+}
+
+fn toggle_regex(app: &mut App, _: CmdArgs) -> CmdResult {
+    toggle_option_key(app, 'r')
+}
+
+pub(crate) fn toggle(app: &mut App, c: char) {
     let f = &mut app.find;
     match c {
         'c' => f.case_sensitive = !f.case_sensitive,
@@ -562,7 +608,6 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
                 };
             }
         }
-        KeyCode::Char(c @ ('c' | 'r' | 'w')) if m == KeyModifiers::ALT => toggle(app, c),
         _ => match bound.as_deref() {
             Some("edit.paste") => {
                 if let Some(text) = app.clipboard.get() {

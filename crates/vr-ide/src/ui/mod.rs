@@ -195,12 +195,12 @@ mod tests {
     fn render_find_bar() {
         let (_d, _p, mut app, _) =
             app_with_file("fn alpha() {}\nfn beta() {}\n// alpha again: alpha\nfn gamma() {}\n");
-        app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        crate::app_tests::press(&mut app, "ctrl+u");
         for c in "alpha".chars() {
             key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        key(&mut app, KeyCode::Char('w'), KeyModifiers::ALT);
+        crate::app_tests::press(&mut app, "ctrl+f2");
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         for c in "omega".chars() {
             key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
@@ -222,11 +222,7 @@ mod tests {
         let (mut app, _) = test_app(&r);
         app.explorer.visible = true;
         app.open_path(std::path::Path::new("README.md")).unwrap();
-        let chord = if replace { 'H' } else { 'F' };
-        app.handle_key(KeyEvent::new(
-            KeyCode::Char(chord),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        ));
+        crate::app_tests::press(&mut app, if replace { "ctrl+r" } else { "ctrl+t" });
         for c in "total".chars() {
             key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
@@ -430,8 +426,8 @@ mod tests {
     #[test]
     fn legacy_keyboard_notice_keeps_remedy_and_dismiss_hint_at_every_width() {
         for (w, h) in [(120, 40), (80, 24), (60, 20), (40, 12), (30, 12)] {
-            let (mut app, _) = test_app(std::path::Path::new("/home/user/DEV/shop"));
-            app.report_startup(Vec::new(), false);
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = crate::app_tests::legacy_notice_app(dir.path());
             let t = draw(&mut app, w, h);
             let buf = t.backend().buffer();
             let rows = app.layout.notice;
@@ -443,9 +439,6 @@ mod tests {
             assert!(notice.contains("palette"), "{w}x{h}:\n{notice}");
             assert!(notice.contains("(Esc)"), "{w}x{h}:\n{notice}");
             assert!(!notice.contains("(app."), "{w}x{h}:\n{notice}");
-            if w <= 40 {
-                assert!(notice.trim_end().ends_with('…'), "{w}x{h}:\n{notice}");
-            }
         }
     }
 

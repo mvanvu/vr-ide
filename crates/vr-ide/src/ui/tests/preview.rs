@@ -250,7 +250,7 @@ fn scenes() -> Vec<Scene> {
                 let (d, _p, mut app, _) = app_with_file(
                     "fn alpha() {}\nfn beta() {}\n// alpha again: alpha\nfn gamma() {}\n",
                 );
-                app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+                crate::app_tests::press(&mut app, "ctrl+u");
                 for c in "alpha".chars() {
                     key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
                 }

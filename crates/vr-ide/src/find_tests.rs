@@ -17,8 +17,17 @@ fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-fn alt(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
+use crate::app_tests::press;
+
+/// A find option toggle (D250): ctrl+f1 match case, ctrl+f2 whole word, ctrl+f3 regex.
+fn opt(app: &mut App, c: char) {
+    let k = match c {
+        'c' => "ctrl+f1",
+        'w' => "ctrl+f2",
+        'r' => "ctrl+f3",
+        _ => unreachable!(),
+    };
+    press(app, k);
 }
 
 fn shift(code: KeyCode) -> KeyEvent {
@@ -142,22 +151,22 @@ fn find_toggles_regex_case_word() {
     app.handle_key(ctrl('f'));
     typ(&mut app, "foo");
     assert_eq!(app.find.matches.len(), 3, "case-insensitive by default");
-    app.handle_key(alt('c'));
+    opt(&mut app, 'c');
     assert!(app.find.case_sensitive);
     assert_eq!(app.find.matches, vec![(4, 7), (8, 11)]);
-    app.handle_key(alt('w'));
+    opt(&mut app, 'w');
     assert!(app.find.whole_word);
     assert_eq!(app.find.matches, vec![(4, 7)]);
-    app.handle_key(alt('c'));
+    opt(&mut app, 'c');
     assert_eq!(app.find.matches, vec![(0, 3), (4, 7)]);
-    app.handle_key(alt('w'));
+    opt(&mut app, 'w');
     assert_eq!(app.find.matches.len(), 3);
     for _ in 0..3 {
         app.handle_key(key(KeyCode::Backspace));
     }
     typ(&mut app, "f.o");
     assert_eq!(app.find.matches, vec![(13, 16)], "literal by default");
-    app.handle_key(alt('r'));
+    opt(&mut app, 'r');
     assert!(app.find.regex);
     assert_eq!(app.find.matches.len(), 4);
     typ(&mut app, "(");
@@ -170,15 +179,65 @@ fn find_toggles_regex_case_word() {
     assert!(row.contains("Aa") && row.contains(".*"), "{row}");
 }
 
+/// D250 / review finding 7: the option keys act on the open find bar also while the editor
+/// has the keys, on the open project search panel when there is no find bar, and say what to
+/// do when neither is open.
+#[test]
+fn find_option_keys_work_while_the_bar_or_panel_is_open() {
+    let (_d, _p, mut app, _) = app_with_file("Foo foo\n");
+    app.handle_key(ctrl('f'));
+    typ(&mut app, "foo");
+    app.focus = Focus::Editor;
+    assert!(app.find.open);
+    opt(&mut app, 'c');
+    assert!(app.find.case_sensitive, "find bar open, editor focused");
+    assert_eq!(app.find.matches, vec![(4, 7)]);
+    opt(&mut app, 'w');
+    opt(&mut app, 'r');
+    assert!(app.find.whole_word && app.find.regex);
+
+    // No find bar, a shown search panel: the panel's options change.
+    let (_d, _p, mut app, _) = app_with_file("Foo foo\n");
+    app.search.visible = true;
+    app.focus = Focus::Editor;
+    let before = (
+        app.search.case_sensitive,
+        app.search.whole_word,
+        app.search.regex,
+    );
+    opt(&mut app, 'c');
+    opt(&mut app, 'w');
+    opt(&mut app, 'r');
+    assert_eq!(
+        (
+            app.search.case_sensitive,
+            app.search.whole_word,
+            app.search.regex
+        ),
+        (!before.0, !before.1, !before.2)
+    );
+
+    // Neither: a hint names the key that opens Find.
+    let (_d, _p, mut app, _) = app_with_file("Foo foo\n");
+    app.notices.clear();
+    opt(&mut app, 'c');
+    assert!(!app.find.case_sensitive);
+    assert!(
+        app.notices.iter().any(|n| n.text.contains("ctrl+f")),
+        "{:?}",
+        app.notices
+    );
+}
+
 #[test]
 fn replace_one_and_all_single_undo() {
     const ORIGINAL: &str = "fn alpha() {}\nfn beta() {}\nfn gamma() {}\n";
     const ALL: &str = "fn new_alpha() {}\nfn new_beta() {}\nfn new_gamma() {}\n";
     let (_d, _p, mut app, _) = app_with_file(ORIGINAL);
-    app.handle_key(ctrl('h'));
+    press(&mut app, "ctrl+u");
     assert!(app.find.open && app.find.replace_mode);
     assert_eq!(app.find.field, Field::Find);
-    app.handle_key(alt('r'));
+    opt(&mut app, 'r');
     typ(&mut app, r"fn (\w+)");
     assert_eq!(app.find.matches.len(), 3);
     app.handle_key(key(KeyCode::Tab));
@@ -198,12 +257,9 @@ fn replace_one_and_all_single_undo() {
     assert!(!app.active_doc().unwrap().buffer.history().can_undo());
 
     // AC-10: replace all with the regex is one undo step.
-    app.handle_key(ctrl('h'));
+    press(&mut app, "ctrl+u");
     assert_eq!(app.find.field, Field::Replace);
-    app.handle_key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
-    ));
+    press(&mut app, "shift+f7");
     assert_eq!(text(&app), ALL);
     assert!(app.notices.iter().any(|n| n.text.contains('3')));
     app.handle_key(key(KeyCode::Esc));
@@ -241,7 +297,7 @@ fn replace_in_read_only_file_is_refused() {
     let (mut app, _) = crate::app_tests::test_app(dir.path());
     app.open_path(std::path::Path::new("l1.txt")).unwrap();
     app.notices.clear();
-    app.handle_key(ctrl('h'));
+    press(&mut app, "ctrl+u");
     typ(&mut app, "caf");
     assert_eq!(
         app.find.matches.len(),
@@ -251,10 +307,7 @@ fn replace_in_read_only_file_is_refused() {
     app.handle_key(key(KeyCode::Tab));
     typ(&mut app, "X");
     app.handle_key(key(KeyCode::Enter));
-    app.handle_key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
-    ));
+    press(&mut app, "shift+f7");
     assert!(!app.active_doc().unwrap().is_modified());
     assert!(app.notices.iter().any(|n| n.text.contains("read-only")));
 }

@@ -35,32 +35,38 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     }
 }
 
-/// The first key bound to `cmd` (hints never hard-code keys, USER-1).
+/// The key shown for `cmd` (hints never hard-code keys, USER-1; D250).
 fn first_key(app: &App, cmd: &str) -> String {
-    app.keymap
-        .keys_for(cmd)
-        .first()
-        .map_or_else(|| format!("run {cmd}"), ToString::to_string)
+    app.key_hint(cmd)
 }
 
 fn width_of(s: &str) -> usize {
     Span::raw(s).width()
 }
 
-/// What the panel's key hint says, in the state the panel is in: hiding is promised only where
-/// the toggle key really reaches vr-ide from a focused terminal (D214).
+/// How a focused terminal gives the keys back (D230): ctrl+`, which reaches vr-ide from a focused
+/// terminal always with the kitty protocol and, in a legacy terminal, while NUL is not passed to
+/// the program (D214); otherwise only a click on the editor does. When the panel covers the
+/// whole editor the same key hides the panel.
+fn leave_text(app: &App) -> String {
+    if term::hide_key_works(app) {
+        let what = if term::editor_covered(app) {
+            "hide"
+        } else {
+            "editor"
+        };
+        format!("{} {what}", first_key(app, "terminal.toggle"))
+    } else {
+        "click editor".to_string()
+    }
+}
+
+/// What the panel's key hint says, in the state the panel is in.
 fn hint(app: &App) -> String {
     if !term::has_keys(app) {
         format!("{} focus ", first_key(app, "terminal.toggle"))
-    } else if term::hide_key_works(app) {
-        format!(
-            "{} editor · {} hide ",
-            first_key(app, "focus.editor"),
-            first_key(app, "terminal.toggle")
-        )
     } else {
-        // terminal_pass_nul in a legacy terminal: ctrl+` reaches the program as NUL.
-        format!("{} editor ", first_key(app, "focus.editor"))
+        format!("{} ", leave_text(app))
     }
 }
 
@@ -318,7 +324,7 @@ pub fn render_status(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     };
     let (i, n) = (p.active + 1, p.tabs.len());
     // The way out of a focused terminal outranks its size: the size gives way first.
-    let out = format!("{} editor", first_key(app, "focus.editor"));
+    let out = leave_text(app);
     let rights = [
         (format!(" {i}/{n} · {cols}×{rows} · {out} "), 6),
         (format!(" {i}/{n} · {out} "), 2),
