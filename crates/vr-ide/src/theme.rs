@@ -1,11 +1,13 @@
 //! Colours and text styles. `dark` and `light` start from the terminal's own colours
-//! (`Color::Reset`) so the editor blends into the user's terminal theme; `dracula` paints
-//! its own background (`text` carries it and fills the whole frame first).
+//! (`Color::Reset`) so the editor blends into the user's terminal theme; `synthwave` (the
+//! default) and `dracula` paint their own background (`text` carries it and fills the whole frame first).
 
 use ratatui::style::{Color, Modifier, Style};
 
+mod synthwave;
+
 /// The theme used when settings name none or an unknown one.
-pub const DEFAULT_THEME: &str = "dracula";
+pub const DEFAULT_THEME: &str = "synthwave";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
@@ -53,6 +55,7 @@ impl Theme {
             "dark" => Some(Self::dark()),
             "light" => Some(Self::light()),
             "dracula" => Some(Self::dracula()),
+            "synthwave" => Some(Self::synthwave()),
             _ => None,
         }
     }
@@ -265,6 +268,15 @@ fn nearest_256(r: u8, g: u8, b: u8) -> u8 {
 }
 
 impl Theme {
+    /// Deep purple with hot pink, orange and cyan: the default theme.
+    pub fn synthwave() -> Theme {
+        Self::synthwave_with(ColorDepth::detect())
+    }
+
+    pub fn synthwave_with(depth: ColorDepth) -> Theme {
+        synthwave::build(depth)
+    }
+
     /// Dracula palette on its own background.
     pub fn dracula() -> Theme {
         Self::dracula_with(ColorDepth::detect())
@@ -442,7 +454,7 @@ mod tests {
 
     #[test]
     fn unknown_names_fall_back_to_the_default_theme() {
-        assert_eq!(DEFAULT_THEME, "dracula");
+        assert_eq!(DEFAULT_THEME, "synthwave");
         assert_eq!(Theme::from_name("nope"), Theme::from_name(DEFAULT_THEME));
     }
 
@@ -590,6 +602,70 @@ mod tests {
     }
 
     #[test]
+    fn synthwave_is_named() {
+        assert_eq!(Theme::named("synthwave"), Some(Theme::synthwave()));
+        assert!(Theme::named("dracula").is_some());
+    }
+
+    #[test]
+    fn synthwave_contrast_meets_the_floor_in_both_depths() {
+        for depth in BOTH {
+            let t = Theme::synthwave_with(depth);
+            for (name, f, b, floor) in pairs(&t) {
+                assert!(
+                    ratio(f, b) >= floor,
+                    "{depth:?} {name}: {f:?} on {b:?} is {:.2}",
+                    ratio(f, b)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn synthwave_without_true_colour_uses_only_indexed_colours() {
+        let t = Theme::synthwave_with(ColorDepth::Indexed256);
+        for s in styles(&t) {
+            for c in [s.fg, s.bg].into_iter().flatten() {
+                assert!(matches!(c, Color::Indexed(16..=255)), "{c:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn synthwave_surfaces_and_roles_stay_distinguishable_in_both_depths() {
+        for depth in BOTH {
+            let t = Theme::synthwave_with(depth);
+            let bg = t.text.bg.unwrap();
+            for (name, s) in [
+                ("bar", t.tab_bar.bg.unwrap()),
+                ("popup", t.popup.bg.unwrap()),
+                ("selection", t.selection.bg.unwrap()),
+                ("list_selected", t.list_selected.bg.unwrap()),
+            ] {
+                assert!(ratio(s, bg) >= 1.1, "{depth:?} {name} vs bg");
+            }
+            assert!(ratio(t.popup.bg.unwrap(), t.tab_bar.bg.unwrap()) >= 1.1);
+            assert!(ratio(t.input.bg.unwrap(), t.popup.bg.unwrap()) >= 1.1);
+            // Find, replace and search inputs sit on the editor background.
+            assert!(
+                ratio(t.input.bg.unwrap(), bg) >= 1.3,
+                "{depth:?} input vs editor"
+            );
+            // The palette input and the selected row sit next to each other.
+            let (input, picked) = (t.input.bg.unwrap(), t.list_selected.bg.unwrap());
+            assert!(
+                ratio(input, picked) >= 1.6,
+                "{depth:?} {:.2}",
+                ratio(input, picked)
+            );
+            assert_ne!(t.selection.bg, t.list_selected.bg);
+            assert_ne!(t.info.fg, t.warning.fg);
+            assert_ne!(t.warning.fg, t.error.fg);
+            assert_ne!(t.focus.fg, t.dim.fg);
+        }
+    }
+
+    #[test]
     fn dracula_surfaces_stay_distinguishable_in_both_depths() {
         for depth in BOTH {
             let t = Theme::dracula_with(depth);
@@ -610,6 +686,7 @@ mod tests {
     fn read_and_edit_badges_have_distinct_colours_in_every_theme() {
         let mut themes = vec![Theme::dark(), Theme::light()];
         themes.extend(BOTH.map(Theme::dracula_with));
+        themes.extend(BOTH.map(Theme::synthwave_with));
         for t in themes {
             let (r, e) = (t.mode_read, t.mode_edit);
             assert!(r.bg.is_some() && e.bg.is_some(), "{r:?} {e:?}");
@@ -617,6 +694,20 @@ mod tests {
             assert_ne!(r.bg, t.status.bg, "READ does not stand out of the bar");
             assert_ne!(e.bg, t.status.bg, "EDIT does not stand out of the bar");
             assert!(r.fg.is_some() && e.fg.is_some());
+            // The badge text must not vanish into its own background.
+            assert_ne!(r.fg, r.bg);
+            assert_ne!(e.fg, e.bg);
+        }
+    }
+
+    #[test]
+    fn terminal_colour_badges_do_not_collide_with_the_bar_or_the_text() {
+        for t in [Theme::dark(), Theme::light()] {
+            for badge in [t.mode_read, t.mode_edit] {
+                assert_ne!(badge.bg, t.status.bg);
+                assert_ne!(badge.bg, t.status.fg);
+                assert_ne!(badge.bg, t.tab_bar.bg);
+            }
         }
     }
 

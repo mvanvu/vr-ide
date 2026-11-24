@@ -248,7 +248,7 @@ with your terminal's own paste shortcut (bracketed paste is supported).
 
 | File | Purpose |
 |---|---|
-| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`dracula` by default; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit. Built-in values: `crates/vr-config/defaults/settings.toml` |
+| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit. Built-in values: `crates/vr-config/defaults/settings.toml` |
 | `~/.config/vr-ide/keymap.toml` | Key overrides on top of the VS Code defaults; see [docs/keymap.md](docs/keymap.md) |
 
 Both files are optional; a missing key keeps its default. A bad entry is reported in a startup notice

@@ -5,8 +5,8 @@
 tab_width = 4
 # Tab key inserts spaces instead of a tab character.
 insert_spaces = true
-# "dracula" (own colours and background), or "dark" / "light" (the terminal's colours).
-theme = "dracula"
+# "synthwave" (own colours and background), "dracula" (own colours), or "dark" / "light" (the terminal's colours).
+theme = "synthwave"
 # Explorer shows dotfiles (.env, .github, ...), like VS Code.
 show_hidden = true
 # Explorer shows paths matched by .gitignore (toggle: explorer.toggle_ignored).
