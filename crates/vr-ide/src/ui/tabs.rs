@@ -13,7 +13,7 @@ use crate::theme::Theme;
 /// The pieces of tab `i`'s label with their styles.
 fn label<'a>(app: &'a App, i: usize, theme: &Theme) -> Vec<Span<'a>> {
     let doc = &app.docs[i];
-    let base = if i == app.active {
+    let base = if i == app.active && !app.welcome {
         theme.tab_active
     } else {
         theme.tab_inactive

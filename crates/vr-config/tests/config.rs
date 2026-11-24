@@ -19,6 +19,7 @@ fn write_user(contents: &str) -> (tempfile::TempDir, PathBuf) {
 const KNOWN: &[&str] = &[
     "app.quit",
     "app.palette",
+    "app.welcome",
     "file.save",
     "file.save_as",
     "file.close",

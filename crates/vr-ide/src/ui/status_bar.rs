@@ -72,7 +72,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     }
     buf.set_style(area, theme.status);
     let width = usize::from(area.width);
-    let Some(doc) = app.active_doc() else {
+    let Some(doc) = app.active_doc().filter(|_| !app.welcome) else {
         let root = format!(" {}", app.root.display());
         buf.set_stringn(area.x, area.y, root, width, theme.status);
         return;

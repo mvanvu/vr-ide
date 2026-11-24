@@ -29,3 +29,5 @@ mod mode_tests;
 mod search_tests;
 #[cfg(test)]
 mod syntax_tests;
+#[cfg(test)]
+mod welcome_tests;

@@ -34,7 +34,9 @@ Contents: [Requirements](#requirements) · [Install](#install) · [Quick start](
 - **A terminal** with keyboard-enhancement support (the kitty keyboard protocol: kitty, WezTerm,
   foot, Ghostty, recent Alacritty and others) is recommended. Without it vr-ide still works, but a
   few default chords cannot be sent (for example `ctrl+shift+p`); `F1` opens the command palette
-  there and every command can be run from it. See [Terminal notes](#terminal-notes).
+  there and every command can be run from it. The same goes for `ctrl+shift+w` (Welcome), which
+  such a terminal sends as `ctrl+w` (Close File): use `ctrl+alt+w` or the palette (`F1`, then "Welcome").
+  See [Terminal notes](#terminal-notes).
 
 ## Install
 
@@ -119,6 +121,7 @@ that cannot be changed, is in [docs/keymap.md](docs/keymap.md); every key can be
 | Close the tab | `ctrl+w` or `ctrl+f4` |
 | Next / previous tab | `ctrl+pagedown` / `ctrl+pageup` |
 | Command palette | `ctrl+shift+p` or `F1` |
+| Welcome screen over the open tabs (Esc, opening a file or switching tabs hides it) | `ctrl+shift+w` or `ctrl+alt+w` |
 
 Closing a tab with unsaved changes asks: Save, Discard or Cancel. Discard keeps a copy of your
 changes in the [recovery folder](#recovery).
