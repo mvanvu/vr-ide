@@ -163,3 +163,52 @@ Fix: when no version was taken, require the result to be that `Io` error. Excuse
 | BASE-4 | pass | notes carry outputs; loop reproduced; the flakes above were not visible in a 20x loop |
 | BASE-6 | pass | English why-comments |
 | BASE-32 | pass | D96 implemented; D77 agreement given above |
+
+## FR-3 review
+
+Verdict: APPROVE FR-3. Both QP1 majors are fixed. One leader decision is open; it does not come from FR-3.
+
+Run (worktree .worktrees/FR3): `run-heavy.sh cargo test -p vr-core -p vr-search -p vr-ide` passed (vr-core 135, vr-ide 79, vr-search 35+2, 0 failed). Diff scope: only `crates/vr-core/src/testutil.rs`.
+
+QP1 findings:
+- Major 1 (timing-dependent both-outcomes), fixed. `assert_both_outcomes(target)` is now deterministic. With no writer the save must succeed and leave ours on disk. With a hook write at `BeforeSwap` (after the last freshness check) it must refuse and leave theirs on disk. The check runs for Own, Other, Absent and Unprompted. For Absent, `create_if_absent` fires `BeforeSwap` before NOREPLACE, so the refusal is real. Leftover hooks are drained. The developer proved it red by moving the hook to `BeforeSwapBack`. The sweeps no longer assert counts, and the strict rule still judges every racing run.
+- Major 2 (Unprompted without a version), fixed. If `take_version_taken()` returns `None`, the result must be the "keeps changing" Io error and ours must not be on disk. Nothing is excused, so every version is checked strictly. Draining `SaveAsVersionTaken` stops the hook from leaking into the thread's next run.
+- Diagnostic: every unaccounted version is reported with mode, visible, saw_ours and replaced_is_ours. The rule is unchanged, so the oracle is not loosened (D77).
+
+### Classification of `version 31 of 60 [mode=InPlace visible=false saw_ours=true replaced_is_ours=true]`: the accepted D75(2)/D76(3) case, not a safe_replace loss
+
+Walk-through:
+- The in-place writer read the path while ours was there (saw_ours). It opened our temp inode and read `Xinitial\n` through the handle (replaced_is_ours).
+- In `write_once`, the order is: read → `here` → `between` → `set_len(0)` → write → `after`. The writer was preempted before `set_len`, which is likely under the 14 busy loops of the load run.
+- Meanwhile the refused save swapped back and took our inode off the path. It then ran `proven(tmp, Some(ours), holds_ours)` and deleted the inode.
+- `proven` would have caught any write before its last `Mark::of`. A version is 2073 bytes and ours is 9, so `set_len` or the write changes `len`. `unwritten_since` compares `len` and `mtime`, and the content hash is checked in between. Either check failing means `keep` → conflict copy → accounted.
+- So the only way to lose v31 is a `set_len`/write after `proven`'s final Mark, into a file already off the path and then unlinked. That is exactly "a writer holding an fd and writing after the file left the path" (D75(2), accepted in D76(3)).
+- It does not have to be the last version. After its orphaned write the writer continues with v32…v60 at the path until `stop()`, and those land normally. The "last version" in my QP1 note was a heuristic, not a requirement.
+
+What in safe_replace could allow a real loss instead: nothing in this trace. Every write that lands while our inode is at the path, or before the final Mark, is seen and kept.
+
+### Can the oracle tell the case apart without loosening it (D77)?
+Not with the four recorded flags. A round-3-class loss (a write into our file while it was at the path, then deleted by a broken protocol) also ends `visible=false` when the swap-out happens before the writer's `after` sample. So excusing that flag combination would loosen the oracle. Keep it strict.
+
+Narrowing that is possible, but it is still a loosening and needs a D77 statement:
+- The writer samples the path again immediately before `set_len`, and records `detached_before_write = (ino at path != opened)`.
+- Excuse only InPlace ∧ detached_before_write ∧ saw_ours ∧ replaced_is_ours.
+- Such a write by definition began after the file left the path (D76(3)).
+- Round-3 stays caught: its write landed at the path, so `detached_before_write = false`.
+- Remaining gap: a regression that puts our inode back on the path after the write and then deletes it. No later writer version would read it there only if it is removed again before the writer's next version.
+
+Leader decision needed (not an FR-3 change): either (a) keep the strict rule and accept a rare, classifiable false positive (about 1 in 200 runs under heavy synthetic load, 0 in normal loops), or (b) add the pre-write sample and the narrow excuse above with a D77 statement. Until then, a CI failure whose diagnostic shows exactly that flag combination is D76(3). Any other combination is a real loss.
+
+## Files read (FR-3)
+- crates/vr-core/src/testutil.rs: read (whole FR-3 diff; `write_once` InPlace order for the classification)
+- crates/vr-core/src/safe_replace.rs: `restore`, `proven`, `Mark::unwritten_since`, `keep` (callee check only)
+
+## Rule check FR-3
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-1 | pass | only testutil.rs |
+| BASE-2 | pass | additive `WriterVersion.mode`; no signature changed |
+| BASE-3 | pass | mutation red (hook moved to BeforeSwapBack) for item 1; items 2/3 are harness branches |
+| BASE-4 | pass | outputs in notes; reproduced (tests pass) |
+| BASE-6 | pass | English why-comments |
+| BASE-32 | pass | D77 rule unchanged; D96 kept |
