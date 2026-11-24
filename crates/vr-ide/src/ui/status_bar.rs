@@ -71,6 +71,10 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         return;
     }
     buf.set_style(area, theme.status);
+    if crate::commands::terminal::has_focus(app) {
+        crate::ui::terminal_view::render_status(buf, area, app, theme);
+        return;
+    }
     let width = usize::from(area.width);
     let Some(doc) = app.active_doc() else {
         let root = format!(" {}", app.root.display());

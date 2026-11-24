@@ -25,7 +25,7 @@ pub const COMMANDS: &[CommandSpec] = &[
 /// replaced and nothing reported. A cancelled replace that has not stopped after
 /// `CANCEL_WAIT` (a worker blocked in I/O) asks first, naming the file.
 fn quit(app: &mut App, _: CmdArgs) -> CmdResult {
-    if !quit_unblocked(app) {
+    if !quit_unblocked(app) || !super::terminal::quit_allowed(app) {
         return Ok(());
     }
     let unsaved: Vec<String> = app

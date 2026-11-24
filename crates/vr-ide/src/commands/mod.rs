@@ -11,5 +11,6 @@ pub mod palette;
 pub mod registry;
 pub mod search;
 pub mod tab;
+pub mod terminal;
 
 pub use registry::{CmdArgs, CmdResult, CommandSpec, all_commands, command_names, find};

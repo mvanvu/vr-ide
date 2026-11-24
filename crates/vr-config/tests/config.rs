@@ -68,6 +68,14 @@ const KNOWN: &[&str] = &[
     "search.prev_result",
     "search.replace_project",
     "focus.cycle",
+    "focus.editor",
+    "terminal.toggle",
+    "terminal.new",
+    "terminal.close",
+    "terminal.next",
+    "terminal.prev",
+    "terminal.grow",
+    "terminal.shrink",
 ];
 
 #[test]
@@ -252,6 +260,22 @@ fn defaults_load_without_user_file() {
         Some("focus.editor")
     );
     assert_eq!(km.command_for_in(Context::Terminal, &chord("ctrl+s")), None);
+    // M5 (D185): ctrl+` toggles the panel everywhere, ctrl+shift+` opens a new terminal (VS Code),
+    // in a focused terminal too; ctrl+space (the legacy NUL) is not bound in the terminal.
+    for ctx in [Context::Editor, Context::Explorer, Context::Terminal] {
+        assert_eq!(
+            km.command_for_in(ctx, &chord("ctrl+`")),
+            Some("terminal.toggle")
+        );
+        assert_eq!(
+            km.command_for_in(ctx, &chord("ctrl+shift+`")),
+            Some("terminal.new")
+        );
+    }
+    assert_eq!(
+        km.command_for_in(Context::Terminal, &chord("ctrl+space")),
+        None
+    );
     // Defaults validate clean against the M1-M3 registry (reserved names are accepted).
     assert!(km.validate(KNOWN).is_empty(), "{:?}", km.validate(KNOWN));
 }
@@ -426,6 +450,7 @@ fn settings_defaults_and_override() {
     assert_eq!(s.tab_width, 4);
     assert!(s.insert_spaces);
     assert_eq!(s.scrollback, 10_000);
+    assert_eq!(s.terminal_height_percent, 40);
     let names: Vec<&str> = s.ai_presets.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["claude", "cursor-agent"]);
     assert_eq!(s.ai_presets[0].command, "claude");
@@ -449,6 +474,22 @@ fn settings_defaults_and_override() {
         w2.iter()
             .any(|w| matches!(w, ConfigWarning::InvalidValue { key, .. } if key == "theme"))
     );
+}
+
+/// M5: the terminal panel height is a share of the screen, 10..=90 %.
+#[test]
+fn terminal_height_percent_is_bounded() {
+    let (_d, path) = write_user("terminal_height_percent = 60\n");
+    assert_eq!(Settings::load(Some(&path)).0.terminal_height_percent, 60);
+    for bad in ["0", "5", "95", "-1", "\"big\""] {
+        let (_d, path) = write_user(&format!("terminal_height_percent = {bad}\n"));
+        let (s, w) = Settings::load(Some(&path));
+        assert_eq!(s.terminal_height_percent, 40, "{bad}");
+        assert!(
+            w.iter().any(|w| matches!(w, ConfigWarning::InvalidValue { key, .. } if key == "terminal_height_percent")),
+            "{bad}: {w:?}"
+        );
+    }
 }
 
 #[test]

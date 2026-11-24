@@ -44,12 +44,16 @@
 "f4" = "search.next_result"
 "shift+f4" = "search.prev_result"
 "f6" = "focus.cycle"
+# Integrated terminal (M5). Hidden: show and focus it (a terminal starts if there is none);
+# shown and focused: hide it; shown elsewhere: focus it. Terminals without the kitty protocol send
+# ctrl+` as NUL (the same byte as ctrl+space); outside a focused terminal that byte toggles too.
+"ctrl+`" = "terminal.toggle"
+"ctrl+shift+`" = "terminal.new"
 # No VS Code default key (palette only): file.reload, explorer.reveal, explorer.new_folder,
-# explorer.move, explorer.toggle_ignored, explorer.toggle_hidden.
+# explorer.move, explorer.toggle_ignored, explorer.toggle_hidden, terminal.close, terminal.next,
+# terminal.prev, terminal.grow, terminal.shrink.
 
-# ---- M4-M8, bound when those commands exist (names provisional) -------------
-# "ctrl+`" = "terminal.toggle"            # M5
-# "ctrl+shift+`" = "terminal.new"         # M5
+# ---- M7-M8, bound when those commands exist (names provisional) -------------
 # "ctrl+shift+g" = "git.focus"            # M7
 # "ctrl+shift+i" = "lsp.format"           # M8
 # [editor] "f12" = "lsp.goto_definition"  # M8
@@ -100,5 +104,11 @@
 # Up/down/enter/escape in the palette are built in.
 
 [terminal]
-# D8: the only key a focused terminal does not receive. Reserved for M5 (not a VS Code key).
+# D8: a focused terminal receives every key except these (global keys do not apply here).
+# alt+q gives the keys back to the editor (not a VS Code key); ctrl+` hides the panel; ctrl+shift+`
+# opens another terminal as in VS Code. Without the kitty protocol ctrl+` arrives as NUL and goes
+# to the program (ctrl+space); use alt+q there. Built in, not listed: shift+pageup / shift+pagedown
+# scroll back, ctrl+shift+v pastes.
 "alt+q" = "focus.editor"
+"ctrl+`" = "terminal.toggle"
+"ctrl+shift+`" = "terminal.new"

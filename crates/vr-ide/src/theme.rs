@@ -5,7 +5,10 @@
 use ratatui::style::{Color, Modifier, Style};
 use vr_syntax::Capture;
 
+mod ansi;
 mod synthwave;
+
+pub use ansi::AnsiPalette;
 
 /// The theme used when settings name none or an unknown one.
 pub const DEFAULT_THEME: &str = "synthwave";
@@ -28,6 +31,9 @@ pub struct Theme {
     pub warning: Style,
     pub error: Style,
     pub dim: Style,
+    /// Healthy level of a meter (the welcome screen's resource monitor); `warning` and `error`
+    /// are the next two.
+    pub ok: Style,
     /// Dialogs and the palette.
     pub popup: Style,
     pub popup_border: Style,
@@ -53,6 +59,10 @@ pub struct Theme {
     pub syntax_on_highlight: bool,
     /// Style of each syntax class, indexed by `Capture as usize`; read through [`Theme::syntax`].
     captures: [Style; Capture::ALL.len()],
+    /// Status bar badge while the integrated terminal has the keys (M5), apart from READ / EDIT.
+    pub mode_term: Style,
+    /// Colours of programs in the integrated terminal; read through [`Theme::ansi_palette`].
+    ansi: Option<AnsiPalette>,
 }
 
 impl Theme {
@@ -101,6 +111,7 @@ impl Theme {
             warning: Style::default().fg(Color::Yellow),
             error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             dim: Style::default().fg(Color::DarkGray),
+            ok: Style::default().fg(Color::Green),
             popup: Style::default().bg(Color::Indexed(236)).fg(Color::White),
             popup_border: Style::default().fg(Color::Cyan),
             input: Style::default().bg(Color::Indexed(238)).fg(Color::White),
@@ -127,6 +138,11 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             syntax_on_highlight: false,
             captures: dark_syntax(),
+            mode_term: Style::default()
+                .bg(Color::Magenta)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            ansi: None,
         }
     }
 
@@ -151,6 +167,7 @@ impl Theme {
             warning: Style::default().fg(Color::Indexed(130)),
             error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             dim: Style::default().fg(Color::Gray),
+            ok: Style::default().fg(Color::Indexed(28)),
             popup: Style::default().bg(Color::Indexed(254)).fg(Color::Black),
             popup_border: Style::default().fg(Color::Blue),
             input: Style::default().bg(Color::White).fg(Color::Black),
@@ -177,6 +194,11 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             syntax_on_highlight: false,
             captures: light_syntax(),
+            mode_term: Style::default()
+                .bg(Color::Magenta)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            ansi: None,
         }
     }
 }
@@ -435,6 +457,7 @@ impl Theme {
             warning: Style::default().fg(orange),
             error: Style::default().fg(red).add_modifier(Modifier::BOLD),
             dim: Style::default().fg(dim),
+            ok: Style::default().fg(green),
             popup: Style::default().bg(raised).fg(fg),
             popup_border: Style::default().fg(purple),
             input: Style::default().bg(input).fg(fg),
@@ -458,6 +481,11 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             syntax_on_highlight: true,
             captures,
+            mode_term: Style::default()
+                .bg(pink)
+                .fg(bg)
+                .add_modifier(Modifier::BOLD),
+            ansi: Some(ansi::palette(depth, fg, bg, &ansi::DRACULA_ANSI)),
         }
     }
 }
@@ -549,6 +577,7 @@ mod tests {
             t.gutter_active,
             t.mode_read,
             t.mode_edit,
+            t.mode_term,
         ]
     }
 
@@ -688,6 +717,7 @@ mod tests {
         v.push(("gutter_active", fg(t.gutter_active), editor, 4.5));
         v.push(("mode_read", fg(t.mode_read), bg(t.mode_read), 4.5));
         v.push(("mode_edit", fg(t.mode_edit), bg(t.mode_edit), 4.5));
+        v.push(("mode_term", fg(t.mode_term), bg(t.mode_term), 4.5));
         v.push(("popup_border", fg(t.popup_border), bg(t.popup), 4.5));
         for (name, surface) in [
             ("dim/editor", editor),
@@ -814,6 +844,59 @@ mod tests {
             // The badge text must not vanish into its own background.
             assert_ne!(r.fg, r.bg);
             assert_ne!(e.fg, e.bg);
+        }
+    }
+
+    /// M5: synthwave and dracula hand programs their own ANSI colours on the editor's
+    /// background; dark and light keep the user's terminal colours.
+    #[test]
+    fn terminal_palette_follows_the_theme() {
+        assert!(Theme::dark().ansi_palette().is_none());
+        assert!(Theme::light().ansi_palette().is_none());
+        for t in BOTH
+            .map(Theme::dracula_with)
+            .into_iter()
+            .chain(BOTH.map(Theme::synthwave_with))
+        {
+            let p = t.ansi_palette().expect("own terminal palette");
+            assert_eq!(Some(p.bg), t.text.bg);
+            assert_eq!(Some(p.fg), t.text.fg);
+            // Normal colours 1..=6 (red..cyan) read on the background.
+            for c in &p.colors[1..7] {
+                assert!(ratio(*c, p.bg) >= 3.0, "{c:?} on {:?}", p.bg);
+            }
+            // True colour keeps all 16 apart; the 256-colour cube may merge a bright tone
+            // with its normal one.
+            let distinct: std::collections::HashSet<_> = p.colors.iter().collect();
+            let all = matches!(p.colors[0], Color::Rgb(..));
+            assert!(
+                distinct.len() >= if all { 16 } else { 12 },
+                "{:?}",
+                p.colors
+            );
+        }
+        assert_eq!(
+            Theme::dracula_with(ColorDepth::TrueColor)
+                .ansi_palette()
+                .unwrap()
+                .colors[1],
+            Color::Rgb(0xff, 0x55, 0x55)
+        );
+    }
+
+    /// The TERM badge (M5-2) is told apart from READ, EDIT and the bar in every theme.
+    #[test]
+    fn term_badge_has_its_own_colour() {
+        let mut themes = vec![Theme::dark(), Theme::light()];
+        themes.extend(BOTH.map(Theme::dracula_with));
+        themes.extend(BOTH.map(Theme::synthwave_with));
+        for t in themes {
+            let b = t.mode_term;
+            assert!(b.bg.is_some() && b.fg.is_some(), "{b:?}");
+            assert_ne!(b.bg, t.mode_read.bg);
+            assert_ne!(b.bg, t.mode_edit.bg);
+            assert_ne!(b.bg, t.status.bg);
+            assert_ne!(b.fg, b.bg);
         }
     }
 

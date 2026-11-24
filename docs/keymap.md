@@ -28,6 +28,8 @@ vr-ide ships VS Code's default Linux keybindings. The list below comes from
 | `search.next_result` | Search: Next Result | `f4` |
 | `search.prev_result` | Search: Previous Result | `shift+f4` |
 | `focus.cycle` | Focus Next Part | `f6` |
+| `terminal.toggle` | Terminal: Toggle Terminal | ``ctrl+` `` (hidden: shows the terminal panel and focuses it, starting a terminal if none runs; shown and focused: hides it; shown elsewhere: focuses it). Without the kitty protocol the terminal sends ``ctrl+` `` as NUL, the same byte as `ctrl+space`; outside a focused terminal that byte toggles too |
+| `terminal.new` | Terminal: New Terminal | ``ctrl+shift+` `` (needs the kitty protocol; the palette otherwise) |
 
 ### `[editor]`
 
@@ -83,10 +85,14 @@ No keymap entries; the palette's keys are built in (see below).
 
 | Command | Title | Keys |
 |---|---|---|
-| `focus.editor` | (M5, reserved) | `alt+q` |
+| `focus.editor` | Focus Editor | `alt+q` |
+| `terminal.toggle` | Terminal: Toggle Terminal | ``ctrl+` `` (hides the panel) |
+| `terminal.new` | Terminal: New Terminal | ``ctrl+shift+` `` |
 
-A focused terminal (M5) receives every key except the ones in `[terminal]`. `alt+q` is reserved for
-returning focus to the editor and is not a VS Code key.
+A focused terminal receives every key except the ones in `[terminal]` (D8): global keys such as
+`ctrl+s`, `ctrl+w` or `ctrl+p` go to the program. `alt+q` gives the keys back to the editor and is
+not a VS Code key. Without the kitty protocol ``ctrl+` `` arrives as NUL and goes to the program
+(it is `ctrl+space` there); use `alt+q`. Add your own keys to `[terminal]` to take them from programs.
 
 ### Commands without a default key (palette only)
 
@@ -99,6 +105,11 @@ returning focus to the editor and is not a VS Code key.
 | `explorer.move` | Explorer: Move |
 | `explorer.toggle_ignored` | Explorer: Toggle Ignored Files |
 | `explorer.toggle_hidden` | Explorer: Toggle Hidden Files |
+| `terminal.close` | Terminal: Close Terminal |
+| `terminal.next` | Terminal: Focus Next Terminal |
+| `terminal.prev` | Terminal: Focus Previous Terminal |
+| `terminal.grow` | Terminal: Increase Panel Height |
+| `terminal.shrink` | Terminal: Decrease Panel Height |
 
 Bind any of them in your own keymap, for example `"ctrl+alt+r" = "file.reload"`.
 
@@ -114,6 +125,7 @@ Typing and cursor movement are built in and not listed in `keymap.toml`.
 | Palette | `up`/`down`, `pageup`/`pagedown` move; `enter` runs; `esc` closes |
 | Dialogs | `left`/`right`/`tab`/`shift+tab` choose a button; `enter` confirms; `esc` cancels. A held (repeating) `enter` never confirms |
 | Find bar | `enter` next match, `shift+enter` previous (in the replace field, `enter` replaces one); `tab`/`shift+tab` switch field; `alt+c` match case, `alt+w` whole word, `alt+r` regex; `esc` closes |
+| Terminal | Every key goes to the program except `[terminal]` keys and these: `shift+pageup`/`shift+pagedown` scroll back (main screen only; any key or new output returns to the bottom); `ctrl+shift+v` pastes the clipboard (bracketed when the program asked for it). After the program exits, `enter` starts a new shell in the tab and the Close File keys (`ctrl+w`) close it. Mouse: drag selects and copies, the wheel scrolls back (programs that ask for the mouse get it; hold `shift` to select anyway), a click on a tab switches to it, dragging the tab bar resizes the panel |
 | Project search panel | `alt+c`/`alt+w`/`alt+r` toggle options; `tab`/`shift+tab` switch field; `enter` in the search field searches, in the replace field shows the replace preview, on a result opens it, and on a shown preview confirms the replace; `down` moves into the results; `up`/`down`/`pageup`/`pagedown`/`home`/`end` move in the list; `space` checks or unchecks a replace preview row; `esc` leaves the panel |
 
 A user binding for a plain key in a context wins over that context's built-in key.

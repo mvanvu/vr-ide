@@ -32,6 +32,8 @@ pub enum Focus {
     FindBar,
     /// The project search panel.
     Search,
+    /// The integrated terminal panel (M5): every key but the `[terminal]` ones goes to it (D8).
+    Terminal,
 }
 
 impl Focus {
@@ -44,6 +46,7 @@ impl Focus {
             Focus::Explorer => Context::Explorer,
             Focus::Palette => Context::Palette,
             Focus::Search => Context::Global,
+            Focus::Terminal => Context::Terminal,
         }
     }
 }
@@ -84,6 +87,9 @@ pub const ENTER_REPEAT_GAP: Duration = Duration::from_millis(700);
 
 /// How long the legacy-keyboard startup hint stays when nothing else is shown.
 pub const KEYBOARD_NOTICE_TTL: Duration = Duration::from_secs(15);
+
+/// Files kept in [`App::recent`].
+pub const RECENT_MAX: usize = 8;
 
 /// The key that dismisses a notice. Built in like the cursor keys (the plan keeps those out
 /// of the keymap); see decisions.md.
@@ -165,6 +171,12 @@ pub struct App {
     editor_seen: Option<usize>,
     /// Syntax highlighting of the open documents (M4).
     pub syntax: crate::syntax::Syntax,
+    /// Resource monitor of the welcome screen; samples only while that screen is shown.
+    pub monitor: crate::monitor::Monitor,
+    /// Files opened this session, newest first (at most [`RECENT_MAX`]).
+    pub recent: Vec<PathBuf>,
+    /// The integrated terminal panel (M5); no terminal runs until the user opens one (AC-1).
+    pub terminal: commands::terminal::TerminalPanel,
 }
 
 impl App {
@@ -175,6 +187,10 @@ impl App {
         clipboard: Box<dyn Clipboard>,
     ) -> App {
         let explorer = Explorer::new(&root, settings.show_hidden, settings.show_ignored);
+        let terminal = commands::terminal::TerminalPanel::new(
+            settings.terminal_height_percent,
+            settings.scrollback,
+        );
         App {
             root,
             docs: Vec::new(),
@@ -210,6 +226,9 @@ impl App {
             search: Default::default(),
             editor_seen: None,
             syntax: crate::syntax::Syntax::new(crate::syntax::builtin_registry()),
+            monitor: Default::default(),
+            recent: Vec::new(),
+            terminal,
         }
     }
 
@@ -388,6 +407,12 @@ impl App {
 
     // ---- documents ---------------------------------------------------------------------
 
+    fn remember_recent(&mut self, path: &Path) {
+        self.recent.retain(|p| p != path);
+        self.recent.insert(0, path.to_path_buf());
+        self.recent.truncate(RECENT_MAX);
+    }
+
     /// Opens `path` (relative paths are taken from the project root) in a new tab, or
     /// activates its tab when it is already open.
     pub fn open_path(&mut self, path: &Path) -> anyhow::Result<()> {
@@ -398,6 +423,7 @@ impl App {
             .position(|d| d.path.as_deref() == Some(&path))
         {
             self.set_active(i);
+            self.remember_recent(&path);
             return Ok(());
         }
         // A running project replace never writes a file a tab opens on.
@@ -427,6 +453,7 @@ impl App {
                 self.display_path(&path)
             ));
         }
+        self.remember_recent(&path);
         self.docs.push(doc);
         self.views.push(View {
             follow_cursor: true,
@@ -773,6 +800,11 @@ impl App {
     /// Drops expired info notices and runs a find rescan whose typing pause is over.
     pub fn tick(&mut self, now: Instant) {
         commands::find::poll(self, now);
+        // The welcome screen is the only reader of the monitor: nothing is read behind a file.
+        if self.monitor.tick(now, self.docs.is_empty()) {
+            self.monitor.branch = crate::monitor::git_branch(&self.root);
+            self.dirty = true;
+        }
         let before = self.notices.len();
         self.notices.retain(|n| n.expires.is_none_or(|t| t > now));
         if self.notices.len() != before {
@@ -894,6 +926,13 @@ impl App {
             self.palette_dismissed(palette_esc);
             return;
         }
+        // A focused terminal takes every key but its own table (D8); elsewhere a legacy
+        // terminal's NUL stands for ctrl+` (D185).
+        if commands::terminal::handle_key(self, &key)
+            || commands::terminal::legacy_toggle(self, &key)
+        {
+            return;
+        }
         // The find bar and the search panel use Esc themselves (close / back to the editor).
         // Keys never go to a search panel that is not shown.
         if self.focus == Focus::Search && !self.search.visible {
@@ -975,6 +1014,7 @@ impl App {
             // Nothing in the explorer takes text.
             Focus::Explorer => {}
             Focus::Editor => commands::edit::insert_pasted(self, text),
+            Focus::Terminal => commands::terminal::paste(self, text),
         }
     }
 
@@ -1008,6 +1048,9 @@ impl App {
             self.palette_dismissed(outside);
             return;
         }
+        if commands::terminal::handle_mouse(self, &ev) {
+            return;
+        }
         let l = self.layout;
         if inside(l.explorer) {
             commands::explorer::handle_mouse(self, &ev);
@@ -1024,7 +1067,10 @@ impl App {
             return;
         }
         if matches!(ev.kind, MouseEventKind::Down(_))
-            && matches!(self.focus, Focus::Explorer | Focus::Search | Focus::FindBar)
+            && matches!(
+                self.focus,
+                Focus::Explorer | Focus::Search | Focus::FindBar | Focus::Terminal
+            )
         {
             self.focus = Focus::Editor;
         }

@@ -191,7 +191,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         return;
     }
     if app.docs.is_empty() {
-        render_welcome(frame.buffer_mut(), area, app, theme);
+        super::welcome::render(frame.buffer_mut(), area, app, theme);
         return;
     }
     let active = app.active;
@@ -420,41 +420,6 @@ fn visible_spans(
         .into_iter()
         .flat_map(|seg| app.syntax.spans(i, seg))
         .collect()
-}
-
-/// Shown when no file is open: the project root (AC-1) and the keys to get started,
-/// read from the keymap (USER-1).
-fn render_welcome(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
-    let hints = [
-        ("app.palette", "Command palette"),
-        ("file.goto", "Go to file"),
-        // The explorer starts hidden; this is the way to it.
-        ("explorer.toggle_focus", "Toggle explorer"),
-        ("app.quit", "Quit"),
-    ];
-    let mut lines = vec![
-        (String::from("vr-ide"), theme.text),
-        (app.root.display().to_string(), theme.dim),
-        (String::new(), theme.text),
-    ];
-    let keys: Vec<String> = hints.iter().map(|(c, _)| app.key_hint(c)).collect();
-    let kw = keys
-        .iter()
-        .map(|k| Span::raw(k.as_str()).width())
-        .max()
-        .unwrap_or(0);
-    for ((_, title), k) in hints.iter().zip(keys) {
-        let pad = kw - Span::raw(k.as_str()).width();
-        lines.push((format!("{k}{}  {title}", " ".repeat(pad)), theme.dim));
-    }
-    let width = usize::from(area.width.saturating_sub(2));
-    for (i, (text, style)) in lines.into_iter().enumerate() {
-        let y = area.y + 1 + i as u16;
-        if y >= area.y + area.height {
-            break;
-        }
-        buf.set_stringn(area.x + 2, y, text, width, style);
-    }
 }
 
 #[cfg(test)]

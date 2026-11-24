@@ -2854,6 +2854,7 @@ dependencies = [
  "vr-fs",
  "vr-search",
  "vr-syntax",
+ "vr-term",
 ]
 
 [[package]]

@@ -87,6 +87,9 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
 - A file opens in **read mode** (status bar `READ`): you can move, select, copy, find and save, but
   typing does nothing. Press `ctrl+i` to edit (`EDIT`) and `esc` to go back to reading. A new file
   from `ctrl+n` opens ready to type.
+- With no file open, the welcome dashboard shows the project, the keys to start with and, on Linux,
+  a live resource monitor (CPU with history and per core, RAM, swap, load, uptime, vr-ide's own CPU
+  and memory). It is sampled once a second only while it is on screen.
 - The **project root** is the folder the explorer shows and the one project search, "Go to File" and
   relative paths in prompts refer to.
 - With no argument it is the current directory; with a directory it is that directory (the path
@@ -234,7 +237,37 @@ If a file you have open changes on disk:
 
 `ctrl+q` quits at once when everything is saved. With unsaved files it lists them and offers Save
 all, Discard or Cancel; Discard keeps a copy in the [recovery folder](#recovery). If a project
-replace is still running, `ctrl+q` asks Quit anyway or Cancel (Cancel is the default).
+replace is still running, `ctrl+q` asks Quit anyway or Cancel (Cancel is the default). While
+programs run in the [terminal panel](#terminal) it asks "N terminals still running" with Quit anyway
+or Cancel (Cancel is the default); quitting hangs up every terminal's process group (SIGHUP, then
+SIGKILL for a program that ignores it).
+
+### Terminal
+
+``ctrl+` `` opens a terminal panel under the editor, running your `$SHELL` (`/bin/sh` if it is
+unset or does not start) in the project root with `TERM=xterm-256color`. Press it again in the
+terminal to hide the panel (the shells keep running); from the editor or explorer it focuses the
+shown panel. No terminal starts until you open one.
+
+- A focused terminal receives every key, `ctrl+s`, `ctrl+w` and `ctrl+p` included, so `vim`, `htop`
+  or `lazygit` work as in any terminal. `alt+q` gives the keys back to the editor; the status bar
+  shows `TERM` while the terminal has them (read and edit mode do not apply there).
+- ``ctrl+shift+` `` opens another terminal tab; the palette has Close, Next, Previous and the panel
+  height commands (Increase / Decrease Panel Height). The tab bar shows each terminal's title (set
+  by the program, or the shell's name) and `[N]` once it exited. Click a tab to switch; drag the tab
+  bar to resize the panel (`terminal_height_percent` in settings, 40 % by default, at least 5 rows).
+- When the program exits the panel says "[process exited N] — Enter to restart, ctrl+w to close".
+- `shift+pageup` / `shift+pagedown` and the mouse wheel scroll back (10 000 lines, setting
+  `scrollback`); any key or new output returns to the bottom. Programs that use the mouse get it;
+  hold `shift` to select text anyway.
+- Dragging the mouse selects and copies to the clipboard; `ctrl+shift+v` pastes (bracketed when the
+  program asked for it), as does your terminal's own paste.
+- Colours: `synthwave` and `dracula` give programs their own 16 ANSI colours and background;
+  `dark` and `light` leave your terminal's colours.
+- Without the kitty keyboard protocol your terminal sends ``ctrl+` `` as NUL (the same byte as
+  `ctrl+space`): outside a terminal it still toggles the panel, inside it goes to the program, so
+  use `alt+q` to leave and ``ctrl+` `` from the editor to hide. ``ctrl+shift+` `` needs the kitty
+  protocol (or use the palette).
 
 ### Clipboard
 
@@ -248,7 +281,7 @@ with your terminal's own paste shortcut (bracketed paste is supported).
 
 | File | Purpose |
 |---|---|
-| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit. Built-in values: `crates/vr-config/defaults/settings.toml` |
+| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit, terminal scrollback (`scrollback`) and panel height (`terminal_height_percent`). Built-in values: `crates/vr-config/defaults/settings.toml` |
 | `~/.config/vr-ide/keymap.toml` | Key overrides on top of the VS Code defaults; see [docs/keymap.md](docs/keymap.md) |
 | `~/.config/vr-ide/languages.toml` | File patterns → language for syntax highlighting; see [Syntax highlighting](#syntax-highlighting). Built-in table: `crates/vr-config/defaults/languages.toml` |
 
@@ -371,7 +404,7 @@ file, search and replace across the project, keymap and settings files.
 Roadmap:
 
 - M4: syntax highlighting (tree-sitter)
-- M5: integrated terminal
+- M5: integrated terminal (in progress: the terminal panel works, see [Terminal](#terminal))
 - M6: AI agent console
 - M7: git (gutter signs, git panel, diff view, hunk staging)
 - M8: LSP (completion, hover, definition, references, diagnostics, rename, format, code actions)
@@ -380,7 +413,8 @@ Roadmap:
 
 `scripts/bench-startup.sh [project-dir]` builds a release binary and prints time to first frame
 (including pty setup) and max RSS for an empty project, then for a generated 200 KB Rust file (first
-frame, RSS at the first frame, max RSS after the colours landed).
+frame, RSS at the first frame, max RSS after the colours landed). A third case leaves the
+empty project (welcome dashboard with its monitor) open for 4 s and reports max RSS.
 
 Measured on a release build after M4 (syntax highlighting) with a 5 000-file project (50 folders x 100 files; the script takes any folder, this one is generated by hand), median of 5 runs:
 

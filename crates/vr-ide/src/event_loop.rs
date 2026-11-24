@@ -88,8 +88,9 @@ pub fn legacy_unreachable(chord: &KeyChord) -> bool {
     let m = chord.mods;
     match chord.code {
         C::Char(c) if m.ctrl => {
+            // ctrl+` arrives as NUL, which the app takes as ctrl+` outside a terminal (D185).
             (m.shift && !(c == ' '))
-                || !(c.is_ascii_lowercase() || matches!(c, ' ' | '\\' | ']' | '/'))
+                || !(c.is_ascii_lowercase() || matches!(c, ' ' | '\\' | ']' | '/' | '`'))
         }
         C::Enter => m.ctrl || m.shift,
         C::Tab => m.ctrl || m.alt,
@@ -144,6 +145,9 @@ pub fn exit(
     restore_terminal();
     crate::recovery::GLOBAL.set_tui_active(false);
     let result = finish(result, app, dir);
+    // Terminals get SIGHUP (SIGKILL after a grace period) and are reaped before vr-ide exits
+    // (AC-14d); each wait is bounded by vr-term.
+    crate::commands::terminal::shutdown(app);
     // After the recovery write: printing can block on a full stderr.
     for m in crate::recovery::GLOBAL.take_deferred() {
         eprintln!("vr-ide: {m}");
@@ -161,21 +165,41 @@ pub fn exit(
     result
 }
 
-/// Block cursor in read mode, bar where typing goes into text (D145); only written when it
-/// changes. Terminals without cursor shapes ignore the sequence; `main` restores the user's
-/// shape on exit.
-fn set_cursor_shape(current: &mut Option<bool>, bar: bool) {
-    use crossterm::cursor::SetCursorStyle;
-    if *current == Some(bar) {
-        return;
+/// How long to wait for input before looking at the wake flags again. A shown terminal panel
+/// is polled more often so a program's output (an echo of typed keys) appears within a frame;
+/// still a timed wait, not a busy loop.
+const TERMINAL_POLL: Duration = Duration::from_millis(16);
+
+fn poll_interval(app: &App) -> Duration {
+    if app.terminal.visible && !app.terminal.tabs.is_empty() {
+        TERMINAL_POLL
+    } else {
+        POLL
     }
-    let style = if bar {
+}
+
+/// The focused terminal's program picks its cursor shape (M5); otherwise block cursor in read
+/// mode, bar where typing goes into text (D145).
+fn cursor_style(app: &App) -> crossterm::cursor::SetCursorStyle {
+    use crossterm::cursor::SetCursorStyle;
+    crate::commands::terminal::cursor_style(app).unwrap_or(if app.wants_bar_cursor() {
         SetCursorStyle::BlinkingBar
     } else {
         SetCursorStyle::SteadyBlock
-    };
+    })
+}
+
+/// Writes the cursor shape only when it changes. Terminals without cursor shapes ignore the
+/// sequence; `main` restores the user's shape on exit.
+fn set_cursor_shape(
+    current: &mut Option<crossterm::cursor::SetCursorStyle>,
+    style: crossterm::cursor::SetCursorStyle,
+) {
+    if *current == Some(style) {
+        return;
+    }
     if crossterm::execute!(std::io::stdout(), style).is_ok() {
-        *current = Some(bar);
+        *current = Some(style);
     }
 }
 
@@ -184,7 +208,7 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Res
 where
     B::Error: Send + Sync + 'static,
 {
-    let mut bar: Option<bool> = None;
+    let mut bar = None;
     loop {
         app.drain_fs_events();
         app.drain_index();
@@ -194,14 +218,18 @@ where
         if app.syntax.take_wake() {
             app.dirty = true;
         }
+        // A terminal printed, changed its title or exited since the last pass.
+        if app.terminal.take_wake() && crate::commands::terminal::refresh(app) {
+            app.dirty = true;
+        }
         if app.dirty {
             draw_frame(terminal, app, &recovery::GLOBAL, ui::render)?;
-            set_cursor_shape(&mut bar, app.wants_bar_cursor());
+            set_cursor_shape(&mut bar, cursor_style(app));
         }
         if app.quit {
             return Ok(());
         }
-        if event::poll(POLL)? {
+        if event::poll(poll_interval(app))? {
             // Handle everything already queued before drawing again (fast typing, pastes).
             loop {
                 match event::read()? {
@@ -349,5 +377,19 @@ mod tests {
         assert!(u("ctrl+shift+p") && u("ctrl+[") && u("ctrl+alt+enter") && u("ctrl+shift+1"));
         assert!(!u("ctrl+s") && !u("ctrl+]") && !u("ctrl+/") && !u("f1") && !u("shift+tab"));
         assert!(!u("alt+up") && !u("ctrl+pagedown"));
+        // ctrl+` arrives as NUL, which stands for it outside a focused terminal (D185).
+        assert!(!u("ctrl+`") && u("ctrl+shift+`"));
+    }
+
+    /// AC-14a: a legacy NUL (ctrl+space) maps to that chord; the app treats it as ctrl+`.
+    #[test]
+    fn legacy_nul_is_ctrl_space() {
+        assert_eq!(
+            chord(K::Char(' '), KeyModifiers::CONTROL, false),
+            "ctrl+space"
+        );
+        let cs = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        assert_eq!(chord(K::Char('~'), cs, true), "ctrl+shift+`");
+        assert_eq!(chord(K::Char('`'), KeyModifiers::CONTROL, true), "ctrl+`");
     }
 }

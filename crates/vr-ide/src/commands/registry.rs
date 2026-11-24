@@ -35,6 +35,7 @@ const GROUPS: &[&[CommandSpec]] = &[
     super::explorer::COMMANDS,
     super::find::COMMANDS,
     super::search::COMMANDS,
+    super::terminal::COMMANDS,
     PENDING,
 ];
 

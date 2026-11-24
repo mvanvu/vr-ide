@@ -13,6 +13,9 @@ pub struct AppLayout {
     /// The find / replace bar, between the tab bar and the editor.
     pub find_bar: Rect,
     pub editor: Rect,
+    /// The terminal panel (M5) under the editor: its tab bar row, then the terminal grid.
+    /// Empty while the panel is hidden.
+    pub terminal: Rect,
     pub notice: Rect,
     pub status: Rect,
 }
@@ -84,7 +87,22 @@ pub fn compute(area: Rect, notice_rows: u16, side: Side, find_rows: u16) -> AppL
         tabs,
         find_bar,
         editor,
+        terminal: Rect::default(),
         notice,
         status,
     }
+}
+
+/// Fewest rows the terminal panel gets (tab bar included) when the screen has them.
+pub const TERMINAL_MIN_ROWS: u16 = 5;
+
+/// Takes the terminal panel from the bottom of the editor: `percent` of the screen height, at
+/// least [`TERMINAL_MIN_ROWS`], at most the whole editor (a tiny screen shows only the panel).
+/// The panel sits beside the side column, like VS Code's panel under its editor groups.
+pub fn place_terminal(layout: &mut AppLayout, screen_height: u16, percent: u16) {
+    let ed = layout.editor;
+    let want = (u32::from(screen_height) * u32::from(percent) + 50) / 100;
+    let rows = (want as u16).max(TERMINAL_MIN_ROWS).min(ed.height);
+    layout.terminal = Rect::new(ed.x, ed.y + ed.height - rows, ed.width, rows);
+    layout.editor.height -= rows;
 }

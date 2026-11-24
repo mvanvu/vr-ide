@@ -15,6 +15,9 @@ show_ignored = false
 max_highlight_bytes = 10485760
 # Terminal scrollback lines (M5).
 scrollback = 10000
+# Terminal panel height in percent of the screen, 10..=90 (at least 5 rows); terminal.grow /
+# terminal.shrink and dragging the panel's tab bar change it for the session.
+terminal_height_percent = 40
 
 # AI agent CLIs opened in a terminal tab in the project root (M6).
 # A user file that sets ai_presets replaces this whole list.

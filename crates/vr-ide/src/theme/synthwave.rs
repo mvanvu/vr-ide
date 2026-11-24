@@ -104,6 +104,7 @@ pub(super) fn build(depth: ColorDepth) -> Theme {
         warning: Style::default().fg(orange),
         error: Style::default().fg(red).add_modifier(bold),
         dim: Style::default().fg(dim),
+        ok: Style::default().fg(green),
         popup: Style::default().bg(raised).fg(fg),
         popup_border: Style::default().fg(pick(p.border)),
         input: Style::default().bg(input).fg(fg),
@@ -116,6 +117,13 @@ pub(super) fn build(depth: ColorDepth) -> Theme {
         mode_edit: Style::default().bg(edit).fg(bg).add_modifier(bold),
         syntax_on_highlight: true,
         captures,
+        mode_term: Style::default().bg(pink).fg(bg).add_modifier(bold),
+        ansi: Some(super::ansi::palette(
+            depth,
+            fg,
+            bg,
+            &super::ansi::SYNTHWAVE_ANSI,
+        )),
     }
 }
 

@@ -8,6 +8,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod commands;
 pub mod event_loop;
+pub mod monitor;
 pub mod recovery;
 pub mod syntax;
 pub mod theme;
@@ -29,3 +30,5 @@ mod mode_tests;
 mod search_tests;
 #[cfg(test)]
 mod syntax_tests;
+#[cfg(test)]
+mod terminal_tests;
