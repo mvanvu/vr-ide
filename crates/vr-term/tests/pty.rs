@@ -273,6 +273,24 @@ fn a_child_ignoring_sighup_is_killed_after_the_grace_period() {
 }
 
 #[test]
+fn replies_to_queries_from_a_program_that_never_reads_stay_under_the_input_cap() {
+    // 750 000 device-attribute queries ask for ~3.7 MB of replies; the program never reads.
+    // Raw mode, as full-screen programs use: the tty's input buffer then fills and holds the
+    // replies back (canonical mode would discard them), and no echo hides the marker.
+    let (term, wake) = spawn(
+        r#"stty raw -echo; yes "$(printf '\033[c')" | head -c 3000000; printf 'QUERIES-DONE\r\n'; sleep 100"#,
+    );
+    wait_for(&term, &wake, Duration::from_secs(120), |g| {
+        has_text(g, "QUERIES-DONE")
+    });
+    let pending = term.pending_input();
+    assert!(
+        pending <= MAX_PENDING_INPUT,
+        "{pending} bytes of replies queued (cap {MAX_PENDING_INPUT})"
+    );
+}
+
+#[test]
 fn input_to_a_program_that_never_reads_is_bounded_and_never_blocks() {
     let (term, wake) = spawn("echo sleeping; sleep 100");
     wait_for(&term, &wake, T, |g| has_text(g, "sleeping"));
@@ -288,9 +306,12 @@ fn input_to_a_program_that_never_reads_is_bounded_and_never_blocks() {
     assert!(t0.elapsed() < Duration::from_secs(1), "write never blocks");
     let (i, err) = refused.expect("backlog refused");
     assert!(matches!(err, TermError::InputBacklog(_)), "{err:?}");
+    // The cap counts bytes still queued; the writer drains some into the tty buffer meanwhile,
+    // so the accepted total may exceed it. What must hold is the queue itself.
+    let pending = term.pending_input();
     assert!(
-        i * chunk.len() <= MAX_PENDING_INPUT,
-        "refused after {i} chunks"
+        pending <= MAX_PENDING_INPUT,
+        "{pending} bytes queued after refusal at chunk {i} (cap {MAX_PENDING_INPUT})"
     );
     // The emulator stays usable.
     let t0 = Instant::now();

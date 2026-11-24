@@ -8,7 +8,7 @@ license.workspace = true
 portable-pty.workspace = true
 alacritty_terminal.workspace = true
 thiserror.workspace = true
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process", "event", "fs"] }
 
 [dev-dependencies]
 tempfile.workspace = true
