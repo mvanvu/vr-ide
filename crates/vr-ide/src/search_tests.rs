@@ -1263,3 +1263,46 @@ fn narrow_esc_and_focus_cycle_never_type_into_a_hidden_editor() {
         }
     }
 }
+
+/// Save As of another tab onto a file the running replace has not reached yet: the worker
+/// never writes it (the tab holds it now), even when its bytes still equal the preview.
+#[test]
+fn save_as_onto_a_pending_replace_file_is_never_written() {
+    let (d, mut app, hold, names) = held_apply(40, 0);
+    std::fs::write(d.path().join("other.txt"), "foo\n").unwrap();
+    app.open_path(Path::new("other.txt")).unwrap();
+    app.run_command(
+        "file.save_as",
+        crate::commands::CmdArgs::Path(d.path().join("f005.txt")),
+    );
+    assert_eq!(app.active_name(), "f005.txt", "{}", notices(&app));
+    hold.store(usize::MAX, Ordering::SeqCst);
+    wait_search(&mut app);
+    assert_eq!(read(&d, "f005.txt"), "foo\n", "written behind the tab");
+    let e = result(&app, "f005.txt").unwrap().unwrap_err();
+    assert!(e.contains("opened in a tab during the replace"), "{e}");
+    let others: Vec<String> = names.iter().filter(|n| *n != "f005.txt").cloned().collect();
+    assert_eq!(check_results(&app, &d, &others), (39, 0));
+}
+
+/// A search still running when the explorer renames a file can send the old path later:
+/// the panel says files moved and to search again.
+#[test]
+fn rename_during_a_running_search_says_search_again() {
+    let (d, mut app) = project(&[("a.rs", "needle\n")]);
+    let (tx, rx) = mpsc::channel();
+    app.search.visible = true;
+    search::attach(&mut app, rx, Arc::new(AtomicBool::new(false)));
+    explorer_rename(&mut app, "a.rs", "b.rs");
+    tx.send(SearchMsg::Batch(vec![pm(d.path(), "a.rs", 1, "needle")]))
+        .unwrap();
+    tx.send(SearchMsg::Done {
+        files: 1,
+        matches: 1,
+        elapsed: Duration::ZERO,
+    })
+    .unwrap();
+    app.drain_search();
+    let shown = app.search.errors.join(" | ");
+    assert!(shown.contains("search again"), "{shown}");
+}

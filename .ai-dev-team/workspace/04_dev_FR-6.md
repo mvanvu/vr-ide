@@ -194,3 +194,51 @@ Finding (QC r1): strict racing 20x under 4 busy-loop hogs → 2 fail, both `docu
 ### Progress
 - r2 step 1: round-0 reference built from a copy (qa-artifacts/FR-6/r0src, own target/): the worktree sources with the four racy decisions moved back after the read (document.rs lines 603/624/705/897; `diff` shows only those 4 lines). No stash/checkout in the worktree.
 - r2 step 2: loop script qa-artifacts/FR-6/loop.sh (test binary direct, QC's 3 filters = 7 tests, every failing run's full output kept in qa-artifacts/FR-6/r2/fail-<label>-<n>.txt, fixed run budget).
+- r2 step 3: 4 busy-loop hogs (own background task, `timeout`-bounded, stopped with TaskStop afterwards); one budgeted run per code version: 300 runs r1 + 300 runs r0, alternating blocks of 100 (r1a r0a r1b r0b r1c r0c) so both saw the same load; all through run-heavy.sh.
+
+### Runs (qa-artifacts/FR-6/r2/summary.txt; every failing run kept whole as r2/fail-<block>-<run>.txt)
+| Code | Runs (7 tests each) | Pass | Fail |
+|---|---|---|---|
+| r1 (worktree as delivered) | 300 | 296 | 4 |
+| r0 (round-0 racy timing, r0src copy) | 300 | 297 | 3 |
+
+### Every failing signature
+| File | Test | Unaccounted version | Signature |
+|---|---|---|---|
+| fail-r1a-13 | document_save_never_loses_a_write_from_a_fast_writer | 7 of 7 | mode=InPlace visible=false saw_ours=true replaced_is_ours=true |
+| fail-r1a-35 | save_as_seen_never_loses_a_write_from_a_fast_writer | 8 of 8 | same |
+| fail-r1a-79 | save_as_seen_never_loses_a_write_from_a_fast_writer | 2 of 2 | same |
+| fail-r1c-98 | save_as_seen_never_loses_a_write_from_a_fast_writer | 4 of 4 | same |
+| fail-r0a-90 | document_save_never_loses_a_write_from_a_fast_writer | 3 of 3 | same |
+| fail-r0b-47 | save_as_seen_never_loses_a_write_from_a_fast_writer | 2 of 2 | same |
+| fail-r0c-10 | document_save_never_loses_a_write_from_a_fast_writer | 2 of 2 | same |
+Each failing run has exactly one panic (testutil.rs:402), one unaccounted version, and it is always the writer's **last** version. No other assertion fired (no overtaken / replaced-on-success / torn-content panic, no WARNING line).
+
+### Classification
+All 7 are the known false positive named in the assert's comment and D99: D75(2)/D76(3).
+- The writer opened the file while it was at the path.
+- The refused save's exchange took that file off the path, then swapped it back.
+- The writer saw our bytes and wrote through its handle into a file that was no longer at the path (`visible=false`).
+This is true of every rename-based save. No real-loss signature appeared in 600 runs.
+
+### Did round 1 make it more likely?
+No evidence that it did.
+- r1 failed 4/300 (1.3 %) and r0 failed 3/300 (1.0 %) under identical alternating load; Fisher's exact two-sided p ≈ 1.0.
+- The rate is load-driven. Unloaded, round 0 was 20/20 twice. With 4 hogs the base rate is about 1 % per 7-test run, so QC's 2/20 is an unlucky draw from the same rate: P(≥2 of 20 at 1.2 %) ≈ 2.5 %.
+- The fast-writer racing tests run with RENAME_EXCHANGE. There the commit is decided by step 3's content check, which round 1 did not touch. Round 1 only moves when `racy` is judged, which at most adds a hash before step 1.
+- The Save As fast-writer test (FR-2) shows the same rate on r0.
+
+### Decision
+No code change in round 2. The oracle is unchanged (D99), and no fix test is needed because no real loss was found. document.rs is unchanged since r1 (the same diff --stat, 384+/22-), so the r1 suite and guard output (final-r1.txt) still apply.
+Scratch build outputs removed (r0src/target, binary copies); r0src sources and all fail files kept.
+
+### Rule compliance (round 2)
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-4 | pass | summary.txt + 7 fail files |
+| BASE-5 | pass | builds and loops via run-heavy.sh; hogs stopped (TaskStop blct84mjp) |
+| BASE-11 | pass | r0 built from a copy under qa-artifacts; nothing stashed or checked out in the worktree |
+| BASE-14 | pass | build, hogs and loop as background tasks |
+| BASE-15 | pass | only my own task stopped, by id |
+| BASE-32 | pass | D99 oracle unchanged |
+| COST | pass | one budgeted run per code version, scratch target removed |

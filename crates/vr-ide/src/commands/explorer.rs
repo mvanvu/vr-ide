@@ -806,6 +806,11 @@ fn retarget(app: &mut App, from: &Path, to: &Path) {
 /// (a tab whose file was deleted on disk keeps its path, D82): one path never gets two tabs
 /// (D95), as Save As refuses too.
 fn check_tab_free(app: &App, from: &Path, to: &Path) -> Result<(), String> {
+    // An existing `to` is refused by vr-fs as taken; only a name free on disk can still be
+    // held by a tab.
+    if to.symlink_metadata().is_ok() {
+        return Ok(());
+    }
     let held = app
         .docs
         .iter()

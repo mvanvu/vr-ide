@@ -376,8 +376,9 @@ impl App {
             self.set_active(i);
             return Ok(());
         }
-        // A running project replace never writes a file a tab opens on (FR-5).
-        let claim = commands::search::before_tab_opens(self, &path).map_err(anyhow::Error::msg)?;
+        // A running project replace never writes a file a tab opens on.
+        let claim = commands::search::before_tab_opens(self, &path)
+            .map_err(|m| anyhow::Error::new(commands::search::BeingReplaced(m)))?;
         let mut doc = match Document::open(&path, self.settings.max_highlight_bytes) {
             Ok(d) => d,
             Err(e) => {

@@ -1560,3 +1560,21 @@ fn closing_a_tab_keeps_the_watch_of_another_tab_on_the_path() {
         app.drain_fs_events();
     }
 }
+
+/// A rename onto an existing file that is also open in a tab reports the name as taken,
+/// not "not on disk".
+#[test]
+fn rename_onto_an_existing_open_file_says_it_exists() {
+    let (_d, mut app) = project();
+    app.open_path(Path::new("README.md")).unwrap();
+    select(&mut app, "composer.json");
+    app.handle_key(key(KeyCode::F(2)));
+    submit(&mut app, "README.md");
+    let err = prompt(&app)
+        .and_then(|p| p.1)
+        .expect("refused in the prompt");
+    assert!(
+        err.contains("already exists") && !err.contains("not on disk"),
+        "{err}"
+    );
+}

@@ -436,9 +436,12 @@ pub fn save_as_doc(
 ) -> Result<(), SaveAsError> {
     let name = app.display_path(target);
     check_other_tabs(app, i, target).map_err(SaveAsError::Failed)?;
-    let Some(doc) = app.docs.get_mut(i) else {
+    if i >= app.docs.len() {
         return Ok(());
-    };
+    }
+    // The tab takes `target`: a running project replace must leave that file alone.
+    let claim = super::search::before_tab_opens(app, target).map_err(SaveAsError::Failed)?;
+    let doc = &mut app.docs[i];
     let old = doc.path.clone();
     doc.buffer.break_undo_group();
     let result = match (seen, injected_commit_error()) {
@@ -446,6 +449,11 @@ pub fn save_as_doc(
         (Some(seen), None) => doc.save_as_seen(target, seen),
         (None, _) => doc.save_as(target),
     };
+    if result.is_err()
+        && let Some((gate, c)) = &claim
+    {
+        gate.open_failed(c);
+    }
     let saved = match result {
         Ok(saved) => saved,
         Err(DocError::ChangedOnDisk) => return Err(SaveAsError::Changed),

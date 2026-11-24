@@ -670,3 +670,8 @@ Regressions: AC-3, AC-8, AC-9, AC-12 behaved as expected in the flows above. Har
 | BASE-19 | pass | flows recorded in this section |
 | COST | pass | one release build, one related-test run, one flow script |
 | Product code and tests | pass | not modified |
+
+## QC FR-6 r2
+Replay of the r1 check on the current worktree (no code change): the 3 filters (`testutil::tests::document_save`, `save_as_seen_never_loses`, `unprompted_save_as`) 20x under 4 busy-loop hogs, `--nocapture`, full output per run in qa-artifacts/FR-6/qc_r2/run_N.txt (failing runs would be fail_N.txt).
+Result: 20 pass / 0 fail. Developer's r2 evidence checked: 7 fail-*.txt in qa-artifacts/FR-6/r2/, all 7 carry exactly `[mode=InPlace visible=false saw_ours=true replaced_is_ours=true]` (the known D75(2)/D76(3) false positive, D99); r1 4/300 vs r0 3/300 is not distinguishable, so the r1 change adds no new racing signature.
+Withdrawn: the r1 racing failure was the known false positive (my r1 grep had cut its signature). Verdict QC_PASS.

@@ -58,3 +58,31 @@ Six findings of 06_final_review.json: all fixed. Save As/recreate row → note_w
 | AC-8 | pass | save/Save As/recreate rows appear; rename/move onto a tab-held path refused |
 | AC-9 | pass | reveal never expands/watches hidden or ignored folders; notice names the toggle |
 | AC-12 | pass | only confirmed files written; a file opened during the replace is skipped and reported (Save As residual = finding 1, minor) |
+
+## Quick pass 1 re-check — APPROVED
+
+Scope: `git diff 0c1e42f -- crates/vr-ide`. The find_tests.rs hunk in that diff is FR-7's merge (72be02e), not part of this pass, so I did not review it. Working-tree changes vs HEAD: the same 6 files the notes list.
+
+- Finding 1 (Save As bypassed the gate): closed. file.rs `save_as_doc` claims the target through `before_tab_opens` after `check_other_tabs` and before the write. It calls `open_failed` on any write error, and nothing else returns between the claim and the write. That is the minimal change; the worker path is untouched. `save_as_onto_a_pending_replace_file_is_never_written` was red ("bar\n" written) and is now green; the test is real.
+- Finding 2 (refused open gave the editor the keys): closed. `open_match` returns bool and `open_selected` calls `focus_editor` only on success. The f4 caller (search.rs:714) ignores the bool, so it behaves as before. The refusal is the typed `BeingReplaced`, shown with `warn`. `refused_open_keeps_the_panel_and_its_keys` (narrow layout, focus stays on Search, the panel stays visible, the notice is a Warning) was red before the fix.
+- Finding 3 ("not on disk" text for a file on disk): closed. `check_tab_free` returns early when `to` exists, and vr-fs then refuses the taken name ("already exists"). A dangling symlink at `to` also counts as existing, and vr-fs refuses it too. `rename_onto_an_existing_open_file_says_it_exists` is a real red-to-green test.
+- Finding 4 (running search keeps old paths after a rename): closed as asked (a notice, not a restart). One "search again" line is added to `errors` while a search runs; `attach` resets it. `rename_during_a_running_search_says_search_again` is a real red-to-green test.
+- Nit: the "(FR-5)" tags are removed.
+- No other behaviour changed. New states: none (the pass reuses the gate claim and the existing errors list).
+
+Nits (no change asked):
+- A Save As refused while the worker writes the target shows "...open it again in a moment". "save again" would fit that action better.
+- The explorer and palette open paths still show `BeingReplaced` as an Error; only the search result path uses `warn`.
+
+## Rule check FR-5 qp1
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-1 | pass | same 6 vr-ide files; only the four findings + nit |
+| BASE-2 | pass | `open_match` is private; `BeingReplaced` is an additive pub type |
+| BASE-3 | pass | four red lines recorded; each test fails on the pre-pass code by construction |
+| BASE-6 | pass | task tags removed; comments state why |
+| BASE-16 | pass | reuses `before_tab_opens` / `open_failed`, `errors` list, vr-fs exists check |
+| BASE-25 | pass | notes: fmt ok, clippy --workspace -D warnings clean, related 120/120 |
+| BASE-32 | pass | D95, D135, D136 kept |
+| new-states | pass | no new state |
+| AC-8 / AC-12 | pass | rename refusal text correct; Save As target never written by the worker |

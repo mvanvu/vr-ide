@@ -253,6 +253,19 @@ impl ReplaceGate {
 
 pub const OPENED_DURING_REPLACE: &str = "opened in a tab during the replace; not replaced";
 
+/// An open refused for a moment because the replace is writing that file (shown as a
+/// warning: it passes by itself).
+#[derive(Debug)]
+pub struct BeingReplaced(pub String);
+
+impl std::fmt::Display for BeingReplaced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BeingReplaced {}
+
 /// Before a tab opens on `path`: while a replace runs, the worker is told to leave the file
 /// alone; refused (with the message) while the worker is writing that very file. Returns
 /// the gate and canonical path to pass to [`ReplaceGate::open_failed`] if the open fails.
@@ -608,8 +621,9 @@ fn replace_project(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
-/// Opens the file of match `mi` of group `gi` and selects the match (file:line:col).
-fn open_match(app: &mut App, gi: usize, mi: usize) {
+/// Opens the file of match `mi` of group `gi` and selects the match (file:line:col); false
+/// when nothing was opened.
+fn open_match(app: &mut App, gi: usize, mi: usize) -> bool {
     let Some(m) = app
         .search
         .groups
@@ -617,11 +631,15 @@ fn open_match(app: &mut App, gi: usize, mi: usize) {
         .and_then(|g| g.matches.get(mi))
         .cloned()
     else {
-        return;
+        return false;
     };
     if let Err(e) = app.open_path(&m.path) {
-        app.error(e.to_string());
-        return;
+        if e.is::<BeingReplaced>() {
+            app.warn(e.to_string());
+        } else {
+            app.error(e.to_string());
+        }
+        return false;
     }
     if let Some(doc) = app.active_doc_mut() {
         let rope = doc.buffer.text();
@@ -635,6 +653,7 @@ fn open_match(app: &mut App, gi: usize, mi: usize) {
         doc.buffer.set_selection(Selection::single(from, to));
     }
     app.cursor_moved();
+    true
 }
 
 /// Enter on a result row: opens it (a file row opens its first match) and gives the editor
@@ -648,8 +667,9 @@ fn open_selected(app: &mut App) {
         Row::Match(g, m) => (g, m),
         Row::File(g) => (g, 0),
     };
-    open_match(app, gi, mi);
-    focus_editor(app);
+    if open_match(app, gi, mi) {
+        focus_editor(app);
+    }
 }
 
 /// Gives the editor the keys. When the panel takes the whole width (a narrow screen, the
@@ -1026,6 +1046,9 @@ fn drop_preview(app: &mut App) {
     app.dirty = true;
 }
 
+const MOVED_WHILE_SEARCHING: &str =
+    "files were moved in the explorer while this search ran; search again for their new paths";
+
 /// `p` with its `from` prefix replaced by `to` (`from` itself becomes `to`), if under it.
 fn moved_path(p: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
     let rest = p.strip_prefix(from).ok()?;
@@ -1061,6 +1084,10 @@ pub fn paths_moved(app: &mut App, from: &Path, to: &Path) {
             .enumerate()
             .map(|(i, g)| (g.path.clone(), i))
             .collect();
+    }
+    // The running walk may still send the old paths (it read them before the move).
+    if s.running() && !s.errors.iter().any(|e| e == MOVED_WHILE_SEARCHING) {
+        s.errors.push(MOVED_WHILE_SEARCHING.to_string());
     }
     let stale = s.preview.as_ref().is_some_and(|p| {
         !p.applying() && !p.applied && p.files.iter().any(|f| f.path.starts_with(from))
@@ -1886,7 +1913,7 @@ mod gate_tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
-    /// FR-5 racing test: a worker writing files and a UI thread opening tabs on the same
+    /// Racing test: a worker writing files and a UI thread opening tabs on the same
     /// files at the same time. A file is never written after (or while) a tab opened on it:
     /// every file both written and opened was opened only after its write was over.
     #[test]
@@ -1966,5 +1993,55 @@ mod gate_tests {
         let missing = dir.path().join("gone.txt");
         assert!(app.open_path(&missing).is_err());
         assert!(gate.begin(&missing));
+    }
+}
+
+#[cfg(test)]
+mod refused_open_tests {
+    use super::*;
+
+    /// Opening a result whose file the replace is writing right now is refused as a
+    /// warning; the panel keeps the keys and stays shown (below 40 columns too).
+    #[test]
+    fn refused_open_keeps_the_panel_and_its_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.txt");
+        std::fs::write(&f, "foo\n").unwrap();
+        let (mut app, _) = crate::app_tests::test_app(dir.path());
+        let (_tx, rx) = mpsc::channel();
+        let job = Job::new(JobKind::Apply, 1, Arc::new(AtomicBool::new(false)), rx);
+        let gate = job.gate.clone();
+        app.search.preview = Some(Preview {
+            query: app.search.query(),
+            replacement: String::new(),
+            files: Vec::new(),
+            applied: false,
+            selected: 0,
+            top: 0,
+            job: Some(job),
+            in_tabs: 0,
+        });
+        app.search.groups.push(FileGroup {
+            path: f.clone(),
+            matches: vec![ProjectMatch {
+                path: f.clone(),
+                line: 1,
+                col: 1,
+                line_text: "foo".into(),
+                match_range: (0, 3),
+            }],
+        });
+        app.search.visible = true;
+        app.search.selected = 1;
+        app.focus = Focus::Search;
+        app.layout.search = Rect::new(0, 0, 36, 12);
+        app.layout.editor = Rect::new(36, 1, 0, 10);
+        assert!(gate.begin(&std::fs::canonicalize(&f).unwrap()));
+        open_selected(&mut app);
+        assert!(app.docs.is_empty());
+        assert_eq!(app.focus, Focus::Search);
+        assert!(app.search.visible, "the panel and its progress stay shown");
+        let n = app.notices.back().unwrap();
+        assert_eq!(n.level, crate::app::NoticeLevel::Warning, "{}", n.text);
     }
 }

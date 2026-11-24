@@ -90,3 +90,21 @@ cargo clippy --workspace --all-targets -- -D warnings
 | BASE-38 | pass | rustfmt --edition 2024 on the 6 changed files only |
 | COST | pass | related tests per step, one full crate run at the end, no polling loops, no snapshot regeneration needed |
 n-a: none of the listed IDs.
+
+## Quick pass 1
+Findings from 05_review_FR-5.md (base: 72be02e). All four tests were written first and seen red:
+1. Save As onto a file the replace has not reached yet. Fixed. `file::save_as_doc` claims the target through `search::before_tab_opens` before the write. It is refused while the worker is writing that file, and the claim is withdrawn (`open_failed`) when the write fails. Red: `search_tests::save_as_onto_a_pending_replace_file_is_never_written` — "written behind the tab", left "bar\n". Green.
+2. A refused open still gave the editor the keys. Fixed. `open_match` returns bool, and `open_selected` calls `focus_editor` only when the open succeeded. The refusal is a typed `search::BeingReplaced` error (app.rs `open_path`) and is shown with `warn`. Red: `commands::search::refused_open_tests::refused_open_keeps_the_panel_and_its_keys` — focus left Editor. Green.
+3. `check_tab_free` said "not on disk" for a file that is on disk. Fixed. The check runs only when `to` is absent; an existing name is reported by vr-fs as "already exists". Red: `explorer_tests::rename_onto_an_existing_open_file_says_it_exists` — "README.md is open in a tab (its file is not on disk)". Green.
+4. A search still running during a rename returned the old paths. Fixed. `paths_moved` adds "files were moved in the explorer while this search ran; search again for their new paths" to the panel's errors (once per search; cleared by the next search). Red: `search_tests::rename_during_a_running_search_says_search_again` — no such text in the errors. Green.
+- Nit: the "(FR-5)" tags are gone from the comments at app.rs:379 and search.rs (racing test doc).
+- New states: none. Item 1 reuses the existing gate claim; item 4 adds one error line to the existing `errors` list, reset by `attach`.
+- Files: crates/vr-ide/src/{app.rs, commands/explorer.rs, commands/file.rs, commands/search.rs, explorer_tests.rs, search_tests.rs}.
+```
+cargo test -p vr-ide --lib -- explorer_tests:: search_tests:: commands::search:: app_tests:: dialog_tests::
+test result: ok. 120 passed; 0 failed; 0 ignored; 0 measured; 53 filtered out; finished in 2.25s
+cargo fmt --all --check -> FMT_OK
+cargo clippy --workspace --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.58s
+```
+Rule rows touched: BASE-3 pass (four red lines above), BASE-6 pass (task tags removed), BASE-25 pass (guard above), BASE-38 pass (rustfmt on the 6 files only). Nothing left running.
