@@ -2412,6 +2412,7 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "ropey",
+ "rustix",
  "similar 3.2.1",
  "tempfile",
  "thiserror 2.0.21",

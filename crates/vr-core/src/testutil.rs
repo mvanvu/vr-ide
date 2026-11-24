@@ -185,7 +185,50 @@ pub fn assert_no_lost_write(
     versions: &[WriterVersion],
     run: OpRun,
 ) {
-    assert_whole_content(initial, final_bytes, ours, versions, run);
+    no_lost_write(initial, final_bytes, ours, versions, run, None);
+}
+
+/// `assert_no_lost_write` for an operation that takes the file out of the path with an atomic
+/// exchange and puts it back when it is not the version it expected (`safe_replace`). While
+/// such a run checks the file it took out, `ours` is readable at the path, so on a run that
+/// reported an error the writer may have seen `ours` there. In exchange, such a run must
+/// account for every version: one that was at the path, or whose writer saw `ours`, is still
+/// in the file, or in a conflict copy the error names (`kept`: the bytes of those copies), or
+/// was overwritten by the writer's own later version. The final content and every rule for a
+/// run that reported success are unchanged.
+pub fn assert_no_lost_write_swapping(
+    initial: &[u8],
+    final_bytes: &[u8],
+    ours: &[u8],
+    versions: &[WriterVersion],
+    run: OpRun,
+    kept: &[Vec<u8>],
+) {
+    no_lost_write(initial, final_bytes, ours, versions, run, Some(kept));
+}
+
+fn no_lost_write(
+    initial: &[u8],
+    final_bytes: &[u8],
+    ours: &[u8],
+    versions: &[WriterVersion],
+    run: OpRun,
+    put_back_on_error: Option<&[Vec<u8>]>,
+) {
+    whole_content(
+        initial,
+        final_bytes,
+        ours,
+        versions,
+        run,
+        put_back_on_error.is_some(),
+    );
+    if let Some(kept) = put_back_on_error
+        && !run.ok
+    {
+        assert_versions_accounted_for(final_bytes, ours, versions, kept);
+        return;
+    }
     let is_version = versions.iter().any(|v| v.bytes == final_bytes);
     // A later version that found `ours` in the file shows `ours` replaced the version before it,
     // even though that later version is the final content.
@@ -211,6 +254,39 @@ pub fn assert_no_lost_write(
     }
 }
 
+/// A refused run that had `ours` at the path for a moment: the writer's sight of `ours` no
+/// longer shows a loss by itself, so each version is traced instead.
+fn assert_versions_accounted_for(
+    final_bytes: &[u8],
+    ours: &[u8],
+    versions: &[WriterVersion],
+    kept: &[Vec<u8>],
+) {
+    let saw_ours = |v: &WriterVersion| v.saw_before.as_deref() == Some(ours);
+    for (i, v) in versions.iter().enumerate() {
+        if !v.visible && !saw_ours(v) {
+            continue;
+        }
+        let later = &versions[i + 1..];
+        let survives = v.bytes == final_bytes
+            || kept.contains(&v.bytes)
+            || later
+                .iter()
+                .any(|w| w.saw_before.as_deref() == Some(&v.bytes[..]));
+        // The next write began while `ours` stood in for this version; the version went back
+        // to the path afterwards and that write, not the operation, replaced it there. A
+        // version whose own writer saw `ours` was written over `ours` and has no such excuse.
+        let replaced_by_next_write = !saw_ours(v) && later.first().is_some_and(saw_ours);
+        assert!(
+            survives || replaced_by_next_write,
+            "lost write: writer version {} of {} is in no file after a run that reported an \
+             error, and the writer did not overwrite it",
+            i + 1,
+            versions.len()
+        );
+    }
+}
+
 /// The first two bullets of `assert_no_lost_write` only: for a write path with a documented
 /// window between its last freshness check and the replace, where the third rule cannot hold.
 pub fn assert_whole_content(
@@ -219,6 +295,17 @@ pub fn assert_whole_content(
     ours: &[u8],
     versions: &[WriterVersion],
     run: OpRun,
+) {
+    whole_content(initial, final_bytes, ours, versions, run, false);
+}
+
+fn whole_content(
+    initial: &[u8],
+    final_bytes: &[u8],
+    ours: &[u8],
+    versions: &[WriterVersion],
+    run: OpRun,
+    put_back_on_error: bool,
 ) {
     let is_ours = final_bytes == ours;
     let is_version = versions.iter().any(|v| v.bytes == final_bytes);
@@ -232,7 +319,7 @@ pub fn assert_whole_content(
         .iter()
         .any(|v| v.saw_before.as_deref() == Some(ours));
     assert!(
-        run.ok || !saw_ours,
+        run.ok || !saw_ours || put_back_on_error,
         "operation reported an error but our bytes were in the file"
     );
     if is_ours && !is_version {
@@ -374,6 +461,67 @@ mod tests {
     }
 
     #[test]
+    fn swapping_rule_allows_sight_of_ours_only_on_a_refused_run() {
+        let (v1, mut v2) = (v(1), v(2));
+        v2.saw_before = Some(b"ours".to_vec());
+        let last = v2.bytes.clone();
+        let versions = [v1, v2];
+        assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[]);
+        let lost = std::panic::catch_unwind(|| {
+            assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(true), &[])
+        });
+        assert!(lost.is_err(), "a replaced version on a successful run");
+        let left = std::panic::catch_unwind(|| {
+            assert_no_lost_write_swapping(b"init", b"ours", b"ours", &[], run(false), &[])
+        });
+        assert!(left.is_err(), "our bytes left in the file by a refused run");
+    }
+
+    /// v1 lands before the exchange; `second` is the writer's next version, `third` the one
+    /// after it, which found `third_saw` at the path.
+    fn refused_run(second_saw: &[u8], third_saw: usize) -> Vec<WriterVersion> {
+        let (v1, mut v2, mut v3) = (v(1), v(2), v(3));
+        v2.saw_before = Some(second_saw.to_vec());
+        v3.saw_before = Some(version_bytes(third_saw));
+        vec![v1, v2, v3]
+    }
+
+    #[test]
+    #[should_panic(expected = "lost write")]
+    fn swapping_rule_flags_version_written_into_our_file_and_deleted() {
+        // The writer saw our bytes at the path, wrote its second version into our file, and
+        // the refused run deleted that file: the third version found the first one again.
+        let versions = refused_run(b"ours", 1);
+        let last = versions[2].bytes.clone();
+        assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lost write")]
+    fn swapping_rule_flags_deleted_version_that_never_saw_ours() {
+        // Same loss, but the writer had read the path before our bytes were there.
+        let versions = refused_run(&version_bytes(1), 1);
+        let last = versions[2].bytes.clone();
+        assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[]);
+    }
+
+    #[test]
+    fn swapping_rule_accepts_sight_of_ours_when_the_version_survives() {
+        // Overwritten by the writer itself: the third version found the second.
+        let versions = refused_run(b"ours", 2);
+        let last = versions[2].bytes.clone();
+        assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[]);
+        // Kept in the conflict copy the error names.
+        let versions = refused_run(b"ours", 1);
+        let (second, last) = (versions[1].bytes.clone(), versions[2].bytes.clone());
+        assert_no_lost_write_swapping(b"init", &last, b"ours", &versions, run(false), &[second]);
+        // Still in the file at the end.
+        let versions = &refused_run(b"ours", 1)[..2];
+        let last = versions[1].bytes.clone();
+        assert_no_lost_write_swapping(b"init", &last, b"ours", versions, run(false), &[]);
+    }
+
+    #[test]
     #[should_panic(expected = "newest writer version")]
     fn flags_vanished_version_on_move() {
         assert_versions_survive(b"init", &[b"init".to_vec()], &[v(1)]);
@@ -399,11 +547,30 @@ mod tests {
 
     const STEP: Duration = Duration::from_micros(400);
 
+    type Rule = fn(&[u8], &[u8], &[u8], &[WriterVersion], OpRun, &[Vec<u8>]);
+
     fn race_document_save(strict: bool) {
+        let rule: Rule = if strict {
+            assert_no_lost_write_swapping
+        } else {
+            |initial, last, ours, versions, run, _| {
+                assert_whole_content(initial, last, ours, versions, run)
+            }
+        };
+        race_document_save_with(rule, Duration::from_millis(3), 4, STEP, 20);
+    }
+
+    fn race_document_save_with(
+        rule: Rule,
+        interval: Duration,
+        versions: usize,
+        step: Duration,
+        sweep: usize,
+    ) {
         use crate::Document;
-        let (mut ok_count, mut err_count) = (0, 0);
+        let (mut ok_count, mut err_count, mut kept_count) = (0, 0, 0);
         for mode in [WriterMode::InPlace, WriterMode::TempRename] {
-            for offset in sweep_offsets(20, STEP) {
+            for offset in sweep_offsets(sweep, step) {
                 let dir = tempfile::tempdir().unwrap();
                 let p = dir.path().join("doc.txt");
                 let initial = b"initial\n".to_vec();
@@ -411,16 +578,36 @@ mod tests {
                 let mut doc = Document::open(&p, u64::MAX).unwrap();
                 doc.buffer.insert_text("X");
                 let ours = b"Xinitial\n".to_vec();
-                let writer =
-                    RacingWriter::start_after(offset, &p, mode, Duration::from_millis(3), 4);
-                let (_, run) = timed(|| doc.save(), |r| r.is_ok());
+                let writer = RacingWriter::start_after(offset, &p, mode, interval, versions);
+                let (result, run) = timed(|| doc.save(), |r| r.is_ok());
                 let versions = writer.stop();
                 let final_bytes = fs::read(&p).unwrap();
-                if strict {
-                    assert_no_lost_write(&initial, &final_bytes, &ours, &versions, run);
-                } else {
-                    assert_whole_content(&initial, &final_bytes, &ours, &versions, run);
+                // Nothing is left behind except a conflict copy the error names, and that
+                // copy holds a whole writer version (or our bytes when in doubt), never less.
+                let kept = match &result {
+                    Err(e) => e
+                        .to_string()
+                        .rsplit_once(" kept at ")
+                        .map(|(_, at)| PathBuf::from(at)),
+                    Ok(_) => None,
+                };
+                let mut kept_bytes = Vec::new();
+                for entry in fs::read_dir(dir.path()).unwrap() {
+                    let entry = entry.unwrap().path();
+                    if entry == p {
+                        continue;
+                    }
+                    assert_eq!(Some(&entry), kept.as_ref(), "unreported file left behind");
+                    let bytes = fs::read(&entry).unwrap();
+                    assert!(
+                        bytes == ours || versions.iter().any(|v| v.bytes == bytes),
+                        "conflict copy holds torn content ({} bytes)",
+                        bytes.len()
+                    );
+                    kept_count += 1;
+                    kept_bytes.push(bytes);
                 }
+                rule(&initial, &final_bytes, &ours, &versions, run, &kept_bytes);
                 if run.ok {
                     ok_count += 1
                 } else {
@@ -428,7 +615,7 @@ mod tests {
                 }
             }
         }
-        eprintln!("save: ok={ok_count} refused={err_count}");
+        eprintln!("save: ok={ok_count} refused={err_count} kept={kept_count}");
     }
 
     #[test]
@@ -436,13 +623,25 @@ mod tests {
         race_document_save(false);
     }
 
-    // `save` keeps the window between its last stat and rename(2) (D25: Linux has no
-    // compare-and-swap rename), and a writer blocked behind the save's fsync lands in it often.
-    // Run with `--ignored` to measure; enable by default when that window is closed.
+    // `save` puts its file in place with RENAME_EXCHANGE, checks the file it took out and
+    // deletes only what it proved (`safe_replace`), so no writer version is ever replaced.
     #[test]
-    #[ignore = "known gap D25: a writer landing between the last stat and rename is replaced"]
     fn document_save_never_loses_a_concurrent_write() {
         race_document_save(true);
+    }
+
+    // A writer with no pause between its versions puts several of them inside one save, so
+    // a second version can land while the save is restoring the first. It also reads the
+    // path while a refused save has our bytes there, hence the swapping rule.
+    #[test]
+    fn document_save_never_loses_a_write_from_a_fast_writer() {
+        race_document_save_with(
+            assert_no_lost_write_swapping,
+            Duration::ZERO,
+            300,
+            STEP / 4,
+            40,
+        );
     }
 
     #[test]
