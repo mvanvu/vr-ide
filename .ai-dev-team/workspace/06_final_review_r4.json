@@ -1,0 +1,12 @@
+{"scope":"8968a7b..8cffd8c (M4-5, T16+revert, T17, M5)","dimensions":["correctness","ui"],
+"confirmed":[
+{"title":"Welcome recommends ctrl+shift+f, unreachable on legacy keyboards","file":"crates/vr-ide/src/ui/welcome.rs","line":320,"severity":"major","dimension":"ui","verdict":"observed on the build (screenshots qa-artifacts/phase5-m5)"},
+{"title":"Legacy-keyboard notice cut at 3 rows hides remedy and dismiss hint; lowercase","file":"crates/vr-ide/src/ui/status_bar.rs","line":58,"severity":"major","dimension":"ui","verdict":"observed on the build"}],
+"uncertain":[],
+"minor":[
+{"title":"Truecolor cells not downsampled at 256 colours; COLORTERM forced for the child","file":"crates/vr-ide/src/ui/terminal_view.rs","line":361,"dimension":"correctness","verdict":"confirmed, re-graded minor by opus verifier"},
+{"title":"0-row editor at 90 % panel gets keys; monitor samples a hidden welcome","file":"crates/vr-ide/src/ui/layout.rs","line":102},
+{"title":"Search panel full width while the terminal has the keys","file":"crates/vr-ide/src/commands/terminal.rs","line":550},
+{"title":"16 ms poll with only exited terminals","file":"crates/vr-ide/src/event_loop.rs","line":173},
+{"title":"No alt+q hint in a narrow focused panel","file":"crates/vr-ide/src/ui/terminal_view.rs","line":319},
+{"title":"Compact welcome repeats the project root","file":"crates/vr-ide/src/ui/welcome.rs","line":432}],"missingDimensions":0}

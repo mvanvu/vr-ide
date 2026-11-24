@@ -966,3 +966,122 @@ None.
 | Startup / RSS budgets | pass | 16-18 ms, 5-18 MB |
 | BASE-14/15/17 | pass | background tasks only; only own processes touched; fixtures only under scratchpad and qa-artifacts |
 | Defects | none | |
+
+## QC M5-1 r1 (re-check, final)
+Engine: cargo test + probe crate (qa-artifacts/M5-1/qc/src/main.rs, full.sh under timeout 1500, one background task, DONE written, own busy-loop PIDs killed). Outputs: qa-artifacts/M5-1/qc/r1/*.txt
+
+| Run | Result |
+|---|---|
+| cargo test -p vr-term (quiet) | pass: lib 7, env 1, flood 1 (1 ignored), leak 1, pty 19 |
+| loaded 1, 2, 4, 5 (4 busy loops) | pass |
+| loaded 3 | FAIL: pty.rs::input_to_a_program_that_never_reads_is_bounded_and_never_blocks, panicked at pty.rs:309:5 "refused after 17 chunks" (18 pass, 1 fail) |
+| release flood --ignored | pass: 100 MiB in 22.5 s; 6862 snapshots, median 626 us, p99 3.25 ms, max 11.7 ms; RSS 2.8 -> 32.5 MB |
+
+Loaded-3 analysis: assertion i*64KiB <= MAX_PENDING_INPUT (1 MiB) saw 17 chunks (1.11 MiB). The cap counts queued bytes only (terminal.rs:96-101); the writer thread drains into the kernel tty buffer meanwhile, so accepted = cap + drained. Library bound held (InputBacklog returned, no blocking). Defect is the test assumption: flaky 1/5 under load, 0 quiet. Fix: add slack (about 256 KiB) or assert on pending_input().
+
+Probe: htop alt_screen=true, 1469 coloured cells; resizes 80x24, 120x40, 60x20 reflected; after q alt_screen=false; stty size 20 60; ctrl+c gives 130; exit 7 gives Exited(7); /proc gone after exit and drop. AC-14d sleep 1000: shell and sleep gone 11.5 ms after drop. Disowned background job: threads 1->4->1, fds 4->8->4 (released); drop 1.3 ms; the stray sleep (pid 2585844) lingers detached, alive 2 s after drop (I stopped it by pid). Not an AC-14d failure.
+
+## Rule check M5-1
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-14 | pass | one bounded background script, no polling |
+| BASE-15 | pass | stopped only own PIDs |
+| BASE-17 | pass | no DB/app commits |
+| BASE-18 | pass | no sub-agents |
+| BASE-19 | pass | outputs per run in r1/ |
+| COST-13 | pass | throwaway only in qa-artifacts/M5-1/qc |
+| No product edits | pass | probe crate and script only |
+| AC-14b/c/d | pass | tests plus probe |
+n-a: browser/SWEEP
+Verdict: QC_FAIL (minor, test-only flaky assertion)
+
+## QC M5-1 r2 (replay of the flaky input-cap test)
+Script qa-artifacts/M5-1/qc/full2.sh (timeout 1500, own busy-loop PIDs killed, DONE written); outputs in qa-artifacts/M5-1/qc/r2/.
+- Test change read in pty.rs:294-319: asserts the refusal (InputBacklog), write never blocks (< 1 s), pending_input() <= MAX_PENDING_INPUT after refusal, snapshot stays responsive.
+- Loaded full sequence, `cargo test -p vr-term` x5 under 4 busy loops: 5/5 pass (every run exit 0, 6 suites ok each; the pty suite 19 passed).
+- `cargo test -p vr-term --test pty input_to_a_program_that_never_reads` x10 under 4 busy loops: 10/10 pass.
+- Busy loops confirmed gone.
+Finding (flaky input-cap assertion) is closed. Rule check unchanged from M5-1 r1 (all pass). Verdict: QC_PASS.
+
+## QC M5-2 (integrated terminal panel, TUI, mode QC, HEAD 4bb6bad)
+Engine: real pty (python harness, TERM=xterm-256color COLORTERM=truecolor SHELL=/bin/bash, 100x30, temp project dir), fresh release build (binary mtime 04:36:55, built by run-heavy.sh in 43 s), once legacy (no kitty protocol, ctrl+` = NUL) and once with kitty protocol (CSI-u). Script: qa-artifacts/M5-2/qc/walk.py (lib.py, h.py); outputs qa-artifacts/M5-2/qc/legacy.txt, qa-artifacts/M5-2/qc/kitty.txt (screen excerpts included).
+
+Tests (once): vr-config 3+17+8 ok; vr-ide lib 335 passed / 4 ignored, bin 0; vr-term 7 + env 1 + flood 1 (1 ignored) + leak 1 + pty 19, all ok. 0 failures.
+
+Flow results (legacy 32/32, kitty 29/29; per-flow lines in the txt files):
+- AC-1: no child process of vr-ide at start (/proc), welcome shows "ctrl+`        Terminal": PASS both.
+- AC-14a: ctrl+` -> panel + TERM badge + 1 bash child, `pwd` = project root: PASS. kitty: ctrl+` again hides (welcome back): PASS. File open, ctrl+` -> panel focused, `echo hi` -> "hi" in panel, file unchanged on disk and in the editor: PASS. alt+q -> editor focused (badge gone, hint "ctrl+` focus"), ctrl+i, "Z" -> "Zhello" in the editor, disk still "hello": PASS. legacy: NUL inside a focused terminal does not hide, reaches the shell (`echo ok$((1+1))` -> ok2): PASS.
+- AC-14: htop (SGR colours in output, alt screen: shell lines hidden, "Load average" visible), 3 resizes (26x90 badge 90x9, 34x120 badge 120x13, 22x70) htop redraws each time; q quits; `stty size` = "8 70" after 22x70, "11 100" after returning to 30x100 = badge: PASS. vi -u NONE: alt screen (~ lines), :q returns: PASS. ls --color=always emits SGR colours: PASS.
+- AC-14b: exit -> "[process exited 0]"; Enter -> new shell works; 2nd tab (kitty ctrl+shift+`; legacy palette "New Terminal") badge 2/2, two bash children; "Focus Previous Terminal" -> 1/2 with tab 1 content: PASS.
+- Scrollback: seq 1 3000, shift+pageup shows up to 2991 and indicator "↑ 10/2996" on the panel; typing returns to the bottom (3000): PASS.
+- AC-14d: with `sleep 1000` running in 2 tabs: alt+q, ctrl+q -> "2 terminals still running; quitting ends them." [Quit anyway] [Cancel]; Enter (default Cancel) keeps everything; ctrl+q, Left, Enter -> then the unsaved-file dialog (file had a buffer edit; Save all/Discard/Cancel, as designed), Discard -> vr-ide exits, sleep and both shells gone (checked by PID in /proc), no leftover sleep process: PASS both modes.
+- Status bar TERM badge while focused (title + "i/n · cols×rows"): PASS.
+
+Observations (no QC_FAIL, for the leader):
+1. Legacy terminals have no key that hides the panel. NUL in a focused terminal goes to the shell (spec), alt+q then NUL or the palette "Toggle Terminal" only FOCUSES the shown panel; the only way out is the palette "Close Terminal" (ends the shell, hides the panel). Consistent with the spec text and D206 but AC-14a's "ctrl+` hides" holds only in kitty. Worth a decision (for example palette/alt+q+toggle hiding when the editor already is focused, or a [terminal] alt key such as alt+`).
+2. At 70 columns the status badge drops the "cols×rows" part (title is kept); cosmetic.
+3. Legacy startup notice lists ctrl+shift+` among unreported keys (D206 says so, intended).
+
+## Rule check M5-2
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-1 | pass | no child at start, welcome hint, /proc check |
+| AC-14 | pass | htop/vi/ls colour, 3 resizes, stty size matches |
+| AC-14a | pass (kitty full; legacy per D206, see obs. 1) | flows above |
+| AC-14b | pass | exit banner, restart, tabs |
+| AC-14d | pass | dialog default Cancel, Quit anyway, /proc PIDs gone |
+| D8, D10, D205-D213 | pass | TERM badge, [terminal] keys, scrollback indicator observed |
+| BASE-14/15/17 | pass | foreground runs only; only own pids killed (none needed); no data committed |
+n-a: other BASE IDs (no production edits by QC)
+
+## Sign-off after M5
+Commit tested: master HEAD 8cffd8c (plus the leader's uncommitted workspace notes only; no product files touched). Artifacts: `qa-artifacts/signoff-m5/` (suite.txt, guard.txt, ignored.txt, walk.py/walk.txt, w40.py/w40.txt, bench.txt). Engine: release binary under a python pty with a small VT model.
+
+Verdict: SIGNOFF_PASS.
+
+### Tests (debug, once, run-heavy.sh cargo test --workspace --no-fail-fast -j 4, EXIT=0)
+| Crate | Passed | Failed | Ignored |
+|---|---|---|---|
+| vr-config (3 + 18 + 8) | 29 | 0 | 0 |
+| vr-core | 151 | 0 | 1 |
+| vr-fs (43 + 2) | 45 | 0 | 1 |
+| vr-search (37 + 2) | 39 | 0 | 1 |
+| vr-ide (lib 344) | 344 | 0 | 4 |
+| vr-syntax (24 + 25 + 26 + 6) | 81 | 0 | 5 |
+| vr-term (7 + 1 + 1 + 1 + 19) | 29 | 0 | 1 |
+Total 718 passed, 0 failed, 13 ignored; doc tests 0. Release ignored (once, EXIT=0): all 13 passed (core open_100mb, fs trash_child, 4 vr-ide perf, search first batch, 5 vr-syntax perf + full seed set 42.8 s, vr-term strict 100 MB flood 18.0 s). No reruns, no flaky.
+
+### Guard
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings: EXIT=0.
+
+### Walk (release, pty, TERM=xterm-256color, COLORTERM=truecolor, legacy keys, /bin/sh ENV=/dev/null)
+| Flow | Result | Evidence |
+|---|---|---|
+| Welcome 120x40, 80x24: "ctrl+` Terminal" hint, no shell at start, numbers update | pass | START list with Terminal row; CPU/RAM/SWP/LOAD/UP/VR-IDE blocks; no children |
+| Welcome 40x12 | pass (note) | CPU spark + RAM bar update over 3 s; 4 keys (go to file, palette, explorer, quit) by T17 design, Terminal is key 5 and shows from 40x13 on a clear screen; with the 15 s legacy-keys notice only 1 key shows (known, accepted in 05_review_T17_impl.md). My first check required the hint at 40x12, not a product defect |
+| ctrl+` (NUL) opens, 1 sh child, echo hi output | pass | TERM badge, "hi" |
+| NUL hides, NUL shows, shell survives | pass | badge empty then TERM again, pid alive |
+| htop 2 s in panel | pass | Load average/Tasks visible |
+| alt+q to editor | pass | badge not TERM |
+| .xml opened, coloured | pass | 18 distinct truecolor fg values |
+| .rs opened in READ, ctrl+i EDIT, type, ctrl+s | pass | disk `Zfn main() {` |
+| explorer ctrl+e | pass | a.xml, m.rs listed |
+| Quit with running terminal: dialog ("1 terminal still running; quitting ends it."), default Cancel keeps app, Quit anyway exits | pass | |
+| No shell left after quit | pass | /proc check, none alive |
+
+### Bench (scripts/bench-startup.sh, release)
+First frame 18 ms, max RSS 6 MB; 200 KB Rust file first frame 20 ms, RSS 7 MB at first frame, 18 MB after colours; welcome with monitor 7 MB after 4 s. Targets met (< 100 ms, < 60 MB). Binary 20,224,752 bytes (about 19.3 MiB).
+
+### Defects
+None.
+
+## Rule check sign-off M5
+| Rule | Result | Evidence |
+|---|---|---|
+| Regression AC-1..AC-18 on touched flows (XML, T16, T17 welcome, M5 terminal) | pass | suite 718/0, walk |
+| BASE-25 guard | pass | fmt + clippy EXIT=0 |
+| COST full suite once, ignored release once | pass | one run each |
+| Startup / RSS budgets | pass | 18-20 ms, 6-18 MB |
+| No shell at start, none left after quit | pass | /proc |
+| BASE-14/15/17 | pass | background task, only own PIDs, fixtures in /tmp |
+| Defects | none | |
