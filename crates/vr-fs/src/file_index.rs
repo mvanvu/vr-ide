@@ -32,6 +32,8 @@ pub struct FileIndex {
     /// Root-relative, sorted.
     files: Vec<PathBuf>,
     truncated: bool,
+    /// Several roots: `(folder, name)` in order; files are then `name/relative`.
+    roots: Vec<(PathBuf, String)>,
 }
 
 impl FileIndex {
@@ -40,8 +42,31 @@ impl FileIndex {
     pub fn build(root: impl Into<PathBuf>, tx: Sender<IndexMsg>) -> JoinHandle<()> {
         let root = root.into();
         std::thread::spawn(move || {
-            walk(root, tx);
+            walk_roots(vec![(root, String::new())], tx);
         })
+    }
+
+    /// Walks several roots `(folder, name)` in order, on one background thread. With more
+    /// than one root each file is listed as `name/relative/path` (root order, then path
+    /// order) and [`FileIndex::absolute`] maps it back; with one root the index is the one
+    /// [`FileIndex::build`] makes. Each root keeps its own ignore rules. A root that cannot
+    /// be read is skipped; `Error` only when none can.
+    pub fn build_roots(roots: Vec<(PathBuf, String)>, tx: Sender<IndexMsg>) -> JoinHandle<()> {
+        std::thread::spawn(move || {
+            walk_roots(roots, tx);
+        })
+    }
+
+    /// The absolute path of `shown`, a path this index lists.
+    pub fn absolute(&self, shown: &Path) -> PathBuf {
+        if self.roots.len() > 1 {
+            for (root, name) in &self.roots {
+                if let Ok(rest) = shown.strip_prefix(name) {
+                    return root.join(rest);
+                }
+            }
+        }
+        self.root.join(shown)
     }
 
     /// Builds an index from root-relative paths (tests and callers that
@@ -53,6 +78,7 @@ impl FileIndex {
             root: root.into(),
             files,
             truncated: false,
+            roots: Vec::new(),
         }
     }
 
@@ -151,15 +177,79 @@ impl FileIndex {
     }
 }
 
+#[cfg(test)]
 fn walk(root: PathBuf, tx: Sender<IndexMsg>) -> usize {
+    walk_roots(vec![(root, String::new())], tx)
+}
+
+/// How one root's walk ended.
+enum Walked {
+    Done,
+    /// [`MAX_FILES`] reached: the files so far are kept, no later root is walked.
+    Full,
+    /// The receiver is gone.
+    Cancelled,
+}
+
+fn walk_roots(roots: Vec<(PathBuf, String)>, tx: Sender<IndexMsg>) -> usize {
     let mut visited = 0;
-    if let Err(e) = std::fs::read_dir(&root) {
-        let _ = tx.send(IndexMsg::Error(format!("{}: {e}", root.display())));
+    let several = roots.len() > 1;
+    let mut files = Vec::new();
+    let mut errors = Vec::new();
+    let mut readable = 0;
+    let mut truncated = false;
+    for (root, name) in &roots {
+        if let Err(e) = std::fs::read_dir(root) {
+            errors.push(format!("{}: {e}", root.display()));
+            continue;
+        }
+        readable += 1;
+        let prefix = several.then(|| Path::new(name));
+        let start = files.len();
+        let walked = walk_one(root, prefix, &tx, &mut files, &mut visited);
+        files[start..].sort();
+        match walked {
+            Walked::Done => {}
+            Walked::Full => {
+                truncated = true;
+                break;
+            }
+            Walked::Cancelled => return visited,
+        }
+    }
+    if readable == 0 {
+        let _ = tx.send(IndexMsg::Error(errors.join("; ")));
         return visited;
     }
+    let first = roots.first().map(|r| r.0.clone()).unwrap_or_default();
+    let mut index = if several {
+        FileIndex {
+            root: first,
+            files,
+            truncated: false,
+            roots,
+        }
+    } else {
+        FileIndex::from_paths(first, files)
+    };
+    index.truncated = truncated;
+    let _ = tx.send(IndexMsg::Ready(index));
+    visited
+}
+
+/// Adds the files under `root` to `files` (relative, behind `prefix` when given).
+fn walk_one(
+    root: &Path,
+    prefix: Option<&Path>,
+    tx: &Sender<IndexMsg>,
+    files: &mut Vec<PathBuf>,
+    visited: &mut usize,
+) -> Walked {
     // Same ignore policy as the tree: gitignore rules (with or without a
     // repo), `.git/info/exclude`, global excludes; dotfiles stay findable.
-    let walker = ignore::WalkBuilder::new(&root)
+    // `parents(false)`: a root's rules never come from the folders above it, nor from
+    // another root.
+    let walker = ignore::WalkBuilder::new(root)
         .hidden(false)
         .parents(false)
         .ignore(false)
@@ -168,14 +258,14 @@ fn walk(root: PathBuf, tx: Sender<IndexMsg>) -> usize {
         .filter_entry(|e| e.file_name() != ".git")
         .build();
 
-    let mut files = Vec::new();
-    let mut truncated = false;
     for entry in walker {
-        visited += 1;
+        *visited += 1;
         // Checked on every kind of entry, so a tree of mostly folders cancels as fast.
         // A failed send means the receiver is gone: stop the walk.
-        if visited % CANCEL_CHECK_EVERY == 0 && tx.send(IndexMsg::Progress(files.len())).is_err() {
-            return visited;
+        if visited.is_multiple_of(CANCEL_CHECK_EVERY)
+            && tx.send(IndexMsg::Progress(files.len())).is_err()
+        {
+            return Walked::Cancelled;
         }
         // Unreadable entries (permissions, races) are skipped.
         let Ok(entry) = entry else { continue };
@@ -186,19 +276,18 @@ fn walk(root: PathBuf, tx: Sender<IndexMsg>) -> usize {
         if !is_file {
             continue;
         }
-        let Ok(rel) = entry.path().strip_prefix(&root) else {
+        let Ok(rel) = entry.path().strip_prefix(root) else {
             continue;
         };
         if files.len() == MAX_FILES {
-            truncated = true;
-            break;
+            return Walked::Full;
         }
-        files.push(rel.to_path_buf());
+        files.push(match prefix {
+            Some(p) => p.join(rel),
+            None => rel.to_path_buf(),
+        });
     }
-    let mut index = FileIndex::from_paths(root, files);
-    index.truncated = truncated;
-    let _ = tx.send(IndexMsg::Ready(index));
-    visited
+    Walked::Done
 }
 
 #[cfg(test)]
@@ -319,6 +408,85 @@ mod tests {
         assert_eq!(top(&index, "Lib", 5), ["Lib.md"]);
         assert_eq!(top(&index, "", 2), ["Lib.md", "crates/vr-fs/src/lib.rs"]);
         assert!(index.query("zzz", 5).is_empty());
+    }
+
+    fn build_roots_sync(roots: &[(&Path, &str)]) -> Result<FileIndex, String> {
+        let (tx, rx) = mpsc::channel();
+        let roots = roots
+            .iter()
+            .map(|(p, n)| (p.to_path_buf(), n.to_string()))
+            .collect();
+        let handle = FileIndex::build_roots(roots, tx);
+        let out = loop {
+            match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
+                IndexMsg::Progress(_) => continue,
+                IndexMsg::Ready(index) => break Ok(index),
+                IndexMsg::Error(e) => break Err(e),
+            }
+        };
+        handle.join().unwrap();
+        out
+    }
+
+    fn names(index: &FileIndex) -> Vec<String> {
+        index
+            .files()
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn file_index_over_two_roots_names_each_root_and_keeps_its_gitignore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("api"), tmp.path().join("web"));
+        fs::create_dir_all(&a).unwrap();
+        fs::write(a.join(".gitignore"), "*.log\n").unwrap();
+        touch(&a.join("src/main.rs"));
+        touch(&a.join("debug.log"));
+        touch(&b.join("keep.log"));
+        touch(&b.join("src/main.rs"));
+
+        let index = build_roots_sync(&[(&a, "api"), (&b, "web")]).unwrap();
+        // Root order first, then path order; a's .gitignore does not hide b's log.
+        assert_eq!(
+            names(&index),
+            [
+                "api/.gitignore",
+                "api/src/main.rs",
+                "web/keep.log",
+                "web/src/main.rs"
+            ]
+        );
+        assert_eq!(
+            index.absolute(Path::new("web/src/main.rs")),
+            b.join("src/main.rs")
+        );
+        assert_eq!(
+            index.absolute(Path::new("api/src/main.rs")),
+            a.join("src/main.rs")
+        );
+        assert_eq!(
+            top(&index, "main", 5),
+            ["api/src/main.rs", "web/src/main.rs"]
+        );
+        assert_eq!(top(&index, "web/main", 5), ["web/src/main.rs"]);
+
+        // One root: the paths and the mapping are those of `build`.
+        let one = build_roots_sync(&[(&a, "api")]).unwrap();
+        assert_eq!(names(&one), [".gitignore", "src/main.rs"]);
+        assert_eq!(one.root(), a);
+        assert_eq!(
+            one.absolute(Path::new("src/main.rs")),
+            a.join("src/main.rs")
+        );
+
+        // A missing root is skipped while the others are indexed; all missing is an error.
+        let gone = tmp.path().join("gone");
+        let some = build_roots_sync(&[(&gone, "gone"), (&b, "web")]).unwrap();
+        assert_eq!(names(&some), ["web/keep.log", "web/src/main.rs"]);
+        let err = build_roots_sync(&[(&gone, "gone")]).unwrap_err();
+        assert!(err.contains("gone"), "{err}");
     }
 
     #[test]

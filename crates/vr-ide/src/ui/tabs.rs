@@ -84,7 +84,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     }
     buf.set_style(area, theme.tab_bar);
     if app.docs.is_empty() {
-        let root = format!(" {}", app.root.display());
+        let root = format!(" {}", app.workspace.label());
         buf.set_stringn(area.x, area.y, root, usize::from(area.width), theme.dim);
         return;
     }

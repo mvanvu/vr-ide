@@ -84,6 +84,8 @@ pub enum DialogAction {
     QuitStuckReplace,
     /// Quit while terminals run (M5): Quit anyway / Cancel, Cancel first.
     QuitTerminals,
+    /// Unsaved files before the roots are replaced (W-1): Save all / Discard / Cancel.
+    OpenWorkspace(Box<crate::workspace::Workspace>),
 }
 
 pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
@@ -129,6 +131,7 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
         (DialogAction::ReplaceInFiles, Outcome::Chosen(0)) => super::search::apply(app),
         (DialogAction::QuitStuckReplace, Outcome::Chosen(0)) => super::app::answer_quit_stuck(app),
         (DialogAction::QuitTerminals, Outcome::Chosen(b)) => super::terminal::answer_quit(app, b),
+        (DialogAction::OpenWorkspace(ws), Outcome::Chosen(b)) => app.answer_open_workspace(*ws, b),
         _ => {}
     }
 }

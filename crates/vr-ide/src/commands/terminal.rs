@@ -509,7 +509,8 @@ fn spawn(app: &App, output: &Arc<AtomicBool>) -> Result<(Terminal, PathBuf), Ter
             SpawnOptions {
                 shell: shell.to_path_buf(),
                 args: Vec::new(),
-                cwd: app.root.clone(),
+                // The root of the active file, else the first root (spec W).
+                cwd: app.active_root().path.clone(),
                 env: child_env(&p.env, crate::theme::ColorDepth::detect()),
                 cols,
                 rows,

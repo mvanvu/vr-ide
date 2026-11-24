@@ -111,7 +111,7 @@ pub fn draw_frame<B: Backend>(
 where
     B::Error: Send + Sync + 'static,
 {
-    state.publish(&app.docs);
+    state.publish_in(&app.docs, &app.workspace);
     terminal.draw(|f| render(f, app))?;
     app.dirty = false;
     Ok(())
@@ -125,7 +125,7 @@ pub fn finish(result: anyhow::Result<()>, app: &App, dir: &std::path::Path) -> a
         return Ok(());
     };
     let docs: Vec<&vr_core::Document> = app.docs.iter().filter(|d| d.is_modified()).collect();
-    let written = recovery::write_docs(&docs, dir);
+    let written = recovery::write_docs_in(&docs, &app.workspace, dir);
     if written.is_empty() {
         return Err(e);
     }

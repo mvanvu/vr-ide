@@ -108,8 +108,31 @@ pub fn plan_replace(
     plan_replace_with(root, q, replacement, files, MAX_FILE_BYTES)
 }
 
+/// [`plan_replace`] over several roots (a multi-root workspace): each file is confined to
+/// the root it resolves into (links followed), and [`apply_replace`] re-checks it against
+/// that root; a file in none of them is refused. Relative paths are taken from the first
+/// root.
+pub fn plan_replace_roots(
+    roots: &[PathBuf],
+    q: &Query,
+    replacement: &str,
+    files: &[PathBuf],
+) -> Vec<FilePreview> {
+    plan_in_roots(roots, q, replacement, files, MAX_FILE_BYTES)
+}
+
 fn plan_replace_with(
     root: &Path,
+    q: &Query,
+    replacement: &str,
+    files: &[PathBuf],
+    max_file_bytes: u64,
+) -> Vec<FilePreview> {
+    plan_in_roots(&[root.to_path_buf()], q, replacement, files, max_file_bytes)
+}
+
+fn plan_in_roots(
+    roots: &[PathBuf],
     q: &Query,
     replacement: &str,
     files: &[PathBuf],
@@ -123,20 +146,27 @@ fn plan_replace_with(
             })
         })
     });
-    let canon_root = fs::canonicalize(root);
+    let canon_roots: Vec<io::Result<PathBuf>> = roots.iter().map(fs::canonicalize).collect();
     files
         .iter()
         .map(|f| {
-            let path = root.join(f);
+            let path = roots.first().map_or_else(|| f.clone(), |r| r.join(f));
             let spec = match &spec {
                 Ok(Some(s)) => s,
                 Ok(None) => return FilePreview::failed(path, "empty search pattern"),
                 Err(e) => return FilePreview::failed(path, e.to_string()),
             };
-            let canon_root = match &canon_root {
-                Ok(r) if inside(&path, r) => r,
-                Ok(_) => return FilePreview::failed(path, "not a file inside the project"),
-                Err(e) => return FilePreview::failed(path, format!("project root: {e}")),
+            let real = fs::canonicalize(&path);
+            let owner = canon_roots.iter().find_map(|r| match (r, &real) {
+                (Ok(r), Ok(p)) if p.starts_with(r) => Some(r),
+                _ => None,
+            });
+            let canon_root = match (owner, &canon_roots[..]) {
+                (Some(r), _) => r,
+                (None, [Err(e)]) => {
+                    return FilePreview::failed(path, format!("project root: {e}"));
+                }
+                (None, _) => return FilePreview::failed(path, "not a file inside the project"),
             };
             let bytes = match read_capped(&path, max_file_bytes) {
                 Ok(Some(b)) => b,
@@ -162,11 +192,6 @@ fn plan_replace_with(
             }
         })
         .collect()
-}
-
-/// True when `path` resolves (links followed) to a file under the canonical `root`.
-fn inside(path: &Path, root: &Path) -> bool {
-    fs::canonicalize(path).is_ok_and(|p| p.starts_with(root))
 }
 
 struct Replaced {
@@ -451,6 +476,44 @@ mod tests {
             before: before.into(),
             after: after.into(),
         }
+    }
+
+    #[test]
+    fn plan_replace_roots_confines_each_file_to_its_own_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("x.txt"), "old\n").unwrap();
+        fs::write(b.join("y.txt"), "old old\n").unwrap();
+        fs::write(dir.path().join("outside.txt"), "old\n").unwrap();
+        let q = Query {
+            pattern: "old".into(),
+            ..Query::default()
+        };
+        let roots = [a.clone(), b.clone()];
+        let files = [
+            a.join("x.txt"),
+            b.join("y.txt"),
+            dir.path().join("outside.txt"),
+        ];
+        let previews = plan_replace_roots(&roots, &q, "new", &files);
+        assert_eq!(previews.len(), 3);
+        assert_eq!(previews[0].path, a.join("x.txt"));
+        assert_eq!(previews[0].error, None);
+        assert_eq!(previews[1].replacements(), 2);
+        assert_eq!(previews[1].error, None);
+        assert!(previews[2].error.is_some(), "outside every root");
+        // Each preview is confined to its own root when applied.
+        assert_eq!(previews[1].root, fs::canonicalize(&b).unwrap());
+        let results = apply_replace(&previews, &files[..2]);
+        assert!(results.iter().all(|r| r.1.is_ok()), "{results:?}");
+        assert_eq!(fs::read_to_string(a.join("x.txt")).unwrap(), "new\n");
+        assert_eq!(fs::read_to_string(b.join("y.txt")).unwrap(), "new new\n");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("outside.txt")).unwrap(),
+            "old\n"
+        );
     }
 
     #[test]

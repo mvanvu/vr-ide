@@ -7,7 +7,9 @@ mod keymap;
 mod keys;
 mod languages;
 mod paths;
+mod recent;
 mod settings;
+mod workspace_file;
 
 use std::path::PathBuf;
 
@@ -15,7 +17,13 @@ pub use keymap::{Context, Keymap, RESERVED_COMMANDS};
 pub use keys::{KeyChord, KeyCode, KeyParseError, Mods};
 pub use languages::{LANGUAGES_FILE, LanguageDef, Languages};
 pub use paths::{config_dir, state_dir};
+pub use recent::{
+    RECENT_FILE, RECENT_WORKSPACES_MAX, RecentWorkspace, RecentWorkspaces, write_atomic,
+};
 pub use settings::{AiPreset, Settings};
+pub use workspace_file::{
+    WORKSPACE_EXT, format_workspace, is_workspace_file, parse_workspace, read_workspace,
+};
 
 /// A non-fatal problem found while loading configuration; the offending entry is skipped.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

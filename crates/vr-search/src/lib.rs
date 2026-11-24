@@ -9,8 +9,8 @@ mod project;
 mod replace;
 
 pub use find::{find_all, replace_all_tx};
-pub use project::{ProjectMatch, SearchMsg, search_project};
-pub use replace::{FilePreview, Hunk, apply_replace, plan_replace};
+pub use project::{ProjectMatch, SearchMsg, search_project, search_roots};
+pub use replace::{FilePreview, Hunk, apply_replace, plan_replace, plan_replace_roots};
 
 /// What to look for. In literal mode the pattern and the replacement are taken verbatim;
 /// in regex mode the replacement expands `$1`, `${name}` and `$0`.
