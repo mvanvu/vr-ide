@@ -32,6 +32,8 @@ pub enum Focus {
     FindBar,
     /// The project search panel.
     Search,
+    /// The integrated terminal panel (M5): every key but the `[terminal]` ones goes to it (D8).
+    Terminal,
 }
 
 impl Focus {
@@ -44,6 +46,7 @@ impl Focus {
             Focus::Explorer => Context::Explorer,
             Focus::Palette => Context::Palette,
             Focus::Search => Context::Global,
+            Focus::Terminal => Context::Terminal,
         }
     }
 }
@@ -172,6 +175,8 @@ pub struct App {
     pub monitor: crate::monitor::Monitor,
     /// Files opened this session, newest first (at most [`RECENT_MAX`]).
     pub recent: Vec<PathBuf>,
+    /// The integrated terminal panel (M5); no terminal runs until the user opens one (AC-1).
+    pub terminal: commands::terminal::TerminalPanel,
 }
 
 impl App {
@@ -182,6 +187,10 @@ impl App {
         clipboard: Box<dyn Clipboard>,
     ) -> App {
         let explorer = Explorer::new(&root, settings.show_hidden, settings.show_ignored);
+        let terminal = commands::terminal::TerminalPanel::new(
+            settings.terminal_height_percent,
+            settings.scrollback,
+        );
         App {
             root,
             docs: Vec::new(),
@@ -219,6 +228,7 @@ impl App {
             syntax: crate::syntax::Syntax::new(crate::syntax::builtin_registry()),
             monitor: Default::default(),
             recent: Vec::new(),
+            terminal,
         }
     }
 
@@ -916,6 +926,13 @@ impl App {
             self.palette_dismissed(palette_esc);
             return;
         }
+        // A focused terminal takes every key but its own table (D8); elsewhere a legacy
+        // terminal's NUL stands for ctrl+` (D185).
+        if commands::terminal::handle_key(self, &key)
+            || commands::terminal::legacy_toggle(self, &key)
+        {
+            return;
+        }
         // The find bar and the search panel use Esc themselves (close / back to the editor).
         // Keys never go to a search panel that is not shown.
         if self.focus == Focus::Search && !self.search.visible {
@@ -997,6 +1014,7 @@ impl App {
             // Nothing in the explorer takes text.
             Focus::Explorer => {}
             Focus::Editor => commands::edit::insert_pasted(self, text),
+            Focus::Terminal => commands::terminal::paste(self, text),
         }
     }
 
@@ -1030,6 +1048,17 @@ impl App {
             self.palette_dismissed(outside);
             return;
         }
+        if commands::terminal::handle_mouse(self, &ev) {
+            return;
+        }
+        // A click on the notice dismisses it without moving the focus: a focused terminal
+        // keeps Esc for its program.
+        if inside(self.layout.notice) {
+            if matches!(ev.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.notices.pop_front();
+            }
+            return;
+        }
         let l = self.layout;
         if inside(l.explorer) {
             commands::explorer::handle_mouse(self, &ev);
@@ -1046,7 +1075,10 @@ impl App {
             return;
         }
         if matches!(ev.kind, MouseEventKind::Down(_))
-            && matches!(self.focus, Focus::Explorer | Focus::Search | Focus::FindBar)
+            && matches!(
+                self.focus,
+                Focus::Explorer | Focus::Search | Focus::FindBar | Focus::Terminal
+            )
         {
             self.focus = Focus::Editor;
         }

@@ -28,6 +28,11 @@ pub struct Settings {
     pub show_ignored: bool,
     pub max_highlight_bytes: u64,
     pub scrollback: usize,
+    /// Height of the terminal panel in percent of the screen, 10..=90 (M5).
+    pub terminal_height_percent: u16,
+    /// Without the kitty protocol, NUL (what ctrl+` sends) in a focused terminal goes to the
+    /// program instead of hiding the panel (D214).
+    pub terminal_pass_nul: bool,
     pub ai_presets: Vec<AiPreset>,
 }
 
@@ -88,6 +93,9 @@ fn parse(table: toml::Table) -> Result<Settings, String> {
         .map_err(|e: toml::de::Error| e.message().to_owned())?;
     if s.tab_width == 0 || s.tab_width > 16 {
         return Err("tab_width must be between 1 and 16".into());
+    }
+    if !(10..=90).contains(&s.terminal_height_percent) {
+        return Err("terminal_height_percent must be between 10 and 90".into());
     }
     if let Some(p) = s.ai_presets.iter().find(|p| p.command.trim().is_empty()) {
         return Err(format!("ai preset {:?} has an empty command", p.name));

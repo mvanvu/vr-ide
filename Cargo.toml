@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/vr-core", "crates/vr-config", "crates/vr-fs", "crates/vr-search", "crates/vr-syntax", "crates/vr-ide"]
+members = ["crates/vr-core", "crates/vr-config", "crates/vr-fs", "crates/vr-search", "crates/vr-syntax", "crates/vr-ide", "crates/vr-term"]
 
 [workspace.package]
 version = "0.1.0"
@@ -60,8 +60,25 @@ vr-config = { path = "crates/vr-config" }
 vr-fs = { path = "crates/vr-fs" }
 vr-search = { path = "crates/vr-search" }
 vr-syntax = { path = "crates/vr-syntax" }
+vr-term = { path = "crates/vr-term" }
+
+# Integrated terminal (M5): PTY (MIT) and emulator (Apache-2.0), wrapped by vr-term's own types.
+portable-pty = "=0.9.0"
+alacritty_terminal = { version = "=0.26.0", default-features = false }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# The terminal emulator parses every byte a program prints; unoptimised it manages ~2 MB/s and
+# holds its lock for milliseconds, so debug builds and tests optimise it, its parser and vr-term
+# (where the emulator's generic code is instantiated).
+[profile.dev.package.vr-term]
+opt-level = 3
+
+[profile.dev.package.alacritty_terminal]
+opt-level = 3
+
+[profile.dev.package.vte]
+opt-level = 3

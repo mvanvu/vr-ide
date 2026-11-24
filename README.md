@@ -237,7 +237,47 @@ If a file you have open changes on disk:
 
 `ctrl+q` quits at once when everything is saved. With unsaved files it lists them and offers Save
 all, Discard or Cancel; Discard keeps a copy in the [recovery folder](#recovery). If a project
-replace is still running, `ctrl+q` asks Quit anyway or Cancel (Cancel is the default).
+replace is still running, `ctrl+q` asks Quit anyway or Cancel (Cancel is the default). While
+programs run in the [terminal panel](#terminal) it asks "N terminals still running" with Quit anyway
+or Cancel (Cancel is the default); quitting hangs up every terminal's process group (SIGHUP, then
+SIGKILL for a program that ignores it).
+
+### Terminal
+
+``ctrl+` `` opens a terminal panel under the editor, running your `$SHELL` (`/bin/sh` if it is
+unset or does not start) in the project root with `TERM=xterm-256color`. Press it again in the
+terminal to hide the panel (the shells keep running); from the editor or explorer it focuses the
+shown panel. No terminal starts until you open one.
+
+- A focused terminal receives every key, `ctrl+s`, `ctrl+w` and `ctrl+p` included, so `vim`, `htop`
+  or `lazygit` work as in any terminal. `alt+q` gives the keys back to the editor; the status bar
+  shows `TERM` while the terminal has them (read and edit mode do not apply there).
+- ``ctrl+shift+` `` opens another terminal tab; the palette has Close, Next, Previous and the panel
+  height commands (Increase / Decrease Panel Height). The tab bar shows each terminal's title (set
+  by the program, or the shell's name) and `[N]` once it exited. Long titles such as bash's
+  `user@host: ~/dir` are cut from the left so the directory stays; when the tabs do not fit, the
+  active one stays in view and `+N` counts the others. Click a tab to switch; drag the tab bar to
+  resize the panel (`terminal_height_percent` in settings, 40 % by default, at least 5 rows).
+- When the program exits the panel says "[process exited N] — Enter to restart, ctrl+w to close"
+  (shorter on narrow screens: "exited N · Enter · ctrl+w").
+- Notices above the status bar: `Esc` goes to the program while a terminal has the keys, so click
+  a notice to dismiss it there.
+- `shift+pageup` / `shift+pagedown` and the mouse wheel scroll back (10 000 lines, setting
+  `scrollback`); any key or new output returns to the bottom. Programs that use the mouse get it;
+  hold `shift` to select text anyway.
+- Dragging the mouse selects and copies to the clipboard; `ctrl+shift+v` pastes (bracketed when the
+  program asked for it), as does your terminal's own paste.
+- Colours: `synthwave` and `dracula` give programs their own 16 ANSI colours and background;
+  `dark` and `light` leave your terminal's colours.
+- With the kitty keyboard protocol ``ctrl+` `` toggles the panel everywhere and `ctrl+space` is a
+  separate key that reaches the program.
+- Without it your terminal sends ``ctrl+` `` as NUL, the same byte as `ctrl+space` and `ctrl+@`.
+  vr-ide takes NUL as ``ctrl+` `` everywhere, so it hides the panel from inside a terminal too, and
+  programs never get `ctrl+space`. If a program needs it (Emacs's mark, a shell binding), set
+  `terminal_pass_nul = true`: NUL then goes to the program, `alt+q` leaves the terminal, ``ctrl+` ``
+  from the editor focuses the panel again, and the panel is hidden only by closing its terminals
+  (palette: Close Terminal). The tab bar's hint shows the keys that work in your setup.
+  ``ctrl+shift+` `` needs the kitty protocol (or use the palette).
 
 ### Clipboard
 
@@ -251,7 +291,7 @@ with your terminal's own paste shortcut (bracketed paste is supported).
 
 | File | Purpose |
 |---|---|
-| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit. Built-in values: `crates/vr-config/defaults/settings.toml` |
+| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit, terminal scrollback (`scrollback`), panel height (`terminal_height_percent`) and whether NUL reaches terminal programs in a terminal without the kitty protocol (`terminal_pass_nul`, off). Built-in values: `crates/vr-config/defaults/settings.toml` |
 | `~/.config/vr-ide/keymap.toml` | Key overrides on top of the VS Code defaults; see [docs/keymap.md](docs/keymap.md) |
 | `~/.config/vr-ide/languages.toml` | File patterns → language for syntax highlighting; see [Syntax highlighting](#syntax-highlighting). Built-in table: `crates/vr-config/defaults/languages.toml` |
 
@@ -374,7 +414,7 @@ file, search and replace across the project, keymap and settings files.
 Roadmap:
 
 - M4: syntax highlighting (tree-sitter)
-- M5: integrated terminal
+- M5: integrated terminal (in progress: the terminal panel works, see [Terminal](#terminal))
 - M6: AI agent console
 - M7: git (gutter signs, git panel, diff view, hunk staging)
 - M8: LSP (completion, hover, definition, references, diagnostics, rename, format, code actions)

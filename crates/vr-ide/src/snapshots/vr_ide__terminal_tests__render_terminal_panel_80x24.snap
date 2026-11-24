@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/terminal_tests.rs
+expression: t.backend()
+---
+" /home/user/DEV/shop                                                            "
+"  vr-ide v0.1.0                                                                 "
+"  /home/user/DEV/shop                                                           "
+"                                                                                "
+"  CPU                                                                        —  "
+"  RAM ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    —  "
+"                                                                                "
+"  ctrl+p        Go to file                                                      "
+"  f1            Command palette                                                 "
+"  ctrl+e        Explorer                                                        "
+"  ctrl+shift+f  Search                                                          "
+"  ctrl+`        Terminal                                                        "
+"  ctrl+q        Quit                                                            "
+" 1 sh  2 htop [0]                                    alt+q editor · ctrl+` hide "
+"$ ls --color                                                                    "
+"docs  src  README.md  run.sh                                                    "
+"$ echo 'xin chào 世界'                                                          " Hidden by multi-width symbols: [(18, " "), (20, " ")]
+"xin chào 世界                                                                   " Hidden by multi-width symbols: [(10, " "), (12, " ")]
+"$                                                                               "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" TERM  sh                                                            1/2 · 80×9 "

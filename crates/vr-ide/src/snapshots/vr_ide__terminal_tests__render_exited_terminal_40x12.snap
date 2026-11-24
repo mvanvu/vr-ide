@@ -1,0 +1,16 @@
+---
+source: crates/vr-ide/src/terminal_tests.rs
+expression: t.backend()
+---
+" /home/user/DEV/shop                    "
+" vr-ide v0.1.0                          "
+" /home/user/DEV/shop                    "
+"                                        "
+" CPU                                  — "
+" RAM ░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    — "
+" 1 sh  2 htop [3]                       "
+"$ ls --color                            "
+"docs  src  README.md  run.sh            "
+"$ echo 'xin chào 世界'                  " Hidden by multi-width symbols: [(18, " "), (20, " ")]
+" exited 3 · Enter restart · ctrl+w close"
+" TERM  htop [exited 3]       2/2 · 80×9 "

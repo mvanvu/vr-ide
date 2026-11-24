@@ -117,6 +117,13 @@ pub(super) fn build(depth: ColorDepth) -> Theme {
         mode_edit: Style::default().bg(edit).fg(bg).add_modifier(bold),
         syntax_on_highlight: true,
         captures,
+        mode_term: Style::default().bg(pink).fg(bg).add_modifier(bold),
+        ansi: Some(super::ansi::palette(
+            depth,
+            fg,
+            bg,
+            &super::ansi::SYNTHWAVE_ANSI,
+        )),
     }
 }
 

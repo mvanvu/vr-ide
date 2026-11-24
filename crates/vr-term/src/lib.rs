@@ -1,0 +1,17 @@
+//! Integrated terminal backend: a PTY child, an emulator fed by a reader thread, and the
+//! key / paste / mouse encodings. The UI only sees this crate's own types.
+
+mod input;
+mod snapshot;
+mod terminal;
+mod types;
+
+pub use input::{
+    KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseKind, encode_key, encode_mouse,
+    encode_paste,
+};
+pub use terminal::{KILL_GRACE, MAX_PENDING_INPUT, Terminal};
+pub use types::{
+    Cell, CellFlags, Color, Cursor, CursorShape, Grid, Modes, Notify, SpawnOptions, TermError,
+    TermStatus,
+};

@@ -9,6 +9,7 @@ pub mod palette;
 pub mod search_panel;
 pub mod status_bar;
 pub mod tabs;
+pub mod terminal_view;
 pub mod welcome;
 
 use ratatui::Frame;
@@ -37,13 +38,17 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     } else {
         layout::Side::None
     };
-    let layout = layout::compute(area, notice_rows, side, find_bar::rows(app));
+    let mut layout = layout::compute(area, notice_rows, side, find_bar::rows(app));
+    if app.terminal.visible {
+        layout::place_terminal(&mut layout, area.height, app.terminal.height_percent);
+    }
     app.layout = layout;
     explorer::render(frame.buffer_mut(), layout.explorer, app, theme);
     search_panel::render(frame, layout.search, app, theme);
     tabs::render(frame.buffer_mut(), layout.tabs, app, theme);
     find_bar::render(frame, layout.find_bar, app, theme);
     editor_view::render(frame, layout.editor, app, theme);
+    terminal_view::render(frame, layout.terminal, app, theme);
     status_bar::render_notice(frame.buffer_mut(), layout.notice, app, theme);
     status_bar::render(frame.buffer_mut(), layout.status, app, theme);
     // Overlays last: they draw over the editor and set the cursor.

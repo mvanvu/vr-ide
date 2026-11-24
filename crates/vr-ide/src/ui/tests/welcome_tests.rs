@@ -242,7 +242,14 @@ fn file_count_says_indexing_until_the_index_is_ready() {
 #[test]
 fn a_command_without_a_key_has_no_hint() {
     let mut app = welcome_app();
-    // `terminal.toggle` is not bound yet: no "Terminal" row rather than "run terminal.toggle".
+    // With `terminal.toggle` bound (M5) its row shows the key; with ctrl+` removed by the user
+    // there is no "Terminal" row rather than "run terminal.toggle".
+    let screen = lines(&mut app, 120, 40).join("\n");
+    assert!(screen.contains("ctrl+`        Terminal"), "{screen}");
+    let dir = tempfile::tempdir().unwrap();
+    let user = dir.path().join("keymap.toml");
+    std::fs::write(&user, "\"ctrl+`\" = \"\"\n[terminal]\n\"ctrl+`\" = \"\"\n").unwrap();
+    app.keymap = vr_config::Keymap::load(Some(&user)).0;
     let screen = lines(&mut app, 120, 40).join("\n");
     assert!(
         !screen.contains("Terminal") && !screen.contains("run "),
