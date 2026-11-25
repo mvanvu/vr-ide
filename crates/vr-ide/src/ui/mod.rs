@@ -5,6 +5,7 @@ pub mod editor_view;
 pub mod explorer;
 pub mod explorer_menu;
 pub mod find_bar;
+pub mod git_history;
 pub mod git_popup;
 pub mod layout;
 pub mod palette;

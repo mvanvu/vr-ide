@@ -24,9 +24,9 @@ use crate::workspace::Workspace;
 
 /// Identity and dates of every commit the tests make, through the popup or the CLI twin, so
 /// the twins' commit ids are equal when the commits are.
-const DATE: &str = "1700000000 +0000";
+pub(crate) const DATE: &str = "1700000000 +0000";
 
-fn fixed_env(f: &Fixture) -> Vec<(OsString, OsString)> {
+pub(crate) fn fixed_env(f: &Fixture) -> Vec<(OsString, OsString)> {
     let mut env = f.env();
     for (k, v) in [
         ("GIT_AUTHOR_NAME", "Ann Author"),
@@ -42,7 +42,7 @@ fn fixed_env(f: &Fixture) -> Vec<(OsString, OsString)> {
 }
 
 /// git in `dir` with the fixed identity and dates; panics on failure.
-fn g(f: &Fixture, dir: &Path, args: &[&str]) -> String {
+pub(crate) fn g(f: &Fixture, dir: &Path, args: &[&str]) -> String {
     let out = run_git(f, dir, args);
     assert!(
         out.status.success(),
@@ -52,7 +52,7 @@ fn g(f: &Fixture, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-fn run_git(f: &Fixture, dir: &Path, args: &[&str]) -> std::process::Output {
+pub(crate) fn run_git(f: &Fixture, dir: &Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
         .current_dir(dir)
         .env_clear()
@@ -79,7 +79,7 @@ fn repo_state(f: &Fixture, dir: &Path) -> (String, String, String) {
     )
 }
 
-fn options(f: &Fixture) -> vr_git::Options {
+pub(crate) fn options(f: &Fixture) -> vr_git::Options {
     vr_git::Options {
         env: Some(fixed_env(f)),
         recovery_dir: Some(f.base.join("state/git-recovery")),
@@ -87,7 +87,7 @@ fn options(f: &Fixture) -> vr_git::Options {
     }
 }
 
-fn app_on(f: &Fixture, ws: Workspace) -> App {
+pub(crate) fn app_on(f: &Fixture, ws: Workspace) -> App {
     let (mut app, _) = test_app(&ws.primary().path.clone());
     app.workspace = ws;
     app.roots_changed();
@@ -102,11 +102,11 @@ fn app_on(f: &Fixture, ws: Workspace) -> App {
     app
 }
 
-fn popup_app(f: &Fixture) -> App {
+pub(crate) fn popup_app(f: &Fixture) -> App {
     app_on(f, Workspace::single(f.dir.clone()))
 }
 
-fn wait(app: &mut App, what: &str, mut cond: impl FnMut(&App) -> bool) {
+pub(crate) fn wait(app: &mut App, what: &str, mut cond: impl FnMut(&App) -> bool) {
     let end = Instant::now() + Duration::from_secs(20);
     loop {
         app.tick(Instant::now());
@@ -119,7 +119,7 @@ fn wait(app: &mut App, what: &str, mut cond: impl FnMut(&App) -> bool) {
 }
 
 /// Nothing pending: scanned, no write queued or running, no job, the diff answered.
-fn idle(a: &App) -> bool {
+pub(crate) fn idle(a: &App) -> bool {
     a.git_popup.as_ref().is_some_and(|p| {
         p.scan.is_some()
             && !p.scanning
@@ -131,7 +131,7 @@ fn idle(a: &App) -> bool {
     })
 }
 
-fn wait_idle(app: &mut App) {
+pub(crate) fn wait_idle(app: &mut App) {
     let end = Instant::now() + Duration::from_secs(20);
     while !idle(app) {
         app.tick(Instant::now());
@@ -154,24 +154,24 @@ fn wait_idle(app: &mut App) {
     }
 }
 
-fn open(app: &mut App) {
+pub(crate) fn open(app: &mut App) {
     crate::git_popup::open(app, "").unwrap();
     wait_idle(app);
 }
 
-fn key(app: &mut App, code: KeyCode) {
+pub(crate) fn key(app: &mut App, code: KeyCode) {
     app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
-fn shift(app: &mut App, code: KeyCode) {
+pub(crate) fn shift(app: &mut App, code: KeyCode) {
     app.handle_key(KeyEvent::new(code, KeyModifiers::SHIFT));
 }
 
-fn ctrl(app: &mut App, c: char) {
+pub(crate) fn ctrl(app: &mut App, c: char) {
     app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
 }
 
-fn typ(app: &mut App, s: &str) {
+pub(crate) fn typ(app: &mut App, s: &str) {
     for c in s.chars() {
         if c == '\n' {
             key(app, KeyCode::Enter);
@@ -181,7 +181,7 @@ fn typ(app: &mut App, s: &str) {
     }
 }
 
-fn popup(app: &App) -> &crate::git_popup::GitPopup {
+pub(crate) fn popup(app: &App) -> &crate::git_popup::GitPopup {
     app.git_popup.as_ref().expect("popup open")
 }
 
@@ -228,7 +228,7 @@ fn to_list(app: &mut App, staged: bool, name: &str) {
     panic!("could not reach {name}");
 }
 
-fn focus(app: &mut App, pane: Pane) {
+pub(crate) fn focus(app: &mut App, pane: Pane) {
     for _ in 0..20 {
         if popup(app).focus == pane {
             return;
@@ -263,7 +263,7 @@ fn row_of(app: &App, kind: LineKind, text: &str) -> usize {
         .unwrap_or_else(|| panic!("no {kind:?} line {text}"))
 }
 
-fn notices(app: &App) -> String {
+pub(crate) fn notices(app: &App) -> String {
     app.notices
         .iter()
         .map(|n| n.text.clone())
@@ -271,7 +271,7 @@ fn notices(app: &App) -> String {
         .join("\n")
 }
 
-fn errors(app: &App) -> String {
+pub(crate) fn errors(app: &App) -> String {
     app.notices
         .iter()
         .filter(|n| n.level != NoticeLevel::Info)
@@ -280,13 +280,13 @@ fn errors(app: &App) -> String {
         .join("\n")
 }
 
-fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
     t.draw(|f| crate::ui::render(f, app)).unwrap();
     t
 }
 
-fn screen(t: &Terminal<TestBackend>) -> String {
+pub(crate) fn screen(t: &Terminal<TestBackend>) -> String {
     let buf = t.backend().buffer();
     (0..buf.area.height)
         .map(|y| {
@@ -901,9 +901,9 @@ fn slash_git_push_and_pull_run_through_the_popup() {
 
 // ---- SEC-15: hostile names and messages -------------------------------------------------------
 
-const HOSTILE: &str = "\x1b[2J\x1b]52;c;ZXZpbA==\x07\u{9b}31m\r\u{202e}";
+pub(crate) const HOSTILE: &str = "\x1b[2J\x1b]52;c;ZXZpbA==\x07\u{9b}31m\r\u{202e}";
 
-fn assert_safe(t: &Terminal<TestBackend>, what: &str) {
+pub(crate) fn assert_safe(t: &Terminal<TestBackend>, what: &str) {
     let buf = t.backend().buffer();
     for y in 0..buf.area.height {
         for x in 0..buf.area.width {
@@ -1190,15 +1190,19 @@ fn keys_stay_in_the_popup_and_esc_keeps_the_draft() {
     assert!(!app.git_popup_shown());
     open(&mut app);
     assert_eq!(popup(&app).message.text(), "draft");
-    // `2` and `3` (History, Blame) are not built yet: nothing happens.
+    // `2` and `3` switch to History and Blame (M7-4b), `1` comes back to the same pane.
     focus(&mut app, Pane::Unstaged);
     key(&mut app, KeyCode::Char('2'));
+    assert_eq!(popup(&app).tab, crate::git_popup::Tab::History);
     key(&mut app, KeyCode::Char('3'));
+    assert_eq!(popup(&app).tab, crate::git_popup::Tab::Blame);
+    key(&mut app, KeyCode::Char('1'));
     assert!(app.git_popup_shown());
+    assert_eq!(popup(&app).tab, crate::git_popup::Tab::Changes);
     assert_eq!(popup(&app).focus, Pane::Unstaged);
 }
 
-fn click(app: &mut App, x: u16, y: u16) {
+pub(crate) fn click(app: &mut App, x: u16, y: u16) {
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: x,

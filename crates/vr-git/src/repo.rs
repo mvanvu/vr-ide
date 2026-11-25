@@ -326,19 +326,32 @@ impl Repo {
         if rev.is_empty() || rev.contains('\0') {
             return Err(GitError::NotACommit(rev.to_string()));
         }
-        let spec = format!("{rev}^{{commit}}");
+        // A message search (`:/<regex>`) takes the rest as the regex, so a `^{commit}` suffix
+        // would become part of it: resolve it bare, then check the object it found.
+        let refused = || GitError::NotACommit(rev.to_string());
+        if rev.starts_with(":/") {
+            let oid = self.verify_rev(rev)?.ok_or_else(refused)?;
+            return match self.verify_rev(&format!("{oid}^{{commit}}"))? {
+                Some(c) if c == oid => Ok(oid),
+                _ => Err(refused()),
+            };
+        }
+        self.verify_rev(&format!("{rev}^{{commit}}"))?
+            .ok_or_else(refused)
+    }
+
+    /// `rev-parse --verify` of `spec` (never read as an option): the full object id, or `None`
+    /// when it names nothing.
+    fn verify_rev(&self, spec: &str) -> Result<Option<String>> {
         let out = self.run_code(&[
             os("rev-parse"),
             os("--verify"),
             os("-q"),
             os("--end-of-options"),
-            os(&spec),
+            os(spec),
         ])?;
         let oid = lossy(out.stdout.trim_ascii_end());
-        if out.code != 0 || !is_oid(&oid) {
-            return Err(GitError::NotACommit(rev.to_string()));
-        }
-        Ok(oid)
+        Ok((out.code == 0 && is_oid(&oid)).then_some(oid))
     }
 
     /// Index entries of exactly `rel` (several stages when conflicted).

@@ -1,9 +1,10 @@
 ---
 source: crates/vr-ide/src/git_popup_tests.rs
+assertion_line: 1696
 expression: t.backend()
 ---
 " w.rs                                                                           "
-"  1 ┌─ Git · ~/repo · main ────────────────────────────────────── Changes ─┐    "
+"  1 ┌─ Git · ~/repo · main ────────────────────── Changes  History  Blame ─┐    "
 "  2▎│Unstaged (1)                │w.rs (unstaged) · col 63+                │xxxx"
 "  3 │ M w.rs                     │@@ -1 +1,2 @@                            │    "
 "    │                            │ …                                       │    "
@@ -21,7 +22,7 @@ expression: t.backend()
 "    │                                                                      │    "
 "    │[ ] Amend [ ] Sign off [Commit] [Push] [Pull] [Rescan]                │    "
 "    │                                                                      │    "
-"    │↑↓ move · ←→ scroll · shift+↑↓ lines · enter stage/unstage · d discard│    "
+"    │↑↓ move · ←→ scroll · shift+↑↓ lines · enter stage/unstage · d discar…│    "
 "    └──────────────────────────────────────────────────────────────────────┘    "
 "                                                                                "
 "                                                                                "

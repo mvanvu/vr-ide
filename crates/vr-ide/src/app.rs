@@ -1219,10 +1219,11 @@ impl App {
         // In the Git popup's message box Enter types a line break: two quick ones are a blank
         // line, not a repeat (D307); a labelled repeat and the settle time still apply.
         let text_box = self.dialog.is_none()
-            && self
-                .git_popup
-                .as_ref()
-                .is_some_and(|p| p.visible && p.focus == crate::git_popup::Pane::Message);
+            && self.git_popup.as_ref().is_some_and(|p| {
+                p.visible
+                    && p.tab == crate::git_popup::Tab::Changes
+                    && p.focus == crate::git_popup::Pane::Message
+            });
         let enter_ignored =
             key.code == KeyCode::Enter && self.enter_is_not_deliberate(&key, now, !text_box);
         if key.code == KeyCode::Enter {

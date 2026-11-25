@@ -340,6 +340,34 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         git_open,
     ),
     cmd(
+        "git log",
+        "",
+        NO_ARG,
+        "Git popup, History tab: the repo's commits (enter shows one)",
+        git_log,
+    ),
+    cmd(
+        "git log file",
+        "",
+        NO_ARG,
+        "Git popup, History tab: the active file's commits, following renames",
+        git_log_file,
+    ),
+    cmd(
+        "git blame",
+        "",
+        NO_ARG,
+        "Git popup, Blame tab: author and age of each line of the active file",
+        git_blame,
+    ),
+    cmd(
+        "git show",
+        "<commit>",
+        ArgKind::Text,
+        "Git popup: one commit's details and diff (an id, branch, tag or HEAD~2)",
+        git_show,
+    ),
+    cmd(
         "git push",
         "",
         NO_ARG,
@@ -1040,6 +1068,23 @@ fn git_blame_line(app: &mut App, _: &str) -> Result<(), String> {
 /// `/git [root]` (M7-3): a root by name only, never a path (SEC-17).
 fn git_open(app: &mut App, arg: &str) -> Result<(), String> {
     crate::git_popup::open(app, arg)
+}
+
+/// `/git log`, `/git log file`, `/git blame`, `/git show <commit>` (M7-4b).
+fn git_log(app: &mut App, _: &str) -> Result<(), String> {
+    crate::git_history::log(app, false)
+}
+
+fn git_log_file(app: &mut App, _: &str) -> Result<(), String> {
+    crate::git_history::log(app, true)
+}
+
+fn git_blame(app: &mut App, _: &str) -> Result<(), String> {
+    crate::git_history::blame(app)
+}
+
+fn git_show(app: &mut App, rev: &str) -> Result<(), String> {
+    crate::git_history::show(app, rev)
 }
 
 fn git_push(app: &mut App, _: &str) -> Result<(), String> {

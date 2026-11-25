@@ -11,19 +11,19 @@ use ratatui::text::Span;
 use vr_git::{FileStatus, LineKind, StatusEntry};
 
 use crate::app::App;
-use crate::git_popup::{Areas, DiffRow, GitPopup, Pane};
+use crate::git_popup::{Areas, DiffRow, GitPopup, Pane, Tab};
 use crate::theme::Theme;
 use crate::ui::safe_text::sanitize;
 
 /// Inner width from which the lists and the diff sit side by side.
 const SIDE_BY_SIDE: u16 = 64;
 
-fn width(s: &str) -> usize {
+pub(crate) fn width(s: &str) -> usize {
     Span::raw(s).width()
 }
 
 /// `s` cut from the left to `cells`, starting with "…" when cut (paths keep their end).
-fn fit_tail(s: &str, cells: usize) -> String {
+pub(crate) fn fit_tail(s: &str, cells: usize) -> String {
     if width(s) <= cells {
         return s.to_string();
     }
@@ -88,13 +88,17 @@ fn entry_text(e: &StatusEntry) -> String {
     }
 }
 
-fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, w: u16, style: Style) {
+pub(crate) fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, w: u16, style: Style) {
     if w > 0 {
         buf.set_stringn(x, y, s, usize::from(w), style);
     }
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
+    let now = crate::git_history::now_secs(app.git.now_secs);
+    let at = app.now();
+    let registry = app.syntax.registry().clone();
+    let notify = app.syntax.notifier();
     let Some(p) = &mut app.git_popup else {
         return;
     };
@@ -123,6 +127,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         p.areas = areas;
         return;
     }
+    if p.tab != Tab::Changes || p.commit.is_some() {
+        let cx = crate::ui::git_history::Ctx {
+            theme,
+            now,
+            at,
+            registry: &registry,
+            notify: &notify,
+        };
+        crate::ui::git_history::render(buf, inner, p, &cx, &mut areas);
+        p.areas = areas;
+        return;
+    }
     let (x, w) = (inner.x, inner.width);
     let mut top = inner.y;
     let mut bottom = inner.y + inner.height;
@@ -130,7 +146,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     // Bottom up: hint, status line, buttons, message box.
     if inner.height >= 16 {
         bottom -= 1;
-        put(buf, x, bottom, &hint(p), w, theme.popup.patch(theme.dim));
+        // Cut with a marker, so a missing key is never silently gone (M7-3 QC).
+        put(
+            buf,
+            x,
+            bottom,
+            &fit_head(&hint(p), usize::from(w)),
+            w,
+            theme.popup.patch(theme.dim),
+        );
     }
     let status = p.status_line();
     let status_style = if p.job.is_some() || !p.queue.is_empty() {
@@ -207,9 +231,25 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         } else {
             theme.popup.patch(theme.warning)
         };
-        buf.set_style(Rect::new(x, top, w, 1), style);
-        put(buf, x, top, &format!("! {text}"), w, style);
-        top += 1;
+        // A banner too wide for one row names its programs first (SEC-19 wants the names
+        // seen) and wraps to a second row while the lists keep 3 rows; what is still left ends
+        // with "…" (M7-3 QC).
+        let rows_left = bottom.saturating_sub(top);
+        let max_rows = if rows_left >= 5 { 2 } else { 1 };
+        let mut rows = wrap(&format!("! {text}"), usize::from(w), max_rows);
+        let cut = rows.last().is_some_and(|r| r.ends_with('…'));
+        if cut && let Some(names) = text.strip_prefix(PROGRAMS_LEAD) {
+            rows = wrap(
+                &format!("! writes run programs: {names}"),
+                usize::from(w),
+                max_rows,
+            );
+        }
+        for row in rows {
+            buf.set_style(Rect::new(x, top, w, 1), style);
+            put(buf, x, top, &row, w, style);
+            top += 1;
+        }
     }
     let body = Rect::new(x, top, w, bottom.saturating_sub(top));
     if body.height > 0 {
@@ -249,11 +289,64 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     }
 }
 
-/// Top border: ` Git · ~/repo · main ↑1 ↓0 · parent repo of <root> ` and the tab on the right.
+/// The program banner's lead-in (`GitPopup::banners`); narrow screens use a shorter one.
+const PROGRAMS_LEAD: &str = "this repo's config runs programs on writes: ";
+
+/// `s` in at most `rows` rows of `w` cells, broken at spaces (continuation rows indented by
+/// two); the last row ends with "…" when text is left over.
+fn wrap(s: &str, w: usize, rows: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = s.to_string();
+    while !rest.is_empty() && out.len() < rows {
+        let lead = if out.is_empty() { "" } else { "  " };
+        let room = w.saturating_sub(lead.len());
+        if width(&rest) <= room {
+            out.push(format!("{lead}{rest}"));
+            rest.clear();
+            break;
+        }
+        if out.len() + 1 == rows {
+            out.push(format!("{lead}{}", fit_head(&rest, room)));
+            rest.clear();
+            break;
+        }
+        // The longest head of whole words that fits; a single long word is cut.
+        let head = fit_head(&rest, room + 1);
+        let head = head.strip_suffix('…').unwrap_or(&head).to_string();
+        if head.is_empty() {
+            break;
+        }
+        // Between list items first ("a, b"), so a name such as `hook pre-push` stays whole.
+        // An item ending exactly at the edge (`…, name,` then a space) is whole too.
+        let at_edge = head.ends_with(',') && rest[head.len()..].starts_with(' ');
+        let cut = match (head.rfind(", "), head.rfind(' ')) {
+            _ if at_edge => head.len(),
+            (Some(i), _) if i > 0 => i + 1,
+            (_, Some(i)) if i > 0 => i,
+            _ => head.len(),
+        };
+        out.push(format!("{lead}{}", &rest[..cut]));
+        rest = rest[cut..].trim_start().to_string();
+    }
+    out
+}
+
+/// Top border: ` Git · ~/repo · main ↑1 ↓0 · parent repo of <root> ` and the tabs on the
+/// right (all three, or the shown one alone when narrow).
 fn header(buf: &mut Buffer, rect: Rect, p: &GitPopup, theme: &Theme, areas: &mut Areas) {
-    let tab = " Changes ";
-    let tw = width(tab) as u16;
+    let names = [
+        (Tab::Changes, " Changes "),
+        (Tab::History, " History "),
+        (Tab::Blame, " Blame "),
+    ];
+    let all: u16 = names.iter().map(|(_, n)| width(n) as u16).sum();
     let room = rect.width.saturating_sub(4);
+    let shown: Vec<(Tab, &str)> = if room >= all + 16 {
+        names.to_vec()
+    } else {
+        names.iter().copied().filter(|(t, _)| *t == p.tab).collect()
+    };
+    let tw: u16 = shown.iter().map(|(_, n)| width(n) as u16).sum();
     let mut title = format!(" Git · {}", p.repo_label);
     let branch = p.branch_text();
     if !branch.is_empty() {
@@ -275,10 +368,18 @@ fn header(buf: &mut Buffer, rect: Rect, p: &GitPopup, theme: &Theme, areas: &mut
         theme.popup_border,
     );
     if show_tab {
-        // History and Blame join the tab bar with M7-4b (D? M7-3: left out until built).
-        let tx = rect.x + rect.width - 2 - tw;
-        put(buf, tx, rect.y, tab, tw, theme.tab_active);
-        areas.tabs = Rect::new(tx, rect.y, tw, 1);
+        let mut tx = rect.x + rect.width - 2 - tw;
+        for (tab, name) in shown {
+            let nw = width(name) as u16;
+            let style = if tab == p.tab {
+                theme.tab_active
+            } else {
+                theme.tab_inactive
+            };
+            put(buf, tx, rect.y, name, nw, style);
+            areas.tabs.push((Rect::new(tx, rect.y, nw, 1), tab));
+            tx += nw;
+        }
     }
 }
 
@@ -592,7 +693,7 @@ fn line_text(line: &vr_git::DiffLine) -> String {
 }
 
 /// `s` without its first `cells` columns (a wide character cut in half goes too).
-fn skip_cells(s: &str, cells: usize) -> &str {
+pub(crate) fn skip_cells(s: &str, cells: usize) -> &str {
     let mut used = 0;
     for (i, ch) in s.char_indices() {
         if used >= cells {
@@ -604,24 +705,26 @@ fn skip_cells(s: &str, cells: usize) -> &str {
 }
 
 /// `s` cut to `cells` columns, ending with "…" when cut.
-fn fit_head(s: &str, cells: usize) -> String {
-    if width(s) <= cells {
-        return s.to_string();
-    }
-    let mut out = String::new();
+/// Walks `s` only until it is known not to fit, so a long line costs what is shown.
+pub(crate) fn fit_head(s: &str, cells: usize) -> String {
     let mut used = 0;
-    for ch in s.chars() {
+    // End of the head that fits with the "…" after it.
+    let mut keep = 0;
+    for (i, ch) in s.char_indices() {
         let cw = width(ch.encode_utf8(&mut [0; 4]));
-        if used + cw + 1 > cells {
-            break;
+        if used + cw < cells {
+            keep = i + ch.len_utf8();
         }
-        out.push(ch);
         used += cw;
+        if used > cells {
+            let mut out = s[..keep].to_string();
+            if cells > 0 {
+                out.push('…');
+            }
+            return out;
+        }
     }
-    if cells > 0 {
-        out.push('…');
-    }
-    out
+    s.to_string()
 }
 
 #[cfg(test)]
@@ -633,6 +736,28 @@ mod tests {
         assert_eq!(fit_tail("src/deep/file.rs", 9), "…/file.rs");
         assert_eq!(fit_tail("a.rs", 9), "a.rs");
         assert_eq!(fit_tail("abc", 0), "");
+    }
+
+    #[test]
+    fn banners_wrap_between_names_and_end_with_an_ellipsis() {
+        assert_eq!(
+            wrap("! runs: filter.x.clean, hook pre-push", 30, 2),
+            vec!["! runs: filter.x.clean,", "  hook pre-push"]
+        );
+        assert_eq!(wrap("short", 30, 2), vec!["short"]);
+        let one = wrap("! runs: filter.x.clean, hook pre-push", 20, 1);
+        assert_eq!(one.len(), 1);
+        assert!(one[0].ends_with('…') && width(&one[0]) <= 20, "{one:?}");
+        let two = wrap("! a b c d e f g h i j k l m n o p", 8, 2);
+        assert_eq!(two.len(), 2);
+        assert!(two[1].ends_with('…'), "{two:?}");
+        assert!(wrap("abc", 0, 2).len() <= 1);
+        // A list item ending exactly at the row edge: the row keeps it, the next row starts
+        // with the next item (M7-4b review: `hook pre-push` was cut at 40x12).
+        assert_eq!(
+            wrap("abc: one, two, three four", 14, 2),
+            vec!["abc: one, two,", "  three four"]
+        );
     }
 
     #[test]

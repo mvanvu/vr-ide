@@ -1,0 +1,17 @@
+---
+source: crates/vr-ide/src/git_history_tests.rs
+assertion_line: 743
+expression: t.backend()
+---
+"┌─ Git · ~/repo · main ──────── Blame ─┐"
+"│Blame · b.rs                          │"
+"│  5d 1 a                              │"
+"│  5d 2 B                              │"
+"│  5d 3 c                              │"
+"│   │ 4 d                              │"
+"│  5d 5 e                              │"
+"│   + 6 f                              │"
+"│                                      │"
+"│line 1: 3bc02cb · Ann Author · 5 days…│"
+"└──────────────────────────────────────┘"
+" READ b.rs · main · Ln 1, Col 1         "

@@ -349,7 +349,7 @@ workspace folder's (folder names only). The header names the repository and the 
 stays on that repository until you open it on another one.
 
 ```
-┌─ Git · ~/repo · main ↑1 ↓0 ──────────────────────── Changes ─┐
+┌─ Git · ~/repo · main ↑1 ↓0 ──────── Changes  History  Blame ─┐
 │Unstaged (2)          │src/app.rs (unstaged)                   │
 │ M src/app.rs         │@@ -1,3 +1,4 @@                         │
 │ ? notes.md           │-    old();                             │
@@ -387,7 +387,7 @@ stays on that repository until you open it on another one.
   queue of writes; pressing `p` again (or the Cancel push button) offers to cancel. git's own
   error text is shown as is, with control characters made visible and passwords in URLs hidden.
 - `r` scans again (changes from outside are picked up by themselves); `esc` closes the popup and
-  keeps your message. History and Blame tabs come later.
+  keeps your message.
 - A merge or rebase in progress (for example after a pull with conflicts) shows a banner;
   conflicted files and commit are then left to the terminal.
 - Writes run git as you would in the terminal, so the repository's hooks, filters (Git LFS) and
@@ -395,6 +395,21 @@ stays on that repository until you open it on another one.
   banner first.
 - If vr-ide was killed in the middle of a discard, the next `/git` offers the hidden
   `.vr-ide-discard-*` file it left: restore an `.old` one under a name, delete an unused `.new` one.
+
+`1`, `2`, `3` switch between the Changes, History and Blame tabs (or click a tab name):
+
+- History (`2`, `/git log`): the repository's commits, newest first, with short id, date, author
+  and subject; more load as you scroll. `/git log file` lists the commits of the active file and
+  follows it across renames. `enter` opens the commit.
+- Blame (`3`, `/git blame`): each line of the active file (your unsaved text included) with the
+  author and age of the commit it comes from, newest commits brightest; lines not committed yet
+  show `+ You, uncommitted`. From the Changes tab, `3` blames the file selected there. A blame of a
+  long-lived file can take seconds: the tab says `blaming…` and keys keep working. `enter` opens
+  the line's commit; `r` blames again.
+- The commit view (`enter`, or `/git show <commit>` with an id, branch, tag or `HEAD~2`) shows the
+  full id, author, date (UTC), message, the changed files and the diff, syntax-coloured;
+  `up`/`down`/`pageup`/`pagedown` scroll, `left`/`right` scroll sideways, `esc` goes back to the
+  list. A name that is not exactly one commit is refused with a notice.
 
 ### Clipboard
 
@@ -535,7 +550,7 @@ Roadmap:
 - M4: syntax highlighting (tree-sitter)
 - M5: integrated terminal (in progress: the terminal panel works, see [Terminal](#terminal))
 - M6: AI agent console
-- M7: git (gutter signs and status bar done; Git popup Changes tab done, see [Git](#git); History and Blame tabs next)
+- M7: git (gutter signs and status bar done; Git popup with Changes, History and Blame tabs done, see [Git](#git))
 - M8: LSP (completion, hover, definition, references, diagnostics, rename, format, code actions)
 
 ## Benchmark

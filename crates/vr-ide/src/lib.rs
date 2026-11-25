@@ -11,6 +11,7 @@ pub mod commands;
 mod config_reload;
 pub mod event_loop;
 pub mod git;
+pub mod git_history;
 pub mod git_popup;
 pub mod monitor;
 mod recent_files;
@@ -32,6 +33,8 @@ mod explorer_menu_tests;
 mod explorer_tests;
 #[cfg(test)]
 mod find_tests;
+#[cfg(test)]
+mod git_history_tests;
 #[cfg(test)]
 mod git_popup_tests;
 #[cfg(test)]

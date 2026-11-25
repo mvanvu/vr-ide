@@ -1,0 +1,29 @@
+---
+source: crates/vr-ide/src/git_history_tests.rs
+assertion_line: 743
+expression: t.backend()
+---
+" b.rs                                                                           "
+"  1 ┌─ Git · ~/repo · main ────────────────────── Changes  History  Blame ─┐    "
+"  2 │Blame · b.rs                                                          │    "
+"  3 │  5d Ann Author       1 a                                             │    "
+"  4 │  5d Bea Blame        2 B                                             │    "
+"  5 │  5d Ann Author       3 c                                             │    "
+"  6▎│   │                  4 d                                             │    "
+"  7 │  5d Cid Commit       5 e                                             │    "
+"    │   + You, uncommitted 6 f                                             │    "
+"    │                                                                      │    "
+"    │                                                                      │    "
+"    │                                                                      │    "
+"    │                                                                      │    "
+"    │                                                                      │    "
+"    │                                                                      │    "
+"    │                                                                      │    "
+"    │                                                                      │    "
+"    │                                                                      │    "
+"    │line 1: 3bc02cb · Ann Author · 5 days ago · first                     │    "
+"    │↑↓ move · ←→ scroll · enter show commit · r blame again · 1 2 3 tabs …│    "
+"    └──────────────────────────────────────────────────────────────────────┘    "
+"                                                                                "
+"                                                                                "
+" READ b.rs · main · Ln 1, Col 1 · LF · UTF-8                                    "

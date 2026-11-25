@@ -610,6 +610,28 @@ fn user_typed_revisions_are_verified() {
 }
 
 #[test]
+fn message_search_revisions_resolve_to_the_matching_commit() {
+    let f = Fixture::new();
+    f.write("a", "1\n");
+    f.commit_all("fourteen apples");
+    f.write("a", "2\n");
+    f.commit_all("two pears");
+    let r = f.repo();
+    let want = f.git_s(&["rev-parse", "HEAD~1"]);
+    assert_eq!(r.resolve_commit(":/fourteen").unwrap(), want.trim());
+    assert_eq!(
+        r.resolve_commit(":/^two").unwrap(),
+        r.resolve_commit("HEAD").unwrap()
+    );
+    for bad in [":/nothing-matches", ":/"] {
+        assert!(
+            matches!(r.resolve_commit(bad), Err(vr_git::GitError::NotACommit(_))),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn symlink_is_addressed_by_its_own_path() {
     let f = Fixture::new();
     std::os::unix::fs::symlink("/etc/hostname", f.path("link")).unwrap();

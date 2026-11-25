@@ -149,6 +149,13 @@ impl Syntax {
         std::mem::take(&mut self.startup)
     }
 
+    /// A notify for a highlighter made outside the documents (the Git commit view): its spans
+    /// landing redraw like a document's.
+    pub fn notifier(&self) -> Notify {
+        let wake = self.wake.clone();
+        Arc::new(move || wake.store(true, Ordering::Release))
+    }
+
     /// True once after a highlighter published new spans (or stopped): redraw.
     pub fn take_wake(&self) -> bool {
         self.wake.swap(false, Ordering::AcqRel)

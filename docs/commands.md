@@ -56,6 +56,18 @@ background. Both show the popup with git's progress; a second `/git push` or `/g
 one runs offers to cancel it. A pull that stops on conflicts leaves the merge to the terminal and
 the popup says so. Keys inside the popup are listed in `docs/keymap.md`.
 
+Git history and blame (popup tabs 2 and 3): `/git log` shows the repository's commits (short id,
+date, author, subject), newest first, loading more as you scroll; `/git log file` the commits of
+the active file, following renames (as `git log --follow`). `enter` opens the commit view: full
+id, author, date (UTC), the whole message, the changed files and the diff against the first parent,
+syntax-coloured; `esc` goes back to the list. `/git blame` shows the active file (your unsaved
+text included) with the author and age of each block of lines, newest commits brightest; lines not
+committed yet show `+ You, uncommitted`. A blame of a long-lived file can take seconds: the tab
+says `blaming…` and every key keeps working. `3` from the Changes tab blames the file selected
+there; `enter` on a line opens its commit. `/git show <commit>` opens the commit view for an id,
+branch, tag or `HEAD~2`; a name git cannot resolve to exactly one commit is refused ("no such
+commit", or "the short id matches more than one commit").
+
 File commands act on the active tab. `/rename <name>` renames its file in the same folder with the
 explorer's checks (one name, no `/`; an existing name is never replaced) and the tab follows,
 unsaved changes included. `/copy-relpath` copies the path relative to the workspace folder that
@@ -121,6 +133,10 @@ protocol does not send are marked).
 | `/keys` | Show the key table (read-only tab) |
 | `/git blame line` | Show or hide the cursor line's blame, for this session |
 | `/git [root]` | Git popup: changes, stage, discard, commit, push (default: the active file's repo) |
+| `/git log` | Git popup, History tab: the repo's commits (enter shows one) |
+| `/git log file` | Git popup, History tab: the active file's commits, following renames |
+| `/git blame` | Git popup, Blame tab: author and age of each line of the active file |
+| `/git show <commit>` | Git popup: one commit's details and diff (an id, branch, tag or HEAD~2) |
 | `/git push` | Push the current branch in the background (the target is shown first) |
 | `/git pull` | Pull in the background (conflicts are resolved in the terminal) |
 | `/help` | List the slash commands |

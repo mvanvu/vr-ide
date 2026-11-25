@@ -1,7 +1,8 @@
 //! The Git popup, Changes tab (M7-3; D297 proposal "Git popup", threat model SEC-15..SEC-20):
 //! unstaged and staged lists, the diff of the selected file with hunk and line selection,
 //! stage / unstage / discard, the commit message box with Amend and Sign off, push, pull and
-//! rescan. `/git`, `/git push`, `/git pull` and `/git <root-name>` open it.
+//! rescan. `/git`, `/git push`, `/git pull` and `/git <root-name>` open it. The History and Blame
+//! tabs and the commit view (M7-4b) live in [`crate::git_history`]; keys `1` / `2` / `3` switch.
 //!
 //! One popup session is bound to one repository (SEC-17): the repo of the active file's root
 //! (or the named root) when it opened. It never follows the focus to another root.
@@ -51,7 +52,16 @@ const OUTPUT_LINES: usize = 200;
 /// Columns one left / right moves the diff pane.
 const DIFF_STEP: usize = 8;
 
-/// Parts of the popup that take keys, in `tab` order.
+/// The popup's tabs (`1` / `2` / `3`); History and Blame live in [`crate::git_history`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tab {
+    #[default]
+    Changes,
+    History,
+    Blame,
+}
+
+/// Parts of the Changes tab that take keys, in `tab` order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Unstaged,
@@ -382,8 +392,11 @@ pub struct Areas {
     pub staged: Rect,
     pub diff: Rect,
     pub message: Rect,
-    pub tabs: Rect,
+    /// The tab names in the top border.
+    pub tabs: Vec<(Rect, Tab)>,
     pub buttons: Vec<(Rect, Pane)>,
+    /// Rows of the History / Blame list or of the commit view.
+    pub history: Rect,
 }
 
 pub struct GitPopup {
@@ -451,6 +464,23 @@ pub struct GitPopup {
     pub areas: Areas,
     /// Push asked for its target to show the confirmation.
     push_asked: bool,
+    pub tab: Tab,
+    pub history: crate::git_history::History,
+    pub blame: crate::git_history::BlameView,
+    /// The commit view over the History or Blame tab.
+    pub commit: Option<crate::git_history::CommitView>,
+    pub(crate) commit_gen: u64,
+    /// The history thread (log, blame, show) and its own git runner (M7-4b): a slow blame
+    /// never waits on, or holds up, the Changes tab's reads and writes.
+    pub(crate) hist_tx: Option<Sender<crate::git_history::HistReq>>,
+    pub(crate) hist_rx: Option<Receiver<crate::git_history::HistMsg>>,
+    pub(crate) hist_repo: Option<Repo>,
+    /// Where a blame thread answers (the history thread's answer channel).
+    pub(crate) hist_back: Option<Sender<crate::git_history::HistMsg>>,
+    /// The runner of the running blame: shut down when a newer blame starts.
+    pub(crate) blame_run: Option<Repo>,
+    /// Blame threads (finished ones are dropped as new ones start).
+    pub(crate) blame_threads: Vec<JoinHandle<()>>,
 }
 
 impl GitPopup {
@@ -1118,6 +1148,24 @@ pub fn open(app: &mut App, root: &str) -> Result<(), String> {
     {
         threads.push(h);
     }
+    // History and show get a runner of their own, each blame another (Writer::open makes one;
+    // no git runs here): a blame of seconds holds neither a reader slot nor the writer's.
+    let hist_repo = Writer::open(&repo).ok().map(|w| w.repo().clone());
+    let (mut hist_tx, mut hist_rx, mut hist_back) = (None, None, None);
+    if let Some(r) = hist_repo.clone() {
+        let (htx, hrx) = mpsc::channel();
+        let (mtx, mrx) = mpsc::channel();
+        let back = mtx.clone();
+        if let Ok(h) = std::thread::Builder::new()
+            .name("vr-git-popup-history".into())
+            .spawn(move || crate::git_history::worker(r, hrx, mtx))
+        {
+            threads.push(h);
+            hist_tx = Some(htx);
+            hist_rx = Some(mrx);
+            hist_back = Some(back);
+        }
+    }
     let mut p = GitPopup {
         visible: true,
         id,
@@ -1164,6 +1212,17 @@ pub fn open(app: &mut App, root: &str) -> Result<(), String> {
         writer_stopped: false,
         areas: Areas::default(),
         push_asked: false,
+        tab: Tab::Changes,
+        history: Default::default(),
+        blame: Default::default(),
+        commit: None,
+        commit_gen: 0,
+        hist_tx,
+        hist_rx,
+        hist_repo,
+        hist_back,
+        blame_run: None,
+        blame_threads: Vec::new(),
     };
     p.rescan();
     p.read(ReadReq::Leftovers);
@@ -1187,9 +1246,19 @@ fn keep_draft(app: &mut App, old: &GitPopup) {
 fn close_session(mut p: GitPopup, wait: bool) {
     p.read_tx = None;
     p.write_tx = None;
+    // Reads only: a running log or blame is killed at once.
+    p.hist_tx = None;
+    p.hist_back = None;
+    if let Some(r) = &p.hist_repo {
+        r.shutdown();
+    }
+    if let Some(r) = p.blame_run.take() {
+        r.shutdown();
+    }
     if !wait {
         return;
     }
+    p.threads.append(&mut p.blame_threads);
     if let Some(c) = &p.commit_cancel {
         c.cancel();
     }
@@ -1278,10 +1347,11 @@ pub fn tick(app: &mut App, now: Instant) {
     if p.rescan_at.is_some_and(|t| now >= t) {
         p.rescan();
     }
-    let changed = !msgs.is_empty() || !events.is_empty();
+    let mut changed = !msgs.is_empty() || !events.is_empty();
     for m in msgs {
         handle_msg(app, m);
     }
+    changed |= crate::git_history::tick(app);
     for e in events {
         handle_job_event(app, e);
     }
@@ -2036,7 +2106,22 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
         KeyCode::Esc => {
-            p.visible = false;
+            // The commit view goes back to its list; else the popup hides.
+            if !crate::git_history::back(p) {
+                p.visible = false;
+            }
+            return;
+        }
+        // Tabs, except where the digits are text (the message box).
+        KeyCode::Char(c @ '1'..='3')
+            if !ctrl && !(p.tab == Tab::Changes && p.focus == Pane::Message) =>
+        {
+            let tab = [Tab::Changes, Tab::History, Tab::Blame][usize::from(c as u8 - b'1')];
+            crate::git_history::switch(app, tab);
+            return;
+        }
+        _ if p.tab != Tab::Changes => {
+            crate::git_history::handle_key(app, key);
             return;
         }
         KeyCode::Tab | KeyCode::BackTab => {
@@ -2064,7 +2149,6 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) {
         return;
     }
     match key.code {
-        KeyCode::Char('1') => {}
         KeyCode::Char('c') => p.focus = Pane::Message,
         KeyCode::Char('r') => p.rescan(),
         KeyCode::Char('p') => push_here(app),
@@ -2214,6 +2298,16 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
     app.dirty = true;
     let (x, y) = (ev.column, ev.row);
     let a = p.areas.clone();
+    if matches!(ev.kind, MouseEventKind::Down(MouseButton::Left))
+        && let Some(&(_, tab)) = a.tabs.iter().find(|(r, _)| inside(*r, x, y))
+    {
+        crate::git_history::switch(app, tab);
+        return;
+    }
+    if p.tab != Tab::Changes {
+        crate::git_history::handle_mouse(app, ev);
+        return;
+    }
     let wheel = match ev.kind {
         MouseEventKind::ScrollUp => Some(KeyCode::Up),
         MouseEventKind::ScrollDown => Some(KeyCode::Down),
@@ -2265,9 +2359,6 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
         let pane = *pane;
         p.focus = pane;
         activate(app, pane);
-        return;
-    }
-    if inside(a.tabs, x, y) {
         return;
     }
     for (r, w) in [(a.unstaged, 0usize), (a.staged, 1)] {
