@@ -1257,3 +1257,36 @@ Notes: the first walk's "menu near bottom-right" FAIL x3 was my script clicking 
 | BASE-14/15/17 | pass | no polling loops of heavy runs; only own pty sessions; temp dirs removed; trash redirected to a temp XDG_DATA_HOME |
 | BASE-19 | pass | written as checked |
 | Full suite | note | unrelated vr-syntax failure under load, see above |
+
+## T19 — terminal panel on the right (D227, D275, D277)
+
+Verdict: QC_PASS. Engine: real release binary in a python pty (TERM=xterm-256color, legacy bytes ESC[18;5~ / ESC[19;5~ / ESC[20;5~, SGR 1006 mouse), scripts qa-artifacts/T19/qc/qc_walk.py and qc_walk2.py, logs walk.log, walk2.log, screens walk_*.txt.
+
+Guards (logs in qa-artifacts/T19/qc): cargo fmt --check clean; cargo test -p vr-ide -p vr-config: vr-config 16+22+8, vr-ide 496 passed / 0 failed / 7 ignored (no timing failure this run); clippy --workspace --all-targets -D warnings: no warnings; fresh release build via run-heavy.sh finished (3m33s).
+
+PTY walk (`stty size` rows x cols inside the terminal; "col" = editor column = screen minus explorer):
+| Size | Explorer | bottom | ctrl+f7 right | ctrl+f8 grow | ctrl+f9 x2 | ctrl+f7 back |
+|---|---|---|---|---|---|---|
+| 120x40 | off | 15x120 | 36x48 (sep 71) | 37x54 | 37x42 | 15x120 |
+| 120x40 | on | 15x90 | 36x36 (sep 83) | 37x41 | 37x32 | 15x90 |
+| 80x24 | off | 9x80 | 19x32 | 21x36 | 21x28 | 9x80 |
+| 80x24 | on (col 60) | 9x60 | 19x24 | 21x27 | 21x21 | 9x60 |
+| 60x20 | off | 7x60 | 15x24 | 17x27 | 17x21 | 7x60 |
+| 60x20 | on (col 44) | 7x44 | stays bottom 7x44 | 8x44 | 6x44 | bottom |
+| 59x20 | off/on | 7x59 / 7x43 | stays bottom | 8 rows | 6 rows | bottom |
+| 40x12 | off/on | 4x40 / 4x24 | stays bottom | 5 rows | 4 rows | bottom |
+Shrink after grow changes the size at once in both modes (grow, shrink, shrink gives less than the start).
+Other flows (walk2.log): in-grid click with a program in mouse mode (1000+1006) reaches it (`^[[<0;19;9M`); separator drag 71 -> 55 moves the line, PTY 37x64 (no drag byte reaches the program); /term right, /term right again ("already on the right", notice queue shows "+1 more"), /term bottom; /set terminal_position right applies at once; /set terminal_position diagonal -> "unknown variant `diagonal`, expected `bottom` or `right`", state unchanged; /set terminal_width_percent 95 -> "must be between 10 and 90"; 50 -> separator 59 (60 columns); settings.toml `terminal_position = "right"` starts on the right (sep 71); find box (ctrl+f, "foo") at 80x24 right keeps its rows left of the separator (walk_find_right.txt). The first scripted "FAIL" lines in walk2.log are my checker picking the editor welcome box's border; the screens (walk_slash_*.txt, walk_set_bad*.txt) show the expected state.
+Docs: docs/commands.md, docs/keymap.md, README.md, defaults/settings.toml comments match behaviour (key, 60-column rule, 10-90, session-only).
+
+## Rule check T19
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-10 tests + guards | pass | test/clippy/fmt/release logs above |
+| BASE-14 no sleep/poll | pass | background runs, notified (one polling loop of mine was stopped with TaskStop) |
+| BASE-15 own processes only | pass | walk kills its sessions; killed only my own walk pids |
+| BASE-17 no data left | pass | temp dirs only |
+| BASE-18 no own agents | pass | none |
+| BASE-19 results written as checked | pass | this section, logs |
+| COST heavy via run-heavy | pass | test, clippy, release via run-heavy.sh |
+| Scope | pass | nothing committed, stashed or restored; FR-13 files untouched |
