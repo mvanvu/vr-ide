@@ -31,6 +31,8 @@ mod mode_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]
+mod slash_tests;
+#[cfg(test)]
 mod syntax_tests;
 #[cfg(test)]
 mod terminal_tests;

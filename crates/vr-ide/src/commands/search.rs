@@ -1442,6 +1442,11 @@ pub fn quit_block(app: &App) -> Option<QuitBlock> {
 
 /// The confirm for [`QuitBlock::Stuck`].
 pub fn ask_quit_stuck(app: &mut App, file: Option<&Path>) {
+    ask_quit_stuck_for(app, file, DialogAction::QuitStuckReplace);
+}
+
+/// [`ask_quit_stuck`] answered by `action` (`/q!` keeps its discard through the question).
+pub fn ask_quit_stuck_for(app: &mut App, file: Option<&Path>, action: DialogAction) {
     let on = file.map_or_else(
         || "in a file operation".to_string(),
         |f| format!("on {}", app.display_path(f)),
@@ -1455,10 +1460,7 @@ pub fn ask_quit_stuck(app: &mut App, file: Option<&Path>) {
     let mut confirm = ConfirmDialog::new("Quit", message, &[QUIT_ANYWAY, super::file::CANCEL]);
     // Quitting is irreversible here: Enter alone must not do it.
     confirm.selected = 1;
-    app.open_dialog(
-        DialogWidget::Confirm(confirm),
-        DialogAction::QuitStuckReplace,
-    );
+    app.open_dialog(DialogWidget::Confirm(confirm), action);
 }
 
 pub const QUIT_ANYWAY: &str = "Quit anyway";

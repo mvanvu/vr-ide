@@ -14,6 +14,10 @@ use crate::theme::Theme;
 const MAX_WIDTH: u16 = 72;
 /// Most rows the list shows.
 const MAX_ROWS: u16 = 12;
+/// Most rows a slash command's error takes.
+const MAX_ERROR_ROWS: u16 = 3;
+/// Cells of a slash command's description kept beside a title too wide for the row.
+const SLASH_DESC_MIN: usize = 10;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let Some(p) = &mut app.palette else {
@@ -30,10 +34,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         .clamp(area.width.min(20), MAX_WIDTH);
     // The status row stays visible: the box ends above it.
     let room = area.height - 2;
+    // A slash command's error goes under the input (T20), wrapped to the box, in at most
+    // [`MAX_ERROR_ROWS`] rows and never at the cost of the input or the one list row.
+    let err_lines: Vec<String> = p.error.as_deref().map_or_else(Vec::new, |e| {
+        let mut l = crate::ui::dialog::wrap(e, w.saturating_sub(4));
+        l.truncate(usize::from(MAX_ERROR_ROWS.min(room.saturating_sub(4))));
+        l
+    });
+    let err_rows = err_lines.len() as u16;
     let list_rows = (p.items.len().max(1) as u16)
         .min(MAX_ROWS)
-        .min(room.saturating_sub(3).max(1));
-    let h = (list_rows + 3).min(room);
+        .min(room.saturating_sub(3 + err_rows).max(1));
+    let h = (list_rows + 3 + err_rows).min(room);
     let rect = Rect::new(area.x + (area.width - w) / 2, area.y + 1, w, h);
     let buf = frame.buffer_mut();
     Clear.render(rect, buf);
@@ -70,10 +82,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     } else if p.selected >= p.top + rows {
         p.top = p.selected + 1 - rows;
     }
-    let list = Rect::new(x0, rect.y + 2, inner_w, list_rows);
+    for (i, e) in err_lines.iter().enumerate() {
+        buf.set_stringn(
+            x0 + 1,
+            rect.y + 2 + i as u16,
+            e,
+            usize::from(inner_w.saturating_sub(2)),
+            theme.popup.patch(theme.error),
+        );
+    }
+    let list = Rect::new(x0, rect.y + 2 + err_rows, inner_w, list_rows);
     p.list_area = list;
     p.area = rect;
     let width = usize::from(inner_w.saturating_sub(2));
+    let slash =
+        p.mode == PaletteMode::Commands && crate::commands::palette::is_slash(p.input.text());
     if p.items.is_empty() {
         buf.set_stringn(
             x0 + 1,
@@ -106,8 +129,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         let used = title_w + if show_keys { keys_w + 2 } else { 0 };
         let show_name = used + 2 + name_w <= width;
         let end = x0 + 1 + width as u16;
+        // A slash row too wide ends its title in "…" and keeps a short tail of the
+        // description when there is room for both (D270).
+        let title = if slash && !show_name {
+            let keep = if item.detail.is_empty() || width < 2 + 2 * SLASH_DESC_MIN {
+                width
+            } else {
+                width - 2 - SLASH_DESC_MIN.min(name_w)
+            };
+            ellipsize(&item.title, keep)
+        } else {
+            item.title.clone()
+        };
         let mut x = x0 + 1;
-        for (ci, ch) in item.title.chars().enumerate() {
+        for (ci, ch) in title.chars().enumerate() {
             let s = ch.to_string();
             let cw = Span::raw(s.as_str()).width() as u16;
             if x + cw > end {
@@ -123,6 +158,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         }
         if show_name {
             buf.set_string(x + 2, y, &item.detail, base.patch(theme.dim));
+        } else if slash && !item.detail.is_empty() && x + 2 + 4 <= end {
+            // A slash command keeps the start of its description (T20).
+            let room = usize::from(end - x - 2);
+            let cut = ellipsize(&item.detail, room);
+            buf.set_string(x + 2, y, &cut, base.patch(theme.dim));
         }
         if show_keys {
             let kx = end - keys_w as u16;
@@ -130,4 +170,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         }
     }
     frame.set_cursor_position(cursor);
+}
+
+/// `text` cut to `cells` display cells, ending in "…" when cut.
+fn ellipsize(text: &str, cells: usize) -> String {
+    if Span::raw(text).width() <= cells {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let cw = Span::raw(ch.to_string()).width();
+        if used + cw + 1 > cells {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out.push('…');
+    out
 }

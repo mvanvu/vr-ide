@@ -1,0 +1,17 @@
+---
+source: crates/vr-ide/src/slash_tests.rs
+assertion_line: 862
+expression: t.backend()
+---
+" /home/user/DEV/shop                    "
+" v┌ Command Palette ─────────────────┐  "
+"  │> /theme pink                     │  "
+" C│ /theme: pink is not one of       │— "
+" R│ synthwave, dracula, dark, light  │— "
+"  │ /theme synthwave|dr…  Switch th… │  "
+" c└──────────────────────────────────┘  "
+" f1      Command palette                "
+" ctrl+e  Explorer                       "
+" ctrl+o  Open file                      "
+" ctrl+q  Quit                           "
+" /home/user/DEV/shop                    "

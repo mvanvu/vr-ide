@@ -1,0 +1,17 @@
+---
+source: crates/vr-ide/src/slash_tests.rs
+assertion_line: 801
+expression: t.backend()
+---
+" /home/user/DEV/shop                    "
+" v┌ Command Palette ─────────────────┐  "
+"  │> /                               │  "
+" C│ /save-as [path]  Save under ano… │— "
+" R│ /reload  Reload the file from d… │— "
+"  │ /term new  Open a new terminal … │  "
+" c│ /term close  Close the active t… │  "
+" f│ /term right  Terminal panel on … │  "
+" c│ /term bottom  Terminal panel at… │  "
+" c│ /run <command>  Type the comman… │  "
+" c└──────────────────────────────────┘  "
+" /home/user/DEV/shop                    "

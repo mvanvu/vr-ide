@@ -10,6 +10,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use vr_config::RecentWorkspace;
+use vr_core::DiskVersion;
 
 /// Stable identity of a root while it is in the workspace (names can change when roots are
 /// added or removed).
@@ -99,6 +100,9 @@ pub struct Workspace {
     next_id: u32,
     /// The `.vr-workspace` file the roots came from or were last saved to.
     file: Option<PathBuf>,
+    /// The version of `file` read or written then: a save onto it replaces only this one
+    /// (D244), so another window's save or a hand edit is never lost.
+    file_version: Option<DiskVersion>,
 }
 
 impl Workspace {
@@ -108,6 +112,7 @@ impl Workspace {
             roots: Vec::new(),
             next_id: 0,
             file: None,
+            file_version: None,
         };
         ws.push(path);
         ws
@@ -140,10 +145,13 @@ impl Workspace {
 
     /// Roots of the workspace file `file` (see [`Workspace::from_paths`]).
     pub fn from_file(file: &Path) -> Result<(Workspace, Vec<WorkspaceError>), WorkspaceError> {
+        // Taken before the read: a change after it is a later version, and a save refuses it.
+        let version = DiskVersion::of_path(file).ok();
         let paths =
             vr_config::read_workspace(file).map_err(|e| WorkspaceError::File(e.to_string()))?;
         let (mut ws, refused) = Workspace::from_paths(&paths)?;
         ws.file = Some(real(file));
+        ws.file_version = version;
         Ok((ws, refused))
     }
 
@@ -173,8 +181,22 @@ impl Workspace {
         self.file.as_deref()
     }
 
+    /// The version of [`Workspace::file`] last read or written (see `file_version`).
+    pub fn file_version(&self) -> Option<&DiskVersion> {
+        self.file_version.as_ref()
+    }
+
+    /// Sets the file with an unknown version: a save onto it then refuses until it is read or
+    /// written again.
     pub fn set_file(&mut self, file: Option<PathBuf>) {
         self.file = file;
+        self.file_version = None;
+    }
+
+    /// Sets the file and the version of it just read or written.
+    pub fn set_file_with_version(&mut self, file: PathBuf, version: Option<DiskVersion>) {
+        self.file = Some(file);
+        self.file_version = version;
     }
 
     pub fn get(&self, id: RootId) -> Option<&Root> {

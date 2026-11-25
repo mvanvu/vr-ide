@@ -336,6 +336,16 @@ impl Terminal {
         Ok(terminal)
     }
 
+    /// The shell itself is the terminal's foreground process group (`tcgetpgrp` on the PTY
+    /// equals its pid): no program it started (an editor, a pager, an agent, `sudo`) holds the
+    /// keyboard. False when that cannot be told (exited, closed, no pid).
+    pub fn shell_in_foreground(&self) -> bool {
+        match (&self.master, self.pid) {
+            (Some(m), Some(pid)) => m.process_group_leader() == Some(pid.as_raw_nonzero().get()),
+            _ => false,
+        }
+    }
+
     /// The child's pid (also its process group id).
     pub fn pid(&self) -> Option<u32> {
         self.pid.map(|p| p.as_raw_nonzero().get() as u32)

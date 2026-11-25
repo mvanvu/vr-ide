@@ -113,6 +113,8 @@ and `ctrl+h` (the terminal sends Backspace as a different byte). The complete li
 names, is in
 [docs/keymap.md](docs/keymap.md); every key can be overridden ([Configuration](#configuration)).
 Commands without a default key can be run from the palette (`F1`).
+Typing `/` in the palette runs slash commands (`/run`, `/ai`, `/ws add`, `/theme`, `/help`, ...);
+the list is in [docs/commands.md](docs/commands.md).
 
 ### Files and tabs
 

@@ -86,6 +86,11 @@ pub enum DialogAction {
     QuitStuckReplace,
     /// Quit while terminals run (M5): Quit anyway / Cancel, Cancel first.
     QuitTerminals,
+    /// `/q!` (T20, D268): [`DialogAction::QuitStuckReplace`] whose Quit anyway goes on
+    /// discarding the unsaved files (recovery copy kept), never asking about them.
+    QuitStuckReplaceDiscard,
+    /// `/q!`: [`DialogAction::QuitTerminals`] whose Quit anyway goes on discarding.
+    QuitTerminalsDiscard,
     /// Unsaved files before the roots are replaced (W-1): Save all / Discard / Cancel.
     OpenWorkspace(Box<crate::workspace::Workspace>),
 }
@@ -136,6 +141,14 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
         (DialogAction::ReplaceInFiles, Outcome::Chosen(0)) => super::search::apply(app),
         (DialogAction::QuitStuckReplace, Outcome::Chosen(0)) => super::app::answer_quit_stuck(app),
         (DialogAction::QuitTerminals, Outcome::Chosen(b)) => super::terminal::answer_quit(app, b),
+        (DialogAction::QuitStuckReplaceDiscard, Outcome::Chosen(0)) => {
+            super::search::allow_quit(app);
+            super::app::quit_discarding(app);
+        }
+        (DialogAction::QuitTerminalsDiscard, Outcome::Chosen(0)) => {
+            super::terminal::confirm_quit(app);
+            super::app::quit_discarding(app);
+        }
         (DialogAction::OpenWorkspace(ws), Outcome::Chosen(b)) => app.answer_open_workspace(*ws, b),
         _ => {}
     }

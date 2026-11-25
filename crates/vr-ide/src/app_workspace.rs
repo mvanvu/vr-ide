@@ -133,7 +133,10 @@ impl App {
         doc.save_as_seen(path, seen)
             .map_err(|e| format!("{shown}: {e}"))?;
         let file = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        self.workspace.set_file(Some(file));
+        // What was just written is the version the next save onto this file may replace.
+        // (A write landing between the save and this read would be taken as ours.)
+        let version = DiskVersion::of_path(path).ok();
+        self.workspace.set_file_with_version(file, version);
         self.remember_workspace();
         self.dirty = true;
         Ok(())

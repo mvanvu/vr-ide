@@ -128,6 +128,13 @@ impl TermTab {
         self.term.as_ref().and_then(Terminal::pid)
     }
 
+    /// See [`Terminal::shell_in_foreground`]; false for a fake tab.
+    pub fn shell_in_foreground(&self) -> bool {
+        self.term
+            .as_ref()
+            .is_some_and(Terminal::shell_in_foreground)
+    }
+
     /// Columns and rows of the PTY (of the grid for a fake tab).
     pub fn size(&self) -> (u16, u16) {
         self.term.as_ref().map_or(
@@ -793,6 +800,47 @@ pub fn paste(app: &mut App, text: &str) {
     send(app, &bytes);
 }
 
+/// Where [`type_line`] types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineTarget {
+    /// The active terminal when its shell is in the foreground; a new one when there is none,
+    /// its shell has exited or a program it started holds the terminal (D269).
+    Active,
+    /// Always a new terminal tab.
+    NewTab,
+}
+
+/// Types `line` and Enter into a terminal, shown with the keys on it (`/run`, `/ai`, T20).
+/// The bytes go to the terminal's own shell as if typed: vr-ide adds no shell of its own, so
+/// the shell reads, expands and reports errors as usual. A new shell reads the line once it
+/// starts (the PTY holds it). Err: no terminal could be started (also an error notice).
+pub fn type_line(app: &mut App, line: &str, target: LineTarget) -> Result<(), String> {
+    let active = app
+        .terminal
+        .active_tab()
+        .filter(|t| t.term.is_some() && t.running());
+    // Only the shell itself reads a command line: a program it started (an agent, an editor,
+    // a `sudo` prompt) would take the line as its own input (D269).
+    let busy = target == LineTarget::Active && active.is_some_and(|t| !t.shell_in_foreground());
+    let reuse = target == LineTarget::Active && active.is_some() && !busy;
+    if !reuse && !add_tab(app) {
+        return Err("no terminal could be started".into());
+    }
+    if busy {
+        app.info(
+            "the active terminal is running a program: the command runs in a new terminal tab",
+        );
+    }
+    reveal(app);
+    if let Some(tab) = app.terminal.active_mut() {
+        tab.scroll = 0;
+    }
+    let mut bytes = line.as_bytes().to_vec();
+    bytes.push(b'\r');
+    send(app, &bytes);
+    Ok(())
+}
+
 /// Writes to the active terminal; a program that stopped reading its input gets one warning.
 fn send(app: &mut App, bytes: &[u8]) {
     let Some(tab) = app.terminal.active_tab() else {
@@ -1067,6 +1115,11 @@ pub fn selected_text(grid: &Grid, sel: Selection) -> String {
 /// Quit while terminals run asks first: "N terminals still running" — Quit anyway / Cancel,
 /// Cancel selected (AC-14d). True when quitting may go on.
 pub fn quit_allowed(app: &mut App) -> bool {
+    quit_allowed_for(app, DialogAction::QuitTerminals)
+}
+
+/// [`quit_allowed`] whose question is answered by `action` (`/q!` keeps its discard).
+pub fn quit_allowed_for(app: &mut App, action: DialogAction) -> bool {
     if std::mem::take(&mut app.terminal.quit_confirmed) {
         return true;
     }
@@ -1081,8 +1134,13 @@ pub fn quit_allowed(app: &mut App) -> bool {
     };
     let mut dialog = ConfirmDialog::new("Quit", message, &[QUIT_ANYWAY, CANCEL]);
     dialog.selected = 1;
-    app.open_dialog(DialogWidget::Confirm(dialog), DialogAction::QuitTerminals);
+    app.open_dialog(DialogWidget::Confirm(dialog), action);
     false
+}
+
+/// Quit anyway was chosen: the next quit does not ask about the terminals again (one shot).
+pub fn confirm_quit(app: &mut App) {
+    app.terminal.quit_confirmed = true;
 }
 
 /// The answer to [`quit_allowed`]'s question: Quit anyway goes on with the quit (unsaved files

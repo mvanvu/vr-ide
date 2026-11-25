@@ -342,3 +342,24 @@ fn terminal_can_move_to_another_thread() {
     fn assert_send<T: Send>() {}
     assert_send::<Terminal>();
 }
+
+#[test]
+fn shell_in_foreground_until_a_job_takes_the_terminal() {
+    // The shell itself waits for input: it is the terminal's foreground process group.
+    let (term, _wake) = spawn("read x");
+    let deadline = Instant::now() + T;
+    while !term.shell_in_foreground() {
+        assert!(
+            Instant::now() < deadline,
+            "the shell never held the terminal"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // With job control a program started from it gets the terminal (vim, cat, an agent).
+    let (term, _wake) = spawn("set -m; cat; exit 0");
+    let deadline = Instant::now() + T;
+    while term.shell_in_foreground() {
+        assert!(Instant::now() < deadline, "cat never took the terminal");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}

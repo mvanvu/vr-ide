@@ -56,6 +56,12 @@ pub struct Palette {
     pub area: Rect,
     /// Focus to return to on close.
     pub prev_focus: Focus,
+    /// Slash commands: why the last Enter ran nothing, shown under the input until the text
+    /// changes (T20).
+    pub error: Option<String>,
+    /// Slash commands: the folder path completion read last (read again only for another
+    /// folder; dropped with the window).
+    pub dir_cache: Option<super::slash::DirListing>,
 }
 
 /// Commands the palette offers: every registered one except itself and the placeholders of
@@ -83,6 +89,8 @@ pub fn open(app: &mut App) {
         list_area: Rect::default(),
         area: Rect::default(),
         prev_focus,
+        error: None,
+        dir_cache: None,
     });
     app.modal_since = Some(app.now());
     app.focus = Focus::Palette;
@@ -115,6 +123,9 @@ fn relist(app: &mut App, keep: bool) {
     }) else {
         return;
     };
+    if mode == PaletteMode::Commands && is_slash(&query) {
+        super::slash::prepare(app, &query);
+    }
     let indexing = app.index_rx.is_some();
     let items = match mode {
         PaletteMode::Commands => command_items(app, &query),
@@ -138,6 +149,19 @@ fn relist(app: &mut App, keep: bool) {
 }
 
 fn command_items(app: &App, query: &str) -> Vec<PaletteItem> {
+    if is_slash(query) {
+        return super::slash::rows(app, query)
+            .into_iter()
+            .map(|r| PaletteItem {
+                name: "",
+                title: r.title,
+                path: None,
+                detail: r.detail,
+                keys: String::new(),
+                hits: Vec::new(),
+            })
+            .collect();
+    }
     let cmds = candidates();
     rank(query, &cmds)
         .into_iter()
@@ -159,6 +183,10 @@ fn command_items(app: &App, query: &str) -> Vec<PaletteItem> {
 /// Runs the selected command (a command may open a dialog) or opens the selected file,
 /// after closing the palette.
 pub fn accept(app: &mut App) {
+    if slash_mode(app) {
+        super::slash::enter(app);
+        return;
+    }
     let Some(item) = app
         .palette
         .as_ref()
@@ -209,6 +237,7 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         KeyCode::Down => move_selection(app, 1),
         KeyCode::PageUp => move_selection(app, -page),
         KeyCode::PageDown => move_selection(app, page),
+        KeyCode::Tab if key.modifiers.is_empty() && slash_mode(app) => super::slash::tab(app),
         _ => {
             let Some(p) = &mut app.palette else {
                 return false;
@@ -218,6 +247,7 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
                 return false;
             }
             if p.input.text() != before {
+                p.error = None;
                 refilter(app);
             }
         }
@@ -255,6 +285,7 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
 pub fn paste(app: &mut App, text: &str) {
     if let Some(p) = &mut app.palette {
         p.input.insert_str(text);
+        p.error = None;
         refilter(app);
     }
 }
@@ -352,4 +383,16 @@ fn file_items(app: &App, query: &str) -> Vec<PaletteItem> {
             }
         })
         .collect()
+}
+
+/// Input that starts with `/` is a slash command (T20).
+pub fn is_slash(query: &str) -> bool {
+    query.starts_with('/')
+}
+
+/// The command list shows slash commands.
+pub fn slash_mode(app: &App) -> bool {
+    app.palette
+        .as_ref()
+        .is_some_and(|p| p.mode == PaletteMode::Commands && is_slash(p.input.text()))
 }

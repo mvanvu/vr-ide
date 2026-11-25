@@ -1,0 +1,29 @@
+---
+source: crates/vr-ide/src/slash_tests.rs
+assertion_line: 801
+expression: t.backend()
+---
+" /home/user/DEV/shop                                                            "
+"    ┌ Command Palette ─────────────────────────────────────────────────────┐    "
+"  vr│> /                                                                   │──  "
+"  /h│ /save-as [path]  Save under another name (no path: the Save As prom… │ —  "
+"    │ /reload  Reload the file from disk                                   │    "
+"    │ /term new  Open a new terminal tab                                   │ —  "
+"  ST│ /term close  Close the active terminal tab                           │ —  "
+"  ct│ /term right  Terminal panel on the right (not available yet)         │ —  "
+"  f1│ /term bottom  Terminal panel at the bottom (not available yet)       │ —  "
+"  ct│ /run <command>  Type the command and Enter into the terminal (opens… │    "
+"  ct│ /ai <tool>  Run an AI tool (e.g. claude) in a new terminal tab       │──  "
+"  ct│ /ws add <dir>  Add a folder to the workspace                         │ —  "
+"  ct│ /ws remove [root]  Remove a workspace folder (default: the active f… │ —  "
+"    │ /ws save [file]  Save the workspace folders to a .vr-workspace file  │    "
+"    │ /ws open <file>  Open a .vr-workspace file                           │    "
+"    └──────────────────────────────────────────────────────────────────────┘    "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+" /home/user/DEV/shop                                                            "

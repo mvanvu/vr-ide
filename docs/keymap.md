@@ -8,6 +8,7 @@ prefix of read mode (below) and `ctrl+h` (byte 0x08; GNOME Terminal's Backspace 
 two stay apart). The list below comes from `crates/vr-config/defaults/keymap.toml` (keys) and
 `crates/vr-ide/src/commands/registry.rs` (command names and titles). The palette (`f1`) lists
 every command with its key.
+Slash commands (type `/` in the palette) are listed in [commands.md](commands.md).
 
 ## Read mode and edit mode
 

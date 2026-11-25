@@ -100,6 +100,11 @@ pub fn answer_quit(app: &mut App, button: usize) {
 
 /// True when no project replace is in the way of quitting; otherwise says why (or asks).
 fn quit_unblocked(app: &mut App) -> bool {
+    quit_unblocked_for(app, DialogAction::QuitStuckReplace)
+}
+
+/// [`quit_unblocked`] whose question (a replace that does not stop) is answered by `action`.
+fn quit_unblocked_for(app: &mut App, action: DialogAction) -> bool {
     match super::search::quit_block(app) {
         None => true,
         Some(QuitBlock::Replacing) => {
@@ -107,9 +112,21 @@ fn quit_unblocked(app: &mut App) -> bool {
             false
         }
         Some(QuitBlock::Stuck(file)) => {
-            super::search::ask_quit_stuck(app, file.as_deref());
+            super::search::ask_quit_stuck_for(app, file.as_deref(), action);
             false
         }
+    }
+}
+
+/// `/q!` (D268): quits without the unsaved-files question, the buffers kept in the recovery
+/// folder first ([`answer_quit`]'s Discard). A replace that does not stop and running
+/// terminals still ask; their Quit anyway comes back here, so the discard is never lost to a
+/// Save all question.
+pub fn quit_discarding(app: &mut App) {
+    if quit_unblocked_for(app, DialogAction::QuitStuckReplaceDiscard)
+        && super::terminal::quit_allowed_for(app, DialogAction::QuitTerminalsDiscard)
+    {
+        answer_quit(app, 1);
     }
 }
 
