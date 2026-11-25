@@ -66,9 +66,11 @@
 "ctrl+f4" = "terminal.close"
 "f8" = "terminal.next"
 "shift+f8" = "terminal.prev"
+# grow / shrink change the panel's height at the bottom, its width on the right.
 "ctrl+f8" = "terminal.grow"
 "ctrl+f9" = "terminal.shrink"
-# ctrl+f7 is kept free for the terminal panel position command (T19).
+# Terminal panel at the bottom / on the right, for the session (setting terminal_position).
+"ctrl+f7" = "terminal.toggle_position"
 
 [editor]
 # Read mode / edit mode (D145): a file opens in read mode; space i edits (built in), escape

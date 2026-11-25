@@ -22,7 +22,7 @@ pub use recent::{
     RECENT_FILE, RECENT_WORKSPACES_MAX, RecentWorkspace, RecentWorkspaces, write_atomic,
 };
 pub use recent_files::{RECENT_FILES_FILE, RECENT_FILES_MAX, RecentFiles};
-pub use settings::{AiPreset, DEFAULT_SETTINGS, Settings};
+pub use settings::{AiPreset, DEFAULT_SETTINGS, Settings, TerminalPosition};
 pub use workspace_file::{
     WORKSPACE_EXT, format_workspace, is_workspace_file, parse_workspace, read_workspace,
 };

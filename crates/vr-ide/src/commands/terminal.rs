@@ -14,7 +14,7 @@ use crossterm::event::{
     KeyCode as K, KeyEvent, KeyModifiers, MouseButton as MB, MouseEvent, MouseEventKind as MK,
 };
 use ratatui::layout::Rect;
-use vr_config::{Context, KeyChord};
+use vr_config::{Context, KeyChord, TerminalPosition};
 use vr_term::{
     CursorShape, Grid, KeyCode as T, Modifiers, MouseButton, MouseKind, SpawnOptions, TermError,
     TermStatus, Terminal, encode_key, encode_mouse, encode_paste,
@@ -60,13 +60,18 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "terminal.grow",
-        title: "Terminal: Increase Panel Height",
+        title: "Terminal: Increase Panel Size",
         run: grow,
     },
     CommandSpec {
         name: "terminal.shrink",
-        title: "Terminal: Decrease Panel Height",
+        title: "Terminal: Decrease Panel Size",
         run: shrink,
+    },
+    CommandSpec {
+        name: "terminal.toggle_position",
+        title: "Terminal: Toggle Panel Position",
+        run: toggle_position,
     },
     CommandSpec {
         name: "focus.editor",
@@ -220,6 +225,14 @@ pub struct TerminalPanel {
     pub visible: bool,
     /// Panel height in percent of the screen (setting `terminal_height_percent`).
     pub height_percent: u16,
+    /// Where the panel sits this session (setting `terminal_position`, T19).
+    pub position: TerminalPosition,
+    /// Width on the right in percent of the editor column (`terminal_width_percent`).
+    pub width_percent: u16,
+    /// Exact panel width in columns set by a drag, so the separator stays under the mouse on
+    /// wide columns where one percent is several cells; grow / shrink and a changed setting
+    /// clear it.
+    pub width_cols: Option<u16>,
     /// Program to run instead of `$SHELL` (tests).
     pub shell: Option<PathBuf>,
     /// Extra environment for new terminals (tests).
@@ -229,7 +242,7 @@ pub struct TerminalPanel {
     selecting: bool,
     /// The program got a mouse press; drags and the release go to it until that release.
     captured: bool,
-    /// The panel's top edge (its tab bar) is being dragged.
+    /// The panel's edge is being dragged: its tab bar at the bottom, the separator on the right.
     resizing: bool,
     /// "Quit anyway" was chosen; the next quit does not ask about terminals again (one shot).
     quit_confirmed: bool,
@@ -244,6 +257,9 @@ impl TerminalPanel {
             active: 0,
             visible: false,
             height_percent: height_percent.clamp(HEIGHT_MIN, HEIGHT_MAX),
+            position: TerminalPosition::Bottom,
+            width_percent: 40,
+            width_cols: None,
             shell: None,
             env: Vec::new(),
             scrollback,
@@ -323,16 +339,131 @@ fn prev(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
+/// grow / shrink: the panel's height at the bottom, its width on the right (T19). The stored
+/// share is clamped to what can be drawn, so the next key press changes the panel at once.
 fn grow(app: &mut App, _: CmdArgs) -> CmdResult {
-    let p = &mut app.terminal;
-    p.height_percent = (p.height_percent + HEIGHT_STEP).min(HEIGHT_MAX);
+    step_size(app, true);
     Ok(())
 }
 
 fn shrink(app: &mut App, _: CmdArgs) -> CmdResult {
-    let p = &mut app.terminal;
-    p.height_percent = p.height_percent.saturating_sub(HEIGHT_STEP).max(HEIGHT_MIN);
+    step_size(app, false);
     Ok(())
+}
+
+fn step_size(app: &mut App, up: bool) {
+    use crate::ui::layout::{EDITOR_MIN_ROWS, TERMINAL_MIN_ROWS, right_cols};
+    let right = right_now(app);
+    let column = app.layout.tabs.width;
+    let screen = app.layout.status.y + app.layout.status.height;
+    // Drawable range in percent; the whole 10..=90 before the first frame.
+    let (lo, hi) = if right && column > 0 {
+        (
+            share(right_cols(column, HEIGHT_MIN), column),
+            share(right_cols(column, HEIGHT_MAX), column),
+        )
+    } else if !right && app.terminal.visible && screen > 0 && app.layout.terminal.height > 0 {
+        let total = app.layout.terminal.height + app.layout.editor.height;
+        let max_rows = if total >= TERMINAL_MIN_ROWS + EDITOR_MIN_ROWS {
+            total - EDITOR_MIN_ROWS
+        } else {
+            total
+        };
+        (
+            share(TERMINAL_MIN_ROWS.min(total), screen),
+            share(max_rows, screen),
+        )
+    } else {
+        (HEIGHT_MIN, HEIGHT_MAX)
+    };
+    let lo = lo.clamp(HEIGHT_MIN, HEIGHT_MAX);
+    let hi = hi.clamp(lo, HEIGHT_MAX);
+    if right {
+        app.terminal.width_cols = None;
+    }
+    let p = &mut app.terminal;
+    let v = if right {
+        &mut p.width_percent
+    } else {
+        &mut p.height_percent
+    };
+    // A stored share outside the drawable range counts as the nearest drawn one.
+    let now = (*v).clamp(lo, hi);
+    *v = if up {
+        (now + HEIGHT_STEP).min(hi)
+    } else {
+        now.saturating_sub(HEIGHT_STEP).max(lo)
+    };
+}
+
+/// `cells` of `total` as a rounded percent.
+fn share(cells: u16, total: u16) -> u16 {
+    ((u32::from(cells) * 100 + u32::from(total) / 2) / u32::from(total.max(1))) as u16
+}
+
+/// ctrl+f7: bottom ↔ right for this session (D227). A hidden panel stays hidden.
+fn toggle_position(app: &mut App, _: CmdArgs) -> CmdResult {
+    let to = match app.terminal.position {
+        TerminalPosition::Bottom => TerminalPosition::Right,
+        TerminalPosition::Right => TerminalPosition::Bottom,
+    };
+    set_position(app, to);
+    Ok(())
+}
+
+/// Puts the panel at `to` for this session (ctrl+f7, `/term right|bottom`) and says so: where
+/// it is shown when the editor column is too narrow for the right, and the setting that keeps
+/// the choice when it differs from settings.toml (the file is never written, D227).
+pub fn set_position(app: &mut App, to: TerminalPosition) {
+    let name = |p: TerminalPosition| match p {
+        TerminalPosition::Bottom => "bottom",
+        TerminalPosition::Right => "right",
+    };
+    let place = match to {
+        TerminalPosition::Bottom => "at the bottom",
+        TerminalPosition::Right => "on the right",
+    };
+    if app.terminal.position == to {
+        app.info(format!("Terminal panel is already {place}"));
+        return;
+    }
+    let p = &mut app.terminal;
+    p.position = to;
+    // The grid changes shape: a selection or a drag of the old edge no longer applies.
+    p.selection = None;
+    p.selecting = false;
+    p.resizing = false;
+    app.dirty = true;
+    let mut text = format!("Terminal panel {place}");
+    if to == TerminalPosition::Right && !right_now(app) {
+        text.push_str(&format!(
+            " (shown at the bottom while the editor is under {} columns wide)",
+            crate::ui::layout::TERMINAL_RIGHT_MIN_COLUMNS
+        ));
+    }
+    if app.settings.terminal_position != to {
+        text.push_str(&format!(
+            "; to keep it, set terminal_position = \"{}\" in settings.toml (/config)",
+            name(to)
+        ));
+    }
+    app.info(text);
+}
+
+/// The panel goes on the right in an editor column `width` cells wide (the setting, unless the
+/// column is too narrow).
+pub fn right_in(app: &App, width: u16) -> bool {
+    app.terminal.position == TerminalPosition::Right && crate::ui::layout::right_fits(width)
+}
+
+/// The panel is (or, shown, would be) on the right at the last frame's size. The tab bar spans
+/// the editor column; before the first frame the setting alone decides.
+fn right_now(app: &App) -> bool {
+    let column = app.layout.tabs.width;
+    if app.layout.status.height == 0 {
+        return app.terminal.position == TerminalPosition::Right;
+    }
+    right_in(app, column)
 }
 
 /// The editor gets the keys; the panel stays (ctrl+` in a focused terminal, D230).
@@ -556,7 +687,15 @@ fn spawn_size(app: &App) -> (u16, u16) {
     let mut l = app.layout;
     let screen = l.status.y + l.status.height;
     if screen > 0 {
-        crate::ui::layout::place_terminal(&mut l, screen, app.terminal.height_percent);
+        if right_in(app, l.editor.width) {
+            crate::ui::layout::place_terminal_right(
+                &mut l,
+                app.terminal.width_percent,
+                app.terminal.width_cols,
+            );
+        } else {
+            crate::ui::layout::place_terminal(&mut l, screen, app.terminal.height_percent);
+        }
         if let Some(size) = grid(l.terminal) {
             return size;
         }
@@ -894,7 +1033,7 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
     let area = app.layout.terminal;
     if app.terminal.resizing {
         match ev.kind {
-            MK::Drag(MB::Left) => resize_to(app, ev.row),
+            MK::Drag(MB::Left) => resize_to(app, ev.column, ev.row),
             MK::Up(MB::Left) => app.terminal.resizing = false,
             _ => {}
         }
@@ -934,6 +1073,13 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
     let inside = |r: Rect| {
         ev.column >= r.x && ev.column < r.x + r.width && ev.row >= r.y && ev.row < r.y + r.height
     };
+    // The separator of a panel on the right is its drag handle (T19).
+    if app.terminal.visible && inside(app.layout.terminal_sep) {
+        if ev.kind == MK::Down(MB::Left) {
+            app.terminal.resizing = true;
+        }
+        return true;
+    }
     if !app.terminal.visible || !inside(area) {
         return false;
     }
@@ -946,7 +1092,9 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
                     app.terminal.captured = false;
                     app.focus = Focus::Terminal;
                 }
-                None => app.terminal.resizing = true,
+                // At the bottom the tab bar is the top edge; on the right the separator is.
+                None if app.layout.terminal_sep.width == 0 => app.terminal.resizing = true,
+                None => {}
             }
         }
         return true;
@@ -1052,9 +1200,25 @@ fn tab_at(app: &App, x: u16) -> Option<usize> {
         .map(|t| t.index)
 }
 
-/// Dragging the top edge: the panel reaches from the mouse row to its bottom.
-fn resize_to(app: &mut App, row: u16) {
+/// Dragging the edge: at the bottom the panel reaches from the mouse row to its bottom; on the
+/// right from the column after the mouse to the editor column's right edge, within the
+/// minimums of panel and editor so the share always matches what is drawn.
+fn resize_to(app: &mut App, column: u16, row: u16) {
     let area = app.layout.terminal;
+    if app.layout.terminal_sep.width > 0 {
+        let editor_column = app.layout.tabs.width;
+        if editor_column == 0 {
+            return;
+        }
+        let right_edge = area.x + area.width;
+        let want = right_edge.saturating_sub(column + 1);
+        let cols = want
+            .min(crate::ui::layout::right_cols(editor_column, HEIGHT_MAX))
+            .max(crate::ui::layout::right_cols(editor_column, HEIGHT_MIN));
+        app.terminal.width_percent = share(cols, editor_column).clamp(HEIGHT_MIN, HEIGHT_MAX);
+        app.terminal.width_cols = Some(cols);
+        return;
+    }
     let screen = app.layout.status.y + app.layout.status.height;
     if screen == 0 || area.height == 0 {
         return;

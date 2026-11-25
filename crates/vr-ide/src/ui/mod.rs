@@ -38,9 +38,20 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
         layout::Side::None
     };
     let mut layout = layout::compute(area, notice_rows, side);
-    // D275: the fields first, then the terminal panel, then the list from what is left.
+    // T19: a panel on the right takes the editor's full height and the find box sits over the
+    // editor beside it; at the bottom (D275) the fields come first, then the panel, then the
+    // list from what is left.
+    let right =
+        app.terminal.visible && crate::commands::terminal::right_in(app, layout.editor.width);
+    if right {
+        layout::place_terminal_right(
+            &mut layout,
+            app.terminal.width_percent,
+            app.terminal.width_cols,
+        );
+    }
     layout::place_find_box(&mut layout, find_bar::field_rows(app));
-    if app.terminal.visible {
+    if app.terminal.visible && !right {
         layout::place_terminal(&mut layout, area.height, app.terminal.height_percent);
     }
     let list_rows = find_bar::list_rows(
@@ -55,6 +66,7 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     find_bar::render(frame, layout.find_bar, app, theme);
     editor_view::render(frame, layout.editor, app, theme);
     terminal_view::render(frame, layout.terminal, app, theme);
+    terminal_view::render_separator(frame.buffer_mut(), layout.terminal_sep, app, theme);
     status_bar::render_notice(frame.buffer_mut(), layout.notice, app, theme);
     status_bar::render(frame.buffer_mut(), layout.status, app, theme);
     // Overlays last: they draw over the editor and set the cursor.

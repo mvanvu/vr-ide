@@ -19,6 +19,17 @@ pub struct AiPreset {
     pub args: Vec<String>,
 }
 
+/// Where the terminal panel sits (D227).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalPosition {
+    /// Under the editor, across the editor column.
+    #[default]
+    Bottom,
+    /// Right of the editor, the editor's full height under the tab bar.
+    Right,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -31,6 +42,10 @@ pub struct Settings {
     pub scrollback: usize,
     /// Height of the terminal panel in percent of the screen, 10..=90 (M5).
     pub terminal_height_percent: u16,
+    /// Where the terminal panel sits (T19).
+    pub terminal_position: TerminalPosition,
+    /// Width of the panel on the right in percent of the editor column, 10..=90 (T19).
+    pub terminal_width_percent: u16,
     /// Without the kitty protocol, NUL (what ctrl+` sends) in a focused terminal goes to the
     /// program instead of giving the keys back to the editor (D214, D230).
     pub terminal_pass_nul: bool,
@@ -160,6 +175,9 @@ fn parse(table: toml::Table) -> Result<Settings, String> {
     }
     if !(10..=90).contains(&s.terminal_height_percent) {
         return Err("terminal_height_percent must be between 10 and 90".into());
+    }
+    if !(10..=90).contains(&s.terminal_width_percent) {
+        return Err("terminal_width_percent must be between 10 and 90".into());
     }
     if let Some(p) = s.ai_presets.iter().find(|p| p.command.trim().is_empty()) {
         return Err(format!("ai preset {:?} has an empty command", p.name));

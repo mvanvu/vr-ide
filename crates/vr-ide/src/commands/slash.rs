@@ -217,15 +217,15 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         "term right",
         "",
         NO_ARG,
-        "Terminal panel on the right (not available yet)",
-        term_position,
+        "Terminal panel on the right, for this session",
+        term_right,
     ),
     cmd(
         "term bottom",
         "",
         NO_ARG,
-        "Terminal panel at the bottom (not available yet)",
-        term_position,
+        "Terminal panel at the bottom, for this session",
+        term_bottom,
     ),
     cmd(
         "run",
@@ -874,9 +874,14 @@ fn term_close(app: &mut App, _: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Listed now; the panel position is task T19's.
-fn term_position(_: &mut App, _: &str) -> Result<(), String> {
-    Err("available after the terminal position feature".into())
+fn term_right(app: &mut App, _: &str) -> Result<(), String> {
+    super::terminal::set_position(app, vr_config::TerminalPosition::Right);
+    Ok(())
+}
+
+fn term_bottom(app: &mut App, _: &str) -> Result<(), String> {
+    super::terminal::set_position(app, vr_config::TerminalPosition::Bottom);
+    Ok(())
 }
 
 /// Only the user's Enter in the window gets here; the text is typed once, as written.
@@ -1341,8 +1346,9 @@ fn set(app: &mut App, arg: &str) -> Result<(), String> {
 
 /// Puts `new` in place and brings what reads settings only at startup in step, for the keys
 /// that changed only: the open files' tab width (and their indent unit unless `/indent` set
-/// their own), the explorer's hidden / ignored toggles and the terminal height. A key that
-/// did not change leaves the current view alone (ctrl+h, terminal grow / shrink).
+/// their own), the explorer's hidden / ignored toggles and the terminal panel's height, width
+/// and position. A key that did not change leaves the current view alone (ctrl+h, terminal
+/// grow / shrink, ctrl+f7).
 /// `scrollback` and `max_highlight_bytes` apply to terminals and files opened from now on.
 fn apply_settings(app: &mut App, new: vr_config::Settings) {
     let before = app.buffer_options();
@@ -1365,6 +1371,14 @@ fn apply_settings(app: &mut App, new: vr_config::Settings) {
         && app.explorer.tree.show_ignored() != new.show_ignored;
     if old.terminal_height_percent != new.terminal_height_percent {
         app.terminal.height_percent = new.terminal_height_percent;
+    }
+    if old.terminal_width_percent != new.terminal_width_percent {
+        app.terminal.width_percent = new.terminal_width_percent;
+        app.terminal.width_cols = None;
+    }
+    if old.terminal_position != new.terminal_position {
+        app.terminal.position = new.terminal_position;
+        app.dirty = true;
     }
     if hidden {
         app.run_command("explorer.toggle_hidden", CmdArgs::None);

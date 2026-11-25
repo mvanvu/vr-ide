@@ -225,10 +225,12 @@ impl App {
             settings.show_hidden,
             settings.show_ignored,
         );
-        let terminal = commands::terminal::TerminalPanel::new(
+        let mut terminal = commands::terminal::TerminalPanel::new(
             settings.terminal_height_percent,
             settings.scrollback,
         );
+        terminal.position = settings.terminal_position;
+        terminal.width_percent = settings.terminal_width_percent;
         App {
             workspace,
             recent_workspaces: Default::default(),

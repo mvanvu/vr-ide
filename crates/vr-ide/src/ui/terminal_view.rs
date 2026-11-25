@@ -35,6 +35,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     }
 }
 
+/// The column left of a panel on the right (T19), drawn like the explorer's edge: in the focus
+/// colour while the terminal has the keys. Dragging it sets the panel's width.
+pub fn render_separator(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
+    if area.width == 0 || !app.terminal.visible {
+        return;
+    }
+    let style = if term::has_keys(app) {
+        theme.focus
+    } else {
+        theme.dim
+    };
+    for y in area.y..area.y + area.height {
+        buf.set_string(area.x, y, "│", style);
+    }
+}
+
 /// The key shown for `cmd` (hints never hard-code keys, USER-1; D261).
 fn first_key(app: &App, cmd: &str) -> String {
     app.key_hint(cmd)

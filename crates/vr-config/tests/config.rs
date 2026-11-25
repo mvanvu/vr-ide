@@ -60,6 +60,7 @@ const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("global", "shift+f8", "terminal.prev"),
     ("global", "ctrl+f8", "terminal.grow"),
     ("global", "ctrl+f9", "terminal.shrink"),
+    ("global", "ctrl+f7", "terminal.toggle_position"),
     ("global", "f1", "app.palette"),
     ("global", "ctrl+q", "app.quit"),
     // Explorer focus. ctrl+n there asks File / Folder first (user change to the spec).
@@ -71,11 +72,11 @@ const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("explorer", "ctrl+v", "explorer.paste"),
 ];
 
-/// Keys the spec removed (T21 "Removed"; ctrl+f2 by the user's later change; ctrl+f7 kept free
-/// for T19): bound nowhere.
+/// Keys the spec removed (T21 "Removed"; ctrl+f2 by the user's later change): bound nowhere.
+/// ctrl+f7, kept free for T19, is the panel position key now.
 const REMOVED_V2: &[&str] = &[
     "ctrl+i", "ctrl+]", "ctrl+u", "f7", "shift+f7", "ctrl+t", "f4", "shift+f4", "f6", "ctrl+f1",
-    "ctrl+f2", "ctrl+f3", "ctrl+f5", "ctrl+f7", "f12", "f5",
+    "ctrl+f2", "ctrl+f3", "ctrl+f5", "f12", "f5",
 ];
 
 /// Every command name the plan's registry lists, plus the M5 reserved one.
@@ -141,6 +142,7 @@ const KNOWN: &[&str] = &[
     "terminal.grow",
     "terminal.hide",
     "terminal.shrink",
+    "terminal.toggle_position",
 ];
 
 #[test]
@@ -559,6 +561,53 @@ fn terminal_height_percent_is_bounded() {
             "{bad}: {w:?}"
         );
     }
+}
+
+/// T19 (D227): the panel position is bottom or right (bottom by default) and its width on the
+/// right a share of the editor column, 10..=90 %; a bad value keeps the default with a warning.
+#[test]
+fn terminal_position_and_width_are_checked() {
+    use vr_config::TerminalPosition;
+    let s = Settings::default();
+    assert_eq!(s.terminal_position, TerminalPosition::Bottom);
+    assert_eq!(s.terminal_width_percent, 40);
+    let (_d, path) = write_user("terminal_position = \"right\"\nterminal_width_percent = 55\n");
+    let (s, w) = Settings::load(Some(&path));
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(s.terminal_position, TerminalPosition::Right);
+    assert_eq!(s.terminal_width_percent, 55);
+    for (key, bad) in [
+        ("terminal_position", "\"left\""),
+        ("terminal_position", "\"Right\""),
+        ("terminal_position", "1"),
+        ("terminal_width_percent", "9"),
+        ("terminal_width_percent", "91"),
+        ("terminal_width_percent", "\"wide\""),
+    ] {
+        let (_d, path) = write_user(&format!("{key} = {bad}\n"));
+        let (s, w) = Settings::load(Some(&path));
+        assert_eq!(s, Settings::default(), "{key} = {bad}");
+        assert!(
+            w.iter()
+                .any(|w| matches!(w, ConfigWarning::InvalidValue { key: k, .. } if k == key)),
+            "{key} = {bad}: {w:?}"
+        );
+    }
+    // /set takes the word as typed and checks it the same way.
+    let d = Settings::default();
+    let right = d.with_value("terminal_position", "right").unwrap();
+    assert_eq!(right.terminal_position, TerminalPosition::Right);
+    assert!(d.with_value("terminal_position", "left").is_err());
+    let wide = d.with_value("terminal_width_percent", "90").unwrap();
+    assert_eq!(wide.terminal_width_percent, 90);
+    assert_eq!(
+        d.with_value("terminal_width_percent", "95").unwrap_err(),
+        "terminal_width_percent must be between 10 and 90"
+    );
+    assert_eq!(
+        d.value_text("terminal_position").as_deref(),
+        Some("\"bottom\"")
+    );
 }
 
 /// D214: a legacy terminal's NUL toggles the panel from inside a terminal unless the user asks

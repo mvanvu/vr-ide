@@ -385,19 +385,62 @@ fn hidden_and_ignored_toggle_the_explorer() {
     assert_eq!(error(&app).as_deref(), Some("/hidden takes no argument"));
 }
 
+/// T19: `/term right` and `/term bottom` set the panel position for the session; a hidden
+/// panel stays hidden, the settings file is not written.
+#[test]
+fn term_right_and_bottom_set_the_panel_position() {
+    use vr_config::TerminalPosition;
+    let (mut app, _) = test_app(Path::new("/p"));
+    slash(&mut app, "/term right");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.palette.is_none(), "{:?}", error(&app));
+    assert_eq!(app.terminal.position, TerminalPosition::Right);
+    assert!(!app.terminal.visible);
+    assert!(
+        notices(&app).contains("terminal_position = \"right\""),
+        "{}",
+        notices(&app)
+    );
+    slash(&mut app, "/term right");
+    key(&mut app, KeyCode::Enter);
+    assert!(notices(&app).contains("already"), "{}", notices(&app));
+    slash(&mut app, "/term bottom");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.terminal.position, TerminalPosition::Bottom);
+    assert_eq!(app.settings.terminal_position, TerminalPosition::Bottom);
+    slash(&mut app, "/term right x");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        error(&app).as_deref(),
+        Some("/term right takes no argument")
+    );
+    key(&mut app, KeyCode::Esc);
+    // /set changes the setting and the panel at once.
+    slash(&mut app, "/set terminal_position right");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.terminal.position, TerminalPosition::Right);
+    slash(&mut app, "/set terminal_width_percent 55");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.terminal.width_percent, 55);
+    slash(&mut app, "/set terminal_width_percent 5");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        error(&app).as_deref(),
+        Some("terminal_width_percent must be between 10 and 90")
+    );
+    key(&mut app, KeyCode::Esc);
+    slash(&mut app, "/set terminal_position left");
+    key(&mut app, KeyCode::Enter);
+    assert!(
+        error(&app).unwrap().contains("terminal_position"),
+        "{:?}",
+        error(&app)
+    );
+}
+
 #[test]
 fn unavailable_commands_say_so_and_change_nothing() {
     let (mut app, _) = test_app(Path::new("/p"));
-    for c in ["/term right", "/term bottom"] {
-        slash(&mut app, c);
-        key(&mut app, KeyCode::Enter);
-        assert_eq!(
-            error(&app).as_deref(),
-            Some("available after the terminal position feature")
-        );
-        assert_eq!(input(&app), c);
-        key(&mut app, KeyCode::Esc);
-    }
     slash(&mut app, "/wrap");
     key(&mut app, KeyCode::Enter);
     assert_eq!(

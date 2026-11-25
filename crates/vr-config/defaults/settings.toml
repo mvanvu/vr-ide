@@ -18,6 +18,13 @@ scrollback = 10000
 # Terminal panel height in percent of the screen, 10..=90 (at least 5 rows); terminal.grow /
 # terminal.shrink and dragging the panel's tab bar change it for the session.
 terminal_height_percent = 40
+# Where the terminal panel sits: "bottom" or "right" (the editor's full height, beside it).
+# On the right it falls back to the bottom while the editor column is under 60 columns wide.
+# terminal.toggle_position (ctrl+f7, /term right, /term bottom) changes it for the session.
+terminal_position = "bottom"
+# Panel width on the right in percent of the editor column, 10..=90 (at least 20 columns);
+# terminal.grow / terminal.shrink and dragging the separator change it for the session.
+terminal_width_percent = 40
 # Terminals without the kitty keyboard protocol send ctrl+` as NUL, the same byte as ctrl+space.
 # false: NUL in a focused terminal does what ctrl+` does there: the editor gets the keys back and
 # the panel stays shown (terminal.hide hides it). true: NUL goes to the program (ctrl+space /

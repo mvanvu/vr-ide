@@ -294,6 +294,10 @@ hint says ``ctrl+` hide``). No terminal starts until you open one.
   `user@host: ~/dir` are cut from the left so the directory stays; when the tabs do not fit, the
   active one stays in view and `+N` counts the others. Click a tab to switch; drag the tab bar to
   resize the panel (`terminal_height_percent` in settings, 40 % by default, at least 5 rows).
+- `ctrl+f7` (or `/term right`, `/term bottom`) moves the panel to the right of the editor for the
+  session: the editor's full height, `terminal_width_percent` of the editor column (40 %, at least
+  20 columns); drag the separator or use `ctrl+f8` / `ctrl+f9` to change the width. Under 60
+  editor columns it shows at the bottom. `terminal_position = "right"` in settings keeps it.
 - When the program exits the panel says "[process exited N] — Enter to restart, ctrl+w to close"
   (shorter on narrow screens: "exited N · Enter · ctrl+w").
 - Notices above the status bar: `Esc` goes to the program while a terminal has the keys, so click
@@ -325,7 +329,7 @@ with your terminal's own paste shortcut (bracketed paste is supported).
 
 | File | Purpose |
 |---|---|
-| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit, terminal scrollback (`scrollback`), panel height (`terminal_height_percent`) and whether NUL reaches terminal programs in a terminal without the kitty protocol (`terminal_pass_nul`, off). Built-in values: `crates/vr-config/defaults/settings.toml` |
+| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit, terminal scrollback (`scrollback`), panel height, position and width (`terminal_height_percent`, `terminal_position`, `terminal_width_percent`) and whether NUL reaches terminal programs in a terminal without the kitty protocol (`terminal_pass_nul`, off). Built-in values: `crates/vr-config/defaults/settings.toml` |
 | `~/.config/vr-ide/keymap.toml` | Key overrides on top of the defaults; see [docs/keymap.md](docs/keymap.md) |
 | `~/.config/vr-ide/languages.toml` | File patterns → language for syntax highlighting; see [Syntax highlighting](#syntax-highlighting). Built-in table: `crates/vr-config/defaults/languages.toml` |
 

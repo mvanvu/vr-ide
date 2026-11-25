@@ -738,6 +738,7 @@ pub(crate) const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("global", "shift+f8", "terminal.prev"),
     ("global", "ctrl+f8", "terminal.grow"),
     ("global", "ctrl+f9", "terminal.shrink"),
+    ("global", "ctrl+f7", "terminal.toggle_position"),
     ("global", "f1", "app.palette"),
     ("global", "ctrl+q", "app.quit"),
     ("explorer", "f2", "explorer.rename"),
@@ -748,11 +749,11 @@ pub(crate) const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("explorer", "ctrl+v", "explorer.paste"),
 ];
 
-/// Keys the spec removed (T21; ctrl+f2, f12 and f5 by the user's later changes; ctrl+f7 kept
-/// free for T19).
+/// Keys the spec removed (T21; ctrl+f2, f12 and f5 by the user's later changes). ctrl+f7,
+/// kept free for T19, is the panel position key now.
 pub(crate) const REMOVED_V2: &[&str] = &[
     "ctrl+i", "ctrl+]", "ctrl+u", "f7", "shift+f7", "ctrl+t", "f4", "shift+f4", "f6", "ctrl+f1",
-    "ctrl+f2", "ctrl+f3", "ctrl+f5", "ctrl+f7", "f12", "f5",
+    "ctrl+f2", "ctrl+f3", "ctrl+f5", "f12", "f5",
 ];
 
 /// The bytes GNOME Terminal (VTE) sends for `k` without the kitty protocol, and the event
@@ -812,6 +813,7 @@ pub(crate) fn legacy_event(k: &str) -> (Vec<u8>, Option<KeyEvent>) {
         "ctrl+f9" => "\x1b[20;5~",
         "ctrl+f4" => "\x1b[1;5S",
         "ctrl+f6" => "\x1b[17;5~",
+        "ctrl+f7" => "\x1b[18;5~",
         "ctrl+f12" => "\x1b[24;5~",
         "shift+f12" => "\x1b[24;2~",
         other => panic!("no legacy bytes for {other}"),

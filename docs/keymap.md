@@ -62,10 +62,14 @@ terminal keeps `tab` for its program (``ctrl+` `` gives the keys back).
 | `terminal.close` | Terminal: Close Terminal | `ctrl+f4` |
 | `terminal.next` | Terminal: Focus Next Terminal | `f8` |
 | `terminal.prev` | Terminal: Focus Previous Terminal | `shift+f8` |
-| `terminal.grow` | Terminal: Increase Panel Height | `ctrl+f8` |
-| `terminal.shrink` | Terminal: Decrease Panel Height | `ctrl+f9` |
+| `terminal.grow` | Terminal: Increase Panel Size | `ctrl+f8` (height at the bottom, width on the right) |
+| `terminal.shrink` | Terminal: Decrease Panel Size | `ctrl+f9` (height at the bottom, width on the right) |
+| `terminal.toggle_position` | Terminal: Toggle Panel Position | `ctrl+f7` (bottom ↔ right for this session; `terminal_position` in settings keeps it) |
 
-`ctrl+f7` is kept free for the terminal panel position command.
+On the right the panel takes the editor's full height under the tab bar and
+`terminal_width_percent` (40 % by default, at least 20 columns) of the editor column; drag the
+separator left of it to resize. While the editor column (the screen right of the explorer) is
+under 60 columns wide the panel is shown at the bottom.
 
 ### `[editor]`
 
@@ -180,7 +184,7 @@ editor shows the selected match and highlights the others while the box is open.
 searches on `enter` and lists the results under the name of each file (and of each root when the
 workspace has several roots), the status ("3 results in 2 files") on the box's first row.
 
-The box keeps its first rows for the fields (before the terminal panel takes its rows: in a short
+The box keeps its first rows for the fields (before a terminal panel at the bottom takes its rows; beside a panel on the right the box sits over the editor: in a short
 window the panel gets smaller, not the fields) and takes up to two fifths of the editor for the list
 (at least 3 rows, fewer when there is less to list; a status or error note above the list comes on
 top); the editor stays visible under it at every size.
@@ -198,7 +202,7 @@ Typing and cursor movement are built in and not listed in `keymap.toml`.
 | Palette | `up`/`down`, `pageup`/`pagedown` move; `enter` runs; `esc` closes |
 | Dialogs | `left`/`right`/`tab`/`shift+tab` choose a button; `enter` confirms; `esc` cancels. A held (repeating) `enter` never confirms |
 | Find box, File scope | typing searches as you type; `up`/`down`/`pageup`/`pagedown` move in the list (the editor shows the match); `enter` in the find field goes to the match and gives the editor the keys in read mode (the box stays open: `f3`/`shift+f3` go on); `shift+enter` there selects the previous match and keeps the box (terminals with the kitty keyboard protocol; others send it as `enter`); in the replace field `enter` replaces one and `ctrl+a` replaces all (the box shows "enter one · ctrl+a all"); `tab`/`shift+tab` switch field; `esc` closes the box and returns to read mode. A click on a row selects that match |
-| Terminal | Every key goes to the program except ``ctrl+` `` and these: `shift+pageup`/`shift+pagedown` scroll back (main screen only; any key or new output returns to the bottom); `ctrl+shift+v` pastes the clipboard (bracketed when the program asked for it). After the program exits, `enter` starts a new shell in the tab and the Close File key (`ctrl+w`) closes it. Mouse: drag selects and copies, the wheel scrolls back (programs that ask for the mouse get it; hold `shift` to select anyway), a click on a tab switches to it, dragging the tab bar resizes the panel |
+| Terminal | Every key goes to the program except ``ctrl+` `` and these: `shift+pageup`/`shift+pagedown` scroll back (main screen only; any key or new output returns to the bottom); `ctrl+shift+v` pastes the clipboard (bracketed when the program asked for it). After the program exits, `enter` starts a new shell in the tab and the Close File key (`ctrl+w`) closes it. Mouse: drag selects and copies, the wheel scrolls back (programs that ask for the mouse get it; hold `shift` to select anyway), a click on a tab switches to it, dragging the tab bar (at the bottom) or the separator (on the right) resizes the panel |
 | Find box, Project scope | `tab`/`shift+tab` switch field; `enter` in the search field searches, in the replace field shows the replace preview, on a result opens it (read mode; the box stays open), and on a shown preview confirms the replace; `down` moves into the results; `up`/`down`/`pageup`/`pagedown`/`home`/`end` move in the list; `space` checks or unchecks a replace preview row; `esc` closes a preview (cancels a running replace), otherwise closes the box and returns to read mode |
 
 A user binding for a plain key in a context wins over that context's built-in key.

@@ -30,7 +30,11 @@ copy goes to the recovery folder); running terminals still ask first, and "Quit 
 discards.
 
 `/theme` changes the theme for this session; set `theme` in `settings.toml` to keep it.
-`/term right`, `/term bottom` and `/wrap` are listed but not available yet.
+`/term right` and `/term bottom` move the terminal panel for this session, as `ctrl+f7`
+(Terminal: Toggle Panel Position) does; set `terminal_position` in `settings.toml` to keep it.
+On the right the panel takes `terminal_width_percent` of the editor column (drag the separator,
+or `ctrl+f8` / `ctrl+f9`, to change it) and falls back to the bottom while the editor column is
+under 60 columns wide. `/wrap` is listed but not available yet.
 
 File commands act on the active tab. `/rename <name>` renames its file in the same folder with the
 explorer's checks (one name, no `/`; an existing name is never replaced) and the tab follows,
@@ -78,8 +82,8 @@ protocol does not send are marked).
 | `/lang <id>` | Highlight the file as another language |
 | `/term new` | Open a new terminal tab |
 | `/term close` | Close the active terminal tab |
-| `/term right` | Terminal panel on the right (not available yet) |
-| `/term bottom` | Terminal panel at the bottom (not available yet) |
+| `/term right` | Terminal panel on the right, for this session |
+| `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
 | `/ai <tool>` | Run an AI tool (e.g. claude) in a new terminal tab |
 | `/ws add <dir>` | Add a folder to the workspace |

@@ -40,6 +40,8 @@ mod slash_tests;
 #[cfg(test)]
 mod syntax_tests;
 #[cfg(test)]
+mod terminal_right_tests;
+#[cfg(test)]
 mod terminal_tests;
 #[cfg(test)]
 mod workspace_tests;

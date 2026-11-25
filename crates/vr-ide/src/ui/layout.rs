@@ -11,9 +11,12 @@ pub struct AppLayout {
     /// The find box (fields and result list), between the tab bar and the editor.
     pub find_bar: Rect,
     pub editor: Rect,
-    /// The terminal panel (M5) under the editor: its tab bar row, then the terminal grid.
-    /// Empty while the panel is hidden.
+    /// The terminal panel (M5) under the editor, or right of it (T19): its tab bar row, then
+    /// the terminal grid. Empty while the panel is hidden.
     pub terminal: Rect,
+    /// The one-column separator left of a panel on the right (its drag handle); empty while
+    /// the panel is at the bottom or hidden.
+    pub terminal_sep: Rect,
     pub notice: Rect,
     pub status: Rect,
 }
@@ -65,6 +68,7 @@ pub fn compute(area: Rect, notice_rows: u16, side: Side) -> AppLayout {
         find_bar,
         editor,
         terminal: Rect::default(),
+        terminal_sep: Rect::default(),
         notice,
         status,
     }
@@ -108,4 +112,43 @@ pub fn place_terminal(layout: &mut AppLayout, screen_height: u16, percent: u16) 
     }
     layout.terminal = Rect::new(ed.x, ed.y + ed.height - rows, ed.width, rows);
     layout.editor.height -= rows;
+}
+
+/// Narrowest editor column (the screen right of the explorer) that gets the panel on the
+/// right; a narrower one shows it at the bottom (D227).
+pub const TERMINAL_RIGHT_MIN_COLUMNS: u16 = 60;
+
+/// Fewest columns of a panel on the right.
+pub const TERMINAL_MIN_COLS: u16 = 20;
+
+/// Editor columns kept left of a wide panel on the right.
+pub const EDITOR_MIN_COLS: u16 = 20;
+
+/// An editor column `width` cells wide has room for the panel on the right.
+pub fn right_fits(width: u16) -> bool {
+    width >= TERMINAL_RIGHT_MIN_COLUMNS
+}
+
+/// Takes the terminal panel and its separator from the right of the editor, the editor's full
+/// height: `percent` of the editor column's width, at least [`TERMINAL_MIN_COLS`], leaving the
+/// editor at least [`EDITOR_MIN_COLS`]. `exact` (a drag) replaces the percent with a column
+/// count. Call it only when [`right_fits`] the editor width.
+pub fn place_terminal_right(layout: &mut AppLayout, percent: u16, exact: Option<u16>) {
+    let ed = layout.editor;
+    let cols = match exact {
+        Some(c) => c
+            .max(TERMINAL_MIN_COLS)
+            .min(ed.width.saturating_sub(EDITOR_MIN_COLS + 1)),
+        None => right_cols(ed.width, percent),
+    };
+    layout.terminal = Rect::new(ed.x + ed.width - cols, ed.y, cols, ed.height);
+    layout.terminal_sep = Rect::new(layout.terminal.x - 1, ed.y, 1, ed.height);
+    layout.editor.width -= cols + 1;
+}
+
+/// Panel columns for an editor column `width` wide (at least [`TERMINAL_RIGHT_MIN_COLUMNS`]).
+pub fn right_cols(width: u16, percent: u16) -> u16 {
+    let want = (u32::from(width) * u32::from(percent) + 50) / 100;
+    let max = width.saturating_sub(EDITOR_MIN_COLS + 1);
+    (want as u16).max(TERMINAL_MIN_COLS).min(max)
 }

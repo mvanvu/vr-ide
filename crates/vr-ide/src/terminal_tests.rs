@@ -21,7 +21,7 @@ use crate::commands::terminal::TermTab;
 const WAIT: Duration = Duration::from_secs(10);
 
 /// A test app whose terminals run `/bin/sh` with a short prompt, in a temp project.
-fn term_app() -> (tempfile::TempDir, App, MemoryClipboard) {
+pub(crate) fn term_app() -> (tempfile::TempDir, App, MemoryClipboard) {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, clip) = test_app(dir.path());
     use_sh(&mut app);
@@ -36,7 +36,7 @@ fn use_sh(app: &mut App) {
     ];
 }
 
-fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
     t.draw(|f| crate::ui::render(f, app)).unwrap();
     t
@@ -47,7 +47,7 @@ fn key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
 }
 
 /// ctrl+` as the kitty protocol reports it.
-fn ctrl_backtick(app: &mut App) {
+pub(crate) fn ctrl_backtick(app: &mut App) {
     key(app, KeyCode::Char('`'), KeyModifiers::CONTROL);
 }
 
@@ -70,7 +70,7 @@ fn hide_panel(app: &mut App) {
     crate::app_tests::press(app, "shift+f12");
 }
 
-fn typ(app: &mut App, s: &str) {
+pub(crate) fn typ(app: &mut App, s: &str) {
     for c in s.chars() {
         if c == '\n' {
             key(app, KeyCode::Enter, KeyModifiers::NONE);
@@ -80,12 +80,12 @@ fn typ(app: &mut App, s: &str) {
     }
 }
 
-fn tab(app: &App) -> &TermTab {
+pub(crate) fn tab(app: &App) -> &TermTab {
     &app.terminal.tabs[app.terminal.active]
 }
 
 /// Waits until the active terminal's screen satisfies `ok`; returns the screen.
-fn wait_screen(app: &App, what: &str, ok: impl Fn(&str) -> bool) -> String {
+pub(crate) fn wait_screen(app: &App, what: &str, ok: impl Fn(&str) -> bool) -> String {
     let deadline = Instant::now() + WAIT;
     loop {
         let s = tab(app).screen_text();
@@ -100,7 +100,7 @@ fn wait_screen(app: &App, what: &str, ok: impl Fn(&str) -> bool) -> String {
     }
 }
 
-fn wait_text(app: &App, needle: &str) -> String {
+pub(crate) fn wait_text(app: &App, needle: &str) -> String {
     wait_screen(app, needle, |s| s.contains(needle))
 }
 
@@ -112,7 +112,7 @@ fn wait_status(app: &App, want: TermStatus) {
     }
 }
 
-fn frame_text(t: &Terminal<TestBackend>) -> String {
+pub(crate) fn frame_text(t: &Terminal<TestBackend>) -> String {
     let buf = t.backend().buffer();
     let mut out = String::new();
     for y in 0..buf.area.height {
@@ -124,7 +124,7 @@ fn frame_text(t: &Terminal<TestBackend>) -> String {
     out
 }
 
-fn row_text(t: &Terminal<TestBackend>, y: u16) -> String {
+pub(crate) fn row_text(t: &Terminal<TestBackend>, y: u16) -> String {
     frame_text(t)
         .lines()
         .nth(usize::from(y))
@@ -731,7 +731,7 @@ fn a_right_click_in_a_mouse_program_is_forwarded_not_a_menu() {
     assert_eq!(app.focus, Focus::Terminal);
 }
 
-fn fake_tab(title: &str, status: TermStatus) -> TermTab {
+pub(crate) fn fake_tab(title: &str, status: TermStatus) -> TermTab {
     TermTab::fake(fake_grid(80, 9), title, status)
 }
 
@@ -822,7 +822,7 @@ fn long_titles_keep_the_active_tab_the_hint_and_the_status_in_view() {
 // ---- rendering --------------------------------------------------------------------------------
 
 /// A shell screen: a coloured `ls`, a wide character and Vietnamese text, a bold line.
-fn fake_grid(cols: usize, rows: usize) -> Grid {
+pub(crate) fn fake_grid(cols: usize, rows: usize) -> Grid {
     let mut g = Grid {
         cols,
         rows,
@@ -886,7 +886,7 @@ fn fake_grid(cols: usize, rows: usize) -> Grid {
 }
 
 /// Fake tabs only (nothing is spawned), under a fixed root so the frame is the same on every run.
-fn snapshot_app() -> ((), App) {
+pub(crate) fn snapshot_app() -> ((), App) {
     let (mut app, _) = test_app(Path::new("/home/user/DEV/shop"));
     app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
     app.terminal
