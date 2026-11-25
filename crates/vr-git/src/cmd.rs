@@ -7,9 +7,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use rustix::process::Pid;
 
@@ -30,6 +31,18 @@ pub struct Options {
     pub max_concurrent: usize,
     /// Environment git starts from (filtered, see [`child_env`]); `None` = this process's.
     pub env: Option<Vec<(OsString, OsString)>>,
+    /// Wall-clock limit of a commit (hooks and signing run inside it).
+    pub hook_timeout: Duration,
+    /// Push/pull are killed after this long without any output from git.
+    pub network_idle_timeout: Duration,
+    /// Where discard keeps recovery copies (absolute). The app sets it to
+    /// `vr_config::paths::state_dir().join("git-recovery")`; `None` = the same rule applied to
+    /// [`Options::env`] (`VR_IDE_STATE_DIR`, else `XDG_STATE_HOME/vr-ide`, else
+    /// `~/.local/state/vr-ide`). Inside a git work tree it is used only when that repository
+    /// ignores it (see `Writer::discard`).
+    pub recovery_dir: Option<PathBuf>,
+    /// Discard refuses a target whose recovery copy would be larger than this many bytes.
+    pub recovery_cap: u64,
 }
 
 impl Default for Options {
@@ -41,6 +54,10 @@ impl Default for Options {
             max_file: 8 << 20,
             max_concurrent: 2,
             env: None,
+            hook_timeout: Duration::from_secs(600),
+            network_idle_timeout: Duration::from_secs(120),
+            recovery_dir: None,
+            recovery_cap: 256 << 20,
         }
     }
 }
@@ -72,7 +89,16 @@ const FIXED_ENV: &[(&str, &str)] = &[
     ("GIT_MERGE_AUTOEDIT", "no"),
     ("GIT_NO_LAZY_FETCH", "1"),
     ("GIT_LITERAL_PATHSPECS", "1"),
+    // gpg-agent hands this tty to pinentry, which opens it by path (no controlling terminal
+    // needed) and would draw over the TUI and read its keys while a signed commit asks for a
+    // passphrase. A curses or tty pinentry now fails and git reports it; a graphical one still
+    // works through DISPLAY / WAYLAND_DISPLAY (SEC-12, D305(1)).
+    ("GPG_TTY", "/dev/null"),
 ];
+
+/// Outer variables that only steer a pinentry to a terminal (`GPG_AGENT_INFO` is read by gpg
+/// before 2.1, `PINENTRY_USER_DATA` picks curses mode in common pinentry wrappers).
+const TTY_HINT_ENV: &[&str] = &["GPG_AGENT_INFO", "PINENTRY_USER_DATA"];
 
 /// Config forced on every command: nothing config-driven runs (SEC-3) and output keeps the
 /// machine shape the parsers expect whatever the user's config says (SEC-4).
@@ -104,7 +130,15 @@ const FIXED_CONFIG: &[(&str, &str)] = &[
     ("log.follow", "false"),
     // Without it a root commit has no name-status, so `log --follow` drops it.
     ("log.showRoot", "true"),
+    // Patches built from a shown diff must land exactly: no whitespace fixing or
+    // whitespace-blind matching from user config.
+    ("apply.whitespace", "nowarn"),
+    ("apply.ignoreWhitespace", "no"),
 ];
+
+/// Extra config of write commands: never an editor on the TUI's terminal, never an askpass
+/// program (an empty `core.askPass` also hides `SSH_ASKPASS` from git's credential prompt).
+const WRITE_CONFIG: &[(&str, &str)] = &[("core.editor", "true"), ("core.askPass", "")];
 
 /// Drivers (`filter.<d>.*`, `diff.<d>.*`) whose program keys are blanked on every command.
 const DRIVER_KEYS: &str = r"^(filter|diff)\..+\.(clean|smudge|process|textconv|command)$";
@@ -119,16 +153,32 @@ pub(crate) struct Output {
     pub stderr: String,
 }
 
+/// What a command may do besides its own work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Profile {
+    /// Automatic and user reads: no program named by config runs (driver keys blanked, hooks
+    /// off), no transport.
+    Read,
+    /// A user-initiated index or worktree write (add, restore, apply): runs like the same
+    /// command typed in a terminal (filters and hooks: accepted risk T18, made visible by
+    /// SEC-19), no transport.
+    Index,
+    /// `commit`: like [`Profile::Index`] but without forced literal pathspecs, which hooks would
+    /// inherit.
+    Commit,
+    /// push / pull: transports allowed, askpass disabled.
+    Network,
+}
+
 /// How long and how much one call may take.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Limits {
     pub timeout: Duration,
     pub max_output: usize,
-    /// Allow git transports. Off for every read: `GIT_ALLOW_PROTOCOL=none` then stops a lazy
+    /// Every profile but [`Profile::Network`] sets `GIT_ALLOW_PROTOCOL=none`: it stops a lazy
     /// fetch even where repo config sets `protocol.<name>.allow` (which beats
-    /// `protocol.allow=never`) and git predates `GIT_NO_LAZY_FETCH`. Only the user's own
-    /// fetch/pull/push (M7-2) sets it.
-    pub network: bool,
+    /// `protocol.allow=never`) and git predates `GIT_NO_LAZY_FETCH`.
+    pub profile: Profile,
 }
 
 impl Limits {
@@ -136,9 +186,46 @@ impl Limits {
         Limits {
             timeout,
             max_output,
-            network: false,
+            profile: Profile::Read,
         }
     }
+
+    pub fn with(self, profile: Profile) -> Limits {
+        Limits { profile, ..self }
+    }
+}
+
+/// A cancel switch shared between the caller and a running write (push, pull, commit).
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    pub fn new() -> Cancel {
+        Cancel::default()
+    }
+
+    /// Kill the running git with its process group; the call returns [`GitError::Cancelled`].
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Callback for each complete stderr line (progress of push/pull).
+pub(crate) type LineSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
+/// Live control of one long call.
+#[derive(Default, Clone)]
+pub(crate) struct Ctl {
+    pub cancel: Option<Cancel>,
+    /// Kill when git prints nothing for this long.
+    pub idle: Option<Duration>,
+    pub on_line: Option<LineSink>,
+    /// Variables set after the filtered environment (e.g. a default `GIT_SSH_COMMAND`).
+    pub env: Vec<(OsString, OsString)>,
 }
 
 #[derive(Default)]
@@ -212,6 +299,15 @@ impl Git {
         Limits::new(self.inner.opts.user_timeout, self.inner.opts.max_output)
     }
 
+    /// A variable of the filtered environment children start from.
+    pub fn env_var(&self, key: &str) -> Option<&OsStr> {
+        self.inner
+            .env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_os_str())
+    }
+
     /// Kill every running git of this repo (all clones of the handle) with its process group,
     /// and refuse later runs with [`GitError::ShutDown`].
     pub fn shutdown(&self) {
@@ -255,8 +351,25 @@ impl Git {
         stdin: Option<&[u8]>,
         lim: Limits,
     ) -> Result<Output> {
-        let drivers = self.driver_config(cwd)?;
-        self.spawn(cwd, args, stdin, lim, &drivers)
+        self.run_ctl(cwd, args, stdin, lim, &Ctl::default())
+    }
+
+    /// [`Git::run`] with cancel, inactivity limit and progress lines.
+    pub fn run_ctl(
+        &self,
+        cwd: &Path,
+        args: &[&OsStr],
+        stdin: Option<&[u8]>,
+        lim: Limits,
+        ctl: &Ctl,
+    ) -> Result<Output> {
+        // Writes run like terminal git (accepted T18); only reads blank the driver programs.
+        let drivers = if lim.profile == Profile::Read {
+            self.driver_config(cwd)?
+        } else {
+            Vec::new()
+        };
+        self.spawn(cwd, args, stdin, lim, &drivers, ctl)
     }
 
     /// Like [`Git::run`] but a non-zero exit becomes [`GitError::Failed`].
@@ -295,7 +408,7 @@ impl Git {
             "--get-regexp".as_ref(),
             DRIVER_KEYS.as_ref(),
         ];
-        let out = self.spawn(cwd, &args, None, self.auto(), &[])?;
+        let out = self.spawn(cwd, &args, None, self.auto(), &[], &Ctl::default())?;
         // Exit 1 = no such key; anything else unexpected is an error rather than an unprotected run.
         if out.code != 0 && out.code != 1 {
             return Err(GitError::Failed {
@@ -363,17 +476,30 @@ impl Git {
         stdin: Option<&[u8]>,
         lim: Limits,
         drivers: &[(OsString, OsString)],
+        ctl: &Ctl,
     ) -> Result<Output> {
         let _slot = self.acquire();
         if self.inner.live.lock().unwrap().closed {
             return Err(GitError::ShutDown);
         }
+        let profile = lim.profile;
         let mut cmd = Command::new(&self.inner.exe);
-        cmd.current_dir(cwd)
-            .env_clear()
-            .envs(self.inner.env.iter().map(|(k, v)| (k, v)));
+        cmd.current_dir(cwd).env_clear().envs(
+            self.inner
+                .env
+                .iter()
+                .filter(|(k, _)| !profile_drops(profile, k))
+                .map(|(k, v)| (k, v)),
+        );
+        let extra: &[(&str, &str)] = if profile == Profile::Read {
+            &[]
+        } else {
+            WRITE_CONFIG
+        };
         let config: Vec<(OsString, OsString)> = FIXED_CONFIG
             .iter()
+            .filter(|(k, _)| !config_dropped(profile, k))
+            .chain(extra)
             .map(|(k, v)| (OsString::from(k), OsString::from(v)))
             .chain(drivers.iter().cloned())
             .collect();
@@ -384,11 +510,19 @@ impl Git {
             cmd.env(format!("GIT_CONFIG_KEY_{i}"), k)
                 .env(format!("GIT_CONFIG_VALUE_{i}"), v);
         }
-        if !lim.network {
+        if profile == Profile::Network {
+            // ssh must not start a graphical askpass either (SEC-13).
+            cmd.env("SSH_ASKPASS_REQUIRE", "never");
+        } else {
             // Beats every protocol.* config key; "none" names no transport.
             cmd.env("GIT_ALLOW_PROTOCOL", "none");
         }
-        cmd.arg("--no-pager").arg("--literal-pathspecs").args(args);
+        cmd.envs(ctl.env.iter().map(|(k, v)| (k, v)));
+        cmd.arg("--no-pager");
+        if matches!(profile, Profile::Read | Profile::Index) {
+            cmd.arg("--literal-pathspecs");
+        }
+        cmd.args(args);
         cmd.stdin(if stdin.is_some() {
             Stdio::piped()
         } else {
@@ -428,44 +562,98 @@ impl Git {
             }
             _ => None,
         };
+        let started = Instant::now();
+        // Milliseconds after `started` of the last byte git printed (inactivity limit).
+        let activity = Arc::new(AtomicU64::new(0));
         let mut err_pipe = child.stderr.take().expect("piped stderr");
+        let (err_activity, on_line) = (activity.clone(), ctl.on_line.clone());
         let err_reader = std::thread::spawn(move || {
             let mut kept = Vec::new();
+            let mut line = Vec::new();
             let mut buf = [0u8; 8192];
             loop {
                 match err_pipe.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        err_activity.store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
                         let room = STDERR_CAP.saturating_sub(kept.len());
                         kept.extend_from_slice(&buf[..n.min(room)]);
+                        if let Some(sink) = &on_line {
+                            // Progress meters redraw with CR: each redraw is a line.
+                            for &b in &buf[..n] {
+                                if b == b'\n' || b == b'\r' {
+                                    if !line.is_empty() {
+                                        sink(&line);
+                                        line.clear();
+                                    }
+                                } else if line.len() < 4096 {
+                                    line.push(b);
+                                }
+                            }
+                        }
                     }
                 }
+            }
+            if let Some(sink) = &on_line
+                && !line.is_empty()
+            {
+                sink(&line);
             }
             kept
         });
         let mut out_pipe = child.stdout.take().expect("piped stdout");
         let (tx, rx) = mpsc::channel();
         let cap = lim.max_output;
+        let out_activity = activity.clone();
         let out_reader = std::thread::spawn(move || {
             let mut out = Vec::new();
-            let res = (&mut out_pipe).take(cap as u64 + 1).read_to_end(&mut out);
-            let res = match res {
-                Ok(_) if out.len() > cap => Err(None),
-                Ok(_) => Ok(out),
-                Err(e) => Err(Some(e.to_string())),
+            let mut buf = [0u8; 8192];
+            let res = loop {
+                match out_pipe.read(&mut buf) {
+                    Ok(0) => break Ok(out),
+                    Ok(n) => {
+                        out_activity.store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
+                        if out.len() + n > cap {
+                            break Err(None);
+                        }
+                        out.extend_from_slice(&buf[..n]);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => break Err(Some(e.to_string())),
+                }
             };
             let _ = tx.send(res);
         });
 
-        let outcome = rx.recv_timeout(lim.timeout);
-        let stdout = match outcome {
-            Ok(Ok(out)) => Ok(out),
-            Ok(Err(None)) => Err(GitError::TooLarge {
-                cmd: name.clone(),
-                limit: cap,
-            }),
-            Ok(Err(Some(e))) => Err(GitError::Io(e)),
-            Err(_) => Err(GitError::Timeout(name.clone())),
+        let tick = Duration::from_millis(50);
+        let stdout = loop {
+            let elapsed = started.elapsed();
+            if elapsed >= lim.timeout {
+                break Err(GitError::Timeout(name.clone()));
+            }
+            if ctl.cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                break Err(GitError::Cancelled);
+            }
+            if let Some(idle) = ctl.idle {
+                let last = Duration::from_millis(activity.load(Ordering::SeqCst));
+                if elapsed.saturating_sub(last) >= idle {
+                    break Err(GitError::Timeout(name.clone()));
+                }
+            }
+            match rx.recv_timeout(tick.min(lim.timeout - elapsed)) {
+                Ok(Ok(out)) => break Ok(out),
+                Ok(Err(None)) => {
+                    break Err(GitError::TooLarge {
+                        cmd: name.clone(),
+                        limit: cap,
+                    });
+                }
+                Ok(Err(Some(e))) => break Err(GitError::Io(e)),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break Err(GitError::Io("output reader stopped".into()));
+                }
+            }
         };
         if stdout.is_err() {
             kill_group(group);
@@ -533,6 +721,30 @@ fn cmd_name(args: &[&OsStr]) -> String {
         .unwrap_or_default()
 }
 
+/// Outer variables a profile does not pass on: commit and push/pull run hooks, which must see
+/// ordinary pathspecs; push/pull must not reach an askpass program (SEC-13).
+fn profile_drops(profile: Profile, key: &OsStr) -> bool {
+    let k = key.as_bytes();
+    match profile {
+        Profile::Read | Profile::Index => false,
+        Profile::Commit => k == b"GIT_LITERAL_PATHSPECS",
+        Profile::Network => matches!(
+            k,
+            b"GIT_LITERAL_PATHSPECS" | b"SSH_ASKPASS" | b"GIT_ASKPASS" | b"SSH_ASKPASS_REQUIRE"
+        ),
+    }
+}
+
+/// Forced read config a write profile leaves to the user: hooks run on writes (D298(1)), and
+/// push/pull need transports.
+fn config_dropped(profile: Profile, key: &str) -> bool {
+    match profile {
+        Profile::Read => false,
+        Profile::Index | Profile::Commit => key == "core.hooksPath",
+        Profile::Network => key == "core.hooksPath" || key == "protocol.allow",
+    }
+}
+
 /// Find `git` in `PATH`, skipping empty and relative entries so a `git` inside the opened repo
 /// (the child's cwd) can never be picked.
 fn find_git(env: &[(OsString, OsString)]) -> Option<PathBuf> {
@@ -552,7 +764,7 @@ fn find_git(env: &[(OsString, OsString)]) -> Option<PathBuf> {
 }
 
 /// The child environment: outer variables minus every `GIT_*` not in [`GIT_ENV_ALLOW`], plus
-/// [`FIXED_ENV`]. The repo is chosen by the child's cwd only.
+/// [`FIXED_ENV`], minus [`TTY_HINT_ENV`]. The repo is chosen by the child's cwd only.
 pub(crate) fn child_env(base: &[(OsString, OsString)]) -> Vec<(OsString, OsString)> {
     let mut env: Vec<(OsString, OsString)> = base
         .iter()
@@ -561,6 +773,7 @@ pub(crate) fn child_env(base: &[(OsString, OsString)]) -> Vec<(OsString, OsStrin
             !k.starts_with(b"GIT_") || GIT_ENV_ALLOW.iter().any(|a| a.as_bytes() == k)
         })
         .filter(|(k, _)| !FIXED_ENV.iter().any(|(f, _)| f.as_bytes() == k.as_bytes()))
+        .filter(|(k, _)| !TTY_HINT_ENV.iter().any(|h| h.as_bytes() == k.as_bytes()))
         .cloned()
         .collect();
     env.extend(
@@ -637,5 +850,24 @@ mod tests {
         let found = found.expect("system git");
         assert!(found.is_absolute());
         assert_ne!(found, shim);
+    }
+
+    #[test]
+    fn child_env_never_passes_the_terminal_to_gpg() {
+        let out = child_env(&env(&[
+            ("PATH", "/usr/bin"),
+            ("GPG_TTY", "/dev/pts/7"),
+            ("GPG_AGENT_INFO", "/run/S.gpg-agent:0:1"),
+            ("PINENTRY_USER_DATA", "USE_CURSES=1"),
+        ]));
+        let get = |k: &str| {
+            out.iter()
+                .filter(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(get("GPG_TTY"), vec![OsString::from("/dev/null")]);
+        assert!(get("GPG_AGENT_INFO").is_empty());
+        assert!(get("PINENTRY_USER_DATA").is_empty());
     }
 }

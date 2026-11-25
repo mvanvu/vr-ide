@@ -149,19 +149,34 @@ impl Repo {
         if entries.is_empty() {
             return self.untracked_diff(&rel);
         }
+        let out = self.raw_unstaged(&rel)?;
+        Ok(parse_diff(&out)?.into_iter().find(|d| !d.stat_only()))
+    }
+
+    /// `diff-files` output of one tracked path, as git printed it (patch headers are copied
+    /// from it, SEC-10).
+    pub(crate) fn raw_unstaged(&self, rel: &Path) -> Result<Vec<u8>> {
         // Plumbing, not `git diff`: the porcelain refreshes and rewrites the index after diffing.
         let mut args: Vec<&OsStr> = vec![os("diff-files"), os("--ignore-submodules=dirty")];
         args.extend(DIFF_ARGS.iter().map(|a| os(a)));
         args.extend([os("--"), rel.as_os_str()]);
-        let out = self
-            .git
-            .run_ok(self.workdir(), &args, None, self.file_limits(false))?;
-        Ok(parse_diff(&out)?.into_iter().find(|d| !d.stat_only()))
+        self.git
+            .run_ok(self.workdir(), &args, None, self.file_limits(false))
     }
 
     /// Index vs HEAD of one file, renames detected. `None` when nothing is staged for it.
     pub fn diff_staged(&self, path: &Path) -> Result<Option<FileDiff>> {
         let rel = self.relative(path)?;
+        let Some(out) = self.raw_staged(&rel)? else {
+            return Ok(None);
+        };
+        Ok(parse_diff(&out)?
+            .into_iter()
+            .find(|d| d.path() == Some(rel.as_path())))
+    }
+
+    /// `diff-index --cached` output of one path (with its rename source), as git printed it.
+    pub(crate) fn raw_staged(&self, rel: &Path) -> Result<Option<Vec<u8>>> {
         let base = if self.head_oid()?.is_some() {
             "HEAD"
         } else {
@@ -178,19 +193,37 @@ impl Repo {
             os("--"),
         ];
         let listing = self.run(&names, false)?;
-        let Some(paths) = pair_for(&listing, &rel) else {
+        let Some(paths) = pair_for(&listing, rel) else {
             return Ok(None);
         };
         let mut args: Vec<&OsStr> = vec![os("diff-index"), os("--cached")];
         args.extend(DIFF_ARGS.iter().map(|a| os(a)));
         args.extend([os("--end-of-options"), os(base), os("--")]);
         args.extend(paths.iter().map(|p| p.as_os_str()));
-        let out = self
-            .git
-            .run_ok(self.workdir(), &args, None, self.file_limits(false))?;
-        Ok(parse_diff(&out)?
-            .into_iter()
-            .find(|d| d.path() == Some(rel.as_path())))
+        self.git
+            .run_ok(self.workdir(), &args, None, self.file_limits(false))
+            .map(Some)
+    }
+
+    /// The source path of a staged rename or copy whose new path is `rel`.
+    pub(crate) fn staged_source(&self, rel: &Path) -> Result<Option<PathBuf>> {
+        let base = if self.head_oid()?.is_some() {
+            "HEAD"
+        } else {
+            EMPTY_TREE
+        };
+        let names = [
+            os("diff-index"),
+            os("--cached"),
+            os("-z"),
+            os("--name-status"),
+            os("-M"),
+            os("--end-of-options"),
+            os(base),
+            os("--"),
+        ];
+        let listing = self.run(&names, false)?;
+        Ok(pair_for(&listing, rel).and_then(|p| (p.len() == 2).then(|| p[0].clone())))
     }
 
     /// A commit against its first parent (the empty tree for a root commit), all files or the one
@@ -334,11 +367,25 @@ impl Repo {
             None if eol_set => return Ok(EolAction::Text),
             None => {}
         }
-        let out = self.run_code(&[os("config"), os("--get"), os("core.autocrlf")])?;
-        let v = lossy(out.stdout.trim_ascii()).to_ascii_lowercase();
-        Ok(match v.as_str() {
-            "true" | "yes" | "on" | "1" | "input" if out.code == 0 => EolAction::Auto,
-            _ => EolAction::Keep,
+        // `input` is the one non-boolean value; anything else follows git's own bool parsing
+        // (a valueless key, `2` and `-1` are true).
+        let raw = self.run_code(&[os("config"), os("--get"), os("core.autocrlf")])?;
+        if raw.code != 0 {
+            return Ok(EolAction::Keep);
+        }
+        if raw.stdout.trim_ascii().eq_ignore_ascii_case(b"input") {
+            return Ok(EolAction::Auto);
+        }
+        let out = self.run_code(&[
+            os("config"),
+            os("--type=bool"),
+            os("--get"),
+            os("core.autocrlf"),
+        ])?;
+        Ok(if out.code == 0 && out.stdout.trim_ascii() == b"true" {
+            EolAction::Auto
+        } else {
+            EolAction::Keep
         })
     }
 

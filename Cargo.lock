@@ -2843,6 +2843,7 @@ dependencies = [
  "similar 3.2.1",
  "tempfile",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
