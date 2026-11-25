@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/vr-core", "crates/vr-config", "crates/vr-fs", "crates/vr-search", "crates/vr-syntax", "crates/vr-ide", "crates/vr-term"]
+members = ["crates/vr-core", "crates/vr-config", "crates/vr-fs", "crates/vr-search", "crates/vr-syntax", "crates/vr-ide", "crates/vr-term", "crates/vr-git"]
 
 [workspace.package]
 version = "0.1.0"

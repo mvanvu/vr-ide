@@ -2836,6 +2836,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vr-git"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "similar 3.2.1",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "vr-ide"
 version = "0.1.0"
 dependencies = [
