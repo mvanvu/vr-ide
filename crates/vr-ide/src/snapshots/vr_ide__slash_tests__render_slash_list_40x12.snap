@@ -1,6 +1,5 @@
 ---
 source: crates/vr-ide/src/slash_tests.rs
-assertion_line: 801
 expression: t.backend()
 ---
 " /home/user/DEV/shop                    "
@@ -8,10 +7,10 @@ expression: t.backend()
 "  │> /                               │  "
 " C│ /save-as [path]  Save under ano… │— "
 " R│ /reload  Reload the file from d… │— "
-"  │ /term new  Open a new terminal … │  "
-" c│ /term close  Close the active t… │  "
-" f│ /term right  Terminal panel on … │  "
-" c│ /term bottom  Terminal panel at… │  "
-" c│ /run <command>  Type the comman… │  "
+"  │ /rename <name>  Rename the file… │  "
+" c│ /copy-path  Copy the file's ful… │  "
+" f│ /copy-relpath  Copy the path wi… │  "
+" c│ /recent [n|name]  Open a recent… │  "
+" c│ /sort  Sort the selected lines … │  "
 " c└──────────────────────────────────┘  "
 " /home/user/DEV/shop                    "

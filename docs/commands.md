@@ -5,7 +5,9 @@ The list shows the matching slash commands with their arguments and a short desc
 
 - `Tab` completes the command name, then the argument: paths for `/save-as`, `/ws add`,
   `/ws save` and `/ws open` (relative to the project folder; `~` is your home folder), the theme
-  names, the workspace folders of `/ws remove` and the numbers of `/ws recent`. With several
+  names, the workspace folders of `/ws remove`, the numbers of `/ws recent` and `/recent`, the
+  values of `/indent` and `/eol`, the language ids of `/lang`, and for `/set` the setting names
+  (with their value now), then `true` / `false` or the theme names. With several
   matches `Tab` first fills in what they share, then takes the highlighted one (`up`/`down`).
 - `Enter` runs the command. On a partial name it takes the highlighted command (a command that
   needs an argument is completed instead).
@@ -30,11 +32,50 @@ discards.
 `/theme` changes the theme for this session; set `theme` in `settings.toml` to keep it.
 `/term right`, `/term bottom` and `/wrap` are listed but not available yet.
 
+File commands act on the active tab. `/rename <name>` renames its file in the same folder with the
+explorer's checks (one name, no `/`; an existing name is never replaced) and the tab follows,
+unsaved changes included. `/copy-relpath` copies the path relative to the workspace folder that
+holds the file. `/recent` lists the last 20 files opened in any vr-ide window (kept in
+`~/.local/state/vr-ide/recent-files.toml`, written in the background); `/recent 3` opens the
+third, `/recent main.rs` the newest whose path contains `main.rs`.
+
+Text commands change the selected lines (`/sort`, `/unique`, `/trim`, `/indent`) or the selected
+text (`/upper`, `/lower`), or the whole file when nothing is selected. Like typing they need edit
+mode (`space` `i`); in read mode they show the read-mode hint and change nothing. Each one is a
+single undo step. `/unique` keeps the first of equal lines; `/trim` drops trailing spaces and tabs.
+`/indent 2|4|tab` re-indents: the old indent step is the most common indent increase between
+lines of the whole file (blank lines and block-comment lines such as ` * text` are skipped; a
+selection uses the step of the whole file too), each step becomes the new unit and columns left
+over stay spaces; the file then indents with that unit. `/eol lf|crlf` converts every line break
+and marks the file changed; in a file with no line break yet it sets the break that Enter and
+paste insert. `/lang <id>` highlights the file as that language until the tab closes.
+
+`/set <name> <value>` changes one `settings.toml` setting for this session (the file is not
+written); the value is checked as in the file (type, range, theme names). Only that setting is
+applied: explorer toggles and the terminal height you changed stay as they are.
+`/config` and `/keymap` open your `settings.toml` and `keymap.toml`; a missing one is first
+made from the built-in defaults with every line commented out, so it changes nothing until you
+uncomment a line. Changes in those files apply when vr-ide starts again. `/keys` shows the
+keys of the keymap in use in a read-only tab (keys a terminal without the kitty keyboard
+protocol does not send are marked).
+
 <!-- slash-commands:start (generated from the registry; a test checks it) -->
 | Command | What it does |
 |---|---|
 | `/save-as [path]` | Save under another name (no path: the Save As prompt) |
 | `/reload` | Reload the file from disk |
+| `/rename <name>` | Rename the file on disk (the tab follows) |
+| `/copy-path` | Copy the file's full path |
+| `/copy-relpath` | Copy the path within its workspace folder |
+| `/recent [n\|name]` | Open a recent file (no argument: list them) |
+| `/sort` | Sort the selected lines (none: the file) |
+| `/unique` | Drop repeated lines (selection or file) |
+| `/upper` | Upper-case the selection (or the file) |
+| `/lower` | Lower-case the selection (or the file) |
+| `/trim` | Drop trailing spaces (selection or file) |
+| `/indent 2\|4\|tab` | Re-indent; set the file's indent unit |
+| `/eol lf\|crlf` | Convert the file's line breaks |
+| `/lang <id>` | Highlight the file as another language |
 | `/term new` | Open a new terminal tab |
 | `/term close` | Close the active terminal tab |
 | `/term right` | Terminal panel on the right (not available yet) |
@@ -50,6 +91,10 @@ discards.
 | `/wrap` | Toggle soft line wrap (not available yet) |
 | `/hidden` | Show or hide hidden files in the explorer |
 | `/ignored` | Show or hide ignored files in the explorer |
+| `/set <name> <value>` | Change a setting for this session |
+| `/config` | Open settings.toml (made when missing) |
+| `/keymap` | Open keymap.toml (made when missing) |
+| `/keys` | Show the key table (read-only tab) |
 | `/help` | List the slash commands |
 | `/q` | Quit (asks about unsaved files) |
 | `/q!` | Quit, discarding unsaved changes (copy kept in recovery) |

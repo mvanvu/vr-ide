@@ -813,8 +813,14 @@ const ROOT_REFUSED: &str =
 /// the project passes it; those are refused here (D109), the link itself is not (its folder
 /// is inside).
 fn below_root(app: &App, path: &Path) -> Result<PathBuf, String> {
-    let p = within(app, path)?;
-    let root = within(app, Path::new(""))?;
+    below_root_of(app, app.explorer.root(), path)
+}
+
+/// [`below_root`] for the workspace root `root` (`/rename` of a file in any root).
+fn below_root_of(app: &App, root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let within = |p: &Path| vr_fs::ensure_within(root, p).map_err(|e| describe(app, &e));
+    let p = within(path)?;
+    let root = within(Path::new(""))?;
     if p == root {
         return Err(ROOT_REFUSED.to_string());
     }
@@ -853,30 +859,35 @@ fn rename(app: &mut App, _: CmdArgs) -> CmdResult {
 /// Renames `path` to the typed name in the same folder; open tabs follow.
 pub fn answer_rename(app: &mut App, widget: DialogWidget, path: PathBuf, text: &str) {
     let action = DialogAction::Rename(path.clone());
-    let checked = vr_fs::validate_name(text)
-        .map_err(|e| describe(app, &e))
-        .and_then(|()| below_root(app, &path))
-        .and_then(|from| {
-            let parent = from.parent().map(Path::to_path_buf).unwrap_or_default();
-            Ok((from, within(app, &parent.join(text))?))
-        });
-    let (from, to) = match checked {
-        Ok(v) => v,
-        Err(e) => return reopen_with_error(app, widget, action, e),
-    };
+    let root = app.explorer.root().to_path_buf();
+    match rename_in(app, &root, &path, text) {
+        Ok(Some(to)) => select_path(app, &to),
+        Ok(None) => {}
+        Err(e) => reopen_with_error(app, widget, action, e),
+    }
+}
+
+/// Renames `path` (strictly below the workspace root `root`) to the name `text` in the same
+/// folder, with the explorer's checks: one valid name, inside the root, never over an
+/// existing path or a path an open tab holds. Open tabs follow. `Ok(None)`: the same name.
+pub fn rename_in(
+    app: &mut App,
+    root: &Path,
+    path: &Path,
+    text: &str,
+) -> Result<Option<PathBuf>, String> {
+    vr_fs::validate_name(text).map_err(|e| describe(app, &e))?;
+    let from = below_root_of(app, root, path)?;
+    let parent = from.parent().map(Path::to_path_buf).unwrap_or_default();
+    let to = vr_fs::ensure_within(root, &parent.join(text)).map_err(|e| describe(app, &e))?;
     if from == to {
-        return;
+        return Ok(None);
     }
-    if let Err(e) = check_tab_free(app, &from, &to) {
-        return reopen_with_error(app, widget, action, e);
-    }
-    if let Err(e) = vr_fs::ops::rename(&from, &to) {
-        let msg = describe(app, &e);
-        return reopen_with_error(app, widget, action, msg);
-    }
+    check_tab_free(app, &from, &to)?;
+    vr_fs::ops::rename(&from, &to).map_err(|e| describe(app, &e))?;
     retarget(app, &from, &to);
     refresh_after(app, &[&from, &to]);
-    select_path(app, &to);
+    Ok(Some(to))
 }
 
 /// Tabs of `from` (a file, or every file under a folder) now point at `to`, unsaved edits

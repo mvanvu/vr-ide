@@ -354,6 +354,11 @@ fn insert_newline(app: &mut App) {
         .chars()
         .take_while(|c| *c == ' ' || *c == '\t')
         .collect();
-    let brk = vr_core::text::default_line_break(rope);
+    // With no break in the text yet, the file's style (detected, or chosen with /eol) decides.
+    let brk = if rope.len_lines() == 1 {
+        doc.line_ending.as_str().to_string()
+    } else {
+        vr_core::text::default_line_break(rope)
+    };
     doc.buffer.insert_text(&format!("{brk}{indent}"));
 }

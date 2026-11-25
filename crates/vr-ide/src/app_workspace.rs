@@ -120,7 +120,7 @@ impl App {
             None => {
                 if path.symlink_metadata().is_ok() {
                     return Err(format!(
-                        "{shown} exists; it is replaced only when confirmed"
+                        "{shown} exists; /ws save does not replace another file"
                     ));
                 }
                 // An absent file is a version too: one created meanwhile is refused.

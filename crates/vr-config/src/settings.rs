@@ -2,14 +2,15 @@
 
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{ConfigWarning, read_user_file, toml_error_message};
 
-const DEFAULT_SETTINGS: &str = include_str!("../defaults/settings.toml");
+/// The built-in `settings.toml` text.
+pub const DEFAULT_SETTINGS: &str = include_str!("../defaults/settings.toml");
 
 /// An AI agent CLI started in a terminal tab (M6).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AiPreset {
     pub name: String,
@@ -18,7 +19,7 @@ pub struct AiPreset {
     pub args: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub tab_width: usize,
@@ -85,6 +86,69 @@ impl Settings {
         let settings = parse(merged).unwrap_or_default();
         (settings, warnings)
     }
+
+    /// The settings `/set` can change: every key of the built-in file with a single value
+    /// (lists such as `ai_presets` are edited in the file), in file order.
+    pub fn names() -> Vec<String> {
+        // Read from the text, not a parsed table: the table does not keep the file's order.
+        DEFAULT_SETTINGS
+            .lines()
+            .take_while(|l| !l.starts_with('['))
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split_once(" = ").map(|(k, _)| k.trim().to_string()))
+            .collect()
+    }
+
+    /// The value of setting `key` as TOML text (`4`, `true`, `"dark"`); `None` for an unknown
+    /// key.
+    pub fn value_text(&self, key: &str) -> Option<String> {
+        if !Settings::names().iter().any(|n| n == key) {
+            return None;
+        }
+        Some(self.table().get(key)?.to_string())
+    }
+
+    /// A copy with setting `key` set to `raw`, checked as when the file is loaded (type and
+    /// range); `raw` is TOML (`4`, `true`) or, for a text setting, plain text too.
+    pub fn with_value(&self, key: &str, raw: &str) -> Result<Settings, String> {
+        let raw = raw.trim();
+        if !Settings::names().iter().any(|n| n == key) {
+            return Err(if key == "ai_presets" {
+                "ai_presets is a list: change it in settings.toml (/config)".to_string()
+            } else {
+                format!("unknown setting {key}")
+            });
+        }
+        if raw.is_empty() {
+            return Err(format!("{key} needs a value"));
+        }
+        let mut table = self.table();
+        let typed = toml::from_str::<toml::Table>(&format!("v = {raw}"))
+            .ok()
+            .and_then(|mut t| t.remove("v"));
+        let value = match (table.get(key), typed) {
+            (Some(toml::Value::String(_)), Some(v @ toml::Value::String(_))) => v,
+            // Text settings take the word as typed: `/set theme dark`.
+            (Some(toml::Value::String(_)), _) => toml::Value::String(raw.to_string()),
+            (_, Some(v)) => v,
+            (_, None) => return Err(format!("{key}: {raw} is not a valid value")),
+        };
+        table.insert(key.to_string(), value);
+        parse(table).map_err(|e| {
+            if e.contains(key) {
+                e
+            } else {
+                format!("{key}: {e}")
+            }
+        })
+    }
+
+    fn table(&self) -> toml::Table {
+        match toml::Value::try_from(self) {
+            Ok(toml::Value::Table(t)) => t,
+            _ => toml::Table::new(),
+        }
+    }
 }
 
 fn parse(table: toml::Table) -> Result<Settings, String> {
@@ -101,4 +165,55 @@ fn parse(table: toml::Table) -> Result<Settings, String> {
         return Err(format!("ai preset {:?} has an empty command", p.name));
     }
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_the_single_value_keys_in_file_order() {
+        let names = Settings::names();
+        assert_eq!(names[0], "tab_width");
+        assert!(names.contains(&"theme".to_string()));
+        assert!(names.contains(&"terminal_pass_nul".to_string()));
+        assert!(!names.contains(&"ai_presets".to_string()));
+    }
+
+    #[test]
+    fn value_text_shows_toml() {
+        let s = Settings::default();
+        assert_eq!(s.value_text("tab_width").as_deref(), Some("4"));
+        assert_eq!(s.value_text("insert_spaces").as_deref(), Some("true"));
+        assert_eq!(s.value_text("theme").as_deref(), Some("\"synthwave\""));
+        assert_eq!(s.value_text("nope"), None);
+    }
+
+    #[test]
+    fn with_value_checks_name_type_and_range() {
+        let s = Settings::default();
+        assert_eq!(s.with_value("tab_width", "2").unwrap().tab_width, 2);
+        assert!(
+            !s.with_value("insert_spaces", "false")
+                .unwrap()
+                .insert_spaces
+        );
+        assert_eq!(s.with_value("theme", "dark").unwrap().theme, "dark");
+        assert_eq!(s.with_value("theme", "\"light\"").unwrap().theme, "light");
+        assert_eq!(
+            s.with_value("nope", "1").unwrap_err(),
+            "unknown setting nope"
+        );
+        assert!(s.with_value("tab_width", "abc").is_err());
+        assert!(s.with_value("tab_width", "true").is_err());
+        assert_eq!(
+            s.with_value("tab_width", "0").unwrap_err(),
+            "tab_width must be between 1 and 16"
+        );
+        assert!(s.with_value("insert_spaces", "yes").is_err());
+        assert!(s.with_value("ai_presets", "[]").is_err());
+        assert!(s.with_value("tab_width", "").is_err());
+        // The original is untouched.
+        assert_eq!(s, Settings::default());
+    }
 }

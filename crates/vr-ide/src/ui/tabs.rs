@@ -18,11 +18,14 @@ fn label<'a>(app: &'a App, i: usize, theme: &Theme) -> Vec<Span<'a>> {
     } else {
         theme.tab_inactive
     };
-    let name = doc
-        .path
-        .as_deref()
-        .and_then(|p| p.file_name())
-        .map_or_else(|| "untitled".into(), |n| n.to_string_lossy());
+    let name = match app.views.get(i).and_then(|v| v.title) {
+        Some(title) => title.into(),
+        None => doc
+            .path
+            .as_deref()
+            .and_then(|p| p.file_name())
+            .map_or_else(|| "untitled".into(), |n| n.to_string_lossy()),
+    };
     let mut spans = vec![Span::styled(format!(" {name}"), base)];
     if doc.is_modified() {
         spans.push(Span::styled(" ●", base.patch(theme.tab_modified)));

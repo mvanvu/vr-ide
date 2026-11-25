@@ -28,13 +28,35 @@ pub enum ArgKind {
     Root,
     /// Optional: the number of a recent workspace (no number: the list is shown).
     Recent,
+    /// Optional: the number (or part of the path) of a recently opened file.
+    RecentFile,
+    /// A language id with a compiled-in grammar.
+    Language,
+    /// A setting name, then its value.
+    Setting,
 }
 
 impl ArgKind {
     pub fn required(self) -> bool {
         matches!(
             self,
-            ArgKind::Path { required: true, .. } | ArgKind::Text | ArgKind::Choice(_)
+            ArgKind::Path { required: true, .. }
+                | ArgKind::Text
+                | ArgKind::Choice(_)
+                | ArgKind::Language
+                | ArgKind::Setting
+        )
+    }
+
+    /// An empty argument with Enter takes the highlighted value of the list.
+    fn picks_from_list(self) -> bool {
+        matches!(
+            self,
+            ArgKind::Choice(_)
+                | ArgKind::Root
+                | ArgKind::Recent
+                | ArgKind::RecentFile
+                | ArgKind::Language
         )
     }
 }
@@ -65,6 +87,8 @@ impl SlashCommand {
 }
 
 pub const THEMES: &[&str] = &["synthwave", "dracula", "dark", "light"];
+pub const INDENTS: &[&str] = &["2", "4", "tab"];
+pub const EOLS: &[&str] = &["lf", "crlf"];
 
 const fn cmd(
     name: &'static str,
@@ -97,6 +121,90 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         save_as,
     ),
     cmd("reload", "", NO_ARG, "Reload the file from disk", reload),
+    cmd(
+        "rename",
+        "<name>",
+        ArgKind::Text,
+        "Rename the file on disk (the tab follows)",
+        rename,
+    ),
+    cmd(
+        "copy-path",
+        "",
+        NO_ARG,
+        "Copy the file's full path",
+        copy_path,
+    ),
+    cmd(
+        "copy-relpath",
+        "",
+        NO_ARG,
+        "Copy the path within its workspace folder",
+        copy_relpath,
+    ),
+    cmd(
+        "recent",
+        "[n|name]",
+        ArgKind::RecentFile,
+        "Open a recent file (no argument: list them)",
+        recent,
+    ),
+    cmd(
+        "sort",
+        "",
+        NO_ARG,
+        "Sort the selected lines (none: the file)",
+        sort,
+    ),
+    cmd(
+        "unique",
+        "",
+        NO_ARG,
+        "Drop repeated lines (selection or file)",
+        unique,
+    ),
+    cmd(
+        "upper",
+        "",
+        NO_ARG,
+        "Upper-case the selection (or the file)",
+        upper,
+    ),
+    cmd(
+        "lower",
+        "",
+        NO_ARG,
+        "Lower-case the selection (or the file)",
+        lower,
+    ),
+    cmd(
+        "trim",
+        "",
+        NO_ARG,
+        "Drop trailing spaces (selection or file)",
+        trim,
+    ),
+    cmd(
+        "indent",
+        "2|4|tab",
+        ArgKind::Choice(INDENTS),
+        "Re-indent; set the file's indent unit",
+        indent,
+    ),
+    cmd(
+        "eol",
+        "lf|crlf",
+        ArgKind::Choice(EOLS),
+        "Convert the file's line breaks",
+        eol,
+    ),
+    cmd(
+        "lang",
+        "<id>",
+        ArgKind::Language,
+        "Highlight the file as another language",
+        lang,
+    ),
     cmd("term new", "", NO_ARG, "Open a new terminal tab", term_new),
     cmd(
         "term close",
@@ -204,6 +312,34 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         NO_ARG,
         "Show or hide ignored files in the explorer",
         ignored,
+    ),
+    cmd(
+        "set",
+        "<name> <value>",
+        ArgKind::Setting,
+        "Change a setting for this session",
+        set,
+    ),
+    cmd(
+        "config",
+        "",
+        NO_ARG,
+        "Open settings.toml (made when missing)",
+        config,
+    ),
+    cmd(
+        "keymap",
+        "",
+        NO_ARG,
+        "Open keymap.toml (made when missing)",
+        keymap,
+    ),
+    cmd(
+        "keys",
+        "",
+        NO_ARG,
+        "Show the key table (read-only tab)",
+        keys,
     ),
     cmd("help", "", NO_ARG, "List the slash commands", help),
     cmd("q", "", NO_ARG, "Quit (asks about unsaved files)", quit),
@@ -361,7 +497,7 @@ pub enum Submit {
 pub fn submit(input: &str, rows: &[Row], selected: usize) -> Submit {
     // A listed choice with nothing typed yet ("/ws recent "): the highlighted value.
     if let Some((c, "")) = in_argument(input)
-        && matches!(c.arg, ArgKind::Choice(_) | ArgKind::Root | ArgKind::Recent)
+        && c.arg.picks_from_list()
         && let Some(row) = rows.get(selected)
         && let Ok((c, arg)) = parse(&row.fill)
         && !arg.is_empty()
@@ -375,9 +511,7 @@ pub fn submit(input: &str, rows: &[Row], selected: usize) -> Submit {
     let picks = match lookup(input) {
         // Nothing typed after the slash: no command is guessed.
         None => input.trim() != "/",
-        Some((c, arg)) => {
-            arg.is_empty() && matches!(c.arg, ArgKind::Choice(_) | ArgKind::Root | ArgKind::Recent)
-        }
+        Some((c, arg)) => arg.is_empty() && c.arg.picks_from_list(),
     };
     match rows.get(selected) {
         Some(row) if picks && row.fill != input => match parse(&row.fill) {
@@ -416,7 +550,53 @@ fn candidates(app: &App, kind: ArgKind, arg: &str) -> Vec<(String, String)> {
             .map(|(i, e)| ((i + 1).to_string(), recent_label(i, e)))
             .filter(|(v, _)| v.starts_with(arg))
             .collect(),
+        ArgKind::RecentFile => app
+            .recent_files
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| {
+                let n = (i + 1).to_string();
+                let shown = app.display_path(p);
+                (n.starts_with(arg) || shown.contains(arg))
+                    .then(|| (n.clone(), format!("{n}  {shown}")))
+            })
+            .collect(),
+        ArgKind::Language => app
+            .syntax
+            .language_ids()
+            .into_iter()
+            .filter(|id| id.starts_with(arg))
+            .map(|id| (id.clone(), id))
+            .collect(),
+        ArgKind::Setting => setting_candidates(app, arg),
     }
+}
+
+/// `/set`: setting names (with their value now) until a space, then the values a setting of
+/// a fixed set takes (true / false, theme names).
+fn setting_candidates(app: &App, arg: &str) -> Vec<(String, String)> {
+    let Some((name, value)) = arg.split_once(' ') else {
+        return vr_config::Settings::names()
+            .into_iter()
+            .filter(|n| n.starts_with(arg))
+            .map(|n| {
+                let now = app.settings.value_text(&n).unwrap_or_default();
+                (format!("{n} "), format!("{n}  {now}"))
+            })
+            .collect();
+    };
+    let value = value.trim_start();
+    let choices: &[&str] = match app.settings.value_text(name).as_deref() {
+        Some("true" | "false") => &["true", "false"],
+        _ if name == "theme" => THEMES,
+        _ => &[],
+    };
+    choices
+        .iter()
+        .filter(|v| v.starts_with(value))
+        .map(|v| (format!("{name} {v}"), v.to_string()))
+        .collect()
 }
 
 fn recent_label(i: usize, e: &vr_config::RecentWorkspace) -> String {
@@ -864,6 +1044,439 @@ fn quit(app: &mut App, _: &str) -> Result<(), String> {
 /// project replace still ask or refuse, as for `/q`; their Quit anyway still discards.
 fn quit_discard(app: &mut App, _: &str) -> Result<(), String> {
     super::app::quit_discarding(app);
+    Ok(())
+}
+
+// ---- phase 2: file extras (T20b) --------------------------------------------------------------
+
+/// The active tab's file, or why there is none.
+fn active_file(app: &App) -> Result<PathBuf, String> {
+    let doc = app.active_doc().ok_or(NO_FILE)?;
+    doc.path
+        .clone()
+        .ok_or_else(|| "this tab has no file name yet: save it first".to_string())
+}
+
+/// The explorer's rename (same checks, open tabs follow) for the active file, in the
+/// workspace folder that holds it.
+fn rename(app: &mut App, name: &str) -> Result<(), String> {
+    let path = active_file(app)?;
+    let root = app
+        .workspace
+        .root_of(&path)
+        .map(|r| r.path.clone())
+        .ok_or_else(|| {
+            format!(
+                "{} is outside the workspace folders: /rename works inside them",
+                path.display()
+            )
+        })?;
+    if let Some(to) = super::explorer::rename_in(app, &root, &path, name)? {
+        app.recent_file_renamed(&path, &to);
+        let shown = app.display_path(&to);
+        app.info(format!("renamed to {shown}"));
+    }
+    Ok(())
+}
+
+fn copy_text(app: &mut App, text: String) -> Result<(), String> {
+    app.clipboard
+        .set(&text)
+        .map_err(|e| format!("clipboard: {e}"))?;
+    app.info(format!("copied {text}"));
+    Ok(())
+}
+
+fn copy_path(app: &mut App, _: &str) -> Result<(), String> {
+    let path = active_file(app)?;
+    copy_text(app, path.display().to_string())
+}
+
+/// Relative to the workspace folder holding the file (with several roots, its own root).
+fn copy_relpath(app: &mut App, _: &str) -> Result<(), String> {
+    let path = active_file(app)?;
+    let rel = app
+        .workspace
+        .root_of(&path)
+        .and_then(|r| path.strip_prefix(&r.path).ok())
+        .map(|p| p.display().to_string())
+        .ok_or_else(|| format!("{} is not inside a workspace folder", path.display()))?;
+    copy_text(app, rel)
+}
+
+/// No argument: the window lists the recent files; a number opens that entry, other text the
+/// newest entry whose shown path contains it.
+fn recent(app: &mut App, arg: &str) -> Result<(), String> {
+    if arg.is_empty() {
+        palette::open(app);
+        set_input(app, "/recent ");
+        return Ok(());
+    }
+    let entries = &app.recent_files.entries;
+    let picked = match arg.parse::<usize>() {
+        Ok(n) => n.checked_sub(1).and_then(|i| entries.get(i)),
+        Err(_) => entries.iter().find(|p| app.display_path(p).contains(arg)),
+    }
+    .cloned()
+    .ok_or_else(|| format!("/recent: no recent file {arg}"))?;
+    app.open_path(&picked).map_err(|e| e.to_string())?;
+    app.focus = crate::app::Focus::Editor;
+    Ok(())
+}
+
+// ---- phase 2: text commands -----------------------------------------------------------------
+
+/// Runs `f` on the active buffer when it may be edited (edit mode, not read-only: else
+/// `editable_doc` shows why and nothing changes). `f` returns whether the text changed.
+fn edit_text(
+    app: &mut App,
+    name: &str,
+    f: impl FnOnce(&mut vr_core::Document) -> bool,
+) -> Result<(), String> {
+    if app.docs.is_empty() {
+        return Err(NO_FILE.into());
+    }
+    let Some(doc) = app.editable_doc() else {
+        return Ok(());
+    };
+    if !f(doc) {
+        app.info(format!("/{name}: nothing to change"));
+    }
+    Ok(())
+}
+
+fn sort(app: &mut App, _: &str) -> Result<(), String> {
+    edit_text(app, "sort", |d| {
+        vr_core::edit_ops::rewrite_lines(&mut d.buffer, |mut lines| {
+            lines.sort();
+            lines
+        })
+    })
+}
+
+/// Keeps the first of equal lines, wherever the others are.
+fn unique(app: &mut App, _: &str) -> Result<(), String> {
+    edit_text(app, "unique", |d| {
+        vr_core::edit_ops::rewrite_lines(&mut d.buffer, |lines| {
+            let mut seen = std::collections::HashSet::new();
+            lines
+                .into_iter()
+                .filter(|l| seen.insert(l.clone()))
+                .collect()
+        })
+    })
+}
+
+fn upper(app: &mut App, _: &str) -> Result<(), String> {
+    edit_text(app, "upper", |d| {
+        vr_core::edit_ops::rewrite_selection(&mut d.buffer, str::to_uppercase)
+    })
+}
+
+fn lower(app: &mut App, _: &str) -> Result<(), String> {
+    edit_text(app, "lower", |d| {
+        vr_core::edit_ops::rewrite_selection(&mut d.buffer, str::to_lowercase)
+    })
+}
+
+/// Trailing spaces and tabs of each line.
+fn trim(app: &mut App, _: &str) -> Result<(), String> {
+    edit_text(app, "trim", |d| {
+        vr_core::edit_ops::rewrite_lines(&mut d.buffer, |lines| {
+            lines
+                .into_iter()
+                .map(|l| l.trim_end_matches([' ', '\t']).to_string())
+                .collect()
+        })
+    })
+}
+
+/// Display columns of `lead` (spaces and tabs) with tab stops every `tab_width`.
+fn lead_cols(lead: &str, tab_width: usize) -> usize {
+    lead.chars().fold(0, |cols, c| {
+        if c == '\t' {
+            (cols / tab_width + 1) * tab_width
+        } else {
+            cols + 1
+        }
+    })
+}
+
+/// The indent step of the whole document in columns: the most common increase between the
+/// indents of consecutive lines (the smaller one on a tie). Blank lines and block-comment
+/// continuations (` * text`, ` */`) are skipped, and 1-column increases count only when there
+/// are no others, so a doc comment's lead or an aligned line cannot turn every column into
+/// a level. `fallback` when no line is indented deeper than the one before it.
+fn indent_step(rope: &ropey::Rope, tw: usize, fallback: usize) -> usize {
+    let mut counts = std::collections::BTreeMap::<usize, usize>::new();
+    let mut prev: Option<usize> = None;
+    for line in rope.lines() {
+        let line: std::borrow::Cow<str> = line.into();
+        let body = line.trim_start_matches([' ', '\t']);
+        let body = body.trim_end_matches(['\r', '\n']);
+        if body.is_empty() || body.starts_with('*') {
+            continue;
+        }
+        let cols = lead_cols(
+            &line[..line.len() - line.trim_start_matches([' ', '\t']).len()],
+            tw,
+        );
+        if let Some(p) = prev.filter(|p| cols > *p) {
+            *counts.entry(cols - p).or_default() += 1;
+        }
+        prev = Some(cols);
+    }
+    let best = |wide: bool| {
+        counts
+            .iter()
+            .filter(|(d, _)| (**d > 1) == wide)
+            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+            .map(|(d, _)| *d)
+    };
+    best(true).or_else(|| best(false)).unwrap_or(fallback)
+}
+
+/// Re-indents the lines (selection or file) by the document's indent step ([`indent_step`],
+/// taken from the whole file even for a selection, so selected lines keep their level
+/// against the rest). Each step becomes the new unit; columns left over stay as spaces. The
+/// new unit is the file's indent unit from now on.
+fn indent(app: &mut App, arg: &str) -> Result<(), String> {
+    let unit = match arg {
+        "2" => "  ",
+        "4" => "    ",
+        _ => "\t",
+    };
+    edit_text(app, "indent", |d| {
+        let opts = d.buffer.options().clone();
+        let tw = opts.tab_width.max(1);
+        let step = indent_step(d.buffer.text(), tw, lead_cols(&opts.indent_unit, tw).max(1));
+        let changed = vr_core::edit_ops::rewrite_lines(&mut d.buffer, |lines| {
+            lines
+                .into_iter()
+                .map(|l| {
+                    let body = l.trim_start_matches([' ', '\t']);
+                    if body.is_empty() {
+                        return l;
+                    }
+                    let cols = lead_cols(&l[..l.len() - body.len()], tw);
+                    format!(
+                        "{}{}{body}",
+                        unit.repeat(cols / step),
+                        " ".repeat(cols % step)
+                    )
+                })
+                .collect()
+        });
+        d.buffer.set_options(vr_core::BufferOptions {
+            tab_width: opts.tab_width,
+            indent_unit: unit.to_string(),
+        });
+        changed || opts.indent_unit != unit
+    })
+}
+
+/// Every line break becomes LF or CRLF; the file is changed (saved with them).
+fn eol(app: &mut App, arg: &str) -> Result<(), String> {
+    use vr_core::document::LineEnding;
+    let (ending, name) = if arg == "crlf" {
+        (LineEnding::CrLf, "CRLF")
+    } else {
+        (LineEnding::Lf, "LF")
+    };
+    let mut already = false;
+    let mut no_breaks = false;
+    edit_text(app, "eol", |d| {
+        let changed = vr_core::edit_ops::convert_line_breaks(&mut d.buffer, ending.as_str());
+        no_breaks = d.buffer.text().len_lines() == 1;
+        already = !changed && !no_breaks && d.line_ending == ending;
+        d.line_ending = ending;
+        // Nothing to report as "nothing to change": the notices below say more.
+        true
+    })?;
+    if no_breaks {
+        app.info(format!(
+            "/eol: no line breaks yet; new lines use {name} (Enter, paste)"
+        ));
+    } else if already {
+        app.info(format!("/eol: the line breaks are already {name}"));
+    }
+    Ok(())
+}
+
+/// Works in read mode too: the text does not change.
+fn lang(app: &mut App, id: &str) -> Result<(), String> {
+    if app.docs.is_empty() {
+        return Err(NO_FILE.into());
+    }
+    if !app.syntax.set_language(app.active, id) {
+        return Err(format!("/lang: no language {id} (Tab lists them)"));
+    }
+    app.sync_syntax();
+    app.info(format!("highlighted as {id} until the tab closes"));
+    Ok(())
+}
+
+// ---- phase 2: settings ----------------------------------------------------------------------
+
+/// The setting changes for this session only; settings.toml is not written.
+fn set(app: &mut App, arg: &str) -> Result<(), String> {
+    let (name, value) = arg
+        .split_once(char::is_whitespace)
+        .map_or((arg, ""), |(n, v)| (n, v.trim()));
+    let new = app.settings.with_value(name, value)?;
+    if name == "theme" && !THEMES.contains(&new.theme.as_str()) {
+        return Err(format!(
+            "theme: {} is not one of {}",
+            new.theme,
+            THEMES.join(", ")
+        ));
+    }
+    apply_settings(app, new);
+    let now = app.settings.value_text(name).unwrap_or_default();
+    app.info(format!(
+        "{name} = {now} for this session (settings.toml keeps its value)"
+    ));
+    Ok(())
+}
+
+/// Puts `new` in place and brings what reads settings only at startup in step, for the keys
+/// that changed only: the open files' tab width (and their indent unit unless `/indent` set
+/// their own), the explorer's hidden / ignored toggles and the terminal height. A key that
+/// did not change leaves the current view alone (ctrl+h, terminal grow / shrink).
+/// `scrollback` and `max_highlight_bytes` apply to terminals and files opened from now on.
+fn apply_settings(app: &mut App, new: vr_config::Settings) {
+    let before = app.buffer_options();
+    let old = std::mem::replace(&mut app.settings, new);
+    let after = app.buffer_options();
+    if before != after {
+        for doc in &mut app.docs {
+            let mut o = doc.buffer.options().clone();
+            o.tab_width = after.tab_width;
+            if o.indent_unit == before.indent_unit {
+                o.indent_unit = after.indent_unit.clone();
+            }
+            doc.buffer.set_options(o);
+        }
+    }
+    let new = &app.settings;
+    let hidden =
+        old.show_hidden != new.show_hidden && app.explorer.tree.show_hidden() != new.show_hidden;
+    let ignored = old.show_ignored != new.show_ignored
+        && app.explorer.tree.show_ignored() != new.show_ignored;
+    if old.terminal_height_percent != new.terminal_height_percent {
+        app.terminal.height_percent = new.terminal_height_percent;
+    }
+    if hidden {
+        app.run_command("explorer.toggle_hidden", CmdArgs::None);
+    }
+    if ignored {
+        app.run_command("explorer.toggle_ignored", CmdArgs::None);
+    }
+}
+
+/// Opens the user file `name` of the configuration folder, first writing it from the
+/// built-in defaults (every line commented out) when it does not exist.
+fn open_user_file(app: &mut App, name: &str, defaults: &str) -> Result<(), String> {
+    let dir = app
+        .config_dir
+        .clone()
+        .ok_or("no configuration folder is known")?;
+    let path = dir.join(name);
+    if path.symlink_metadata().is_err() {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                f.write_all(vr_config::user_file_template(defaults).as_bytes())
+            });
+        match made {
+            Ok(()) => app.info(format!(
+                "{} made from the built-in defaults",
+                path.display()
+            )),
+            // Made meanwhile (another vr-ide): open that one.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    app.open_path(&path).map_err(|e| e.to_string())?;
+    app.focus = crate::app::Focus::Editor;
+    app.info(format!("{name}: changes apply when vr-ide starts again"));
+    Ok(())
+}
+
+fn config(app: &mut App, _: &str) -> Result<(), String> {
+    open_user_file(app, "settings.toml", vr_config::DEFAULT_SETTINGS)
+}
+
+fn keymap(app: &mut App, _: &str) -> Result<(), String> {
+    open_user_file(app, "keymap.toml", vr_config::DEFAULT_KEYMAP)
+}
+
+const KEYS_TITLE: &str = "keys";
+
+/// The key table of the keymap in use: context, key, command, title; keys a terminal without
+/// the kitty protocol does not send are marked.
+pub fn key_table(app: &App) -> String {
+    let rows: Vec<[String; 4]> = app
+        .keymap
+        .bindings()
+        .map(|(ctx, k, cmd)| {
+            let title = super::registry::find(cmd).map_or("", |c| c.title);
+            let note = if crate::event_loop::legacy_unreachable(k) {
+                " (kitty keyboard only)"
+            } else {
+                ""
+            };
+            [
+                ctx.to_string(),
+                k.to_string(),
+                cmd.to_string(),
+                format!("{title}{note}"),
+            ]
+        })
+        .collect();
+    let head = ["context", "key", "command", "title"].map(String::from);
+    let width = |i: usize| {
+        rows.iter()
+            .chain(std::iter::once(&head))
+            .map(|r| r[i].chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let (w0, w1, w2) = (width(0), width(1), width(2));
+    let mut out = String::from(
+        "Key table of the keymap in use (read-only; /keymap opens keymap.toml to change it)\n\n",
+    );
+    for r in std::iter::once(&head).chain(rows.iter()) {
+        let line = format!("{:w0$}  {:w1$}  {:w2$}  {}", r[0], r[1], r[2], r[3]);
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// A read-only tab without a file holding [`key_table`]; a second `/keys` shows it again.
+fn keys(app: &mut App, _: &str) -> Result<(), String> {
+    let table = key_table(app);
+    if let Some(i) = app.views.iter().position(|v| v.title == Some(KEYS_TITLE)) {
+        app.set_active(i);
+    } else {
+        let mut doc = vr_core::Document::untitled();
+        doc.buffer = vr_core::Buffer::from_str(&table);
+        doc.read_only = true;
+        app.docs.push(doc);
+        app.views.push(crate::app::View {
+            follow_cursor: true,
+            title: Some(KEYS_TITLE),
+            ..Default::default()
+        });
+        app.set_active(app.docs.len() - 1);
+    }
+    app.focus = crate::app::Focus::Editor;
     Ok(())
 }
 

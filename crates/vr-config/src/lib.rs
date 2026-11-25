@@ -8,19 +8,21 @@ mod keys;
 mod languages;
 mod paths;
 mod recent;
+mod recent_files;
 mod settings;
 mod workspace_file;
 
 use std::path::PathBuf;
 
-pub use keymap::{Context, Keymap, RESERVED_COMMANDS};
+pub use keymap::{Context, DEFAULT_KEYMAP, Keymap, RESERVED_COMMANDS};
 pub use keys::{KeyChord, KeyCode, KeyParseError, Mods};
 pub use languages::{LANGUAGES_FILE, LanguageDef, Languages};
 pub use paths::{config_dir, state_dir};
 pub use recent::{
     RECENT_FILE, RECENT_WORKSPACES_MAX, RecentWorkspace, RecentWorkspaces, write_atomic,
 };
-pub use settings::{AiPreset, Settings};
+pub use recent_files::{RECENT_FILES_FILE, RECENT_FILES_MAX, RecentFiles};
+pub use settings::{AiPreset, DEFAULT_SETTINGS, Settings};
 pub use workspace_file::{
     WORKSPACE_EXT, format_workspace, is_workspace_file, parse_workspace, read_workspace,
 };
@@ -89,5 +91,55 @@ pub(crate) fn toml_error_message(text: &str, e: &toml::de::Error) -> String {
             format!("line {line}: {}", e.message())
         }
         None => e.message().to_owned(),
+    }
+}
+
+/// A user file made from built-in defaults (`/config`, `/keymap`): every setting line is
+/// commented out, so the file changes nothing until a line is uncommented, and later changes
+/// of the defaults still reach the user. `[table]` headers stay, so an uncommented key lands
+/// in its table; `[[array]]` headers are commented (an empty entry would be invalid).
+pub fn user_file_template(defaults: &str) -> String {
+    let mut out = String::from(
+        "# Made by vr-ide from the built-in defaults. Every line is commented out: remove the\n\
+         # \"# \" in front of a line to change that value; the rest keep the built-in values.\n\n",
+    );
+    for line in defaults.lines() {
+        let keep = line.is_empty()
+            || line.starts_with('#')
+            || (line.starts_with('[') && !line.starts_with("[["));
+        if !keep {
+            out.push_str("# ");
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_file_templates_change_nothing_until_a_line_is_uncommented() {
+        let d = tempfile::tempdir().unwrap();
+        let settings = d.path().join("settings.toml");
+        std::fs::write(&settings, user_file_template(DEFAULT_SETTINGS)).unwrap();
+        let (s, w) = Settings::load(Some(&settings));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(s, Settings::default());
+        let text = std::fs::read_to_string(&settings).unwrap();
+        assert!(text.contains("\n# tab_width = 4\n"), "{text}");
+        assert!(text.contains("\n# [[ai_presets]]\n"), "{text}");
+        std::fs::write(&settings, text.replace("# tab_width = 4", "tab_width = 2")).unwrap();
+        assert_eq!(Settings::load(Some(&settings)).0.tab_width, 2);
+
+        let keymap = d.path().join("keymap.toml");
+        let text = user_file_template(DEFAULT_KEYMAP);
+        assert!(text.contains("\n[editor]\n"), "table headers stay");
+        std::fs::write(&keymap, &text).unwrap();
+        let (k, w) = Keymap::load(Some(&keymap));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(k, Keymap::load(None).0);
     }
 }

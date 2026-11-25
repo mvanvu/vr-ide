@@ -1,6 +1,5 @@
 ---
 source: crates/vr-ide/src/slash_tests.rs
-assertion_line: 801
 expression: t.backend()
 ---
 " /home/user/DEV/shop                                                                                                    "
@@ -8,16 +7,16 @@ expression: t.backend()
 "  vr-ide v0.1.0         │> /                                                                   │──────────────────────  "
 "  /home/user/DEV/shop   │ /save-as [path]  Save under another name (no path: the Save As prom… │                  58 s  "
 "                        │ /reload  Reload the file from disk                                   │                        "
-"                        │ /term new  Open a new terminal tab                                   │                        "
-"  START ────────────────│ /term close  Close the active terminal tab                           │                        "
-"  ctrl+p  Go to file    │ /term right  Terminal panel on the right (not available yet)         │                        "
-"  f1      Command palett│ /term bottom  Terminal panel at the bottom (not available yet)       │                        "
-"  ctrl+e  Explorer      │ /run <command>  Type the command and Enter into the terminal (opens… │                        "
-"  ctrl+o  Open file     │ /ai <tool>  Run an AI tool (e.g. claude) in a new terminal tab       │                        "
-"  ctrl+`  Terminal      │ /ws add <dir>  Add a folder to the workspace                         │                        "
-"  ctrl+q  Quit          │ /ws remove [root]  Remove a workspace folder (default: the active f… │                        "
-"                        │ /ws save [file]  Save the workspace folders to a .vr-workspace file  │░░░░░░░░░░░░░░░ —    —  "
-"                        │ /ws open <file>  Open a .vr-workspace file                           │░░░░░░░░░░░░░░░ —    —  "
+"                        │ /rename <name>  Rename the file on disk (the tab follows)            │                        "
+"  START ────────────────│ /copy-path  Copy the file's full path                                │                        "
+"  ctrl+p  Go to file    │ /copy-relpath  Copy the path within its workspace folder             │                        "
+"  f1      Command palett│ /recent [n|name]  Open a recent file (no argument: list them)        │                        "
+"  ctrl+e  Explorer      │ /sort  Sort the selected lines (none: the file)                      │                        "
+"  ctrl+o  Open file     │ /unique  Drop repeated lines (selection or file)                     │                        "
+"  ctrl+`  Terminal      │ /upper  Upper-case the selection (or the file)                       │                        "
+"  ctrl+q  Quit          │ /lower  Lower-case the selection (or the file)                       │                        "
+"                        │ /trim  Drop trailing spaces (selection or file)                      │░░░░░░░░░░░░░░░ —    —  "
+"                        │ /indent 2|4|tab  Re-indent; set the file's indent unit               │░░░░░░░░░░░░░░░ —    —  "
 "                        └──────────────────────────────────────────────────────────────────────┘                        "
 "                                                          │ LOAD —                                                UP —  "
 "                                                          │                                                             "

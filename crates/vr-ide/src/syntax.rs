@@ -74,6 +74,8 @@ pub struct Syntax {
 struct DocSyntax {
     /// The document's path when its language was resolved; `None` before that.
     resolved: Option<Option<PathBuf>>,
+    /// The language chosen with `/lang`, used instead of the one the path gives.
+    forced: Option<String>,
     hl: Option<Highlighter>,
     /// The text the highlighter has and the buffer version it had.
     seen: Rope,
@@ -124,6 +126,35 @@ impl Syntax {
 
     pub fn is_empty(&self) -> bool {
         self.docs.is_empty()
+    }
+
+    /// Highlights document `i` as language `id` from now on, whatever its path says
+    /// (`/lang`); `false` when no compiled-in grammar has that id.
+    pub fn set_language(&mut self, i: usize, id: &str) -> bool {
+        if !self.registry.has_grammar(id) {
+            return false;
+        }
+        if self.docs.len() <= i {
+            self.docs.resize_with(i + 1, DocSyntax::default);
+        }
+        let d = &mut self.docs[i];
+        d.forced = Some(id.to_string());
+        // The next sync resolves the language again.
+        d.resolved = None;
+        true
+    }
+
+    /// Ids of the languages that can be highlighted, sorted (`/lang` completion).
+    pub fn language_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .registry
+            .ids()
+            .filter(|id| self.registry.has_grammar(id))
+            .map(str::to_string)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
     }
 
     /// The highlighted language of document `i` (None: plain text).
@@ -225,7 +256,10 @@ impl DocSyntax {
         wake: &Arc<AtomicBool>,
     ) {
         self.resolved = Some(doc.path.clone());
-        let language = doc.path.as_deref().and_then(|p| language_for(registry, p));
+        let language = match &self.forced {
+            Some(id) => registry.ids().find(|known| known == id),
+            None => doc.path.as_deref().and_then(|p| language_for(registry, p)),
+        };
         let rope = doc.buffer.text();
         let version = doc.buffer.version();
         match (&self.hl, language) {

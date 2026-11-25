@@ -8,7 +8,8 @@ use std::path::Path;
 
 use crate::{ConfigWarning, KeyChord, read_user_file, toml_error_message};
 
-const DEFAULT_KEYMAP: &str = include_str!("../defaults/keymap.toml");
+/// The built-in `keymap.toml` text.
+pub const DEFAULT_KEYMAP: &str = include_str!("../defaults/keymap.toml");
 const BUILT_IN: &str = "<built-in keymap>";
 
 /// Keys already bound by the file being applied, by (context, chord), with the key text as written.

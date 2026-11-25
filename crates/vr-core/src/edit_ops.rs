@@ -6,7 +6,8 @@ use ropey::Rope;
 
 use crate::selection::{Pos, Range, Selection};
 use crate::text::{
-    Buffer, char_to_pos, default_line_break, line_break_str, line_content_end, pos_to_char,
+    Buffer, char_to_pos, default_line_break, is_line_break, line_break_str, line_content_end,
+    pos_to_char,
 };
 use crate::transaction::{Change, Transaction, apply_changes, normalize};
 
@@ -50,6 +51,22 @@ fn after_line(rope: &Rope, line: usize) -> usize {
 fn content(rope: &Rope, line: usize) -> String {
     rope.slice(line_start(rope, line)..line_content_end(rope, line))
         .to_string()
+}
+
+/// Byte length of `line` (one rope line) without its break, the way [`line_content_end`]
+/// counts it: CRLF is one break.
+fn content_len(line: &str) -> usize {
+    match line.chars().next_back() {
+        Some(c) if is_line_break(c) => {
+            let n = line.len() - c.len_utf8();
+            if c == '\n' && line[..n].ends_with('\r') {
+                n - 1
+            } else {
+                n
+            }
+        }
+        _ => line.len(),
+    }
 }
 
 fn leading_blank_chars(s: &str) -> usize {
@@ -328,6 +345,276 @@ pub fn toggle_comment(buf: &mut Buffer, token: &str) {
             .collect()
     };
     buf.apply(Transaction::new(changes));
+}
+
+// ---- text commands on the selection or the whole document (T20b) -----------------------------
+//
+// Each one is a single transaction (one undo step) and reports whether it changed the text.
+// With a non-empty range they act on what the ranges cover (line commands: the covered lines);
+// without one, on the whole document.
+
+/// The line blocks the non-empty ranges cover; with none, every line of the document except
+/// the empty line after a final line break (it is the end of the file, not a line to sort).
+fn text_blocks(rope: &Rope, sel: &Selection) -> (Vec<(usize, usize)>, bool) {
+    if sel.ranges().iter().any(|r| !r.is_empty()) {
+        let ranges: Vec<Range> = sel
+            .ranges()
+            .iter()
+            .copied()
+            .filter(|r| !r.is_empty())
+            .collect();
+        let only = Selection::new(ranges, 0);
+        return (line_blocks(rope, &only), true);
+    }
+    let mut last = rope.len_lines().saturating_sub(1);
+    if last > 0 && line_start(rope, last) == rope.len_chars() {
+        last -= 1;
+    }
+    if rope.len_chars() == 0 {
+        return (Vec::new(), false);
+    }
+    (vec![(0, last)], false)
+}
+
+/// Applies one change per block; a selection becomes the rewritten blocks, a cursor stays at
+/// its line and column (clamped).
+fn apply_blocks(buf: &mut Buffer, blocks: &[(usize, usize, String)], selected: bool) -> bool {
+    let rope = buf.text();
+    let changes: Vec<Change> = blocks
+        .iter()
+        .filter(|(from, to, new)| rope.slice(*from..*to) != new.as_str())
+        .map(|(from, to, new)| Change::new(*from, *to, new.clone()))
+        .collect();
+    if changes.is_empty() {
+        return false;
+    }
+    if selected {
+        let mut shift: isize = 0;
+        let ranges = blocks
+            .iter()
+            .map(|(from, to, text)| {
+                let start = (*from as isize + shift) as usize;
+                let len = text.chars().count();
+                shift += len as isize - (*to - *from) as isize;
+                Range::new(start, start + len)
+            })
+            .collect();
+        buf.apply(Transaction::new(changes).with_selection(Selection::new(ranges, 0)));
+        return true;
+    }
+    // The line and column are read before and placed after the one rebuild `apply` does;
+    // building the new text a second time only for the cursor doubled the cost on big files.
+    let p = char_to_pos(rope, buf.selection().primary().head);
+    buf.apply(Transaction::new(changes));
+    let at = pos_to_char(buf.text(), p);
+    buf.set_selection(Selection::point(at));
+    true
+}
+
+/// Replaces the lines of each block (selection, or the whole document) by `f` of them. Line
+/// breaks stay in place: the n-th break of a block still ends its n-th line, so a block keeps
+/// its own breaks and a last line without one still has none.
+pub fn rewrite_lines(buf: &mut Buffer, f: impl Fn(Vec<String>) -> Vec<String>) -> bool {
+    let rope = buf.text();
+    let (blocks, selected) = text_blocks(rope, buf.selection());
+    let rewritten: Vec<(usize, usize, String)> = blocks
+        .iter()
+        .map(|&(s, e)| {
+            // One pass over the lines (no per-line lookups): a 1M-line file spent most of
+            // its /sort time finding each line and its break again.
+            let n = e - s + 1;
+            let mut lines = Vec::with_capacity(n);
+            let mut breaks = Vec::with_capacity(n);
+            for l in rope.lines_at(s).take(n) {
+                let mut text = l.to_string();
+                let cut = content_len(&text);
+                breaks.push(text.split_off(cut));
+                lines.push(text);
+            }
+            let lines = f(lines);
+            let mut out = String::with_capacity(lines.iter().map(|l| l.len() + 2).sum());
+            for (i, line) in lines.iter().enumerate() {
+                if i > 0 {
+                    // Break n of the block ends line n; extra lines take the block's last one.
+                    let at = (s + i - 1).min(e.saturating_sub(1)).max(s);
+                    let brk = &breaks[at - s];
+                    out.push_str(if brk.is_empty() { "\n" } else { brk });
+                }
+                out.push_str(line);
+            }
+            (line_start(rope, s), line_content_end(rope, e), out)
+        })
+        .collect();
+    apply_blocks(buf, &rewritten, selected)
+}
+
+/// Replaces the selected text (or the whole document) by `f` of it.
+pub fn rewrite_selection(buf: &mut Buffer, f: impl Fn(&str) -> String) -> bool {
+    let rope = buf.text();
+    let mut ranges: Vec<Range> = buf
+        .selection()
+        .ranges()
+        .iter()
+        .copied()
+        .filter(|r| !r.is_empty())
+        .collect();
+    let selected = !ranges.is_empty();
+    if !selected {
+        ranges.push(Range::new(0, rope.len_chars()));
+    }
+    let rewritten: Vec<(usize, usize, String)> = ranges
+        .iter()
+        .map(|r| {
+            let text = rope.slice(r.from()..r.to()).to_string();
+            (r.from(), r.to(), f(&text))
+        })
+        .collect();
+    apply_blocks(buf, &rewritten, selected)
+}
+
+/// Makes every CR, LF and CRLF line break `brk`; the cursor keeps its line and column.
+pub fn convert_line_breaks(buf: &mut Buffer, brk: &str) -> bool {
+    let rope = buf.text();
+    let changes: Vec<Change> = (0..rope.len_lines().saturating_sub(1))
+        .filter_map(|l| {
+            let old = line_break_str(rope, l);
+            (matches!(old.as_str(), "\n" | "\r\n" | "\r") && old != brk)
+                .then(|| Change::new(line_content_end(rope, l), line_start(rope, l + 1), brk))
+        })
+        .collect();
+    if changes.is_empty() {
+        return false;
+    }
+    apply_by_pos(buf, changes, |_, anchor, head| (anchor, head));
+    true
+}
+
+#[cfg(test)]
+mod text_command_tests {
+    use super::*;
+
+    /// Timing of a whole-file /sort on 1,000,000 lines (60 MB), by phase. Run with
+    /// `cargo test --release -p vr-core -- --ignored sort_timing --nocapture`.
+    #[test]
+    #[ignore]
+    fn sort_timing_on_a_million_lines() {
+        let mut text = String::new();
+        for i in 0..1_000_000 {
+            text.push_str(&format!(
+                "line {:07} some text here to pad the line out ab\n",
+                999_999 - i
+            ));
+        }
+        let mut buf = Buffer::from_str(&text);
+        let t = std::time::Instant::now();
+        assert!(rewrite_lines(&mut buf, |mut l| {
+            l.sort();
+            l
+        }));
+        eprintln!("rewrite_lines sort: {:?}", t.elapsed());
+    }
+
+    fn buf_at(text: &str, line: usize, col: usize) -> Buffer {
+        let mut buf = Buffer::from_str(text);
+        let at = pos_to_char(buf.text(), Pos { line, col });
+        buf.set_selection(Selection::point(at));
+        buf
+    }
+
+    fn head_pos(buf: &Buffer) -> Pos {
+        char_to_pos(buf.text(), buf.selection().primary().head)
+    }
+
+    fn assert_one_undo(buf: &mut Buffer, original: &str) {
+        assert!(buf.undo());
+        assert_eq!(buf.text().to_string(), original);
+        assert!(!buf.history().can_undo());
+    }
+
+    fn sel(buf: &mut Buffer, anchor: usize, head: usize) {
+        buf.set_selection(Selection::single(anchor, head));
+    }
+
+    #[test]
+    fn rewrite_lines_sorts_the_whole_document_keeping_the_final_break() {
+        let mut buf = buf_at("b\nc\na\n", 1, 1);
+        assert!(rewrite_lines(&mut buf, |mut v| {
+            v.sort();
+            v
+        }));
+        assert_eq!(buf.text().to_string(), "a\nb\nc\n");
+        assert_eq!(head_pos(&buf), Pos { line: 1, col: 1 });
+        assert_one_undo(&mut buf, "b\nc\na\n");
+        // Already sorted: nothing changes, no undo step.
+        let mut buf = Buffer::from_str("a\nb");
+        assert!(!rewrite_lines(&mut buf, |mut v| {
+            v.sort();
+            v
+        }));
+        assert!(!buf.history().can_undo());
+    }
+
+    #[test]
+    fn rewrite_lines_acts_on_the_selected_lines_and_keeps_crlf() {
+        let text = "z\r\nc\r\nb\r\na\r\n";
+        let mut buf = Buffer::from_str(text);
+        // From inside line 1 to the start of line 3: lines 1 and 2.
+        sel(&mut buf, 4, 9);
+        assert!(rewrite_lines(&mut buf, |mut v| {
+            v.sort();
+            v
+        }));
+        assert_eq!(buf.text().to_string(), "z\r\nb\r\nc\r\na\r\n");
+        let r = buf.selection().primary();
+        assert_eq!(
+            (r.from(), r.to()),
+            (3, 7),
+            "the rewritten lines are selected"
+        );
+        // Fewer lines (unique): the block's own breaks, the last line keeps none.
+        let mut buf = Buffer::from_str("a\nb\na");
+        assert!(rewrite_lines(&mut buf, |v| {
+            let mut out: Vec<String> = Vec::new();
+            for l in v {
+                if !out.contains(&l) {
+                    out.push(l);
+                }
+            }
+            out
+        }));
+        assert_eq!(buf.text().to_string(), "a\nb");
+    }
+
+    #[test]
+    fn rewrite_selection_changes_the_selected_text_or_everything() {
+        let mut buf = Buffer::from_str("abc def");
+        sel(&mut buf, 4, 7);
+        assert!(rewrite_selection(&mut buf, str::to_uppercase));
+        assert_eq!(buf.text().to_string(), "abc DEF");
+        let r = buf.selection().primary();
+        assert_eq!((r.from(), r.to()), (4, 7));
+        let mut buf = buf_at("ab\nßc", 1, 1);
+        assert!(rewrite_selection(&mut buf, str::to_uppercase));
+        assert_eq!(buf.text().to_string(), "AB\nSSC");
+        assert_one_undo(&mut buf, "ab\nßc");
+        assert!(!rewrite_selection(
+            &mut Buffer::from_str("x"),
+            str::to_lowercase
+        ));
+    }
+
+    #[test]
+    fn convert_line_breaks_makes_every_break_the_same() {
+        let mut buf = buf_at("a\nb\r\nc\rd", 2, 1);
+        assert!(convert_line_breaks(&mut buf, "\r\n"));
+        assert_eq!(buf.text().to_string(), "a\r\nb\r\nc\r\nd");
+        assert_eq!(head_pos(&buf), Pos { line: 2, col: 1 });
+        assert_one_undo(&mut buf, "a\nb\r\nc\rd");
+        let mut buf = Buffer::from_str("a\nb\n");
+        assert!(!convert_line_breaks(&mut buf, "\n"));
+        assert!(convert_line_breaks(&mut buf, "\r\n"));
+        assert_eq!(buf.text().to_string(), "a\r\nb\r\n");
+    }
 }
 
 #[cfg(test)]

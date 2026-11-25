@@ -13,32 +13,32 @@ use crate::app::{App, Focus};
 use crate::app_tests::{app_with_file, test_app};
 use crate::commands::slash::{self, SLASH_COMMANDS, parse};
 
-fn key(app: &mut App, code: KeyCode) {
+pub(crate) fn key(app: &mut App, code: KeyCode) {
     app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
-fn typ(app: &mut App, s: &str) {
+pub(crate) fn typ(app: &mut App, s: &str) {
     for c in s.chars() {
         key(app, KeyCode::Char(c));
     }
 }
 
 /// F1, then `text` typed into the window.
-fn slash(app: &mut App, text: &str) {
+pub(crate) fn slash(app: &mut App, text: &str) {
     key(app, KeyCode::F(1));
     assert_eq!(app.focus, Focus::Palette, "f1 opens the command window");
     typ(app, text);
 }
 
-fn input(app: &App) -> String {
+pub(crate) fn input(app: &App) -> String {
     app.palette.as_ref().unwrap().input.text().to_string()
 }
 
-fn error(app: &App) -> Option<String> {
+pub(crate) fn error(app: &App) -> Option<String> {
     app.palette.as_ref().and_then(|p| p.error.clone())
 }
 
-fn titles(app: &App) -> Vec<String> {
+pub(crate) fn titles(app: &App) -> Vec<String> {
     app.palette
         .as_ref()
         .unwrap()
@@ -48,7 +48,7 @@ fn titles(app: &App) -> Vec<String> {
         .collect()
 }
 
-fn notices(app: &App) -> String {
+pub(crate) fn notices(app: &App) -> String {
     app.notices
         .iter()
         .map(|n| n.text.clone())
@@ -81,6 +81,23 @@ fn registry_has_the_phase_1_commands_once() {
         "help",
         "q",
         "q!",
+        // Phase 2 (T20b, slash2_tests).
+        "rename",
+        "copy-path",
+        "copy-relpath",
+        "recent",
+        "sort",
+        "unique",
+        "upper",
+        "lower",
+        "trim",
+        "indent",
+        "eol",
+        "lang",
+        "set",
+        "config",
+        "keymap",
+        "keys",
     ];
     let names: Vec<&str> = SLASH_COMMANDS.iter().map(|c| c.name).collect();
     for w in want {
@@ -671,7 +688,7 @@ fn ws_add_tab_completes_folders() {
     assert_eq!(titles(&app), ["../.hid/"]);
 }
 
-fn set(app: &mut App, text: &str) {
+pub(crate) fn set(app: &mut App, text: &str) {
     app.palette.as_mut().unwrap().input.set(text);
     crate::commands::palette::refilter(app);
 }
@@ -998,7 +1015,7 @@ fn ws_save_refuses_a_workspace_file_changed_since_it_was_opened() {
 }
 
 /// F1 (or the palette command when a terminal has the keys), `text`, Enter.
-fn set_input_and_enter(app: &mut App, text: &str) {
+pub(crate) fn set_input_and_enter(app: &mut App, text: &str) {
     app.run_command("app.palette", crate::commands::CmdArgs::None);
     typ(app, text);
     key(app, KeyCode::Enter);
