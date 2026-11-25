@@ -1345,3 +1345,43 @@ Findings: none blocking. Open D295 (terminal 'x' closes running program without 
 | BASE-14/15 | pass | run-heavy, background + monitor, own walk processes killed; foreign pid 1456662 untouched |
 | BASE-17 | pass | temp config/state/HOME dirs only |
 | BASE-18/19/24 | pass | no sub-agents, written incrementally, no commit/stash/checkout |
+
+## M7-4a
+Verdict: QC_PASS. Engines: cargo (clippy, fmt, test, release build via run-heavy.sh), own python pty harness (qa-artifacts/FR-10/h.py, TERM=xterm-256color, legacy bytes, temp HOME/XDG, repos built with the git CLI). Scripts and outputs: qa-artifacts/M7-4a/qc/ (t1..t6.py, o*.txt, suite.txt, clippy.txt).
+
+| Check | Result |
+|---|---|
+| cargo clippy --workspace --all-targets -D warnings | exit 0 |
+| cargo fmt --all --check | clean |
+| cargo test --workspace -j 4 (once) | exit 0, 1037 passed, 0 failed (no flaky seen) |
+| cargo build --release -p vr-ide | exit 0 |
+| AC-16a marks == git diff -U0 (modify line 2, delete line 5, add 2 lines; pre-save == post-save), 120x40 / 80x24 / 40x12 | pass |
+| CRLF file: clean = no marks; one edit = marks of git diff -U0; file bytes keep CRLF | pass (3 sizes) |
+| AC-16b status bar vs git status -sb: in sync, ↑1, ↑1 ↓1, ↑2 ↓1 (bare upstream, fetch, local commits) | pass (3 sizes) |
+| Detached HEAD: `detached <short sha>` (120, 80), `<sha>` (40) == rev-parse --short | pass |
+| Parent repo label (root = repo subdir): `main · parent repo: <path>` 120, `parent repo` 80, dropped with branch at 40 | pass |
+| AC-16 blame: /git blame line on; shown within 0.05 s when already at rest, hidden 250 ms after a move, shown by 0.30 s; text `Ann Author, 3 days ago • Add numbers`; unsaved line `You, uncommitted`; off removes it, marks stay; at 40 cols the text is cut at the edge | pass |
+| AC-16d no repo folder, untracked file, bare repo dir: no marks, no git text, no notice | pass |
+| AC-16d two roots (git + plain): git root marks and branch, plain root nothing, switching back restores marks, no error line | pass |
+| git init + commit in an open plain root: branch appears, edit then shows a mark | pass |
+| SEC-15 hostile branch: U+202E rendered as `<U+202E>` (120, 80), tier dropped at 40; ESC/OSC 52 branch name in HEAD: nothing drawn, no control cells, app alive | pass |
+| AC-16e / AC-1: typing 36 chars in a 60k-line file at 120x40: echo 0.05-0.057 s each (pty poll granularity) | pass |
+| No vr-ide process of mine left | pass |
+
+Notes (not defects): at 40x12 the 60k-typing probe missed the last 3 chars only because the 36-char line scrolled horizontally (harness artefact, latencies 0.05 s); the 40x12 age-text probe misses because blame is cut at the edge (documented). Opening `dir/sub/file.txt` as a file argument makes the repo root the workspace root, so the parent-repo label shows only when the workspace root is the subfolder (open the folder). Marks compare against the index (git diff), as AC-16a says.
+
+## Rule check M7-4a
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-1 | pass | only M7-4a files touched; vr-git untouched (git status) |
+| BASE-3 | pass | dev notes show tests first; 19 git_tests pass in suite |
+| BASE-5/COST | pass | heavy runs once via run-heavy.sh; pty probes light |
+| BASE-10 | pass | full suite once, 1037 passed |
+| BASE-11/24 | pass | no commit/stash/checkout/restore on the shared tree |
+| BASE-14 | pass | long runs in background, no polling loops of agents |
+| BASE-15 | pass | only my own pty sessions stopped |
+| BASE-17 | pass | temp repos in /tmp, removed |
+| BASE-18 | pass | no sub-agents |
+| BASE-19 | pass | report appended |
+| SEC-15 | pass | hostile branch probes above |
+| SEC-17 | pass | two-root probe: each root shows its own repo / nothing |
