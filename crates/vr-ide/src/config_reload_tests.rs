@@ -323,3 +323,45 @@ fn an_empty_keymap_file_seen_by_the_watcher_is_not_applied() {
         notices(&app)
     );
 }
+
+/// Final review 2: a reloaded keymap whose only key for a command is one a legacy terminal
+/// cannot send says so, as the startup check does.
+#[test]
+fn a_reloaded_keymap_names_keys_a_legacy_terminal_cannot_send() {
+    let (_d, mut app, cfg) = setup(None, Some(""));
+    let keymap = cfg.join("keymap.toml");
+    app.keyboard_enhanced = false;
+    std::fs::write(&keymap, "\"ctrl+shift+m\" = \"file.save_overwrite\"\n").unwrap();
+    app.handle_fs_event(FsEvent::Modified(keymap.clone()));
+    let m: KeyChord = "ctrl+shift+m".parse().unwrap();
+    assert_eq!(app.keymap.command_for(&m), Some("file.save_overwrite"));
+    let n = app
+        .notices
+        .iter()
+        .find(|n| n.text.contains("cannot send"))
+        .unwrap_or_else(|| panic!("no keyboard notice: {}", notices(&app)));
+    assert_eq!(n.level, NoticeLevel::Warning);
+    assert!(n.text.contains("keymap.toml applied"), "{}", n.text);
+    assert!(
+        n.detail
+            .as_deref()
+            .is_some_and(|d| d.contains("ctrl+shift+m")),
+        "{:?}",
+        n.detail
+    );
+    // With the kitty protocol every key arrives: just "applied".
+    app.notices.clear();
+    app.keyboard_enhanced = true;
+    std::fs::write(
+        &keymap,
+        "\"ctrl+shift+m\" = \"file.save_overwrite\"\n\"ctrl+t\" = \"file.goto\"\n",
+    )
+    .unwrap();
+    app.handle_fs_event(FsEvent::Modified(keymap));
+    assert!(!notices(&app).contains("cannot send"), "{}", notices(&app));
+    assert!(
+        notices(&app).contains("keymap.toml applied"),
+        "{}",
+        notices(&app)
+    );
+}

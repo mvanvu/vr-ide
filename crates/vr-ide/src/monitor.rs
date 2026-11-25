@@ -7,7 +7,7 @@
 //! (drawn as "—") and never panics.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Samples kept for the CPU history graphs (about a minute).
@@ -344,48 +344,6 @@ impl Monitor {
     }
 }
 
-/// Content of a small regular file; anything else (a FIFO, a device, a huge file) is skipped so
-/// a hostile or broken repository cannot stall the UI thread.
-fn read_small(path: &Path) -> Option<String> {
-    use std::io::Read;
-    const MAX: u64 = 4096;
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > MAX {
-        return None;
-    }
-    let mut text = String::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(MAX)
-        .read_to_string(&mut text)
-        .ok()?;
-    Some(text)
-}
-
-/// The branch named by `.git/HEAD` of `root` or the nearest parent that has one (a short hash
-/// when HEAD is detached). Reads files only; no git process.
-pub fn git_branch(root: &Path) -> Option<String> {
-    let dot_git = root
-        .ancestors()
-        .map(|d| d.join(".git"))
-        .find(|p| p.exists())?;
-    let git_dir: PathBuf = if dot_git.is_dir() {
-        dot_git
-    } else {
-        // A worktree or submodule: `.git` is a file naming the real directory.
-        let text = read_small(&dot_git)?;
-        let target = text.trim().strip_prefix("gitdir:")?.trim();
-        dot_git.parent()?.join(target)
-    };
-    let head = read_small(&git_dir.join("HEAD"))?;
-    let head = head.trim();
-    match head.strip_prefix("ref: ") {
-        Some(r) => Some(r.strip_prefix("refs/heads/").unwrap_or(r).to_string()),
-        None => (head.len() >= 7 && head.chars().all(|c| c.is_ascii_hexdigit()))
-            .then(|| head[..7].to_string()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -621,86 +579,5 @@ cpu1 100 0 50 400 50 0 0 0 0 0\n";
         assert!(m.reading.mem.total.is_some_and(|k| k > 0));
         assert!(m.reading.uptime.is_some());
         assert!(m.reading.load.is_some());
-    }
-
-    #[test]
-    fn git_branch_reads_head_without_a_process() {
-        let d = tempfile::tempdir().unwrap();
-        assert_eq!(git_branch(&d.path().join("none")), None);
-        let git = d.path().join(".git");
-        std::fs::create_dir(&git).unwrap();
-        std::fs::write(git.join("HEAD"), "ref: refs/heads/feature/x\n").unwrap();
-        assert_eq!(git_branch(d.path()).as_deref(), Some("feature/x"));
-        // A sub-directory of the repository.
-        let sub = d.path().join("a/b");
-        std::fs::create_dir_all(&sub).unwrap();
-        assert_eq!(git_branch(&sub).as_deref(), Some("feature/x"));
-        std::fs::write(
-            git.join("HEAD"),
-            "0123456789abcdef0123456789abcdef01234567\n",
-        )
-        .unwrap();
-        assert_eq!(git_branch(d.path()).as_deref(), Some("0123456"));
-        std::fs::write(git.join("HEAD"), "garbage").unwrap();
-        assert_eq!(git_branch(d.path()), None);
-    }
-
-    /// A FIFO in place of `.git/HEAD` (or of the `.git` file) must not block the UI thread:
-    /// opening it would wait for a writer forever.
-    #[cfg(unix)]
-    #[test]
-    fn git_branch_does_not_open_a_fifo() {
-        let mkfifo = |p: &Path| {
-            std::process::Command::new("mkfifo")
-                .arg(p)
-                .status()
-                .is_ok_and(|s| s.success())
-        };
-        let d = tempfile::tempdir().unwrap();
-        let git = d.path().join(".git");
-        std::fs::create_dir(&git).unwrap();
-        if !mkfifo(&git.join("HEAD")) {
-            return;
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let root = d.path().to_path_buf();
-        std::thread::spawn(move || tx.send(git_branch(&root)).ok());
-        let got = rx.recv_timeout(Duration::from_secs(5));
-        assert_eq!(
-            got,
-            Ok(None),
-            "git_branch must return, not wait on the FIFO"
-        );
-        // Same for a `.git` file that is a FIFO.
-        let d2 = tempfile::tempdir().unwrap();
-        if !mkfifo(&d2.path().join(".git")) {
-            return;
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let root = d2.path().to_path_buf();
-        std::thread::spawn(move || tx.send(git_branch(&root)).ok());
-        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(None));
-    }
-
-    #[test]
-    fn git_branch_ignores_an_oversized_head() {
-        let d = tempfile::tempdir().unwrap();
-        let git = d.path().join(".git");
-        std::fs::create_dir(&git).unwrap();
-        let big = format!("ref: refs/heads/{}", "x".repeat(100_000));
-        std::fs::write(git.join("HEAD"), big).unwrap();
-        assert_eq!(git_branch(d.path()), None);
-    }
-
-    #[test]
-    fn git_branch_follows_a_worktree_file() {
-        let d = tempfile::tempdir().unwrap();
-        let real = d.path().join("main.git/worktrees/w");
-        std::fs::create_dir_all(&real).unwrap();
-        std::fs::write(real.join("HEAD"), "ref: refs/heads/wt\n").unwrap();
-        let wt = d.path().join("wt");
-        std::fs::create_dir(&wt).unwrap();
-        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", real.display())).unwrap();
-        assert_eq!(git_branch(&wt).as_deref(), Some("wt"));
     }
 }

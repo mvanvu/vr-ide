@@ -143,8 +143,9 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         return;
     }
     let width = usize::from(area.width);
-    // Branch, ahead/behind and the parent-repo label (M7-4a); sanitized by `git`.
-    let git = crate::git::status_label(app);
+    // Branch, ahead/behind, the parent-repo label (M7-4a) and a running git write of the
+    // hidden popup (D309); sanitized by `git`.
+    let git = crate::git::status_bar_label(app);
     let Some(doc) = app.active_doc() else {
         let mut root = format!(" {}", app.workspace.label());
         if let Some(g) = &git {

@@ -1114,26 +1114,44 @@ pub fn rename_in(
 }
 
 /// Tabs of `from` (a file, or every file under a folder) now point at `to`, unsaved edits
-/// included, and the watcher and the project search results follow them.
+/// included, and the watcher and the project search results follow them; so do the
+/// recent-files list and the git marks (the old path's are dropped, the new path asks
+/// afresh). Every rename and move (F2, the menu, `/rename`, cut + paste, Move to) ends here.
 fn retarget(app: &mut App, from: &Path, to: &Path) {
+    let moved_path = |old: &Path| -> Option<PathBuf> {
+        let rest = old.strip_prefix(from).ok()?;
+        Some(if rest.as_os_str().is_empty() {
+            to.to_path_buf()
+        } else {
+            to.join(rest)
+        })
+    };
     let mut moved = Vec::new();
     for doc in &mut app.docs {
         let Some(old) = doc.path.clone() else {
             continue;
         };
-        let Ok(rest) = old.strip_prefix(from) else {
+        let Some(new) = moved_path(&old) else {
             continue;
-        };
-        let new = if rest.as_os_str().is_empty() {
-            to.to_path_buf()
-        } else {
-            to.join(rest)
         };
         doc.path = Some(new.clone());
         moved.push((old, new));
     }
-    for (old, new) in moved {
-        app.rewatch(Some(&old), &new);
+    for (old, new) in &moved {
+        app.rewatch(Some(old), new);
+        app.git.forget_doc(old);
+        app.git.forget_doc(new);
+    }
+    // Oldest first, so the moved entries keep their order at the front of the list.
+    let recent: Vec<(PathBuf, PathBuf)> = app
+        .recent_files
+        .entries
+        .iter()
+        .rev()
+        .filter_map(|old| moved_path(old).map(|new| (old.clone(), new)))
+        .collect();
+    for (old, new) in recent {
+        app.recent_file_renamed(&old, &new);
     }
     super::search::paths_moved(app, from, to);
     app.dirty = true;

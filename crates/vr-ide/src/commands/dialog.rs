@@ -84,7 +84,8 @@ pub enum DialogAction {
     /// Quit while a cancelled project replace has not stopped (its worker is blocked in
     /// I/O): Quit anyway / Cancel.
     QuitStuckReplace,
-    /// Quit while terminals run (M5): Quit anyway / Cancel, Cancel first.
+    /// Quit while terminals run (M5) or a git push, pull or commit runs (D309): Quit anyway /
+    /// Cancel, Cancel first.
     QuitTerminals,
     /// `/q!` (T20, D268): [`DialogAction::QuitStuckReplace`] whose Quit anyway goes on
     /// discarding the unsaved files (recovery copy kept), never asking about them.
