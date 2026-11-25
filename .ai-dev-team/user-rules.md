@@ -11,3 +11,4 @@
   - USER-5 note (D229, superseded by D250): no leader key; one direct ctrl or F-key per command (D250 table).
   - USER-5 note (D230): default keys use ctrl only — no alt (and no shift+alt) anywhere.
   - USER-5 note (D231, superseded by D250): leader removed.
+- USER-6 (user 2026-11-25, repeated: "do it as proposed — I've said it many times"): when the user approves a proposal ("làm theo đề xuất", "theo khuyến nghị"), every open question in it is answered with the leader's recommendation and work starts; no follow-up questions about the same proposal.
