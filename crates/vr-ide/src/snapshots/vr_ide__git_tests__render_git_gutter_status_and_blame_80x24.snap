@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/git_tests.rs
+expression: t.backend()
+---
+" lib.rs                                                                         "
+"  1 fn one() {}  Ann Author, 2 hours ago • Add the numbers                      "
+"  2▎fn two(x: u8) {}                                                            "
+"  3▁fn three() {}                                                               "
+"  4 fn five() {}                                                                "
+"  5 fn six() {}                                                                 "
+"  6▎fn seven() {}                                                               "
+"  7                                                                             "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" READ src/lib.rs · main ↑1 · Ln 1, Col 1 · LF · UTF-8                           "

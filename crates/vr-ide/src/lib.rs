@@ -10,6 +10,7 @@ pub mod clipboard;
 pub mod commands;
 mod config_reload;
 pub mod event_loop;
+pub mod git;
 pub mod monitor;
 mod recent_files;
 pub mod recovery;
@@ -30,6 +31,8 @@ mod explorer_menu_tests;
 mod explorer_tests;
 #[cfg(test)]
 mod find_tests;
+#[cfg(test)]
+mod git_tests;
 #[cfg(test)]
 mod language_snapshot_tests;
 #[cfg(test)]

@@ -179,6 +179,58 @@ fn follow_long(
     (s, x)
 }
 
+/// Git gutter marks (M7-4a), drawn in the gutter's last column (the space after the line
+/// number), so files outside git keep the same layout: a bar for added / changed lines, a
+/// low or high bar where lines were removed below / above.
+pub const MARK_CHANGE: &str = "▎";
+pub const MARK_DELETED_BELOW: &str = "▁";
+pub const MARK_DELETED_ABOVE: &str = "▔";
+
+/// The mark of each of the `rows` lines from `top`: symbol and kind. A change mark wins over
+/// a deletion mark on the same line; a deletion is shown under the line above it, else over
+/// the line after it.
+pub fn mark_rows(
+    changes: &[vr_git::LineChange],
+    top: usize,
+    rows: usize,
+) -> Vec<Option<(&'static str, vr_git::ChangeKind)>> {
+    use vr_git::ChangeKind;
+    let mut out = vec![None; rows];
+    type Row = Option<(&'static str, ChangeKind)>;
+    fn put(out: &mut [Row], top: usize, line: usize, mark: (&'static str, ChangeKind), wins: bool) {
+        if let Some(slot) = line.checked_sub(top).and_then(|r| out.get_mut(r))
+            && (wins || slot.is_none())
+        {
+            *slot = Some(mark);
+        }
+    }
+    for c in changes.iter().filter(|c| c.kind != ChangeKind::Deleted) {
+        let (start, len) = (c.start as usize, c.len as usize);
+        for line in start.max(top)..(start + len).min(top + rows) {
+            put(&mut out, top, line, (MARK_CHANGE, c.kind), true);
+        }
+    }
+    let changed = |out: &[Row], line: usize| {
+        line.checked_sub(top)
+            .and_then(|r| out.get(r).copied().flatten())
+            .is_some_and(|(s, _)| s == MARK_CHANGE)
+    };
+    for c in changes.iter().filter(|c| c.kind == ChangeKind::Deleted) {
+        let start = c.start as usize;
+        let mark = if start > 0 && !changed(&out, start - 1) {
+            Some((start - 1, MARK_DELETED_BELOW))
+        } else if !changed(&out, start) {
+            Some((start, MARK_DELETED_ABOVE))
+        } else {
+            None
+        };
+        if let Some((line, sym)) = mark {
+            put(&mut out, top, line, (sym, ChangeKind::Deleted), false);
+        }
+    }
+    out
+}
+
 /// Line-number column plus one space; at least three digits so the text does not shift
 /// for small files.
 pub fn gutter_width(rope: &Rope) -> u16 {
@@ -255,6 +307,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         matches.get(i).is_some_and(|&(s, _)| s <= abs)
     };
     let spans = visible_spans(app, active, top, left, rows, text_w);
+    let marks = doc
+        .path
+        .as_deref()
+        .and_then(|p| app.git.shown_marks(p))
+        .map(|c| mark_rows(c, top, rows))
+        .unwrap_or_default();
+    // Already sanitized (SEC-15) and only for the cursor line once the cursor rests.
+    let blame = crate::git::inline_text(app).filter(|_| gutter > 1);
     for row in 0..rows {
         let ln = top + row;
         if ln > last_line {
@@ -270,6 +330,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         };
         let num = format!("{:>w$} ", ln + 1, w = usize::from(gutter.saturating_sub(1)));
         buf.set_stringn(area.x, y, num, usize::from(gutter), num_style);
+        if let Some(Some((sym, kind))) = marks.get(row)
+            && gutter > 1
+        {
+            let style = match kind {
+                vr_git::ChangeKind::Added => theme.git_added,
+                vr_git::ChangeKind::Modified => theme.git_modified,
+                vr_git::ChangeKind::Deleted => theme.git_deleted,
+            };
+            buf.set_stringn(area.x + gutter - 1, y, sym, 1, style);
+        }
 
         let line = rope.line(ln);
         let line_start = rope.line_to_char(ln);
@@ -357,6 +427,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             && end_col < skip + text_w
         {
             put(buf, end_col, " ", 1, theme.selection);
+        }
+        // Inline blame: two cells after the end of the cursor line, cut at the edge; only
+        // when the whole line is on screen (never over code).
+        if ln == head_line
+            && let Some(text) = &blame
+            && !is_long(line)
+            && end == content
+            && end_col >= skip
+        {
+            let x = end_col - skip + 2;
+            if x < text_w {
+                let room = text_w - x;
+                buf.set_stringn(x0 + x as u16, y, text, room, theme.git_blame);
+            }
         }
     }
 

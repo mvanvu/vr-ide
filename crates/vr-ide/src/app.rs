@@ -223,6 +223,8 @@ pub struct App {
     /// How long the UI thread waits for such a check before it goes on and the result comes
     /// in later ([`crate::app_workspace::JOB_WAIT`]; tests set zero).
     pub ws_job_wait: Duration,
+    /// Git context of the editor (M7-4a): per-root repos, gutter marks, branch, inline blame.
+    pub git: crate::git::GitState,
 }
 
 /// What the welcome screen shows of one root besides its name.
@@ -321,6 +323,7 @@ impl App {
             welcome_hits: Vec::new(),
             ws_job: None,
             ws_job_wait: crate::app_workspace::JOB_WAIT,
+            git: Default::default(),
         }
     }
 
@@ -480,6 +483,12 @@ impl App {
                 "file watching is off ({e}); external changes are not detected"
             )),
         }
+    }
+
+    /// Starts git for the workspace roots (M7-4a): each root's repo is found on a thread of
+    /// its own, so main calls this after the first frame and nothing waits for git (AC-1).
+    pub fn start_git(&mut self) {
+        crate::git::start(self);
     }
 
     /// Starts the explorer's folder watches (D110): the project root plus each expanded
@@ -658,6 +667,7 @@ impl App {
             ));
         }
         self.remember_recent(&path);
+        self.git.forget_doc(&path);
         self.docs.push(doc);
         self.views.push(View {
             follow_cursor: true,
@@ -747,6 +757,13 @@ impl App {
             || doc.path.as_deref().is_some_and(|p| self.is_config_file(p));
         if let (Some(w), Some(p), false) = (&mut self.watcher, &doc.path, shared) {
             w.unwatch(p);
+        }
+        if let Some(p) = doc
+            .path
+            .as_deref()
+            .filter(|p| !self.docs.iter().any(|d| d.path.as_deref() == Some(*p)))
+        {
+            self.git.forget_doc(p);
         }
         if self.active > i || self.active >= self.docs.len() {
             self.active = self.active.saturating_sub(1);
@@ -1040,6 +1057,7 @@ impl App {
 
     /// Drops expired info notices and runs a find rescan whose typing pause is over.
     pub fn tick(&mut self, now: Instant) {
+        crate::git::tick(self, now);
         commands::find::poll(self, now);
         // The welcome screen is the only reader of the monitor: nothing is read behind a file or a panel that covers it.
         // Before the first frame nothing is known: sample as usual.
@@ -1490,6 +1508,7 @@ impl App {
     /// [`App::handle_fs_event`] without re-reading the explorer folders it touched.
     fn apply_fs_event(&mut self, ev: FsEvent) {
         commands::explorer::on_fs_event(self, &ev);
+        crate::git::on_fs_event(self, &ev);
         // settings.toml / keymap.toml changed by another program (T24): applied at once. A file
         // removed or renamed away is not read (editors do that for a moment while saving).
         match &ev {

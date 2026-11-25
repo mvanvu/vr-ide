@@ -118,6 +118,10 @@ pub(super) fn build(depth: ColorDepth) -> Theme {
         syntax_on_highlight: true,
         captures,
         mode_term: Style::default().bg(pink).fg(bg).add_modifier(bold),
+        git_added: Style::default().fg(green),
+        git_modified: Style::default().fg(cyan),
+        git_deleted: Style::default().fg(red),
+        git_blame: Style::default().fg(dim).add_modifier(Modifier::ITALIC),
         ansi: Some(super::ansi::palette(
             depth,
             fg,

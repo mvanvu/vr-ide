@@ -37,6 +37,16 @@ or `ctrl+f8` / `ctrl+f9`, to change it) and falls back to the bottom while the e
 under 60 columns wide. A new terminal and closing one: the `+` and the `x` of each tab in the
 panel's tab bar (no slash command, no key).
 
+Git (read only): in a folder that is a git repository (or inside one) the gutter marks the lines
+of the active file that differ from the git index, unsaved changes included: a bar for added and
+changed lines, a low or high bar where lines were removed. The status bar shows the branch (or
+`detached <sha>`), `↑n ↓n` against its upstream, and `parent repo: <folder>` when the repository
+was found above the workspace folder (e.g. a dotfiles repo in your home folder). Each workspace
+folder uses its own repository; a folder without git shows nothing. `/git blame line` turns on a
+dim `Author, 3 days ago • subject` after the cursor line once the cursor rests there (`You,
+uncommitted` for lines not committed yet); it hides while you type. It is off by default and
+changes for this session; set `git_inline_blame = true` in `settings.toml` to keep it on.
+
 File commands act on the active tab. `/rename <name>` renames its file in the same folder with the
 explorer's checks (one name, no `/`; an existing name is never replaced) and the tab follows,
 unsaved changes included. `/copy-relpath` copies the path relative to the workspace folder that
@@ -100,6 +110,7 @@ protocol does not send are marked).
 | `/config` | Open settings.toml (made when missing) |
 | `/keymap` | Open keymap.toml (made when missing) |
 | `/keys` | Show the key table (read-only tab) |
+| `/git blame line` | Show or hide the cursor line's blame, for this session |
 | `/help` | List the slash commands |
 | `/q` | Quit (asks about unsaved files) |
 | `/q!` | Quit, discarding unsaved changes (copy kept in recovery) |

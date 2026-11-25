@@ -7,6 +7,7 @@ pub mod explorer_menu;
 pub mod find_bar;
 pub mod layout;
 pub mod palette;
+pub mod safe_text;
 pub mod search_panel;
 pub mod status_bar;
 pub mod tabs;

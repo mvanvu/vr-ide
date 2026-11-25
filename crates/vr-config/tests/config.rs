@@ -631,6 +631,19 @@ fn terminal_pass_nul_defaults_to_off() {
     assert!(s.terminal_pass_nul);
 }
 
+/// M7-4a: inline blame is off until the user turns it on; `/set` and the file both know it.
+#[test]
+fn git_inline_blame_defaults_to_off_and_is_settable() {
+    assert!(!Settings::load(None).0.git_inline_blame);
+    assert!(Settings::names().contains(&"git_inline_blame".to_string()));
+    let (_d, path) = write_user("git_inline_blame = true\n");
+    let (s, w) = Settings::load(Some(&path));
+    assert!(w.is_empty(), "{w:?}");
+    assert!(s.git_inline_blame);
+    let off = s.with_value("git_inline_blame", "false").unwrap();
+    assert!(!off.git_inline_blame);
+}
+
 #[test]
 fn unquoted_keys_with_quote_or_brace_parse() {
     let (_d, path) = write_user(

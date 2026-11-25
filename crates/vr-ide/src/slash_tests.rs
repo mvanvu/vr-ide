@@ -95,6 +95,8 @@ fn registry_has_the_phase_1_commands_once() {
         "config",
         "keymap",
         "keys",
+        // M7-4a.
+        "git blame line",
     ];
     let names: Vec<&str> = SLASH_COMMANDS.iter().map(|c| c.name).collect();
     for w in want {

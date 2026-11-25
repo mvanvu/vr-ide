@@ -325,6 +325,13 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         "Show the key table (read-only tab)",
         keys,
     ),
+    cmd(
+        "git blame line",
+        "",
+        NO_ARG,
+        "Show or hide the cursor line's blame, for this session",
+        git_blame_line,
+    ),
     cmd("help", "", NO_ARG, "List the slash commands", help),
     cmd("q", "", NO_ARG, "Quit (asks about unsaved files)", quit),
     cmd(
@@ -993,6 +1000,19 @@ fn hidden(app: &mut App, _: &str) -> Result<(), String> {
 
 fn ignored(app: &mut App, _: &str) -> Result<(), String> {
     app.run_command("explorer.toggle_ignored", CmdArgs::None);
+    Ok(())
+}
+
+/// Inline blame of the cursor line on or off for this session (M7-4a), as `/theme` and
+/// `/hidden` do; `git_inline_blame` in settings.toml keeps it.
+fn git_blame_line(app: &mut App, _: &str) -> Result<(), String> {
+    let on = !app.settings.git_inline_blame;
+    app.settings.git_inline_blame = on;
+    let state = if on { "on" } else { "off" };
+    app.info(format!(
+        "inline blame {state} for this session (settings.toml `git_inline_blame` keeps it)"
+    ));
+    app.dirty = true;
     Ok(())
 }
 

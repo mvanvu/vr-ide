@@ -143,8 +143,18 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         return;
     }
     let width = usize::from(area.width);
+    // Branch, ahead/behind and the parent-repo label (M7-4a); sanitized by `git`.
+    let git = crate::git::status_label(app);
     let Some(doc) = app.active_doc() else {
-        let root = format!(" {}", app.workspace.label());
+        let mut root = format!(" {}", app.workspace.label());
+        if let Some(g) = &git {
+            let full = format!("{root} · {}", g.full);
+            root = if width_of(&full) <= width {
+                full
+            } else {
+                format!("{root} · {}", g.short)
+            };
+        }
         buf.set_stringn(area.x, area.y, root, width, theme.status);
         return;
     };
@@ -167,11 +177,26 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         LineEnding::Cr => "CR",
     };
     let (ln, col) = (pos.line + 1, pos.col + 1);
-    let rights = [
+    let plain = [
         format!(" · Ln {ln}, Col {col} · {eol} · {} ", encoding_name(doc)),
         format!(" · Ln {ln}, Col {col} "),
         format!(" Ln {ln}:{col} "),
     ];
+    // With git, each position tier comes first with the full, then the short branch text; the
+    // branch is given up before the file name, and only after every shorter form failed.
+    let mut rights: Vec<String> = Vec::new();
+    if let Some(g) = &git {
+        for (i, r) in plain.iter().enumerate() {
+            let r = if i == 2 {
+                format!(" · {}", r.trim_start())
+            } else {
+                r.clone()
+            };
+            rights.push(format!(" · {}{r}", g.full));
+            rights.push(format!(" · {}{r}", g.short));
+        }
+    }
+    rights.extend(plain.iter().cloned());
     let (mut long, mut short) = (String::new(), String::new());
     if doc.read_only {
         long.push_str(" [read-only]");
@@ -209,8 +234,8 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     let fits = |b: &&str, r: &str| width_of(b) + width_of(r) + width_of(&short) + need <= width;
     let badge = badges[..2]
         .iter()
-        .find(|b| fits(b, &rights[0]))
-        .or_else(|| badges.iter().find(|b| fits(b, &rights[2])))
+        .find(|b| fits(b, &plain[0]))
+        .or_else(|| badges.iter().find(|b| fits(b, &plain[2])))
         .copied()
         .unwrap_or(badges[2]);
     let bw = width_of(badge).min(width);
@@ -222,7 +247,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         .iter()
         .flat_map(|r| [(r, &long), (r, &short)])
         .find(|(r, f)| width_of(r) + width_of(f) + need <= width)
-        .unwrap_or((&rights[2], &short));
+        .unwrap_or((&plain[2], &short));
     let (right, flags) = pick;
     let room = width.saturating_sub(width_of(right) + width_of(flags));
     let left = format!("{}{flags}", shorten_left(&path, room));

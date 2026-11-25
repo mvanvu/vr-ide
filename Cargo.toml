@@ -61,6 +61,7 @@ vr-fs = { path = "crates/vr-fs" }
 vr-search = { path = "crates/vr-search" }
 vr-syntax = { path = "crates/vr-syntax" }
 vr-term = { path = "crates/vr-term" }
+vr-git = { path = "crates/vr-git" }
 
 # Integrated terminal (M5): PTY (MIT) and emulator (Apache-2.0), wrapped by vr-term's own types.
 portable-pty = "=0.9.0"

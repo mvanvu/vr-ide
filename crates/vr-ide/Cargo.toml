@@ -11,6 +11,8 @@ vr-fs.workspace = true
 vr-search.workspace = true
 vr-syntax.workspace = true
 vr-term.workspace = true
+vr-git.workspace = true
+rustix = { workspace = true, features = ["process"] }
 ratatui.workspace = true
 crossterm.workspace = true
 arboard.workspace = true

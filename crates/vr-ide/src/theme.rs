@@ -61,6 +61,12 @@ pub struct Theme {
     captures: [Style; Capture::ALL.len()],
     /// Status bar badge while the integrated terminal has the keys (M5), apart from READ / EDIT.
     pub mode_term: Style,
+    /// Gutter marks of lines added / changed / removed against the git index (M7-4a).
+    pub git_added: Style,
+    pub git_modified: Style,
+    pub git_deleted: Style,
+    /// The inline blame after the cursor line: quieter than code.
+    pub git_blame: Style,
     /// Colours of programs in the integrated terminal; read through [`Theme::ansi_palette`].
     ansi: Option<AnsiPalette>,
 }
@@ -142,6 +148,12 @@ impl Theme {
                 .bg(Color::Magenta)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
+            git_added: Style::default().fg(Color::Green),
+            git_modified: Style::default().fg(Color::Indexed(75)),
+            git_deleted: Style::default().fg(Color::Red),
+            git_blame: Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
             ansi: None,
         }
     }
@@ -198,6 +210,12 @@ impl Theme {
                 .bg(Color::Magenta)
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
+            git_added: Style::default().fg(Color::Indexed(28)),
+            git_modified: Style::default().fg(Color::Blue),
+            git_deleted: Style::default().fg(Color::Red),
+            git_blame: Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC),
             ansi: None,
         }
     }
@@ -485,6 +503,10 @@ impl Theme {
                 .bg(pink)
                 .fg(bg)
                 .add_modifier(Modifier::BOLD),
+            git_added: Style::default().fg(green),
+            git_modified: Style::default().fg(cyan),
+            git_deleted: Style::default().fg(red),
+            git_blame: Style::default().fg(dim).add_modifier(Modifier::ITALIC),
             ansi: Some(ansi::palette(depth, fg, bg, &ansi::DRACULA_ANSI)),
         }
     }
@@ -731,6 +753,15 @@ mod tests {
         }
         v.push(("gutter", fg(t.gutter), editor, 3.0));
         v.push(("gutter_current", fg(t.gutter_current), editor, 3.0));
+        // Gutter marks are thin bars: non-text contrast (3:1), like the line numbers.
+        for (name, s) in [
+            ("git_added", t.git_added),
+            ("git_modified", t.git_modified),
+            ("git_deleted", t.git_deleted),
+            ("git_blame", t.git_blame),
+        ] {
+            v.push((name, fg(s), editor, 3.0));
+        }
         v
     }
 

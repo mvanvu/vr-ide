@@ -103,6 +103,7 @@ fn run(app: &mut App) -> Result<()> {
     // watches are one per shown folder.
     app.watch_root();
     app.start_index();
+    app.start_git();
     app.remember_workspace();
     // Without the kitty protocol, ctrl+shift+<letter>, ctrl+/ and similar chords cannot be
     // told apart; the startup notice lists the affected keys.
