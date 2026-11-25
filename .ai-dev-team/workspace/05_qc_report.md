@@ -1201,3 +1201,34 @@ Verdict: QC_PASS (slash commands phase 2, after review round 1). Engine: pty (py
 | BASE-17 probes leave no data | pass | temp HOME/XDG/state dirs only |
 | BASE-25/38 fmt, clippy | pass | exit 0 |
 | Known user questions D264/D265/D267/D271/D273 | not findings | per brief |
+
+## T22 (QC, unified find ctrl+f) — QC_PASS
+Engine: pty walk (python pty + VT model, TERM=xterm-256color, release binary rebuilt by QC), legacy bytes at 120x40, 80x24, 40x12, kitty bytes at 120x40; no browser. Artifacts: qa-artifacts/T22/qc/ (walk.py..walk4.py, w_*, x_*, y_*, t_* screens, run2_120.txt, run3.txt, full_suite.txt, release_build.txt).
+
+| Check | Result |
+|---|---|
+| cargo test --workspace -j 4 via run-heavy (once) | 870 passed, 0 failed, 17 ignored, exit 0 |
+| clippy --workspace --all-targets -D warnings; fmt --check | clean; ok |
+| fresh release build (touch + run-heavy) | Finished release 25.3s |
+| AC-22a File list, Enter jump (Ln 3 Col 16, READ), Esc box -> READ | pass at 3 sizes |
+| AC-22b ctrl+f again -> Project, grouped by file; two roots -> root header rows (qcw2.., qcr2..); Enter opens file at match (ro.txt Ln1) | pass |
+| AC-22c `foo/i`, `/fo+/`, `/fo+/i`, `a\/b` (finds only `a/b`), `/fo(/` -> "invalid regex ... unclosed group", no search | pass |
+| AC-22d f3 next (2/4 -> 3/4); shift+f3 kitty (`CSI 13;2~`) back; legacy shift+f3 unchanged = D264 (known); shift+Enter kitty previous (3/3, 2/3) | pass |
+| ctrl+r File: Enter one (1/3 -> 1/2), ctrl+a all ("Replaced 2 occurrences"), Esc -> READ; ctrl+s writes `PIN 1\nPIN 2\nPIN 3\n` on disk | pass |
+| ctrl+r on non-UTF-8 (read-only) file: stays READ [read-only], bytes on disk unchanged | pass |
+| ctrl+r Project: preview [x] per file, Space unchecks r2, confirm dialog "2 matches in 2 files" (default Cancel; left+Enter = Replace); disk: r3 `PIN 5`, r2 unchanged, ro.txt (mode 0444) "skipped: file is read-only" unchanged | pass |
+| 1M-line file: open 2.2s; each key (type, down, enter, f3, switch) answered within the 50 ms poll floor; 10 matches listed | pass |
+| terminal open, short windows 80x12, 40x10, 120x14: Find and Replace rows keep their rows, list/editor shrink | pass |
+| docs/keymap.md "The find box", README find section match observed behaviour | pass |
+
+Observations (not defects): (1) after Enter jumps, focus is the editor and Esc there leaves the box open (Esc in the box closes it); matches spec wording. (2) A 0444 file opens editable in the editor (read_only means non-UTF-8 only); file-scope replace edits its buffer; project replace skips it safely. Pre-existing. (3) 40x10 + terminal: replace row drawn, hint "enter one - ctrl+a all" dropped for width.
+
+## Rule check T22
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-22a..e | pass | table above; snapshots covered by suite (80x24, 120x40, 40x12) |
+| BASE-4/5 | pass | full suite, clippy, fmt, release build outputs in qa-artifacts/T22/qc |
+| BASE-14/15/17 | pass | no polling loops of heavy runs; only own pty sessions killed; temp dirs only |
+| BASE-19 | pass | results written as checked |
+| USER-5 | pass | legacy ctrl+f/ctrl+r bytes walked |
+| COMPACT | pass | short windows keep box rows |
