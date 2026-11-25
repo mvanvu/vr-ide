@@ -22,6 +22,8 @@ mod app_tests;
 #[cfg(test)]
 mod dialog_tests;
 #[cfg(test)]
+mod explorer_menu_tests;
+#[cfg(test)]
 mod explorer_tests;
 #[cfg(test)]
 mod find_tests;

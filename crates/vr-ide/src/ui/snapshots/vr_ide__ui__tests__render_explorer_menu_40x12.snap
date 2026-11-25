@@ -1,0 +1,16 @@
+---
+source: crates/vr-ide/src/ui/mod.rs
+expression: t.backend()
+---
+"▾ sh┌──────────────────┐ntroller.php    "
+"  ▾ │ New…      ctrl+n │p               "
+"    │ Rename…       f2 │                "
+"    │ Copy      ctrl+c │s OrderControlle"
+"    │ Cut       ctrl+x │                "
+"    │ Paste     ctrl+v │                "
+"  ▸ │ Delete    delete │                "
+"    └──────────────────┘                "
+"    composer.j…│                        "
+"    README.md  │                        "
+"               │                        "
+" READ …oller/OrderController.php Ln 1:1 "

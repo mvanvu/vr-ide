@@ -695,6 +695,42 @@ fn a_program_drag_released_outside_the_panel_still_gets_the_release() {
     assert!(!crate::commands::terminal::handle_mouse(&mut app, &drag));
 }
 
+/// T23 (D211/D218): with the explorer shown, a right press on a terminal whose program asked
+/// for the mouse still reaches the program as before; no explorer menu opens.
+#[test]
+fn a_right_click_in_a_mouse_program_is_forwarded_not_a_menu() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    app.explorer.visible = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    draw(&mut app, 80, 24);
+    wait_text(&app, "$");
+    typ(&mut app, "printf '\\033[?1000h\\033[?1006h'; cat -v\n");
+    let deadline = Instant::now() + WAIT;
+    while !tab(&app).grid_now().modes.mouse_reporting {
+        assert!(Instant::now() < deadline, "mouse reporting never enabled");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let area = app.layout.terminal;
+    for kind in [
+        MouseEventKind::Down(MouseButton::Right),
+        MouseEventKind::Up(MouseButton::Right),
+    ] {
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: area.x + 2,
+            row: area.y + 2,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let s = wait_text(&app, "[<2;3;2m");
+    assert!(s.contains("[<2;3;2M"), "{s}");
+    assert!(app.explorer.menu.is_none());
+    assert_eq!(app.focus, Focus::Terminal);
+}
+
 fn fake_tab(title: &str, status: TermStatus) -> TermTab {
     TermTab::fake(fake_grid(80, 9), title, status)
 }

@@ -244,6 +244,14 @@ destination folder, relative to the project root) are palette only.
 By default dotfiles are shown and paths matched by `.gitignore` are hidden. Copy, move and rename
 never overwrite an existing item. Mouse clicks and the wheel work in the explorer.
 
+A right click on a row selects it and opens a small menu at the pointer with the same actions as
+the keys above: New… (File / Folder), Rename…, Copy, Cut, Paste and Delete, each with its key on
+the right (taken from your keymap). Actions that cannot apply are dimmed: Paste while nothing is
+copied or cut; Rename, Copy, Cut and Delete on the project folder row. A right click below the last
+row targets the project folder (New, Paste); one on a row of a multi-selection keeps the selection.
+`up`/`down` (and `home`/`end`) move, `enter` or a left click runs an item; `esc` or a click outside closes the menu.
+Inside a terminal whose program asked for the mouse, the right click still goes to the program.
+
 ### External changes
 
 If a file you have open changes on disk:

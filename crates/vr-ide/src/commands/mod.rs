@@ -4,6 +4,7 @@ pub mod app;
 pub mod dialog;
 pub mod edit;
 pub mod explorer;
+pub mod explorer_menu;
 pub mod file;
 pub mod find;
 pub mod nav;

@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/mod.rs
+expression: t.backend()
+---
+"▾ shop             │ OrderController.php                                        "
+"  ▾ src            │  1 <?php                                                   "
+"    ▾ Controller   │  2                                                         "
+"        OrderContr…│  3 class OrderController                                   "
+"        UserContro…│  4 {                                                       "
+"    ▸ Entity       │  5 }                                                       "
+"  ▸ tests          │  6                                                         "
+"    .gitignore     │                                                            "
+"    composer.json  │                                                            "
+"    ┌──────────────────┐                                                        "
+"    │ New…      ctrl+n │                                                        "
+"    │ Rename…       f2 │                                                        "
+"    │ Copy      ctrl+c │                                                        "
+"    │ Cut       ctrl+x │                                                        "
+"    │ Paste     ctrl+v │                                                        "
+"    │ Delete    delete │                                                        "
+"    └──────────────────┘                                                        "
+"                   │                                                            "
+"                   │                                                            "
+"                   │                                                            "
+"                   │                                                            "
+"                   │                                                            "
+"                   │                                                            "
+" READ src/Controller/OrderController.php · Ln 1, Col 1 · LF · UTF-8             "

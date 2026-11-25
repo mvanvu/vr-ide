@@ -1037,6 +1037,7 @@ impl App {
     /// Opens a modal dialog; it replaces any open one and closes the palette.
     pub fn open_dialog(&mut self, widget: DialogWidget, action: DialogAction) {
         commands::palette::close(self);
+        self.explorer.menu = None;
         self.dialog = Some(Dialog { widget, action });
         self.modal_since = Some(self.now());
         self.dirty = true;
@@ -1099,7 +1100,8 @@ impl App {
         if key.code == KeyCode::Enter {
             self.last_enter = Some(now);
         }
-        let modal = self.dialog.is_some() || self.focus == Focus::Palette;
+        let modal =
+            self.dialog.is_some() || self.focus == Focus::Palette || self.explorer.menu.is_some();
         if modal && enter_ignored {
             return;
         }
@@ -1107,6 +1109,14 @@ impl App {
             let outcome = d.widget.handle_key(&key);
             self.answer_dialog(outcome);
             return;
+        }
+        // The explorer's right-click menu takes the keys it uses (T23).
+        if self.explorer.menu.is_some() {
+            if self.focus != Focus::Explorer || !self.explorer.visible {
+                self.explorer.menu = None;
+            } else if commands::explorer_menu::handle_key(self, &key) {
+                return;
+            }
         }
         let palette_esc = key.code == KeyCode::Esc;
         if self.focus == Focus::Palette && commands::palette::handle_key(self, &key) {
@@ -1230,6 +1240,10 @@ impl App {
         if let Some(d) = &mut self.dialog {
             let outcome = d.widget.handle_mouse(&ev);
             self.answer_dialog(outcome);
+            return;
+        }
+        // An open explorer menu sees every mouse event first (T23).
+        if commands::explorer_menu::handle_mouse(self, &ev) {
             return;
         }
         if self.palette.is_some() {

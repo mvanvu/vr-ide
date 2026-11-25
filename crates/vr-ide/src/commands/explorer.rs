@@ -163,6 +163,8 @@ pub struct Explorer {
     pub watched: HashSet<PathBuf>,
     /// `App::watch_root` ran: from then on `watched` follows `expanded`.
     pub watching: bool,
+    /// The right-click menu while open (T23); it takes keys and clicks first.
+    pub menu: Option<super::explorer_menu::Menu>,
 }
 
 impl Explorer {
@@ -188,6 +190,7 @@ impl Explorer {
             reported_leftovers: HashSet::new(),
             watched: HashSet::new(),
             watching: false,
+            menu: None,
         }
     }
 
@@ -323,6 +326,7 @@ pub fn ensure_loaded(app: &mut App) {
 /// Shows or hides the panel; hiding it while focused gives the editor the keys.
 fn toggle(app: &mut App, _: CmdArgs) -> CmdResult {
     app.explorer.visible = !app.explorer.visible;
+    app.explorer.menu = None;
     if app.explorer.visible {
         ensure_loaded(app);
     } else if app.focus == Focus::Explorer {
@@ -336,6 +340,7 @@ fn toggle(app: &mut App, _: CmdArgs) -> CmdResult {
 fn toggle_focus(app: &mut App, _: CmdArgs) -> CmdResult {
     if app.explorer.visible {
         app.explorer.visible = false;
+        app.explorer.menu = None;
         app.focus = Focus::Editor;
     } else {
         show_and_focus(app);
@@ -492,10 +497,31 @@ pub fn handle_builtin_key(app: &mut App, key: &KeyEvent) -> bool {
 
 /// Click selects (a folder toggles, a file opens and the explorer keeps the keys),
 /// ctrl+click adds to or removes from the selection, shift+click selects a range, the wheel
-/// scrolls.
+/// scrolls. A right press selects its row (the root below the last row) and opens the
+/// menu of the explorer's key actions there (T23).
 pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
     let area = app.explorer.area;
     match ev.kind {
+        MouseEventKind::Down(MouseButton::Right) => {
+            app.focus = Focus::Explorer;
+            let i = app.explorer.drawn_top + usize::from(ev.row.saturating_sub(area.y));
+            let in_selection = app
+                .explorer
+                .rows
+                .get(i)
+                .is_some_and(|r| app.explorer.selected.contains(&r.path));
+            if i >= app.explorer.rows.len() {
+                move_cursor(app, 0, false);
+            } else if in_selection {
+                // A row of a multi-selection: the actions apply to the whole selection, as
+                // its keys do.
+                app.explorer.cursor = i;
+                app.explorer.follow_cursor = true;
+            } else {
+                move_cursor(app, i as isize, false);
+            }
+            super::explorer_menu::open(app, ev.column, ev.row);
+        }
         MouseEventKind::Down(MouseButton::Left) => {
             app.focus = Focus::Explorer;
             let i = app.explorer.drawn_top + usize::from(ev.row.saturating_sub(area.y));
@@ -1172,7 +1198,7 @@ pub fn drop_nested(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 /// What a multi-item operation acts on: the selection (or the cursor row) in row order,
 /// without the root and without paths nested in another selected one. The flag says the
 /// root was asked for.
-fn targets(app: &App) -> (Vec<PathBuf>, bool) {
+pub(crate) fn targets(app: &App) -> (Vec<PathBuf>, bool) {
     let ex = &app.explorer;
     let rows: Vec<&Row> = if ex.selected.is_empty() {
         ex.current().into_iter().collect()

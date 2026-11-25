@@ -3,6 +3,7 @@
 pub mod dialog;
 pub mod editor_view;
 pub mod explorer;
+pub mod explorer_menu;
 pub mod find_bar;
 pub mod layout;
 pub mod palette;
@@ -57,6 +58,7 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     status_bar::render_notice(frame.buffer_mut(), layout.notice, app, theme);
     status_bar::render(frame.buffer_mut(), layout.status, app, theme);
     // Overlays last: they draw over the editor and set the cursor.
+    explorer_menu::render(frame.buffer_mut(), area, app, theme);
     if app.palette.is_some() {
         palette::render(frame, area, app, theme);
     }
@@ -451,6 +453,43 @@ mod tests {
         draw(&mut app, 24, 12);
         assert_eq!(app.layout.explorer.width, 0);
         assert_eq!(app.layout.editor.width, 24);
+    }
+
+    /// T23: the right-click menu on a file row at the three review sizes; Paste is dimmed
+    /// (nothing copied), the highlight is on the first item, keys on the right. At 40x12 a
+    /// press on the last explorer row moves the box up to stay on screen.
+    #[test]
+    fn render_explorer_menu() {
+        for (w, h) in [(80, 24), (120, 40), (40, 12)] {
+            let (_d, mut app) = explorer_app();
+            draw(&mut app, w, h);
+            let a = app.explorer.area;
+            let i = app
+                .explorer
+                .rows
+                .iter()
+                .position(|r| r.name() == "composer.json")
+                .unwrap();
+            let row = (a.y + (i - app.explorer.drawn_top) as u16).min(a.y + a.height - 1);
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column: a.x + 4,
+                row,
+                modifiers: KeyModifiers::NONE,
+            });
+            assert!(app.explorer.menu.is_some(), "{w}x{h}");
+            let t = draw(&mut app, w, h);
+            insta::assert_snapshot!(format!("render_explorer_menu_{w}x{h}"), t.backend());
+            let m = app.explorer.menu.as_ref().unwrap().area;
+            assert!(m.x + m.width <= w && m.y + m.height <= h, "{w}x{h}: {m:?}");
+            // The dimmed item uses the dim colour.
+            let theme = Theme::from_name(&app.settings.theme);
+            let paste_y = m.y + 1 + 4;
+            assert_eq!(
+                t.backend().buffer()[(m.x + 2, paste_y)].fg,
+                theme.popup.patch(theme.dim).fg.unwrap()
+            );
+        }
     }
 
     #[test]
