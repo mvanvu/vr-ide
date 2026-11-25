@@ -570,6 +570,31 @@ pub fn roots_changed(app: &mut App) {
     }
 }
 
+/// Another workspace opened (W-2): results that [`roots_changed`] did not search again
+/// (the query field was edited since) belong to the old roots; they are dropped, with a
+/// search still running over them. A replace never runs here (Open Workspace waits for it).
+pub fn clear_stale(app: &mut App) {
+    if app.search.busy() {
+        return;
+    }
+    let shown = app.search.query.clone();
+    if shown.is_some() && shown == Some(app.search.query()) {
+        return;
+    }
+    cancel_running(app);
+    drop_preview(app);
+    let s = &mut app.search;
+    s.groups.clear();
+    s.index.clear();
+    s.total = 0;
+    s.errors.clear();
+    s.selected = 0;
+    s.top = 0;
+    s.status = Status::Idle;
+    s.query = None;
+    app.dirty = true;
+}
+
 /// Takes every message the running search and the preview / replace worker sent so far,
 /// without blocking.
 pub fn drain(app: &mut App) {

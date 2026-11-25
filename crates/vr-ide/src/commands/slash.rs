@@ -11,7 +11,6 @@ use super::registry::CmdArgs;
 use super::terminal::LineTarget;
 use crate::app::App;
 use crate::ui::dialog::{DialogWidget, PromptDialog};
-use crate::workspace::Workspace;
 
 /// What a slash command takes after its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +204,13 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         "Highlight the file as another language",
         lang,
     ),
-    cmd("term new", "", NO_ARG, "Open a new terminal tab", term_new),
+    cmd(
+        "term new",
+        "[root]",
+        ArgKind::Root,
+        "Open a new terminal tab in a workspace folder (default: the active file's)",
+        term_new,
+    ),
     cmd(
         "term close",
         "",
@@ -760,7 +765,7 @@ fn window_state(app: &App) -> Option<(String, usize)> {
         .map(|p| (p.input.text().to_string(), p.selected))
 }
 
-fn set_input(app: &mut App, text: &str) {
+pub(crate) fn set_input(app: &mut App, text: &str) {
     if let Some(p) = &mut app.palette {
         p.input.set(text);
         p.error = None;
@@ -861,9 +866,40 @@ fn reload(app: &mut App, _: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn term_new(app: &mut App, _: &str) -> Result<(), String> {
-    app.run_command("terminal.new", CmdArgs::None);
+/// No root: the root of the active file (as the key does); a named root starts the shell there.
+fn term_new(app: &mut App, arg: &str) -> Result<(), String> {
+    if arg.is_empty() {
+        app.run_command("terminal.new", CmdArgs::None);
+        return Ok(());
+    }
+    let root =
+        find_root(app, arg).ok_or_else(|| format!("/term new: no workspace folder named {arg}"))?;
+    super::terminal::new_terminal_in(app, &root);
     Ok(())
+}
+
+/// The root named `arg` (its display name, or its path as typed).
+fn find_root(app: &App, arg: &str) -> Option<PathBuf> {
+    let path = resolve_arg(app, arg);
+    app.workspace
+        .roots()
+        .iter()
+        .find(|r| r.name == arg || r.path == path)
+        .map(|r| r.path.clone())
+}
+
+/// "Terminal: New Terminal" from the palette with several roots (W-2): the F1 window lists the
+/// roots with the active file's one highlighted; Enter starts the terminal there.
+pub fn pick_terminal_root(app: &mut App) {
+    let active = app.active_root().id;
+    palette::open(app);
+    set_input(app, "/term new ");
+    let i = app.workspace.roots().iter().position(|r| r.id == active);
+    if let (Some(p), Some(i)) = (&mut app.palette, i)
+        && i < p.items.len()
+    {
+        p.selected = i;
+    }
 }
 
 fn term_close(app: &mut App, _: &str) -> Result<(), String> {
@@ -900,12 +936,11 @@ fn ai(app: &mut App, tool: &str) -> Result<(), String> {
 /// The W-1 checks apply: a missing folder, a file, a repeat or a nested folder is refused.
 fn ws_add(app: &mut App, arg: &str) -> Result<(), String> {
     let path = resolve_arg(app, arg);
-    let id = app.add_root(&path).map_err(|e| e.to_string())?;
-    if let Some(r) = app.workspace.get(id) {
-        let msg = format!("workspace: added {}", r.name);
-        app.info(msg);
+    // The checks run off the UI thread (W-2); a slow answer comes later as a notice.
+    match app.add_root_checked(&path) {
+        Some(Err(e)) => Err(e.to_string()),
+        Some(Ok(_)) | None => Ok(()),
     }
-    Ok(())
 }
 
 /// Nothing on disk is touched and no tab is closed (W-1).
@@ -976,16 +1011,10 @@ fn changed_on_disk(path: &Path) -> String {
 
 /// Unsaved files ask first (Save all / Discard / Cancel), as for quit.
 fn ws_open(app: &mut App, arg: &str) -> Result<(), String> {
-    let (ws, refused) = Workspace::from_file(&resolve_arg(app, arg)).map_err(|e| e.to_string())?;
-    open_workspace(app, ws, refused);
-    Ok(())
-}
-
-fn open_workspace(app: &mut App, ws: Workspace, refused: Vec<crate::workspace::WorkspaceError>) {
-    for e in refused {
-        app.warn(format!("workspace: {e}"));
-    }
-    app.open_workspace(ws);
+    let file = resolve_arg(app, arg);
+    // Read off the UI thread (W-2): a FIFO or a dead mount never hangs the window.
+    app.open_workspace_from(Some(file), Vec::new())
+        .map_err(|e| e.to_string())
 }
 
 fn ws_recent(app: &mut App, arg: &str) -> Result<(), String> {
@@ -1001,13 +1030,17 @@ fn ws_recent(app: &mut App, arg: &str) -> Result<(), String> {
         .and_then(|i| app.recent_workspaces.entries.get(i))
         .cloned()
         .ok_or_else(|| format!("/ws recent: no recent workspace {arg}"))?;
-    let (ws, refused) = match &entry.file {
-        Some(f) => Workspace::from_file(f),
-        None => Workspace::from_paths(&entry.roots),
-    }
-    .map_err(|e| e.to_string())?;
-    open_workspace(app, ws, refused);
-    Ok(())
+    open_recent_workspace(app, &entry)
+}
+
+/// Opens a recent-list entry (`/ws recent n`, a click on the welcome screen); its file or
+/// folders are read off the UI thread.
+pub fn open_recent_workspace(
+    app: &mut App,
+    entry: &vr_config::RecentWorkspace,
+) -> Result<(), String> {
+    app.open_workspace_from(entry.file.clone(), entry.roots.clone())
+        .map_err(|e| e.to_string())
 }
 
 fn theme(app: &mut App, name: &str) -> Result<(), String> {

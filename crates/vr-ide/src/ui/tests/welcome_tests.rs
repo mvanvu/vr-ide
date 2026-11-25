@@ -426,3 +426,131 @@ fn compact_welcome_does_not_repeat_the_root_and_shows_one_more_hint() {
     .count();
     assert_eq!(shown, 3, "{body}");
 }
+
+// ---- several roots (W-2) ----------------------------------------------------------------------
+
+const WEB: &str = "/home/user/DEV/web";
+const DOCS: &str = "/home/user/DEV/docs";
+
+/// `welcome_app` with three roots (`docs` gone from disk), their branches, an index over
+/// them and two recent workspaces.
+fn multi_root_app() -> App {
+    use crate::app::RootInfo;
+    let mut app = welcome_app();
+    let roots = [PathBuf::from(ROOT), PathBuf::from(WEB), PathBuf::from(DOCS)];
+    let (ws, _) = crate::workspace::Workspace::from_paths(&roots).unwrap();
+    app.workspace = ws;
+    app.root_info = vec![
+        RootInfo {
+            path: PathBuf::from(ROOT),
+            branch: Some("main".into()),
+            missing: false,
+        },
+        RootInfo {
+            path: PathBuf::from(WEB),
+            branch: Some("feature/login".into()),
+            missing: false,
+        },
+        RootInfo {
+            path: PathBuf::from(DOCS),
+            branch: None,
+            missing: true,
+        },
+    ];
+    let mut files: Vec<PathBuf> = (0..1284)
+        .map(|i| PathBuf::from(format!("shop/src/f{i}.rs")))
+        .collect();
+    files.extend((0..312).map(|i| PathBuf::from(format!("web/src/c{i}.ts"))));
+    app.file_index = Some(vr_fs::FileIndex::from_paths(ROOT, files));
+    app.count_root_files();
+    app.recent_workspaces.entries = vec![
+        vr_config::RecentWorkspace {
+            file: None,
+            roots: roots.to_vec(),
+        },
+        vr_config::RecentWorkspace {
+            file: Some(PathBuf::from("/home/user/DEV/team.vr-workspace")),
+            roots: vec![PathBuf::from(ROOT), PathBuf::from("/home/user/DEV/api")],
+        },
+        vr_config::RecentWorkspace {
+            file: None,
+            roots: vec![PathBuf::from("/home/user/old/blog")],
+        },
+    ];
+    app
+}
+
+#[test]
+fn welcome_multi_root_snapshots() {
+    let mut app = multi_root_app();
+    for (w, h) in [(120, 40), (80, 24), (40, 12)] {
+        let t = draw(&mut app, w, h);
+        insta::assert_snapshot!(format!("welcome_multi_root_{w}x{h}"), t.backend());
+    }
+}
+
+#[test]
+fn welcome_lists_each_root_and_the_recent_workspaces() {
+    let mut app = multi_root_app();
+    let screen = lines(&mut app, 120, 40).join("\n");
+    for needle in [
+        "PROJECT",
+        "shop",
+        "main · 1,284 files",
+        "web",
+        "feature/login · 312 files",
+        "docs",
+        "missing",
+        "WORKSPACES",
+        "team",
+        "blog",
+    ] {
+        assert!(screen.contains(needle), "{needle:?} missing:\n{screen}");
+    }
+    // Numbered as `/ws recent` takes them; the workspace now open (1) is not offered again.
+    assert!(
+        screen.contains("2  team") && screen.contains("3  blog"),
+        "{screen}"
+    );
+    assert!(!screen.contains("1  shop"), "{screen}");
+    // One root: no PROJECT list, the dashboard as before (snapshots above).
+    let mut one = welcome_app();
+    let screen = lines(&mut one, 120, 40).join("\n");
+    assert!(!screen.contains("PROJECT"), "{screen}");
+}
+
+#[test]
+fn a_click_on_a_recent_workspace_opens_it() {
+    let d = tempfile::tempdir().unwrap();
+    let base = d.path().canonicalize().unwrap();
+    for f in ["a", "b", "c"] {
+        std::fs::create_dir(base.join(f)).unwrap();
+    }
+    let (mut app, _) = test_app(&base.join("a"));
+    app.recent_workspaces.entries = vec![
+        vr_config::RecentWorkspace {
+            file: None,
+            roots: vec![base.join("a")],
+        },
+        vr_config::RecentWorkspace {
+            file: None,
+            roots: vec![base.join("b"), base.join("c")],
+        },
+    ];
+    let t = draw(&mut app, 120, 40);
+    let text = format!("{}", t.backend());
+    let (y, line) = text
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("b, c"))
+        .unwrap_or_else(|| panic!("no recent workspace row:\n{text}"));
+    let shown = line.trim_matches('"');
+    let x = shown[..shown.find("b, c").unwrap()].chars().count() as u16;
+    app.handle_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: x,
+        row: y as u16,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    });
+    assert_eq!(app.workspace.paths(), [base.join("b"), base.join("c")]);
+}

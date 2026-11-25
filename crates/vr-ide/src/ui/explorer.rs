@@ -1,5 +1,6 @@
-//! Explorer panel: the project tree with folders expanded in place (AC-1). Row 0 is the
-//! project root; a column on the right separates the panel from the editor.
+//! Explorer panel: the project tree with folders expanded in place (AC-1). Each workspace
+//! root is a top-level row (W-2; a missing one is marked); a column on the right separates
+//! the panel from the editor.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -15,6 +16,9 @@ const INDENT: usize = 2;
 
 /// After the name of a row matched by .gitignore (shown with explorer.toggle_ignored).
 const IGNORED_MARK: &str = " ·";
+
+/// After the name of a workspace root whose folder is gone (W-2).
+const MISSING_MARK: &str = " (missing)";
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     app.explorer.area = area;
@@ -54,6 +58,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
         };
         buf.set_style(Rect::new(area.x, y, inner, 1), style);
         if row.ignored
+            || row.missing
             || matches!(
                 row.kind,
                 NodeKind::Symlink(SymlinkTarget::Broken | SymlinkTarget::Loop)
@@ -70,9 +75,15 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
             icon(row, ex.expanded.contains(&row.path)),
             row.name()
         );
-        // Ignored rows are also marked in text, so the flag shows without colours; the
-        // marker is kept when a long name is cut.
-        let marker = if row.ignored { IGNORED_MARK } else { "" };
+        // Ignored rows and missing roots are also marked in text, so the flag shows without
+        // colours; the marker is kept when a long name is cut.
+        let marker = if row.missing {
+            MISSING_MARK
+        } else if row.ignored {
+            IGNORED_MARK
+        } else {
+            ""
+        };
         let room = usize::from(inner).saturating_sub(marker.chars().count());
         let shown = format!("{}{marker}", fit(&text, room));
         buf.set_stringn(area.x, y, shown, usize::from(inner), style);
@@ -84,6 +95,9 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
 }
 
 fn icon(row: &Row, expanded: bool) -> &'static str {
+    if row.missing {
+        return "✗ ";
+    }
     match row.kind {
         k if k.is_expandable() && expanded => "▾ ",
         k if k.is_expandable() => "▸ ",

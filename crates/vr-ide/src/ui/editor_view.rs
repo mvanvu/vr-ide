@@ -191,7 +191,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         return;
     }
     if app.docs.is_empty() {
-        super::welcome::render(frame.buffer_mut(), area, app, theme);
+        app.welcome_hits = super::welcome::render(frame.buffer_mut(), area, app, theme);
         return;
     }
     let active = app.active;

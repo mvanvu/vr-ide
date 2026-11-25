@@ -45,3 +45,5 @@ mod terminal_right_tests;
 mod terminal_tests;
 #[cfg(test)]
 mod workspace_tests;
+#[cfg(test)]
+mod workspace_ui_tests;

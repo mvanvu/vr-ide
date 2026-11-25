@@ -91,18 +91,32 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
   a live resource monitor (CPU with history and per core, RAM, swap, load, uptime, vr-ide's own CPU
   and memory). It is sampled once a second only while it is on screen.
 - The **project root** is the folder the explorer shows and the one project search, "Go to File" and
-  relative paths in prompts refer to.
+  relative paths in prompts refer to (with several folders, see
+  [Workspace](#workspace-several-folders)).
 - With no argument it is the current directory; with a directory it is that directory (the path
   is resolved, so `a/../a/b` works).
 - With a file it is the nearest parent folder that contains `.git`, walking up from the file's
   folder; if there is none, the file's own folder.
-- vr-ide takes at most one argument and has no options: `vr-ide --help` or `--version` are read as
-  paths and fail. A missing path or a second argument prints a message and exits with status 2.
+- vr-ide has no options: `vr-ide --help` or `--version` are read as paths and fail. A missing path
+  prints a message and exits with status 2.
 - It needs an interactive terminal; it cannot run with its input or output redirected.
 
 Press `F1` to open the command palette, which lists every command with its
 key. Press `ctrl+q` to quit. If any file has unsaved changes, vr-ide asks first (see
 [Quit guard](#quit-guard)).
+
+### Workspace (several folders)
+
+- `vr-ide dir1 dir2 …` opens each folder as a root of one workspace; a file argument opens the file
+  and adds its project as a root unless a folder argument already holds it.
+- `vr-ide team.vr-workspace` opens the roots listed in that file; a workspace file is given alone
+  (with other arguments vr-ide prints the usage and exits with status 2).
+- The explorer then shows one node per folder; a folder that is gone is marked `(missing)` and can
+  be removed. Each file operation stays inside its own folder: moving (cut and paste, Move) between
+  workspace folders is refused, also through a folder link that leads into another one; copy and
+  paste works across them.
+- `/ws add`, `/ws remove`, `/ws save`, `/ws open` and `/ws recent` (also in the palette as
+  `Workspace: …`) change the folders, see [docs/commands.md](docs/commands.md).
 
 ## Using vr-ide
 
@@ -239,7 +253,8 @@ not overwritten.
 
 `Explorer: Reveal Active File` expands the tree down to the file in the active tab.
 `Explorer: Toggle` (show or hide, focus stays where it is) and `Explorer: Move` (asks for the
-destination folder, relative to the project root) are palette only.
+destination folder, relative to the project root; with several workspace folders it is typed as
+shown in the explorer, `folder-name/path`, and must be in the same folder) are palette only.
 
 By default dotfiles are shown and paths matched by `.gitignore` are hidden. Copy, move and rename
 never overwrite an existing item. Mouse clicks and the wheel work in the explorer.
@@ -249,6 +264,9 @@ the keys above: New… (File / Folder), Rename…, Copy, Cut, Paste and Delete, 
 the right (taken from your keymap). Actions that cannot apply are dimmed: Paste while nothing is
 copied or cut; Rename, Copy, Cut and Delete on the project folder row. A right click below the last
 row targets the project folder (New, Paste); one on a row of a multi-selection keeps the selection.
+With several workspace folders, the menu of a folder's root row also has **Remove Folder from
+Workspace** (not on the last one); it takes the folder out of the workspace and leaves its files and
+open tabs as they are.
 `up`/`down` (and `home`/`end`) move, `enter` or a left click runs an item; `esc` or a click outside closes the menu.
 Inside a terminal whose program asked for the mouse, the right click still goes to the program.
 

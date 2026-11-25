@@ -64,6 +64,9 @@ pub enum WorkspaceError {
     UnknownRoot,
     /// A workspace file could not be read or written.
     File(String),
+    /// The folder's path is not valid UTF-8: workspace files and the recent list (TOML)
+    /// cannot hold it, so it would come back as a different, missing folder.
+    NotUtf8(PathBuf),
 }
 
 impl fmt::Display for WorkspaceError {
@@ -88,6 +91,11 @@ impl fmt::Display for WorkspaceError {
             Self::LastRoot => write!(f, "the last folder of the workspace cannot be removed"),
             Self::UnknownRoot => write!(f, "that folder is no longer in the workspace"),
             Self::File(m) => f.write_str(m),
+            Self::NotUtf8(p) => write!(
+                f,
+                "{} has a name that is not UTF-8; vr-ide cannot keep it in a workspace",
+                p.display()
+            ),
         }
     }
 }
@@ -210,6 +218,28 @@ impl Workspace {
 
     /// Adds the existing folder `path` (links resolved) as the last root.
     pub fn add(&mut self, path: &Path) -> Result<RootId, WorkspaceError> {
+        let canon = Workspace::check_folder(path, &self.named_paths())?;
+        self.add_checked(canon)
+    }
+
+    /// The roots as `(path, name)`, for [`Workspace::check_folder`] on another thread.
+    pub fn named_paths(&self) -> Vec<(PathBuf, String)> {
+        self.roots
+            .iter()
+            .map(|r| (r.path.clone(), r.name.clone()))
+            .collect()
+    }
+
+    /// The part of [`Workspace::add`] that asks the file system (it can hang on a dead
+    /// mount, so Add Folder runs it off the UI thread): `path` must be a folder; returns it
+    /// with links resolved, refused when it repeats, sits in or holds one of `roots`.
+    pub fn check_folder(
+        path: &Path,
+        roots: &[(PathBuf, String)],
+    ) -> Result<PathBuf, WorkspaceError> {
+        if path.to_str().is_none() {
+            return Err(WorkspaceError::NotUtf8(path.to_path_buf()));
+        }
         let meta = match std::fs::metadata(path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -223,8 +253,30 @@ impl Workspace {
         let canon = path
             .canonicalize()
             .map_err(|e| WorkspaceError::Io(path.to_path_buf(), e.to_string()))?;
-        self.check(&canon)?;
+        if canon.to_str().is_none() {
+            return Err(WorkspaceError::NotUtf8(canon));
+        }
+        check_against(&canon, roots.iter().map(|(p, n)| (real(p), n.as_str())))?;
+        Ok(canon)
+    }
+
+    /// Adds `canon` (from [`Workspace::check_folder`]) without touching the file system: the
+    /// roots may have changed since the check, so it is checked again against them as stored.
+    pub fn add_checked(&mut self, canon: PathBuf) -> Result<RootId, WorkspaceError> {
+        check_against(
+            &canon,
+            self.roots.iter().map(|r| (r.path.clone(), r.name.as_str())),
+        )?;
         Ok(self.push(canon))
+    }
+
+    /// The first root whose path is not valid UTF-8: a workspace file or the recent list
+    /// cannot hold it (TOML strings are UTF-8).
+    pub fn non_utf8_root(&self) -> Option<&Path> {
+        self.roots
+            .iter()
+            .map(|r| r.path.as_path())
+            .find(|p| p.to_str().is_none())
     }
 
     /// Removes a root (nothing on disk is touched). The last root stays.
@@ -247,10 +299,14 @@ impl Workspace {
         self.roots.iter().find(|r| p.starts_with(&r.path))
     }
 
-    /// The active-root rule: the root of the active file, else the first root.
+    /// The active-root rule: the root of the active file, else the first root whose folder
+    /// exists (the first root when all are gone). Stats roots only without an active file in
+    /// a root, and only up to the first one found; callers act on it (a terminal spawn, a
+    /// typed path), never a frame.
     pub fn active_root(&self, active_file: Option<&Path>) -> &Root {
         active_file
             .and_then(|p| self.root_of(p))
+            .or_else(|| self.roots.iter().find(|r| !r.missing()))
             .unwrap_or_else(|| self.primary())
     }
 
@@ -305,29 +361,10 @@ impl Workspace {
 
     /// Refuses `path` (canonical) when it repeats, sits in or holds a root.
     fn check(&self, path: &Path) -> Result<(), WorkspaceError> {
-        for r in &self.roots {
-            let root = real(&r.path);
-            let (path_buf, name) = (path.to_path_buf(), r.name.clone());
-            if path == root {
-                return Err(WorkspaceError::Duplicate {
-                    path: path_buf,
-                    root: name,
-                });
-            }
-            if path.starts_with(&root) {
-                return Err(WorkspaceError::Nested {
-                    path: path_buf,
-                    root: name,
-                });
-            }
-            if root.starts_with(path) {
-                return Err(WorkspaceError::Contains {
-                    path: path_buf,
-                    root: name,
-                });
-            }
-        }
-        Ok(())
+        check_against(
+            path,
+            self.roots.iter().map(|r| (real(&r.path), r.name.as_str())),
+        )
     }
 
     fn push(&mut self, path: PathBuf) -> RootId {
@@ -394,6 +431,36 @@ pub fn normalize(p: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// Refuses `path` when it is one of `roots` (`(path, name)`, compared as given), sits in
+/// one or holds one.
+fn check_against<'a>(
+    path: &Path,
+    roots: impl Iterator<Item = (PathBuf, &'a str)>,
+) -> Result<(), WorkspaceError> {
+    for (root, name) in roots {
+        let (path_buf, root_name) = (path.to_path_buf(), name.to_string());
+        if path == root {
+            return Err(WorkspaceError::Duplicate {
+                path: path_buf,
+                root: root_name,
+            });
+        }
+        if path.starts_with(&root) {
+            return Err(WorkspaceError::Nested {
+                path: path_buf,
+                root: root_name,
+            });
+        }
+        if root.starts_with(path) {
+            return Err(WorkspaceError::Contains {
+                path: path_buf,
+                root: root_name,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// `p` with links resolved when it exists, else as given.

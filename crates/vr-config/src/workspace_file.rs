@@ -17,6 +17,9 @@ use crate::ConfigWarning;
 /// File name extension of workspace files (without the dot).
 pub const WORKSPACE_EXT: &str = "vr-workspace";
 
+/// A workspace file lists folders; anything larger is not one (and is not read whole).
+pub const MAX_WORKSPACE_FILE: u64 = 1024 * 1024;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileFormat {
@@ -30,11 +33,40 @@ pub fn is_workspace_file(path: &Path) -> bool {
 
 /// Reads the roots of the workspace file `file` (absolute, `.` and `..` removed lexically,
 /// in file order). Missing folders are returned too: the caller shows them as missing.
+///
+/// Only a regular file of at most [`MAX_WORKSPACE_FILE`] bytes is read: a FIFO or device
+/// would block the read (or never end), so it is refused before the open and again on the
+/// opened handle. A FIFO swapped in between those two can still block the open, which is
+/// why the app calls this off its UI thread.
 pub fn read_workspace(file: &Path) -> Result<Vec<PathBuf>, ConfigWarning> {
-    let text = std::fs::read_to_string(file).map_err(|e| ConfigWarning::Io {
+    use std::io::Read;
+    let io = |message: String| ConfigWarning::Io {
         file: file.to_owned(),
-        message: e.to_string(),
-    })?;
+        message,
+    };
+    let not_regular = || io("not a regular file".to_string());
+    if !std::fs::metadata(file)
+        .map_err(|e| io(e.to_string()))?
+        .is_file()
+    {
+        return Err(not_regular());
+    }
+    let handle = std::fs::File::open(file).map_err(|e| io(e.to_string()))?;
+    if !handle.metadata().map_err(|e| io(e.to_string()))?.is_file() {
+        return Err(not_regular());
+    }
+    let mut bytes = Vec::new();
+    handle
+        .take(MAX_WORKSPACE_FILE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| io(e.to_string()))?;
+    if bytes.len() as u64 > MAX_WORKSPACE_FILE {
+        return Err(io(format!(
+            "too large for a workspace file (over {} KiB)",
+            MAX_WORKSPACE_FILE / 1024
+        )));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| io("not UTF-8 text".to_string()))?;
     parse_workspace(&text, file)
 }
 
@@ -170,5 +202,29 @@ mod tests {
         assert!(matches!(read_workspace(&f), Err(ConfigWarning::Io { .. })));
         std::fs::write(&f, "roots = [\"a\"]\n").unwrap();
         assert_eq!(read_workspace(&f).unwrap(), vec![d.path().join("a")]);
+    }
+
+    #[test]
+    fn read_workspace_refuses_a_fifo_a_folder_and_a_huge_file() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("dir.vr-workspace");
+        std::fs::create_dir(&dir).unwrap();
+        let e = read_workspace(&dir).unwrap_err().to_string();
+        assert!(e.contains("not a regular file"), "{e}");
+        let big = d.path().join("big.vr-workspace");
+        let mut text = String::from("roots = [\"a\"]\n");
+        text.push_str(&"#".repeat(MAX_WORKSPACE_FILE as usize));
+        std::fs::write(&big, text).unwrap();
+        let e = read_workspace(&big).unwrap_err().to_string();
+        assert!(e.contains("too large"), "{e}");
+        let fifo = d.path().join("f.vr-workspace");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
+        if made {
+            let e = read_workspace(&fifo).unwrap_err().to_string();
+            assert!(e.contains("not a regular file"), "{e}");
+        }
     }
 }

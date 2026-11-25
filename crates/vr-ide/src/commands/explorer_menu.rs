@@ -20,6 +20,10 @@ const ITEMS: [(&str, &str); 6] = [
     ("Delete", "explorer.delete"),
 ];
 
+/// The extra item of a root row (W-2): runs `workspace.remove_folder` on that root; files on
+/// disk are never touched.
+pub const REMOVE_ROOT: &str = "Remove Folder from Workspace";
+
 /// Cells between the longest label and the key column.
 const KEY_GAP: u16 = 3;
 
@@ -128,7 +132,10 @@ pub fn open(app: &mut App, column: u16, row: u16) {
     let rename = ex.current().is_some_and(|r| r.depth > 0);
     let (paths, _) = super::explorer::targets(app);
     let paste = !ex.copied.is_empty();
-    let items: Vec<Item> = ITEMS
+    // A root row of a workspace with several roots also takes that root out of the
+    // workspace (W-2); the last root stays (D241), so one root never offers it.
+    let remove_root = ex.is_multi() && ex.current().is_some_and(|r| r.depth == 0);
+    let mut items: Vec<Item> = ITEMS
         .iter()
         .map(|&(label, command)| Item {
             label,
@@ -142,6 +149,16 @@ pub fn open(app: &mut App, column: u16, row: u16) {
             },
         })
         .collect();
+    if remove_root {
+        items.push(Item {
+            label: REMOVE_ROOT,
+            command: "workspace.remove_folder",
+            key: app
+                .display_key("workspace.remove_folder")
+                .unwrap_or_default(),
+            enabled: true,
+        });
+    }
     let selected = items.iter().position(|i| i.enabled).unwrap_or(0);
     let mut menu = Menu {
         items,

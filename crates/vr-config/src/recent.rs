@@ -30,7 +30,7 @@ pub struct RecentWorkspace {
 impl RecentWorkspace {
     /// The same workspace: the same file, or (both without a file) the same roots in any
     /// order.
-    fn same(&self, other: &RecentWorkspace) -> bool {
+    pub fn same(&self, other: &RecentWorkspace) -> bool {
         match (&self.file, &other.file) {
             (Some(a), Some(b)) => a == b,
             (None, None) => {

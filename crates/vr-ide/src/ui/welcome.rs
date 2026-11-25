@@ -395,8 +395,7 @@ fn project_line(pen: &mut Pen, row: u16, app: &App, p: &Palette) {
 
 fn recent_rows(pen: &mut Pen, row: u16, app: &App, n: usize, p: &Palette) {
     for (i, path) in app.recent.iter().take(n).enumerate() {
-        let rel = path.strip_prefix(app.root()).unwrap_or(path);
-        let shown = clip_left(&rel.display().to_string(), pen.width);
+        let shown = clip_left(&app.display_path(path), pen.width);
         let cut = shown.rfind('/').map_or(0, |i| i + 1);
         let r = row + i as u16;
         pen.put(0, r, &shown[..cut], p.dim);
@@ -404,14 +403,126 @@ fn recent_rows(pen: &mut Pen, row: u16, app: &App, n: usize, p: &Palette) {
     }
 }
 
-pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
+/// Draws the screen; returns the rows that open a recent workspace when clicked (screen
+/// area, index into `recent_workspaces.entries`).
+pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) -> Vec<(Rect, usize)> {
     let p = Palette::new(theme);
     let mode = mode_for(area);
     if mode == Mode::Compact {
         compact(buf, area, app, &p);
+        Vec::new()
     } else {
-        columns(buf, area, app, &p, mode);
+        columns(buf, area, app, &p, mode)
     }
+}
+
+/// `name  branch · N files` per root (several roots, W-2), at most `cap` of them; the rest
+/// as `+N more`. Returns the rows used.
+fn root_rows(pen: &mut Pen, row: u16, app: &App, cap: usize, p: &Palette) -> u16 {
+    let roots = app.workspace.roots();
+    let shown = if roots.len() > cap {
+        cap.saturating_sub(1)
+    } else {
+        roots.len()
+    };
+    let name_w = roots
+        .iter()
+        .take(shown)
+        .map(|r| text_width(&r.name))
+        .max()
+        .unwrap_or(0)
+        .min(pen.width / 2);
+    for (i, r) in roots.iter().take(shown).enumerate() {
+        let y = row + i as u16;
+        let name = clip_left(&r.name, name_w);
+        pen.put(0, y, &name, p.text);
+        let mut x = name_w + 2;
+        let info = app.root_info.iter().find(|i| i.path == r.path);
+        if info.is_some_and(|i| i.missing) {
+            pen.put(x, y, "missing", p.warn);
+            continue;
+        }
+        let files = match app.root_files.get(&r.name) {
+            Some(n) => Some(format!("{} files", thousands(*n))),
+            None if app.index_rx.is_some() => Some("indexing…".to_string()),
+            None => None,
+        };
+        if let Some(b) = info.and_then(|i| i.branch.as_deref()) {
+            x = pen.put(x, y, b, p.ok);
+            if files.is_some() {
+                x = pen.put(x, y, " · ", p.sep);
+            }
+        }
+        if let Some(f) = files {
+            pen.put(x, y, &f, p.dim);
+        }
+    }
+    let mut used = shown as u16;
+    if shown < roots.len() {
+        pen.put(
+            0,
+            row + used,
+            &format!("+{} more", roots.len() - shown),
+            p.dim,
+        );
+        used += 1;
+    }
+    used
+}
+
+/// What a recent workspace is called on the welcome screen: its file's name, else its
+/// folder names.
+fn recent_workspace_label(e: &vr_config::RecentWorkspace) -> String {
+    if let Some(stem) = e.file.as_deref().and_then(Path::file_stem) {
+        return stem.to_string_lossy().into_owned();
+    }
+    e.roots
+        .iter()
+        .map(|r| {
+            r.file_name().map_or_else(
+                || r.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `n  label` for up to `n` recent workspaces other than the one open (the number is the
+/// one `/ws recent` takes); returns the clickable rows.
+fn workspace_rows(pen: &mut Pen, row: u16, app: &App, n: usize, p: &Palette) -> Vec<(Rect, usize)> {
+    let current = app.workspace.recent_entry();
+    let mut hits = Vec::new();
+    let others = app
+        .recent_workspaces
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| !e.same(&current))
+        .take(n);
+    for (k, (i, e)) in others.enumerate() {
+        let y = row + k as u16;
+        if pen.top + y >= pen.bottom {
+            break;
+        }
+        let num = format!("{}", i + 1);
+        pen.put(0, y, &num, p.head);
+        let x = text_width(&num) + 2;
+        let label = recent_workspace_label(e);
+        let end = pen.put(x, y, &label, p.text);
+        hits.push((Rect::new(pen.left, pen.top + y, end.max(x), 1), i));
+    }
+    hits
+}
+
+/// Recent workspaces other than the one open.
+fn other_workspaces(app: &App) -> usize {
+    let current = app.workspace.recent_entry();
+    app.recent_workspaces
+        .entries
+        .iter()
+        .filter(|e| !e.same(&current))
+        .count()
 }
 
 fn compact(buf: &mut Buffer, area: Rect, app: &App, p: &Palette) {
@@ -425,7 +536,15 @@ fn compact(buf: &mut Buffer, area: Rect, app: &App, p: &Palette) {
     };
     let m = &app.monitor;
     name_line(&mut pen, 0, p);
-    if let Some(b) = &m.branch {
+    if app.workspace.is_multi() {
+        // Several roots: their count instead of one branch (the list needs a wider screen).
+        pen.put(
+            text_width(concat!("vr-ide v", env!("CARGO_PKG_VERSION"))) + 2,
+            0,
+            &format!("{} folders", app.workspace.len()),
+            p.dim,
+        );
+    } else if let Some(b) = &m.branch {
         pen.put(
             text_width(concat!("vr-ide v", env!("CARGO_PKG_VERSION"))) + 2,
             0,
@@ -456,7 +575,7 @@ fn compact(buf: &mut Buffer, area: Rect, app: &App, p: &Palette) {
     key_rows(&mut pen, row, &keep(hints(app), free), p);
 }
 
-fn columns(buf: &mut Buffer, area: Rect, app: &App, p: &Palette, mode: Mode) {
+fn columns(buf: &mut Buffer, area: Rect, app: &App, p: &Palette, mode: Mode) -> Vec<(Rect, usize)> {
     let divider = if area.width >= 110 {
         58
     } else {
@@ -473,7 +592,7 @@ fn columns(buf: &mut Buffer, area: Rect, app: &App, p: &Palette, mode: Mode) {
         top: area.y + 1,
         bottom,
     };
-    left_column(&mut left, app, p, mode);
+    let hits = left_column(&mut left, app, p, mode);
     let rx = divider + 2;
     let width = area.width.saturating_sub(rx + 2).min(64);
     let mut right = Pen {
@@ -484,23 +603,45 @@ fn columns(buf: &mut Buffer, area: Rect, app: &App, p: &Palette, mode: Mode) {
         bottom,
     };
     right_column(&mut right, app, p, mode);
+    hits
 }
 
-fn left_column(pen: &mut Pen, app: &App, p: &Palette, mode: Mode) {
+fn left_column(pen: &mut Pen, app: &App, p: &Palette, mode: Mode) -> Vec<(Rect, usize)> {
     name_line(pen, 0, p);
-    root_line(pen, 1, app.root(), p);
-    project_line(pen, 2, app, p);
+    let full = mode == Mode::Full;
+    let mut row = if app.workspace.is_multi() {
+        // Several roots (W-2): one row each instead of the root path and its branch line.
+        pen.rule(2, "PROJECT", p.head, p.line);
+        let cap = if full { 6 } else { 3 };
+        3 + root_rows(pen, 3, app, cap, p) + 1
+    } else {
+        root_line(pen, 1, app.root(), p);
+        project_line(pen, 2, app, p);
+        4
+    };
     let keys = hints(app);
     let n = keys.len() as u16;
-    pen.rule(4, "START", p.head, p.line);
-    key_rows(pen, 5, &keys, p);
-    let row = 5 + n + 1;
+    pen.rule(row, "START", p.head, p.line);
+    key_rows(pen, row + 1, &keys, p);
+    row += 1 + n + 1;
+    let workspaces = other_workspaces(app);
     if !app.recent.is_empty() {
         pen.rule(row, "RECENT", p.head, p.line);
-        let cap = if mode == Mode::Full { 5 } else { 3 };
-        let room = usize::from(pen.rows().saturating_sub(row + 1));
-        recent_rows(pen, row + 1, app, cap.min(room), p);
+        let cap = if full { 5 } else { 3 };
+        // Rows the workspaces block below needs (rule, one entry, blank) stay free.
+        let keep = if workspaces > 0 { 3 } else { 0 };
+        let room = usize::from(pen.rows().saturating_sub(row + 1 + keep));
+        let shown = cap.min(room).min(app.recent.len());
+        recent_rows(pen, row + 1, app, shown, p);
+        row += 1 + shown as u16 + 1;
     }
+    if workspaces == 0 || row + 1 >= pen.rows() {
+        return Vec::new();
+    }
+    pen.rule(row, "WORKSPACES", p.head, p.line);
+    let cap = if full { 5 } else { 3 };
+    let room = usize::from(pen.rows().saturating_sub(row + 1));
+    workspace_rows(pen, row + 1, app, cap.min(room), p)
 }
 
 fn right_column(pen: &mut Pen, app: &App, p: &Palette, mode: Mode) {

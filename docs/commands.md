@@ -80,7 +80,7 @@ protocol does not send are marked).
 | `/indent 2\|4\|tab` | Re-indent; set the file's indent unit |
 | `/eol lf\|crlf` | Convert the file's line breaks |
 | `/lang <id>` | Highlight the file as another language |
-| `/term new` | Open a new terminal tab |
+| `/term new [root]` | Open a new terminal tab in a workspace folder (default: the active file's) |
 | `/term close` | Close the active terminal tab |
 | `/term right` | Terminal panel on the right, for this session |
 | `/term bottom` | Terminal panel at the bottom, for this session |

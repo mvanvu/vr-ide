@@ -104,17 +104,34 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
-/// One visible line of the explorer. The root is row 0 (depth 0); its children have depth 1.
+/// One visible line of the explorer. Each workspace root is a row of depth 0 (W-2); its
+/// children have depth 1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub path: PathBuf,
     pub kind: NodeKind,
     pub ignored: bool,
     pub depth: usize,
+    /// A root row: its display name (D240).
+    pub label: Option<String>,
+    /// A root row whose folder is gone (listed so it can be removed).
+    pub missing: bool,
+}
+
+/// A workspace root as the explorer shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplorerRoot {
+    pub path: PathBuf,
+    pub name: String,
+    /// Its folder was not found the last time it was read (never a stat per frame).
+    pub missing: bool,
 }
 
 impl Row {
     pub fn name(&self) -> String {
+        if let Some(l) = &self.label {
+            return l.clone();
+        }
         self.path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -126,7 +143,11 @@ impl Row {
 /// the selection. Folders are read only when expanded (huge trees cost nothing until then).
 #[derive(Debug, Clone)]
 pub struct Explorer {
+    /// The hidden / ignored toggles (one pair for every root) and the first root; each
+    /// root's folders are listed with that root's own ignore files ([`Explorer::tree_for`]).
     pub tree: Tree,
+    /// The workspace roots in order (W-2), kept in step by [`Explorer::set_roots`].
+    pub roots: Vec<ExplorerRoot>,
     pub visible: bool,
     /// Expanded folders; the root is always in it once loaded. Their listings are in `children`.
     pub expanded: HashSet<PathBuf>,
@@ -169,8 +190,17 @@ pub struct Explorer {
 
 impl Explorer {
     pub fn new(root: &Path, show_hidden: bool, show_ignored: bool) -> Explorer {
+        let name = root.file_name().map_or_else(
+            || root.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
         Explorer {
             tree: Tree::new(root, show_hidden, show_ignored),
+            roots: vec![ExplorerRoot {
+                path: root.to_path_buf(),
+                name,
+                missing: false,
+            }],
             visible: false,
             expanded: HashSet::new(),
             children: HashMap::new(),
@@ -198,13 +228,83 @@ impl Explorer {
         &self.tree.root
     }
 
-    /// A fresh explorer on `root` keeping the panel's state that is not about the old tree:
-    /// shown or not, the hidden / ignored toggles, whether folders are watched.
-    pub fn rerooted(&self, root: &Path) -> Explorer {
-        let mut e = Explorer::new(root, self.tree.show_hidden(), self.tree.show_ignored());
-        e.visible = self.visible;
-        e.watching = self.watching;
-        e
+    /// Takes the workspace roots `(path, name)` in order. A root that stays keeps its
+    /// expanded folders, listings and selection; what belonged to a removed root is dropped
+    /// (its watches end with the next `App::sync_explorer_watches`). Returns the new roots,
+    /// for the caller to read when the explorer is loaded.
+    pub fn set_roots(&mut self, roots: &[(PathBuf, String)]) -> Vec<PathBuf> {
+        let old = std::mem::take(&mut self.roots);
+        let mut added = Vec::new();
+        for (path, name) in roots {
+            let missing = match old.iter().find(|r| &r.path == path) {
+                Some(r) => r.missing,
+                None => {
+                    added.push(path.clone());
+                    false
+                }
+            };
+            self.roots.push(ExplorerRoot {
+                path: path.clone(),
+                name: name.clone(),
+                missing,
+            });
+        }
+        if let Some((first, _)) = roots.first() {
+            self.tree.root = first.clone();
+        }
+        let now: Vec<PathBuf> = self.roots.iter().map(|r| r.path.clone()).collect();
+        let kept = |p: &Path| now.iter().any(|r| p.starts_with(r));
+        self.expanded.retain(|p| kept(p));
+        self.children.retain(|p, _| kept(p));
+        self.selected.retain(|p| kept(p));
+        self.copied.retain(|p| kept(p));
+        if self.copied.is_empty() {
+            self.cut = false;
+        }
+        self.filtered.retain(|p| kept(p));
+        self.dirty.retain(|p| kept(p));
+        if self.loaded {
+            self.rebuild();
+        }
+        added
+    }
+
+    /// More than one root: roots collapse, show their names, and moves stay in their root.
+    pub fn is_multi(&self) -> bool {
+        self.roots.len() > 1
+    }
+
+    /// The root `p` lies in.
+    pub fn root_of(&self, p: &Path) -> Option<&ExplorerRoot> {
+        self.roots.iter().find(|r| p.starts_with(&r.path))
+    }
+
+    /// `p` is one of the roots.
+    pub fn is_root(&self, p: &Path) -> bool {
+        self.roots.iter().any(|r| r.path == p)
+    }
+
+    /// A tree listing folders of the root `p` is in: that root's ignore files with the
+    /// shared hidden / ignored toggles.
+    pub fn tree_for(&self, p: &Path) -> Option<Tree> {
+        self.root_of(p)
+            .map(|r| Tree::new(&r.path, self.tree.show_hidden(), self.tree.show_ignored()))
+    }
+
+    /// Lists `dir` with its root's tree; reading a root's own folder also updates its
+    /// missing mark (the only place the explorer learns it, so no frame stats a root).
+    fn list(&mut self, dir: &Path) -> io::Result<Vec<Node>> {
+        let listed = match self.tree_for(dir) {
+            Some(t) => t.children(dir),
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is outside every workspace folder", dir.display()),
+            )),
+        };
+        if let Some(r) = self.roots.iter_mut().find(|r| r.path == dir) {
+            r.missing = matches!(&listed, Err(e) if e.kind() == io::ErrorKind::NotFound);
+        }
+        listed
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -218,16 +318,25 @@ impl Explorer {
 
     /// Reads `dir` (again) and shows it expanded. On an error it stays as it was.
     pub fn expand(&mut self, dir: &Path) -> io::Result<()> {
-        let nodes = self.tree.children(dir)?;
+        let nodes = match self.list(dir) {
+            Ok(n) => n,
+            Err(e) => {
+                // A root found missing shows its mark at once.
+                if self.loaded {
+                    self.rebuild();
+                }
+                return Err(e);
+            }
+        };
         self.children.insert(dir.to_path_buf(), nodes);
         self.expanded.insert(dir.to_path_buf());
         self.rebuild();
         Ok(())
     }
 
-    /// Collapses `dir` (never the root); folders below it are read again when shown.
+    /// Collapses `dir` (never the only root); folders below it are read again when shown.
     pub fn collapse(&mut self, dir: &Path) {
-        if dir == self.root() {
+        if !self.is_multi() && dir == self.root() {
             return;
         }
         self.expanded.retain(|p| !p.starts_with(dir));
@@ -244,11 +353,11 @@ impl Explorer {
         #[cfg(test)]
         RELOADS.with(|c| c.set(c.get() + 1));
         self.filtered.retain(|p| p.parent() != Some(dir));
-        match self.tree.children(dir) {
+        match self.list(dir) {
             Ok(nodes) => {
                 self.children.insert(dir.to_path_buf(), nodes);
             }
-            Err(_) if dir == self.tree.root => {
+            Err(_) if self.is_root(dir) => {
                 self.children.insert(dir.to_path_buf(), Vec::new());
             }
             Err(_) => {
@@ -273,14 +382,20 @@ impl Explorer {
     /// place when that path is gone); selected paths that are gone are dropped.
     pub fn rebuild(&mut self) {
         let keep = self.current().map(|r| r.path.clone());
-        let root = self.tree.root.clone();
-        let mut rows = vec![Row {
-            path: root.clone(),
-            kind: NodeKind::Dir,
-            ignored: false,
-            depth: 0,
-        }];
-        self.push_children(&root, &mut rows);
+        let mut rows = Vec::new();
+        for root in &self.roots {
+            rows.push(Row {
+                path: root.path.clone(),
+                kind: NodeKind::Dir,
+                ignored: false,
+                depth: 0,
+                label: Some(root.name.clone()),
+                missing: root.missing,
+            });
+            if self.expanded.contains(&root.path) {
+                self.push_children(&root.path, &mut rows);
+            }
+        }
         let old = self.cursor;
         self.rows = rows;
         self.cursor = keep
@@ -300,6 +415,8 @@ impl Explorer {
                 kind: n.kind,
                 ignored: n.ignored,
                 depth: n.depth + 1,
+                label: None,
+                missing: false,
             });
             if n.kind.is_expandable() && self.expanded.contains(&n.path) {
                 self.push_children(&n.path, rows);
@@ -314,13 +431,71 @@ pub fn ensure_loaded(app: &mut App) {
         return;
     }
     app.explorer.loaded = true;
-    let root = app.explorer.root().to_path_buf();
-    if let Err(e) = app.explorer.expand(&root) {
-        app.explorer.expanded.insert(root.clone());
-        app.explorer.rebuild();
-        app.warn(format!("explorer: cannot read {}: {e}", root.display()));
+    let roots: Vec<PathBuf> = app.explorer.roots.iter().map(|r| r.path.clone()).collect();
+    for root in roots {
+        load_root(app, &root);
     }
-    report_leftovers(app, &root);
+    app.explorer.rebuild();
+}
+
+/// Reads a root's own folder and shows it expanded; a folder that cannot be read stays
+/// listed (a missing one marked so) with nothing under it.
+fn load_root(app: &mut App, root: &Path) {
+    // Named already when the watches started before the explorer was shown (D292).
+    let named = app
+        .explorer
+        .roots
+        .iter()
+        .any(|r| r.path == root && r.missing);
+    if let Err(e) = app.explorer.expand(root) {
+        app.explorer.expanded.insert(root.to_path_buf());
+        app.explorer.children.insert(root.to_path_buf(), Vec::new());
+        app.explorer.rebuild();
+        // Only another root can stay when this one goes (D241).
+        if app.explorer.is_multi()
+            && app
+                .explorer
+                .roots
+                .iter()
+                .any(|r| r.path == root && r.missing)
+        {
+            if !named {
+                missing_root_notice(app, root);
+            }
+        } else {
+            app.warn(format!("explorer: cannot read {}: {e}", root.display()));
+        }
+        return;
+    }
+    report_leftovers(app, root);
+}
+
+/// The one notice for a workspace folder that is gone (D292: no watch error besides it).
+pub(crate) fn missing_root_notice(app: &mut App, root: &Path) {
+    app.warn(format!(
+        "explorer: the workspace folder {} is missing; Remove Folder takes it out of the \
+         workspace",
+        root.display()
+    ));
+}
+
+/// The workspace roots changed (W-2): the explorer takes the new list and, when loaded,
+/// reads the roots that are new; the cursor stays on its row when that row is still shown.
+pub fn sync_roots(app: &mut App) {
+    let roots: Vec<(PathBuf, String)> = app
+        .workspace
+        .roots()
+        .iter()
+        .map(|r| (r.path.clone(), r.name.clone()))
+        .collect();
+    let added = app.explorer.set_roots(&roots);
+    if app.explorer.loaded {
+        for root in added {
+            load_root(app, &root);
+        }
+        app.explorer.rebuild();
+    }
+    app.dirty = true;
 }
 
 /// Shows or hides the panel; hiding it while focused gives the editor the keys.
@@ -463,7 +638,7 @@ pub fn handle_builtin_key(app: &mut App, key: &KeyEvent) -> bool {
             let Some(row) = app.explorer.current().cloned() else {
                 return true;
             };
-            if row.depth > 0
+            if (row.depth > 0 || app.explorer.is_multi())
                 && row.kind.is_expandable()
                 && app.explorer.expanded.contains(&row.path)
             {
@@ -511,7 +686,9 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
                 .get(i)
                 .is_some_and(|r| app.explorer.selected.contains(&r.path));
             if i >= app.explorer.rows.len() {
-                move_cursor(app, 0, false);
+                // Below the last row: the root those rows belong to (the last one).
+                let last_root = app.explorer.rows.iter().rposition(|r| r.depth == 0);
+                move_cursor(app, last_root.unwrap_or(0) as isize, false);
             } else if in_selection {
                 // A row of a multi-selection: the actions apply to the whole selection, as
                 // its keys do.
@@ -702,9 +879,40 @@ pub fn note_written(app: &mut App, path: &Path) {
 // `..`). The root itself is never renamed, moved or trashed. Writes happen only through
 // `vr_fs::ops`, which never replace an existing path.
 
-/// `p` confined to the project, as the path to act on.
+/// The workspace root `p` is in (W-2: each operation is confined to its own root, D109);
+/// the first root for a path in none (then `ensure_within` refuses it).
+fn root_for(app: &App, p: &Path) -> PathBuf {
+    app.explorer
+        .root_of(p)
+        .map_or_else(|| app.explorer.root().to_path_buf(), |r| r.path.clone())
+}
+
+/// `p` confined to its workspace root, as the path to act on.
 fn within(app: &App, p: &Path) -> Result<PathBuf, String> {
-    vr_fs::ensure_within(app.explorer.root(), p).map_err(|e| describe(app, &e))
+    vr_fs::ensure_within(&root_for(app, p), p).map_err(|e| describe(app, &e))
+}
+
+/// Explorer moves never cross workspace roots (spec W); a copy does.
+fn cross_root(app: &App, from: &Path) -> String {
+    format!(
+        "{} was not moved: moving between workspace folders is refused; copy and paste it \
+         instead",
+        app.display_path(from)
+    )
+}
+
+/// `dest` (lexically in `root`) resolves into another workspace root, e.g. through a
+/// folder link `api/link -> ../web/sub`. A path that cannot be resolved, or that leads
+/// outside every root, is left to the existing checks (D109).
+fn really_in_another_root(app: &App, dest: &Path, root: &Path) -> bool {
+    let Ok(real) = std::fs::canonicalize(dest) else {
+        return false;
+    };
+    app.explorer.roots.iter().any(|r| {
+        r.path != root
+            && !r.missing
+            && std::fs::canonicalize(&r.path).is_ok_and(|rp| real.starts_with(rp))
+    })
 }
 
 /// The folder new entries and pastes go to: the cursor row when it is a folder, else its
@@ -715,7 +923,7 @@ fn target_dir(app: &App) -> PathBuf {
         Some(r) => r
             .path
             .parent()
-            .map_or_else(|| app.explorer.root().to_path_buf(), Path::to_path_buf),
+            .map_or_else(|| root_for(app, &r.path), Path::to_path_buf),
         None => app.explorer.root().to_path_buf(),
     }
 }
@@ -828,7 +1036,7 @@ const ROOT_REFUSED: &str =
 /// the project passes it; those are refused here (D109), the link itself is not (its folder
 /// is inside).
 fn below_root(app: &App, path: &Path) -> Result<PathBuf, String> {
-    below_root_of(app, app.explorer.root(), path)
+    below_root_of(app, &root_for(app, path), path)
 }
 
 /// [`below_root`] for the workspace root `root` (`/rename` of a file in any root).
@@ -874,7 +1082,7 @@ fn rename(app: &mut App, _: CmdArgs) -> CmdResult {
 /// Renames `path` to the typed name in the same folder; open tabs follow.
 pub fn answer_rename(app: &mut App, widget: DialogWidget, path: PathBuf, text: &str) {
     let action = DialogAction::Rename(path.clone());
-    let root = app.explorer.root().to_path_buf();
+    let root = root_for(app, &path);
     match rename_in(app, &root, &path, text) {
         Ok(Some(to)) => select_path(app, &to),
         Ok(None) => {}
@@ -1110,10 +1318,17 @@ fn move_selection(app: &mut App, _: CmdArgs) -> CmdResult {
         return Ok(());
     }
     let from_dir = paths[0].parent().map(Path::to_path_buf).unwrap_or_default();
-    let label = format!(
-        "Folder to move {} into (relative to the project folder)",
-        list(app, &paths)
-    );
+    let label = if app.explorer.is_multi() {
+        format!(
+            "Folder to move {} into (as shown: folder name/path, the same workspace folder)",
+            list(app, &paths)
+        )
+    } else {
+        format!(
+            "Folder to move {} into (relative to the project folder)",
+            list(app, &paths)
+        )
+    };
     let initial = app.display_path(&from_dir);
     app.open_dialog(
         DialogWidget::Prompt(PromptDialog::new("Move", label, &initial)),
@@ -1125,7 +1340,15 @@ fn move_selection(app: &mut App, _: CmdArgs) -> CmdResult {
 /// Moves each path into the typed folder (never over an existing name); tabs follow.
 pub fn answer_move(app: &mut App, widget: DialogWidget, paths: Vec<PathBuf>, text: &str) {
     let action = DialogAction::MoveTo(paths.clone());
-    let dest = match within(app, Path::new(text)) {
+    let from_root = paths
+        .first()
+        .map_or_else(|| app.explorer.root().to_path_buf(), |p| root_for(app, p));
+    let typed = typed_folder(app, text, &from_root);
+    let dest = match within(app, &typed) {
+        Ok(d) if root_for(app, &d) != from_root => {
+            let msg = cross_root(app, &paths[0]);
+            return reopen_with_error(app, widget, action, msg);
+        }
         Ok(d) if d.is_dir() => d,
         Ok(d) => {
             let msg = format!("{} is not a folder", app.display_path(&d));
@@ -1137,12 +1360,44 @@ pub fn answer_move(app: &mut App, widget: DialogWidget, paths: Vec<PathBuf>, tex
     finish_batch(app, &dest, &moved, &errors, "moved", "not moved");
 }
 
+/// A folder typed in the Move prompt as the explorer shows paths: relative to the project
+/// folder with one root; with several, `root-name/path` (a path that does not start with a
+/// root name stays in `from_root`). Absolute paths are taken as typed.
+fn typed_folder(app: &App, text: &str, from_root: &Path) -> PathBuf {
+    let typed = Path::new(text);
+    if typed.is_absolute() {
+        return typed.to_path_buf();
+    }
+    if app.explorer.is_multi() {
+        let mut parts = typed.components();
+        if let Some(first) = parts.next()
+            && let Some(r) = app
+                .explorer
+                .roots
+                .iter()
+                .find(|r| first.as_os_str() == r.name.as_str())
+        {
+            return r.path.join(parts.as_path());
+        }
+    }
+    from_root.join(typed)
+}
+
 /// Moves each path into `dest` (never over an existing name; one already in `dest` stays);
 /// tabs follow. `paths` come from `targets` (nested paths dropped). Returns the new paths and
-/// one message per failure.
+/// one message per failure. A path of another workspace root than `dest` is not moved.
 fn move_paths(app: &mut App, paths: Vec<PathBuf>, dest: &Path) -> (Vec<PathBuf>, Vec<String>) {
     let mut moved = Vec::new();
     let mut errors = Vec::new();
+    let dest_root = root_for(app, dest);
+    // `dest` is lexical: a folder link inside this root can lead into another root, where
+    // the move would land (D292). One canonicalize per batch.
+    if really_in_another_root(app, dest, &dest_root) {
+        for p in &paths {
+            errors.push(cross_root(app, p));
+        }
+        return (moved, errors);
+    }
     for p in paths {
         let from = match below_root(app, &p) {
             Ok(f) => f,
@@ -1151,6 +1406,10 @@ fn move_paths(app: &mut App, paths: Vec<PathBuf>, dest: &Path) -> (Vec<PathBuf>,
                 continue;
             }
         };
+        if root_for(app, &from) != dest_root {
+            errors.push(cross_root(app, &from));
+            continue;
+        }
         if from.parent() == Some(dest) {
             continue;
         }
@@ -1388,7 +1647,7 @@ fn reveal(app: &mut App, _: CmdArgs) -> CmdResult {
 
 /// Expands every folder between the root and `path` and selects `path` when it is shown.
 pub fn reveal_path(app: &mut App, path: &Path) {
-    let root = app.explorer.root().to_path_buf();
+    let root = root_for(app, path);
     if !path.starts_with(&root) {
         let msg = format!("{} is outside the project", path.display());
         app.info(msg);
@@ -1438,7 +1697,7 @@ fn listed(app: &App, dir: &Path, child: &Path) -> bool {
 fn not_shown_reason(app: &App, path: &Path) -> String {
     let rel = app.display_path(path);
     let names: Vec<String> = path
-        .strip_prefix(app.explorer.root())
+        .strip_prefix(root_for(app, path))
         .unwrap_or(path)
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())

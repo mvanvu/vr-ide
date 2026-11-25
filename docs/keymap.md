@@ -154,9 +154,15 @@ A `ctrl+space` binding you add to `[terminal]` wins over the NUL rule.
 | `edit.indent` | Indent (`tab` in edit mode) |
 | `focus.cycle` | Focus Next Part (`tab` in read mode) |
 | `editor.edit_mode` | Enter Edit Mode (`space i` in read mode) |
+| `workspace.add_folder` | Workspace: Add Folder… (opens `/ws add `) |
+| `workspace.remove_folder` | Workspace: Remove Folder (the root row under the explorer cursor, else `/ws remove `; also on a root row's right-click menu as "Remove Folder from Workspace"; files on disk are never touched) |
+| `workspace.save_as` | Workspace: Save As… (opens `/ws save `) |
+| `workspace.open` | Workspace: Open… (opens `/ws open `) |
+| `workspace.open_recent` | Workspace: Open Recent (opens `/ws recent `; the welcome screen lists them too, a click opens one) |
 
 Match case and regex are part of the query (see [The find box](#the-find-box)); there are no
-option commands. The workspace commands are palette only too.
+option commands. With several workspace folders, "Terminal: New Terminal" from the palette first asks
+which folder the shell starts in (`/term new [root]`); its key uses the active file's folder.
 
 ## The find box
 

@@ -14,5 +14,6 @@ pub mod search;
 pub mod slash;
 pub mod tab;
 pub mod terminal;
+pub mod workspace;
 
 pub use registry::{CmdArgs, CmdResult, CommandSpec, all_commands, command_names, find};

@@ -207,6 +207,11 @@ pub fn accept(app: &mut App) {
                 Err(e) => super::search::report_open_error(app, &e),
             }
         }
+        // From the palette a new terminal asks which root it starts in when there are
+        // several (spec W); its key keeps the active file's root.
+        None if item.name == "terminal.new" && app.workspace.is_multi() => {
+            super::slash::pick_terminal_root(app);
+        }
         None => {
             app.run_command(item.name, CmdArgs::None);
         }

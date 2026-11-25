@@ -159,7 +159,12 @@ fn slash_lists_matching_commands_with_arguments_and_descriptions() {
     typ(&mut app, "te");
     assert_eq!(
         titles(&app),
-        ["/term new", "/term close", "/term right", "/term bottom",]
+        [
+            "/term new [root]",
+            "/term close",
+            "/term right",
+            "/term bottom",
+        ]
     );
     typ(&mut app, "rm c");
     assert_eq!(titles(&app), ["/term close"]);

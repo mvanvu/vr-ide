@@ -222,6 +222,7 @@ where
         app.drain_fs_events();
         app.drain_index();
         app.drain_search();
+        app.drain_ws_job();
         app.tick(Instant::now());
         // A highlighter's worker published spans (or gave up) since the last pass.
         if app.syntax.take_wake() {

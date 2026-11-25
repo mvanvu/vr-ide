@@ -24,7 +24,8 @@ pub use recent::{
 pub use recent_files::{RECENT_FILES_FILE, RECENT_FILES_MAX, RecentFiles};
 pub use settings::{AiPreset, DEFAULT_SETTINGS, Settings, TerminalPosition};
 pub use workspace_file::{
-    WORKSPACE_EXT, format_workspace, is_workspace_file, parse_workspace, read_workspace,
+    MAX_WORKSPACE_FILE, WORKSPACE_EXT, format_workspace, is_workspace_file, parse_workspace,
+    read_workspace,
 };
 
 /// A non-fatal problem found while loading configuration; the offending entry is skipped.

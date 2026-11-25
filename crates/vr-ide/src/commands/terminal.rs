@@ -324,6 +324,13 @@ fn new_terminal(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
+/// `terminal.new` with the shell started in `cwd` (the root picked in the F1 window, W-2).
+pub fn new_terminal_in(app: &mut App, cwd: &Path) {
+    if add_tab_in(app, cwd) {
+        reveal(app);
+    }
+}
+
 fn close_terminal(app: &mut App, _: CmdArgs) -> CmdResult {
     close_active(app);
     Ok(())
@@ -549,9 +556,16 @@ fn step(app: &mut App, forward: bool) {
 }
 
 /// Starts a terminal in a new tab and makes it active; a failure becomes an error notice.
+/// A new terminal tab in the root of the active file, else the first root (spec W).
 fn add_tab(app: &mut App) -> bool {
+    let cwd = app.active_root().path.clone();
+    add_tab_in(app, &cwd)
+}
+
+/// A new terminal tab whose shell starts in `cwd`.
+fn add_tab_in(app: &mut App, cwd: &Path) -> bool {
     let output = Arc::new(AtomicBool::new(false));
-    match spawn(app, &output) {
+    match spawn(app, &output, cwd) {
         Ok((term, shell)) => {
             app.terminal.tabs.push(TermTab {
                 term: Some(term),
@@ -578,7 +592,8 @@ fn add_tab(app: &mut App) -> bool {
 fn restart(app: &mut App) {
     let i = app.terminal.active;
     let output = Arc::new(AtomicBool::new(false));
-    match spawn(app, &output) {
+    let cwd = app.active_root().path.clone();
+    match spawn(app, &output, &cwd) {
         Ok((term, shell)) => {
             let tab = &mut app.terminal.tabs[i];
             let old = tab.term.replace(term);
@@ -624,7 +639,11 @@ fn drop_later(term: Option<Terminal>) {
 }
 
 /// `$SHELL` (or the test override), falling back to `/bin/sh` when it cannot start.
-fn spawn(app: &App, output: &Arc<AtomicBool>) -> Result<(Terminal, PathBuf), TermError> {
+fn spawn(
+    app: &App,
+    output: &Arc<AtomicBool>,
+    cwd: &Path,
+) -> Result<(Terminal, PathBuf), TermError> {
     let p = &app.terminal;
     let preferred = p.shell.clone().or_else(|| {
         std::env::var_os("SHELL")
@@ -642,8 +661,7 @@ fn spawn(app: &App, output: &Arc<AtomicBool>) -> Result<(Terminal, PathBuf), Ter
             SpawnOptions {
                 shell: shell.to_path_buf(),
                 args: Vec::new(),
-                // The root of the active file, else the first root (spec W).
-                cwd: app.active_root().path.clone(),
+                cwd: cwd.to_path_buf(),
                 env: child_env(&p.env, crate::theme::ColorDepth::detect()),
                 cols,
                 rows,

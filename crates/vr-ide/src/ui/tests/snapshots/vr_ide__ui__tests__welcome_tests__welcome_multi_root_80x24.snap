@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/tests/welcome_tests.rs
+expression: t.backend()
+---
+" shop, web, docs                                                                "
+"                                        │                                       "
+"  vr-ide v0.1.0                         │ SYSTEM ─────────────────────────────  "
+"                                        │ CPU ▃▃▄▂▅▅▅▃▂▅▂▃▂▅▅▃▅▄▄▅▃▅▅▂▃▂▅  37%  "
+"  PROJECT ────────────────────────────  │ CORE 0▄ 1▂ 2▅ 3▂ 4▇ 5▃ 6▃ 7▄          "
+"  shop  main · 1,284 files              │ RAM ████████░░░░░░ 9.4/15.5 GiB  61%  "
+"  web   feature/login · 312 files       │ SWP ██░░░░░░░░░░░░  0.3/2.0 GiB  15%  "
+"  docs  missing                         │ LOAD                  1.42 1.18 0.97  "
+"                                        │ UP                             3d 4h  "
+"  START ──────────────────────────────  │                                       "
+"  ctrl+p  Go to file                    │ VR-IDE ─────────────────────────────  "
+"  f1      Command palette               │ CPU                             1.2%  "
+"  ctrl+e  Explorer                      │ RSS                           48 MiB  "
+"  ctrl+o  Open file                     │                                       "
+"  ctrl+`  Terminal                      │                                       "
+"  ctrl+q  Quit                          │                                       "
+"                                        │                                       "
+"  RECENT ─────────────────────────────  │                                       "
+"  shop/src/main.rs                      │                                       "
+"  shop/src/app.rs                       │                                       "
+"                                        │                                       "
+"  WORKSPACES ─────────────────────────  │                                       "
+"  2  team                               │                                       "
+" shop, web, docs                                                                "

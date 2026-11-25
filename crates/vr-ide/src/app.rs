@@ -122,7 +122,7 @@ pub struct View {
 }
 
 pub struct App {
-    /// The project folders (roots) of this window (D226); the explorer shows the first.
+    /// The project folders (roots) of this window (D226); the explorer lists each one (W-2).
     pub workspace: Workspace,
     /// Recently opened workspaces and the file they are kept in (None: not kept, tests).
     pub recent_workspaces: vr_config::RecentWorkspaces,
@@ -201,6 +201,28 @@ pub struct App {
     pub config_dir: Option<PathBuf>,
     /// The integrated terminal panel (M5); no terminal runs until the user opens one (AC-1).
     pub terminal: commands::terminal::TerminalPanel,
+    /// Branch and missing mark of each root for the welcome screen (W-2), read with the
+    /// monitor's samples and when the roots change, never while drawing.
+    pub root_info: Vec<RootInfo>,
+    /// Files of each root in the go-to-file index, by root name (several roots), counted
+    /// once when the index is ready.
+    pub root_files: std::collections::HashMap<String, usize>,
+    /// Rows of the welcome screen that open a recent workspace when clicked (screen area,
+    /// index into `recent_workspaces.entries`), from the last frame.
+    pub welcome_hits: Vec<(ratatui::layout::Rect, usize)>,
+    /// Add Folder / Open Workspace checks running off the UI thread (W-2).
+    pub(crate) ws_job: Option<crate::app_workspace::WsJob>,
+    /// How long the UI thread waits for such a check before it goes on and the result comes
+    /// in later ([`crate::app_workspace::JOB_WAIT`]; tests set zero).
+    pub ws_job_wait: Duration,
+}
+
+/// What the welcome screen shows of one root besides its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootInfo {
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub missing: bool,
 }
 
 impl App {
@@ -220,11 +242,17 @@ impl App {
         settings: Settings,
         clipboard: Box<dyn Clipboard>,
     ) -> App {
-        let explorer = Explorer::new(
+        let mut explorer = Explorer::new(
             &workspace.primary().path,
             settings.show_hidden,
             settings.show_ignored,
         );
+        let roots: Vec<(PathBuf, String)> = workspace
+            .roots()
+            .iter()
+            .map(|r| (r.path.clone(), r.name.clone()))
+            .collect();
+        explorer.set_roots(&roots);
         let mut terminal = commands::terminal::TerminalPanel::new(
             settings.terminal_height_percent,
             settings.scrollback,
@@ -278,6 +306,11 @@ impl App {
             recent_writer: None,
             config_dir: None,
             terminal,
+            root_info: Vec::new(),
+            root_files: Default::default(),
+            welcome_hits: Vec::new(),
+            ws_job: None,
+            ws_job_wait: crate::app_workspace::JOB_WAIT,
         }
     }
 
@@ -457,19 +490,48 @@ impl App {
         }
         // Every root's own folder is watched (its top level is always listed), plus each
         // expanded folder.
+        // A root marked missing already has its one notice; a watch would only fail and
+        // add a second one (D292).
+        let missing: Vec<&PathBuf> = ex
+            .roots
+            .iter()
+            .filter(|r| r.missing)
+            .map(|r| &r.path)
+            .collect();
         let roots = self.workspace.paths();
         let shown = |p: &PathBuf| roots.contains(p) || ex.expanded.contains(p);
         let gone: Vec<PathBuf> = ex.watched.iter().filter(|p| !shown(p)).cloned().collect();
         let mut new: Vec<PathBuf> = ex
             .expanded
             .iter()
-            .filter(|p| !ex.watched.contains(*p))
+            .filter(|p| !ex.watched.contains(*p) && !missing.contains(p))
             .cloned()
             .collect();
-        for root in roots {
-            if !ex.watched.contains(&root) && !ex.expanded.contains(&root) {
-                new.push(root);
+        for root in &roots {
+            if !ex.watched.contains(root) && !ex.expanded.contains(root) && !missing.contains(&root)
+            {
+                new.push(root.clone());
             }
+        }
+        // The watches can start before the explorer has listed anything (welcome screen):
+        // a root not found here is marked missing and named once, instead of a watch error.
+        // One stat per root about to be watched, never per frame.
+        let mut found_missing = Vec::new();
+        if self.workspace.is_multi() {
+            new.retain(|p| {
+                let lost = roots.contains(p)
+                    && matches!(std::fs::metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+                if lost {
+                    found_missing.push(p.clone());
+                }
+                !lost
+            });
+        }
+        for p in found_missing {
+            if let Some(r) = self.explorer.roots.iter_mut().find(|r| r.path == p) {
+                r.missing = true;
+            }
+            commands::explorer::missing_root_notice(self, &p);
         }
         if gone.is_empty() && new.is_empty() {
             return;
@@ -970,6 +1032,9 @@ impl App {
         let welcome_drawn = self.docs.is_empty() && !covered;
         if self.monitor.tick(now, welcome_drawn) {
             self.monitor.branch = self.active_root().branch();
+            if self.workspace.is_multi() {
+                self.refresh_root_info();
+            }
             self.dirty = true;
         }
         let before = self.notices.len();
@@ -1292,6 +1357,21 @@ impl App {
                     {
                         self.set_active(i);
                     }
+                } else if self.docs.is_empty() && inside(l.editor) {
+                    // The welcome screen: a recent workspace row opens it (W-2).
+                    let hit = self.welcome_hits.iter().find(|(r, _)| {
+                        ev.column >= r.x
+                            && ev.column < r.x + r.width
+                            && ev.row >= r.y
+                            && ev.row < r.y + r.height
+                    });
+                    if let Some(entry) = hit
+                        .and_then(|(_, i)| self.recent_workspaces.entries.get(*i))
+                        .cloned()
+                        && let Err(e) = commands::slash::open_recent_workspace(self, &entry)
+                    {
+                        self.warn(format!("workspace: {e}"));
+                    }
                 } else if inside(l.editor)
                     && let Some(pos) = self.char_at_screen(ev.column, ev.row)
                 {
@@ -1469,6 +1549,7 @@ impl App {
                     self.note_index_cap(index.len());
                 }
                 self.file_index = Some(index);
+                self.count_root_files();
             }
             Err(e) => self.warn(format!("go to file: {e}")),
         }

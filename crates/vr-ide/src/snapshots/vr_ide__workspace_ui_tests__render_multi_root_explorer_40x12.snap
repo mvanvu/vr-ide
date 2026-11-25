@@ -1,0 +1,16 @@
+---
+source: crates/vr-ide/src/workspace_ui_tests.rs
+expression: t.backend()
+---
+"▾ api          │ app.ts                 "
+"  ▸ src        │  1 export const app = 1"
+"    Cargo.toml │  2                     "
+"▾ web          │                        "
+"  ▾ src        │                        "
+"      app.ts   │                        "
+"    index.html │                        "
+"✗ do… (missing)│                        "
+"               │                        "
+"               │                        "
+"               │                        "
+" R …c/app.ts · Ln 1, Col 1 · LF · UTF-8 "
