@@ -1183,3 +1183,21 @@ Findings
 Known, not findings: D264/D265, D267 (/wrap unavailable), D271 (F1 inside a focused terminal goes to the program; the walk used ctrl+` to leave the terminal first).
 
 Verdict T20: QC_PASS (one LOW finding).
+
+## T20b
+Verdict: QC_PASS (slash commands phase 2, after review round 1). Engine: pty (python, TERM=xterm-256color, legacy bytes, release binary, DISPLAY unset so OSC 52 clipboard); no browser (TUI).
+- Full suite via run-heavy.sh: 26 result lines ok, 852 passed, exit 0 (qa-artifacts/T20b/qc/full-suite.txt). clippy --workspace --all-targets -D warnings exit 0; fmt --check exit 0; release build exit 0 (cargo found it fresh, 0.16 s: built by the developer's last run, fingerprints match the tree).
+- docs table: `docs_table_matches_the_registry` ok; 36 command rows in docs/commands.md.
+- Own walk qc/walk.py: 58/58 PASS (qc/walk.txt, screens qc/w_NN.txt). First run 54/58: 4 were walk errors (Esc after a notice leaves edit mode; /set notice is queued behind an older explorer notice "+1 more"; keymap template keeps `[section]` headers uncommented, only key lines commented), fixed in the walk, not the app.
+- Covered: /rename (open tab follows, unsaved edit kept, save lands on new name, existing name refused, slash refused, no-file error), /copy-path and /copy-relpath (OSC 52 payload decoded: full path / `c.txt`), /recent (3 files, after rename d.txt replaces c.txt, bad name, 99, by name; recent-files.toml on exit), /sort /unique /upper /lower /trim (read-mode refusal, whole file, selection, one undo each), /indent 2|tab|4 on a 4-space C file with a doc comment (doc comment untouched) + bad arg, /eol lf|crlf (bytes on disk, already notice, bad arg), /lang rust + bad id, /set tab_width 2 + bad name/value/range/missing value (ctrl+h hidden toggle unchanged and still works), /config /keymap (created in temp XDG_CONFIG_HOME, key lines commented; existing files byte-identical), /keys.
+
+## Rule check T20b
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-20b phase-2 commands, good and bad args, text kept on error | pass | walk 58/58 |
+| AC-20d docs and /help match registry; snapshots | pass | docs_table test, 852 suite incl. snapshots |
+| BASE-4 evidence | pass | qc/*.txt |
+| BASE-14/15 no polling, only own processes | pass | background run, own pty sessions quit with /q! |
+| BASE-17 probes leave no data | pass | temp HOME/XDG/state dirs only |
+| BASE-25/38 fmt, clippy | pass | exit 0 |
+| Known user questions D264/D265/D267/D271/D273 | not findings | per brief |
