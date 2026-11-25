@@ -64,6 +64,15 @@ impl Default for HighlightOptions {
     }
 }
 
+/// What one [`Highlighter::query`] call found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpanQuery {
+    /// Sorted and disjoint spans, bytes of the current text.
+    pub spans: Vec<(Range<usize>, Capture)>,
+    /// The call ran out of `query_timeout`: `spans` may lack colours of the range.
+    pub truncated: bool,
+}
+
 /// Why a document is shown without colours. `Display` is the one-line notice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Disabled {
@@ -330,23 +339,30 @@ impl Highlighter {
     }
 
     /// Spans of the current text inside `range` (bytes), sorted and disjoint. Regions not
-    /// parsed yet are left out (plain).
+    /// parsed yet are left out (plain). [`Highlighter::query`] also says whether the call was
+    /// cut by `query_timeout`.
     pub fn spans(&self, range: Range<usize>) -> Vec<(Range<usize>, Capture)> {
+        self.query(range).spans
+    }
+
+    /// [`Highlighter::spans`] plus whether the call ran out of `query_timeout` (D162: it
+    /// returns what it found by then); a caller that drew a cut result may ask again later.
+    pub fn query(&self, range: Range<usize>) -> SpanQuery {
         let snapshot = {
             let state = self.shared.lock();
             if state.disabled.is_some() {
-                return Vec::new();
+                return SpanQuery::default();
             }
             match &state.snapshot {
                 Some(s) => s.clone(),
-                None => return Vec::new(),
+                None => return SpanQuery::default(),
             }
         };
         let len = self.text.len_bytes();
         let end = range.end.min(len);
         let start = range.start.min(end);
         if start == end {
-            return Vec::new();
+            return SpanQuery::default();
         }
         let edits: Vec<Edit> = self
             .pending
@@ -359,14 +375,23 @@ impl Highlighter {
         }
         let old_start = map_back(start, &edits, false);
         let old_end = map_back(end, &edits, true).max(old_start);
-        let spans = snapshot.spans(old_start..old_end, self.options.query_timeout);
-        map_forward(spans, &edits)
+        let q = snapshot.spans(old_start..old_end, self.options.query_timeout);
+        let spans = map_forward(q.spans, &edits)
             .into_iter()
             .filter_map(|(r, c)| {
                 let r = r.start.max(start)..r.end.min(end);
                 (r.start < r.end).then_some((r, c))
             })
-            .collect()
+            .collect();
+        SpanQuery {
+            spans,
+            truncated: q.truncated,
+        }
+    }
+
+    /// Changes the budget of later `spans()` / `query()` calls.
+    pub fn set_query_timeout(&mut self, timeout: Duration) {
+        self.options.query_timeout = timeout;
     }
 
     /// Blocks up to `timeout` until spans describe the current text (or highlighting is
@@ -1337,21 +1362,23 @@ struct Painted {
 impl Snapshot {
     /// Spans of this snapshot's text in `range`: each layer paints its captures (outer nodes
     /// first, so inner ones win), embedded layers after their hosts.
-    fn spans(&self, range: Range<usize>, timeout: Duration) -> Vec<(Range<usize>, Capture)> {
+    fn spans(&self, range: Range<usize>, timeout: Duration) -> SpanQuery {
         let len = self.text.len_bytes();
         let range = range.start.min(len)..range.end.min(len);
         if range.is_empty() {
-            return Vec::new();
+            return SpanQuery::default();
         }
         let deadline = Instant::now() + timeout;
         let mut buf = vec![NO_CAPTURE; range.len()];
         let mut cursor = QueryCursor::new();
+        let mut truncated = false;
         for layer in &self.layers {
             let (first, last) = (&layer.ranges[0], &layer.ranges[layer.ranges.len() - 1]);
             if first.start_byte >= range.end || last.end_byte <= range.start {
                 continue;
             }
             if !layer.paint(&mut cursor, &self.text, &range, &mut buf, deadline) {
+                truncated = true;
                 break;
             }
         }
@@ -1368,7 +1395,10 @@ impl Snapshot {
             }
             i = j;
         }
-        out
+        SpanQuery {
+            spans: out,
+            truncated,
+        }
     }
 }
 

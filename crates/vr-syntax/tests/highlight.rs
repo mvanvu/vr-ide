@@ -1267,6 +1267,26 @@ fn spans_call_is_bounded_by_the_query_timeout() {
 }
 
 #[test]
+fn a_query_cut_by_its_budget_says_so() {
+    let text = rust_source(20_000);
+    let options = HighlightOptions {
+        query_timeout: Duration::ZERO,
+        ..HighlightOptions::default()
+    };
+    let mut h = Highlighter::new(registry(), "rust", Rope::from_str(&text), options, None);
+    assert!(h.wait(PARSE_WAIT));
+    let cut = h.query(0..text.len());
+    assert!(cut.truncated, "no time at all: the query is cut");
+    h.set_query_timeout(PARSE_WAIT);
+    let full = h.query(0..text.len());
+    assert!(!full.truncated);
+    assert!(full.spans.len() > cut.spans.len());
+    assert_eq!(h.spans(0..text.len()), full.spans);
+    // Nothing to look at is never cut.
+    assert_eq!(h.query(5..5), vr_syntax::SpanQuery::default());
+}
+
+#[test]
 #[ignore = "perf: run in release with --ignored"]
 fn perf_edit_to_spans_typical_files() {
     let text = rust_source(200_000);

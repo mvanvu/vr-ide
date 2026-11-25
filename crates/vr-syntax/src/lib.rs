@@ -13,7 +13,9 @@ mod registry;
 
 pub use capture::Capture;
 pub use edit::{Edit, LineBreaks, Point, has_lone_cr, lone_cr_in};
-pub use highlighter::{Disabled, HighlightOptions, HighlightStatus, Highlighter, Notify};
+pub use highlighter::{
+    Disabled, HighlightOptions, HighlightStatus, Highlighter, Notify, SpanQuery,
+};
 pub use registry::{LanguageRegistry, RegistryWarning};
 
 use tree_sitter::Language;

@@ -964,3 +964,102 @@ fn double_click_on_a_hidden_file_tab_keeps_the_reveal_rule() {
     assert!(!app.explorer.expanded.contains(&roots[0].join(".github")));
     assert!(notices(&app).contains("ctrl+h"), "{}", notices(&app));
 }
+
+/// One mouse event of `kind` at a cell, at time `at`.
+fn mouse_at(app: &mut App, kind: MouseEventKind, column: u16, row: u16, at: Instant) {
+    app.handle_mouse_at(
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        },
+        at,
+    );
+}
+
+#[test]
+fn a_drag_the_wheel_or_a_press_elsewhere_between_two_tab_presses_breaks_the_pair() {
+    let (_d, _r, mut app) = two_tabs();
+    let ms = |n: u64| Duration::from_millis(n);
+    let t0 = Instant::now();
+    let editor = |app: &App| (app.layout.editor.x + 8, app.layout.editor.y + 1);
+    // A press on the tab that starts a drag, then a press on it again (review T25 C1).
+    tab_click(&mut app, 0, t0);
+    let (ex, ey) = editor(&app);
+    mouse_at(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        ex,
+        ey,
+        t0 + ms(30),
+    );
+    tab_click(&mut app, 0, t0 + ms(60));
+    assert!(!app.explorer.visible, "drag in between");
+    // The wheel in the editor in between.
+    tab_click(&mut app, 0, t0 + ms(1000));
+    mouse_at(&mut app, MouseEventKind::ScrollDown, ex, ey, t0 + ms(1030));
+    tab_click(&mut app, 0, t0 + ms(1060));
+    assert!(!app.explorer.visible, "wheel in between");
+    // A press in the editor in between.
+    tab_click(&mut app, 0, t0 + ms(2000));
+    mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        ex,
+        ey,
+        t0 + ms(2030),
+    );
+    mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        ex,
+        ey,
+        t0 + ms(2040),
+    );
+    tab_click(&mut app, 0, t0 + ms(2060));
+    assert!(
+        !app.explorer.visible,
+        "press outside the tab bar in between"
+    );
+    // A pointer move in between is not a click: the pair stands.
+    tab_click(&mut app, 0, t0 + ms(3000));
+    mouse_at(&mut app, MouseEventKind::Moved, ex, ey, t0 + ms(3030));
+    tab_click(&mut app, 0, t0 + ms(3060));
+    assert!(app.explorer.visible, "a move does not break the pair");
+}
+
+#[test]
+fn a_tab_scrolled_by_the_first_press_still_takes_the_second() {
+    let names: Vec<String> = (0..12)
+        .map(|i| format!("a_rather_long_file_name_{i:02}.txt"))
+        .collect();
+    let files: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "x\n")).collect();
+    let (_d, roots) = folders(&[("p", &files)]);
+    let mut app = ws_app(&roots);
+    for n in &names {
+        app.open_path(&roots[0].join(n)).unwrap();
+    }
+    app.explorer.visible = false;
+    app.focus = Focus::Editor;
+    app.active = 0;
+    draw(&mut app, 100, 30);
+    let width = app.layout.tabs.width;
+    // The last tab on screen is cut at the right edge.
+    let before = crate::ui::tabs::positions(&app, width);
+    let &(k, x, w) = before.last().unwrap();
+    assert!(x + w == width && k + 1 < app.docs.len(), "{before:?}");
+    let t0 = Instant::now();
+    tab_click(&mut app, k, t0);
+    assert_eq!(app.active, k);
+    let after = crate::ui::tabs::positions(&app, width);
+    let moved = after.iter().find(|(j, ..)| *j == k).unwrap().1;
+    assert_ne!(moved, x, "the first press scrolled the bar");
+    // The second press on that tab, where it is now, completes the double click.
+    tab_click(&mut app, k, t0 + Duration::from_millis(200));
+    assert_eq!(app.active, k);
+    assert!(app.explorer.visible);
+    assert_eq!(app.focus, Focus::Explorer);
+    let cur = &app.explorer.rows[app.explorer.cursor];
+    assert_eq!(cur.path, roots[0].join(&names[k]));
+}

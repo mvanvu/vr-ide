@@ -1168,21 +1168,69 @@ fn goto_file_keeps_selection_when_index_arrives() {
     assert_eq!(p.items[p.selected].path, chosen, "{:?}", items(&app));
 }
 
+/// Time this thread spent on a CPU (Linux `schedstat`, ns); wall-clock time where that is not
+/// readable.
+enum CpuClock {
+    Cpu(u64),
+    Wall(std::time::Instant),
+}
+
+impl CpuClock {
+    fn now_ns() -> Option<u64> {
+        let s = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
+        s.split_whitespace().next()?.parse().ok()
+    }
+
+    fn start() -> CpuClock {
+        match CpuClock::now_ns() {
+            Some(ns) => CpuClock::Cpu(ns),
+            None => CpuClock::Wall(std::time::Instant::now()),
+        }
+    }
+
+    fn elapsed(&self) -> std::time::Duration {
+        match self {
+            CpuClock::Cpu(start) => std::time::Duration::from_nanos(
+                CpuClock::now_ns().unwrap_or(*start).saturating_sub(*start),
+            ),
+            CpuClock::Wall(t) => t.elapsed(),
+        }
+    }
+}
+
 #[test]
 fn drop_nested_keeps_order_and_scales() {
     let p = |s: &str| PathBuf::from(s);
-    // Shift+End over a big expanded tree: one folder and every row below it.
-    let mut many = vec![p("/r/big")];
-    many.extend((0..20_000).map(|i| PathBuf::from(format!("/r/big/d{}/f{i}.txt", i % 100))));
-    many.extend((0..20_000).map(|i| PathBuf::from(format!("/r/other{i}.txt"))));
-    let t = std::time::Instant::now();
-    let kept = explorer::drop_nested(many);
+    // Shift+End over a big expanded tree: one folder and every row below it, then as many
+    // unrelated paths.
+    let tree = |n: usize| {
+        let mut many = vec![p("/r/big")];
+        many.extend((0..n).map(|i| PathBuf::from(format!("/r/big/d{}/f{i}.txt", i % 100))));
+        many.extend((0..n).map(|i| PathBuf::from(format!("/r/other{i}.txt"))));
+        many
+    };
+    assert_eq!(explorer::drop_nested(tree(20_000)).len(), 20_001);
+    // Scaling, not a wall-clock limit (a loaded machine stretches any absolute time): 4x the
+    // paths costs about 4-5x when O(n log n) and 16x when quadratic. Timed in this thread's
+    // CPU time, so time spent waiting for a CPU does not count; the best of several
+    // interleaved runs per size drops the rest of the noise.
+    let best = |n: usize, best: &mut std::time::Duration| {
+        let many = tree(n);
+        let t = CpuClock::start();
+        let kept = explorer::drop_nested(many);
+        *best = (*best).min(t.elapsed());
+        assert_eq!(kept.len(), n + 1);
+    };
+    let (mut small, mut large) = (std::time::Duration::MAX, std::time::Duration::MAX);
+    for _ in 0..5 {
+        best(5_000, &mut small);
+        best(20_000, &mut large);
+    }
+    let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-9);
     assert!(
-        t.elapsed() < std::time::Duration::from_secs(1),
-        "{:?}",
-        t.elapsed()
+        ratio < 10.0,
+        "4x the paths took {ratio:.1}x the time ({small:?} -> {large:?})"
     );
-    assert_eq!(kept.len(), 20_001);
     // Order is kept; a path listed twice is acted on once.
     assert_eq!(
         explorer::drop_nested(vec![

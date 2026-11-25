@@ -68,6 +68,14 @@ pub struct Syntax {
     wake: Arc<AtomicBool>,
     /// languages.toml problems not shown yet (AC-13e).
     startup: Vec<String>,
+    /// A `spans` call since the last frame ran out of its query budget (D162).
+    cut: AtomicBool,
+    /// The coming frame is the one redraw asked for after a cut frame; if it is cut too, no
+    /// further one is asked for, so a document whose every query is cut does not redraw in a
+    /// loop.
+    follow_up: bool,
+    /// Query budget for highlighters (tests); `None` keeps vr-syntax's default.
+    query_timeout: Option<Duration>,
 }
 
 #[derive(Default)]
@@ -96,7 +104,33 @@ impl Syntax {
             docs: Vec::new(),
             wake: Arc::default(),
             startup: Vec::new(),
+            cut: AtomicBool::new(false),
+            follow_up: false,
+            query_timeout: None,
         }
+    }
+
+    /// Query budget of every highlighter, open and later ones (tests: 0 cuts every query).
+    #[cfg(test)]
+    pub(crate) fn set_query_timeout(&mut self, timeout: Duration) {
+        self.query_timeout = Some(timeout);
+        for hl in self.docs.iter_mut().filter_map(|d| d.hl.as_mut()) {
+            hl.set_query_timeout(timeout);
+        }
+    }
+
+    /// Called once a frame is drawn: when a `spans` call of it was cut by the query budget,
+    /// asks the event loop for one more frame (through the wake flag), unless this frame was
+    /// already that follow-up. True when it asked.
+    pub fn frame_drawn(&mut self) -> bool {
+        let cut = self.cut.swap(false, Ordering::AcqRel);
+        let was_follow_up = std::mem::take(&mut self.follow_up);
+        if cut && !was_follow_up {
+            self.follow_up = true;
+            self.wake.store(true, Ordering::Release);
+            return true;
+        }
+        false
     }
 
     /// Uses `languages` (built-in table plus the user's file) for documents opened from now on.
@@ -175,14 +209,21 @@ impl Syntax {
         }
     }
 
-    /// Spans of document `i` inside `bytes`, sorted and disjoint (empty for plain text).
+    /// Spans of document `i` inside `bytes`, sorted and disjoint (empty for plain text). A
+    /// call cut by the query budget is remembered for [`Syntax::frame_drawn`].
     pub fn spans(
         &self,
         i: usize,
         bytes: std::ops::Range<usize>,
     ) -> Vec<(std::ops::Range<usize>, Capture)> {
         match self.docs.get(i).and_then(|d| d.hl.as_ref()) {
-            Some(hl) => hl.spans(bytes),
+            Some(hl) => {
+                let q = hl.query(bytes);
+                if q.truncated {
+                    self.cut.store(true, Ordering::Release);
+                }
+                q.spans
+            }
             None => Vec::new(),
         }
     }
@@ -224,7 +265,7 @@ impl Syntax {
         let rope = doc.buffer.text();
         let version = doc.buffer.version();
         if d.resolved.as_ref() != Some(&doc.path) {
-            d.resolve(&registry, doc, max_bytes, &wake);
+            d.resolve(&registry, doc, max_bytes, &wake, self.query_timeout);
         } else if d.hl.is_some() {
             d.step(rope, version, max_bytes);
         }
@@ -254,6 +295,7 @@ impl DocSyntax {
         doc: &Document,
         max_bytes: u64,
         wake: &Arc<AtomicBool>,
+        query_timeout: Option<Duration>,
     ) {
         self.resolved = Some(doc.path.clone());
         let language = match &self.forced {
@@ -270,9 +312,11 @@ impl DocSyntax {
             (_, Some(lang)) => {
                 let wake = wake.clone();
                 let notify: Notify = Arc::new(move || wake.store(true, Ordering::Release));
+                let defaults = HighlightOptions::default();
                 let options = HighlightOptions {
                     max_bytes,
-                    ..HighlightOptions::default()
+                    query_timeout: query_timeout.unwrap_or(defaults.query_timeout),
+                    ..defaults
                 };
                 // Too large: the highlighter disables itself; no scan of the text.
                 self.lone_cr = self.scan(rope, max_bytes);

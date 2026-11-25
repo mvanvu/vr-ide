@@ -113,16 +113,19 @@ fn the_first_frame_does_not_wait_for_the_parse() {
     let path = dir.path().join("big.rs");
     std::fs::write(&path, &big).unwrap();
     let (mut app, _) = test_app(dir.path());
-    // Opening creates the highlighter, so it is inside the timed part.
-    let t = std::time::Instant::now();
+    // The parse of 4.8 MB takes seconds, opening and one frame milliseconds; a machine's load
+    // stretches both alike, so the order is what is checked, not a time: the frame is back
+    // while the parse is still running and is drawn plain. A frame that waited for the parse
+    // would come back with it landed.
     app.open_path(&path).unwrap();
     assert_eq!(app.syntax.language(0), Some("rust"));
-    draw(&mut app);
+    let buf = draw(&mut app);
     assert!(
-        t.elapsed() < Duration::from_secs(2),
-        "first frame took {:?}",
-        t.elapsed()
+        !app.syntax.wait(0, Duration::ZERO),
+        "the first frame came back after the parse landed"
     );
+    assert_eq!(cell(&app, &buf, 0, 0).0, "f");
+    assert_eq!(fg(&app, &buf, 0, 0), theme().text.fg.unwrap(), "plain");
 }
 
 #[test]
@@ -443,6 +446,61 @@ fn a_landed_parse_asks_the_event_loop_to_redraw() {
     assert!(app.syntax.wait(0, WAIT));
     assert!(app.syntax.take_wake(), "notify did not fire");
     assert!(!app.syntax.take_wake(), "taken once");
+}
+
+/// Dense Rust lines: a 12-row viewport of them is more query work than one budget check.
+fn dense_rust() -> String {
+    (0..400)
+        .map(|i| {
+            format!("fn f{i}(a: u8) -> u8 {{ let x = \"s\"; let y = a + {i} * 2; g(x, y) }}\n")
+        })
+        .collect()
+}
+
+/// Cells of the editor area whose colour is a syntax colour other than the text's.
+fn coloured_cells(app: &App, buf: &Buffer) -> usize {
+    let ed = app.layout.editor;
+    let plain = theme().text.fg;
+    (ed.y..ed.y + ed.height)
+        .flat_map(|y| (ed.x..ed.x + ed.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let c = &buf[(x, y)];
+            c.symbol() != " " && Some(c.fg) != plain
+        })
+        .count()
+}
+
+#[test]
+fn a_frame_cut_by_the_query_budget_asks_for_one_follow_up() {
+    let (_d, _p, mut app) = open("dense.rs", &dense_rust());
+    let full = draw_settled(&mut app);
+    let full_cells = coloured_cells(&app, &full);
+    assert!(full_cells > 0);
+    app.syntax.take_wake();
+    draw(&mut app);
+    assert!(!app.syntax.take_wake(), "an uncut frame asks for nothing");
+
+    // Every query is cut: the frame has fewer colours and asks for one more frame.
+    app.syntax.set_query_timeout(Duration::ZERO);
+    let cut = draw(&mut app);
+    assert!(
+        coloured_cells(&app, &cut) < full_cells,
+        "the frame was not cut"
+    );
+    assert!(app.syntax.take_wake(), "no redraw asked after a cut frame");
+    // The follow-up is cut again: no further redraw (no loop).
+    draw(&mut app);
+    assert!(!app.syntax.take_wake(), "a cut follow-up asked again");
+    // A frame for another reason (a key) is cut: it gets its own one follow-up.
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    draw(&mut app);
+    assert!(app.syntax.take_wake());
+
+    // The budget is back before the follow-up: it draws the full colours and asks nothing.
+    app.syntax.set_query_timeout(WAIT);
+    let again = draw(&mut app);
+    assert_eq!(coloured_cells(&app, &again), full_cells);
+    assert!(!app.syntax.take_wake());
 }
 
 fn median_and_worst(mut times: Vec<Duration>) -> (Duration, Duration) {

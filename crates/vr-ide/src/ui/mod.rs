@@ -77,6 +77,8 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     if let Some(d) = &mut app.dialog {
         d.widget.render(frame, area, theme);
     }
+    // A query cut by its budget drew partial colours: one more frame (D162).
+    app.syntax.frame_drawn();
 }
 
 #[cfg(test)]

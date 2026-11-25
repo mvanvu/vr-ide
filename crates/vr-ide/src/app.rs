@@ -1319,6 +1319,12 @@ impl App {
 
     fn route_mouse(&mut self, ev: MouseEvent) {
         self.space_pending = false;
+        // The first half of a tab double click lasts until the next mouse event other than a
+        // release or a move: a drag, the wheel or a press anywhere but on a tab breaks it.
+        let tab_click = match ev.kind {
+            MouseEventKind::Up(_) | MouseEventKind::Moved => self.last_tab_click,
+            _ => self.last_tab_click.take(),
+        };
         let inside = |r: ratatui::layout::Rect| {
             ev.column >= r.x
                 && ev.column < r.x + r.width
@@ -1379,11 +1385,12 @@ impl App {
                     {
                         self.set_active(i);
                         let now = self.now();
-                        let double = self.last_tab_click.is_some_and(|(j, t)| {
+                        // By tab, not by column: when the first press scrolled an overflowing
+                        // bar, a second press on that tab where it is now still counts.
+                        let double = tab_click.is_some_and(|(j, t)| {
                             j == i && now.saturating_duration_since(t) <= TAB_DOUBLE_CLICK
                         });
                         if double {
-                            self.last_tab_click = None;
                             if self.docs[i].path.is_some() {
                                 self.run_command("explorer.reveal", CmdArgs::None);
                             }

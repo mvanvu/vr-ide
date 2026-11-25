@@ -471,15 +471,31 @@ mod tests {
         let p = dir.path().join("a.txt");
         fs::write(&p, "0").unwrap();
         w.watch(&p).unwrap();
+        // 20 writes ~5 ms apart. The debouncer reports a path once per DEBOUNCE window that
+        // starts at its first unreported change, so a burst spanning S gives at most
+        // S / DEBOUNCE + 2 events: 1-2 for the ~100 ms it takes on an idle machine. A loaded
+        // machine stretches the sleeps; the bound follows the span the writes really took
+        // instead of assuming 100 ms.
+        let start = Instant::now();
+        let mut widest_gap = Duration::ZERO;
         for i in 0..20 {
+            let t = Instant::now();
             fs::write(&p, i.to_string()).unwrap();
             std::thread::sleep(Duration::from_millis(5));
+            widest_gap = widest_gap.max(t.elapsed());
         }
+        let span = start.elapsed();
         let events = collect(&rx, Duration::from_millis(1200));
+        let most = (span.as_millis() / DEBOUNCE.as_millis()) as usize + 2;
         assert!(
-            (1..=2).contains(&events.len()),
-            "20 writes in ~100 ms → 1–2 events, got {events:?}"
+            (1..=most).contains(&events.len()),
+            "20 writes in {span:?} → 1–{most} events, got {events:?}"
         );
+        // Never one event per write: every pause between writes was shorter than DEBOUNCE,
+        // so the burst is coalesced.
+        if widest_gap < DEBOUNCE {
+            assert!(events.len() < 20 / 2, "not coalesced: {events:?}");
+        }
         assert!(events.iter().all(|e| *e == FsEvent::Modified(p.clone())));
     }
 
