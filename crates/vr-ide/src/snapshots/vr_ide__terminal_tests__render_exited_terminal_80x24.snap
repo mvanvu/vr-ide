@@ -11,7 +11,7 @@ expression: t.backend()
 "  ctrl+p  Go to file                                                            "
 "  f1      Command palette                                                       "
 "  ctrl+e  Explorer                                                              "
-"  ctrl+t  Search                                                                "
+"  ctrl+o  Open file                                                             "
 "  ctrl+`  Terminal                                                              "
 "  ctrl+q  Quit                                                                  "
 "                                                                                "

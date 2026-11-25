@@ -205,8 +205,13 @@ fn explorer_new_file_opens_it() {
     let (d, mut app) = project();
     let r = d.path();
     select(&mut app, "src/main.rs");
+    // ctrl+n in the explorer asks File / Folder first (File is the default), then the name.
     app.handle_key(ctrl('n'));
-    assert!(prompt(&app).is_some(), "ctrl+n opens the name prompt");
+    let kind = confirm(&app).expect("ctrl+n asks File / Folder");
+    assert_eq!(kind.buttons, ["File", "Folder"]);
+    assert_eq!(kind.selected, 0, "File is the default");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(prompt(&app).is_some(), "then the name prompt");
     // Names with a slash, `..`, or an existing name are refused in the prompt.
     for bad in ["a/b.rs", "..", "main.rs"] {
         submit(&mut app, bad);
@@ -225,9 +230,16 @@ fn explorer_new_file_opens_it() {
     assert_eq!(app.focus, Focus::Editor);
     assert_eq!(cursor_name(&app), "lib.rs");
 
-    // New folder in the folder under the cursor.
+    // New folder in the folder under the cursor: ctrl+n, then Folder.
     select(&mut app, "tests");
-    app.run_command("explorer.new_folder", crate::commands::CmdArgs::None);
+    app.handle_key(ctrl('n'));
+    app.handle_key(key(KeyCode::Right));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        prompt(&app).map(|p| p.0),
+        Some(String::new()),
+        "folder name prompt"
+    );
     submit(&mut app, "unit");
     assert!(r.join("tests/unit").is_dir());
     assert_eq!(cursor_name(&app), "unit");
@@ -254,7 +266,7 @@ fn explorer_rename_open_file_updates_tab() {
     let (d, mut app) = project();
     let r = d.path().to_path_buf();
     app.open_path(Path::new("src/main.rs")).unwrap();
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "x");
     app.open_path(Path::new("README.md")).unwrap();
     select(&mut app, "src/main.rs");
@@ -346,7 +358,7 @@ fn explorer_delete_confirms_then_trashes() {
     let trash = fake_trash(&mut app, &side.path().join("trash"));
     app.recovery_dir = Some(side.path().join("recovery"));
     app.open_path(Path::new("README.md")).unwrap();
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "unsaved ");
     app.open_path(Path::new("composer.json")).unwrap();
     app.open_path(Path::new("src/main.rs")).unwrap();
@@ -621,9 +633,9 @@ fn focus_cycle_editor_explorer() {
     app.keyboard_enhanced = true;
     app.open_path(Path::new("README.md")).unwrap();
     // f6 (focus.cycle): editor → explorer → editor.
-    app.handle_key(key(KeyCode::F(6)));
+    crate::app_tests::run(&mut app, "focus.cycle");
     assert_eq!(app.focus, Focus::Explorer);
-    app.handle_key(key(KeyCode::F(6)));
+    crate::app_tests::run(&mut app, "focus.cycle");
     assert_eq!(app.focus, Focus::Editor);
     // ctrl+b focuses the explorer, ctrl+e hides it and the editor gets the keys back.
     crate::app_tests::press(&mut app, "ctrl+b");
@@ -632,14 +644,14 @@ fn focus_cycle_editor_explorer() {
     assert!(!app.explorer.visible);
     assert_eq!(app.focus, Focus::Editor);
     // Hidden: focus.cycle stays in the editor; ctrl+e shows the panel again (and focuses it).
-    app.handle_key(key(KeyCode::F(6)));
+    crate::app_tests::run(&mut app, "focus.cycle");
     assert_eq!(app.focus, Focus::Editor);
     crate::app_tests::press(&mut app, "ctrl+e");
     assert!(app.explorer.visible);
     assert_eq!(app.focus, Focus::Explorer);
     app.handle_key(key(KeyCode::Esc));
     // Esc in the explorer returns to the editor.
-    app.handle_key(key(KeyCode::F(6)));
+    crate::app_tests::run(&mut app, "focus.cycle");
     app.handle_key(key(KeyCode::Esc));
     assert_eq!(app.focus, Focus::Editor);
 }
@@ -833,7 +845,7 @@ fn trash_of_unsaved_file_stops_when_recovery_fails() {
     fs::write(side.path().join("blocked"), "").unwrap();
     app.recovery_dir = Some(side.path().join("blocked/recovery"));
     app.open_path(Path::new("README.md")).unwrap();
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "mine ");
     select(&mut app, "README.md");
     app.handle_key(key(KeyCode::Delete));
@@ -1288,6 +1300,7 @@ fn linked_folder_outside_the_project_refuses_destructive_ops() {
     // New file and paste into it stay allowed; the link itself can be trashed.
     select(&mut app, "link/x.txt");
     app.handle_key(ctrl('n'));
+    app.handle_key(key(KeyCode::Enter));
     submit(&mut app, "new.txt");
     assert!(outside.path().join("new.txt").is_file());
     select(&mut app, "README.md");
@@ -1459,7 +1472,7 @@ fn reveal_of_a_hidden_or_ignored_file_says_how_to_show_it() {
     app.run_command("explorer.toggle_hidden", crate::commands::CmdArgs::None);
     assert!(!app.explorer.tree.show_hidden());
     for (file, dir, hint) in [
-        (".github/workflows/ci.yml", ".github", "ctrl+f5"),
+        (".github/workflows/ci.yml", ".github", "ctrl+h"),
         ("build/out.txt", "build", "ctrl+f6"),
     ] {
         app.notices.clear();
@@ -1694,7 +1707,7 @@ fn ctrl_e_hides_the_explorer_and_returns_focus_to_the_editor() {
         assert!(app.palette.is_none());
     }
     // Keys typed now go to the file, not the hidden tree: ctrl+i edits it (D145).
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     app.handle_key(key(KeyCode::Char('x')));
     assert_eq!(
         app.active_doc().unwrap().buffer.text().to_string(),

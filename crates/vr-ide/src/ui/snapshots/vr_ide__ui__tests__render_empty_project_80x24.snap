@@ -12,7 +12,7 @@ expression: t.backend()
 "  ctrl+p  Go to file                    │ LOAD                               —  "
 "  f1      Command palette               │ UP                                 —  "
 "  ctrl+e  Explorer                      │                                       "
-"  ctrl+t  Search                        │ VR-IDE ─────────────────────────────  "
+"  ctrl+o  Open file                     │ VR-IDE ─────────────────────────────  "
 "  ctrl+`  Terminal                      │ CPU                                —  "
 "  ctrl+q  Quit                          │ RSS                                —  "
 "                                        │                                       "

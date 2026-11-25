@@ -210,7 +210,7 @@ fn two_modified() -> (tempfile::TempDir, App) {
     std::fs::write(d.path().join("b.txt"), "b\n").unwrap();
     typ(&mut app, "1");
     app.open_path(Path::new("b.txt")).unwrap();
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "2");
     (d, app)
 }
@@ -340,7 +340,7 @@ fn prompt_error(app: &App) -> Option<String> {
 fn save_as_prompt() {
     let (d, path, mut app, _) = app_with_file("one\n");
     typ(&mut app, "x");
-    crate::app_tests::press(&mut app, "f12");
+    crate::app_tests::run(&mut app, "file.save_as");
     assert_eq!(
         prompt_text(&app).as_deref(),
         Some("a.txt"),
@@ -362,7 +362,7 @@ fn save_as_prompt() {
     assert_eq!(app.active_name(), "sub/copy.txt");
     // An existing file is replaced only after a confirmation.
     std::fs::write(d.path().join("other.txt"), "keep\n").unwrap();
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "y");
     app.run_command("file.save_as", CmdArgs::None);
     submit(&mut app, "other.txt");
@@ -417,7 +417,7 @@ fn modified_doc_changed_on_disk_prompts() {
     choose(&mut app, "Reload");
     assert_eq!(text(&app), "theirs\n");
     assert!(!app.active_doc().unwrap().is_modified());
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     app.handle_key(ctrl('z'));
     assert_eq!(text(&app), "mine old\n");
 
@@ -862,7 +862,7 @@ fn save_as_onto_a_file_open_in_another_tab() {
     std::fs::write(&b, "b\n").unwrap();
     app.open_path(&b).unwrap();
     app.set_active(0);
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "x");
     app.run_command("file.save_as", CmdArgs::None);
     submit(&mut app, "b.txt");
@@ -877,10 +877,10 @@ fn save_as_onto_a_file_open_in_another_tab() {
     let b = d.path().join("b.txt");
     std::fs::write(&b, "b\n").unwrap();
     app.open_path(&b).unwrap();
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "y");
     app.set_active(0);
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "x");
     app.run_command("file.save_as", CmdArgs::None);
     submit(&mut app, "b.txt");
@@ -1159,8 +1159,8 @@ fn keep_mine_recreating_a_deleted_file_brings_its_row_back() {
     drop(d);
 }
 
-/// D250: the palette's key column shows each command's one key, in both keyboard modes;
-/// palette-only commands show none.
+/// T21: the palette's key column shows each command's one key, in both keyboard modes;
+/// palette-only commands show none; the read-mode built-ins show theirs.
 #[test]
 fn palette_key_column_shows_the_one_key() {
     for enhanced in [true, false] {
@@ -1170,11 +1170,21 @@ fn palette_key_column_shows_the_one_key() {
         let items = app.palette.as_ref().unwrap().items.clone();
         let keys = |name: &str| items.iter().find(|i| i.name == name).unwrap().keys.clone();
         // The palette does not list itself.
-        for &(_, k, cmd) in crate::app_tests::D250
+        for &(_, k, cmd) in crate::app_tests::KEYSET_V2
             .iter()
             .filter(|e| e.2 != "app.palette")
         {
             assert_eq!(keys(cmd), k, "{cmd} {enhanced}");
+        }
+        assert_eq!(keys("editor.edit_mode"), "space i", "{enhanced}");
+        assert_eq!(keys("focus.cycle"), "tab", "{enhanced}");
+        for cmd in [
+            "search.project",
+            "file.save_as",
+            "file.reload",
+            "explorer.new_folder",
+        ] {
+            assert_eq!(keys(cmd), "", "{cmd} {enhanced}");
         }
         assert_eq!(keys("explorer.toggle"), "", "{enhanced}");
         assert_eq!(keys("terminal.toggle"), "ctrl+`", "{enhanced}");

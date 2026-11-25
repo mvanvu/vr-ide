@@ -75,7 +75,7 @@ fn typ(app: &mut App, s: &str) {
 }
 
 fn edit_mode(app: &mut App) {
-    key(app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+    crate::app_tests::space_i(app);
     assert!(app.edit_mode());
 }
 
@@ -160,7 +160,7 @@ fn replace_all_hands_its_changes_to_the_highlighter() {
     let (_d, _p, mut app) = open("a.rs", "fn a() { b(); }\nfn b() {}\nfn c() { b(); }\n");
     edit_mode(&mut app);
     draw_settled(&mut app);
-    crate::app_tests::press(&mut app, "ctrl+u");
+    crate::app_tests::run(&mut app, "find.replace_open");
     typ(&mut app, "fn");
     key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     typ(&mut app, "// fn");

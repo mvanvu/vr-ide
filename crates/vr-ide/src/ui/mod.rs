@@ -169,10 +169,10 @@ mod tests {
         }
         // second.rs: modified; third.md: active, changed on disk while modified.
         app.set_active(1);
-        key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+        crate::app_tests::space_i(&mut app);
         key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         app.set_active(2);
-        key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+        crate::app_tests::space_i(&mut app);
         key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
         app.docs[2].disk_state = vr_core::DiskState::ChangedOnDisk;
         app.notices.clear();
@@ -195,12 +195,12 @@ mod tests {
     fn render_find_bar() {
         let (_d, _p, mut app, _) =
             app_with_file("fn alpha() {}\nfn beta() {}\n// alpha again: alpha\nfn gamma() {}\n");
-        crate::app_tests::press(&mut app, "ctrl+u");
+        crate::app_tests::run(&mut app, "find.replace_open");
         for c in "alpha".chars() {
             key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        crate::app_tests::press(&mut app, "ctrl+f2");
+        crate::app_tests::run(&mut app, "find.toggle_word");
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         for c in "omega".chars() {
             key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
@@ -222,7 +222,12 @@ mod tests {
         let (mut app, _) = test_app(&r);
         app.explorer.visible = true;
         app.open_path(std::path::Path::new("README.md")).unwrap();
-        crate::app_tests::press(&mut app, if replace { "ctrl+r" } else { "ctrl+t" });
+        let cmd = if replace {
+            "search.replace_project"
+        } else {
+            "search.project"
+        };
+        crate::app_tests::run(&mut app, cmd);
         for c in "total".chars() {
             key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
@@ -302,7 +307,7 @@ mod tests {
         key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         std::fs::write(d.path().join("second.rs"), "fn a() {}\n").unwrap();
         app.open_path(std::path::Path::new("second.rs")).unwrap();
-        key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+        crate::app_tests::space_i(&mut app);
         key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
         app.run_command("app.quit", crate::commands::CmdArgs::None);
         snap("render_confirm_dialog", &mut app);
@@ -336,7 +341,7 @@ mod tests {
         // Dialog buttons answer clicks; clicks elsewhere do nothing while it is open.
         std::fs::write(d.path().join("b.txt"), "b\n").unwrap();
         // Closed from outside: back in read mode (D145).
-        key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+        crate::app_tests::space_i(&mut app);
         key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
         app.run_command("app.quit", crate::commands::CmdArgs::None);
         draw(&mut app, 40, 12);
@@ -457,7 +462,7 @@ mod tests {
         std::fs::write(dir.path().join("l1.txt"), b"caf\xe9\n").unwrap();
         let (mut app, _) = test_app(dir.path());
         app.open_path(&deep.join("handler.rs")).unwrap();
-        key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+        crate::app_tests::space_i(&mut app);
         key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         app.docs[0].disk_state = vr_core::DiskState::ChangedOnDisk;
         for w in [40u16, 30, 80] {

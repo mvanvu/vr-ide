@@ -1,4 +1,4 @@
-# vr-ide built-in keymap: its own key set (USER-5, D250), one key per command.
+# vr-ide built-in keymap: its own key set (USER-5, keyset v2 D261), one key per command.
 #
 # Override any key in ~/.config/vr-ide/keymap.toml; only the keys you list change.
 #
@@ -17,15 +17,23 @@
 #   a letter, digit or symbol ("ctrl+/", "ctrl+]", "ctrl+`"), f1..f24, enter, escape, tab,
 #   backspace, delete, insert, home, end, pageup, pagedown, up, down, left, right, space, plus.
 # A binding is always one key; there are no key sequences.
-# Cursor movement and typing (arrows, home/end, pageup/pagedown, shift+ to extend, ctrl+left/right,
-# backspace/delete/enter/tab in the editor) are built in and not listed here.
+#
+# Built in, not listed here:
+#   - cursor movement and typing (arrows, home/end, pageup/pagedown, shift+ to extend,
+#     ctrl+left/right, backspace/delete/enter in the editor);
+#   - read (normal) mode in the editor: space then i enters edit mode, space then space opens
+#     the command palette (like f1), space then another key only shows a hint; tab moves the
+#     focus to the next part (editor, side panel, terminal; ctrl+f reaches the find bar);
+#   - edit mode: tab indents (shift+tab outdents, below), escape goes back to read mode.
 # Unknown command names are reported in a startup notice; the rest of the file still applies.
 #
 # Every default key reaches vr-ide from a terminal without the kitty protocol and none is taken by
 # GNOME Terminal or the GNOME desktop: ctrl+letter or an F key (alone, with ctrl or with shift);
-# no alt, no ctrl+shift+letter, no ctrl+PageUp/PageDown, no F10/F11 (USER-5).
-# Commands without a key run from the command palette (F1): file.save_overwrite, explorer.toggle,
-# explorer.move and the workspace commands.
+# no alt, no ctrl+shift+letter, no ctrl+PageUp/PageDown, no F10/F11 (USER-5). The user approved
+# one exception: ctrl+h (byte 0x08; GNOME Terminal's Backspace sends 0x7f, so they differ).
+# Commands without a key run from the command palette (f1): project search and its result
+# stepping, the find options, replace one / all, new folder, save as, reload from disk, indent,
+# focus cycle, and others.
 
 # ---- global ----------------------------------------------------------------
 "f1" = "app.palette"
@@ -33,28 +41,21 @@
 "ctrl+p" = "file.goto"
 "ctrl+o" = "file.open"
 "ctrl+s" = "file.save"
-"f12" = "file.save_as"
-"f5" = "file.reload"
 "ctrl+w" = "file.close"
-# There are no untitled buffers: this creates the file on disk.
+# There are no untitled buffers: this creates the file on disk. In the explorer ctrl+n asks
+# File / Folder first (see [explorer]).
 "ctrl+n" = "explorer.new_file"
 "f9" = "tab.next"
 "shift+f9" = "tab.prev"
-"f6" = "focus.cycle"
 # Hidden explorer: show it and focus it; shown: hide it and the editor gets the keys.
 "ctrl+e" = "explorer.toggle_focus"
 "ctrl+b" = "explorer.focus"
 "ctrl+k" = "explorer.reveal"
-"ctrl+f5" = "explorer.toggle_hidden"
+"ctrl+h" = "explorer.toggle_hidden"
 "ctrl+f6" = "explorer.toggle_ignored"
-"ctrl+t" = "search.project"
+# Replace is contextual: in the editor (and its find bar) it opens the in-file replace, see
+# [editor]; with the project search panel focused (and elsewhere) the project replace.
 "ctrl+r" = "search.replace_project"
-"f4" = "search.next_result"
-"shift+f4" = "search.prev_result"
-# Find options: act on the open find bar (or, without one, the open project search panel).
-"ctrl+f1" = "find.toggle_case"
-"ctrl+f2" = "find.toggle_word"
-"ctrl+f3" = "find.toggle_regex"
 # Integrated terminal (M5). Hidden: show and focus it (a terminal starts if there is none);
 # shown elsewhere: focus it; focused: the editor gets the keys and the panel stays shown.
 # Terminals without the kitty protocol send ctrl+` as NUL (the same byte as ctrl+space); that
@@ -70,10 +71,8 @@
 # ctrl+f7 is kept free for the terminal panel position command (T19).
 
 [editor]
-# Read mode / edit mode (D145, the user's keys, D249): a file is opened in read mode; ctrl+i
-# edits, escape goes back to reading. Without the kitty protocol ctrl+i arrives as tab, which also
-# enters edit mode from read mode (and indents in edit mode).
-"ctrl+i" = "editor.edit_mode"
+# Read mode / edit mode (D145): a file opens in read mode; space i edits (built in), escape
+# goes back to reading. Edit keys in read mode show the hint "Read mode: space i to edit".
 "escape" = "editor.read_mode"
 "ctrl+z" = "edit.undo"
 "ctrl+y" = "edit.redo"
@@ -86,20 +85,19 @@
 "ctrl+up" = "edit.move_line_up"
 "ctrl+down" = "edit.move_line_down"
 "ctrl+/" = "edit.toggle_comment"
-"ctrl+]" = "edit.indent"
-# ctrl+[ is Escape for most terminals, so outdent is shift+tab.
+# ctrl+[ is Escape for most terminals, so outdent is shift+tab (tab indents, built in).
 "shift+tab" = "edit.outdent"
 "ctrl+g" = "nav.goto_line"
 "ctrl+f" = "find.open"
 "f3" = "find.next"
 "shift+f3" = "find.prev"
-"ctrl+u" = "find.replace_open"
-"f7" = "find.replace_one"
-"shift+f7" = "find.replace_all"
+# Opens the replace field in edit mode: Enter replaces one, ctrl+a replaces all.
+"ctrl+r" = "find.replace_open"
 
 [explorer]
 "f2" = "explorer.rename"
-"ctrl+f2" = "explorer.new_folder"
+# Asks File / Folder (File first), then the name.
+"ctrl+n" = "explorer.new"
 "delete" = "explorer.delete"
 "ctrl+c" = "explorer.copy"
 "ctrl+x" = "explorer.cut"

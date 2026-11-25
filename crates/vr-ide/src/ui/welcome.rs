@@ -312,13 +312,13 @@ fn hints(app: &App) -> Vec<Hint> {
         ("file.goto", "Go to file", 0),
         ("app.palette", "Command palette", 1),
         ("explorer.toggle_focus", "Explorer", 2),
-        ("search.project", "Search", 4),
+        ("file.open", "Open file", 4),
         ("terminal.toggle", "Terminal", 5),
         ("app.quit", "Quit", 3),
     ];
     ALL.iter()
         .filter_map(|&(cmd, title, priority)| {
-            // The display key (D250); without the kitty protocol a key the terminal cannot send
+            // The display key (D261); without the kitty protocol a key the terminal cannot send
             // is not recommended, so a command with only such keys is left out (D223).
             let key = app.display_key(cmd)?;
             if !app.keyboard_enhanced

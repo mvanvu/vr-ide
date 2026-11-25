@@ -7,10 +7,10 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 use crate::app::{App, Focus, View};
-use crate::app_tests::test_app;
+use crate::app_tests::{space_i, test_app};
 use crate::clipboard::{Clipboard, MemoryClipboard};
 
-const HINT: &str = "Read mode: ctrl+i to edit";
+const HINT: &str = "Read mode: space i to edit";
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -22,11 +22,6 @@ fn ctrl(c: char) -> KeyEvent {
 
 fn with(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
     KeyEvent::new(code, mods)
-}
-
-/// ctrl+i as a terminal with the kitty protocol reports it (legacy terminals send Tab).
-fn ctrl_i() -> KeyEvent {
-    ctrl('i')
 }
 
 fn typ(app: &mut App, s: &str) {
@@ -49,7 +44,7 @@ fn hints(app: &App) -> usize {
 }
 
 /// A temp project with `files` (name, content), the first one opened the way a user opens
-/// it (no ctrl+i pressed).
+/// it (no space i pressed).
 fn project(files: &[(&str, &str)]) -> (tempfile::TempDir, Vec<PathBuf>, App, MemoryClipboard) {
     let dir = tempfile::tempdir().unwrap();
     let paths: Vec<PathBuf> = files
@@ -96,9 +91,9 @@ fn opened_file_is_in_read_mode_and_typing_shows_the_hint() {
 }
 
 #[test]
-fn ctrl_i_enters_edit_mode_and_edits_and_undo_work() {
+fn space_i_enters_edit_mode_and_edits_and_undo_work() {
     let (_d, _p, mut app, _) = one("ab\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Backspace));
     assert_eq!(text(&app), "ab\n");
@@ -111,22 +106,235 @@ fn ctrl_i_enters_edit_mode_and_edits_and_undo_work() {
     assert_eq!(hints(&app), 0);
 }
 
+/// AC-21b: in read mode Tab moves the focus (editor, explorer, terminal, editor) and changes
+/// no text; in edit mode it indents. ctrl+i is not an edit key any more: a legacy terminal
+/// sends it as Tab, and with the kitty protocol it is unbound.
 #[test]
-fn legacy_tab_enters_edit_mode_without_inserting_and_then_indents() {
+fn tab_cycles_focus_in_read_mode_and_indents_in_edit_mode() {
     let (_d, _p, mut app, _) = one("ab\n");
-    // A terminal without the kitty protocol sends ctrl+i as Tab.
+    app.explorer.visible = true;
+    app.terminal.shell = Some(PathBuf::from("/bin/sh"));
+    app.terminal.env = vec![("ENV".into(), "/dev/null".into())];
     app.handle_key(key(KeyCode::Tab));
+    assert_eq!(
+        app.focus,
+        Focus::Explorer,
+        "read mode: Tab goes to the explorer"
+    );
     assert_eq!(text(&app), "ab\n");
+    // From the explorer Tab goes on; with no terminal open it comes back to the editor.
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.focus, Focus::Editor);
+    assert!(!app.edit_mode(), "back in read mode");
+    // A shown terminal is the next part after the side panel.
+    app.run_command("terminal.toggle", crate::commands::CmdArgs::None);
+    app.run_command("focus.editor", crate::commands::CmdArgs::None);
+    assert_eq!(app.focus, Focus::Editor);
+    app.handle_key(key(KeyCode::Tab));
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.focus, Focus::Terminal, "explorer -> terminal");
+    crate::commands::terminal::shutdown(&mut app);
+    app.focus = Focus::Editor;
+    // ctrl+i (kitty) does nothing; edit mode: Tab indents.
+    app.handle_key(ctrl('i'));
+    assert!(!app.edit_mode(), "ctrl+i is no edit key");
+    space_i(&mut app);
+    assert!(app.edit_mode());
     typ(&mut app, "x");
     assert_eq!(text(&app), "xab\n");
     app.handle_key(key(KeyCode::Tab));
     assert_eq!(text(&app), "x   ab\n");
+    assert_eq!(app.focus, Focus::Editor);
+    app.handle_key(key(KeyCode::Home));
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(text(&app), "    x   ab\n");
+    app.handle_key(with(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(text(&app), "x   ab\n", "shift+tab outdents");
+    app.handle_key(key(KeyCode::Esc));
+    assert!(!app.edit_mode(), "Esc: back to read mode");
+}
+
+/// AC-21b: space i edits, space space opens the palette (like f1), space + any other key only
+/// shows a hint; in edit mode a space is a space.
+#[test]
+fn space_sequences_in_read_mode_and_spaces_in_edit_mode() {
+    let (_d, _p, mut app, _) = one("ab\n");
+    let space = || key(KeyCode::Char(' '));
+    app.handle_key(space());
+    assert!(
+        app.notices.is_empty(),
+        "a single space waits: {:?}",
+        app.notices
+    );
+    assert!(!app.edit_mode());
+    app.handle_key(space());
+    assert_eq!(app.focus, Focus::Palette, "space space opens the palette");
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.focus, Focus::Editor);
+    // space + another key: a hint, nothing else (no text, no mode, no command).
+    app.handle_key(space());
+    app.ran.clear();
+    app.handle_key(key(KeyCode::Char('x')));
+    assert_eq!(text(&app), "ab\n");
+    assert!(!app.edit_mode());
+    assert!(app.ran.is_empty(), "{:?}", app.ran);
+    assert_eq!(
+        app.notices.front().map(|n| n.text.as_str()),
+        Some(SPACE_HINT),
+        "{:?}",
+        app.notices
+    );
+    // The key after the hint is an ordinary key again; i alone does not edit.
+    app.notices.clear();
+    typ(&mut app, "i");
+    assert!(!app.edit_mode());
+    assert_eq!(
+        hints(&app),
+        1,
+        "i alone is a refused edit: {:?}",
+        app.notices
+    );
+    // A space then a command key (f9): the hint, the key does not run.
+    app.notices.clear();
+    app.handle_key(space());
+    app.ran.clear();
+    crate::app_tests::press(&mut app, "f9");
+    assert!(app.ran.is_empty(), "{:?}", app.ran);
+    // space i: edit mode, and then spaces are text.
+    space_i(&mut app);
+    assert!(app.edit_mode());
+    typ(&mut app, "a b  c");
+    assert_eq!(text(&app), "a b  cab\n");
+    assert_eq!(app.focus, Focus::Editor);
+    // A focus change between the two keys forgets the first space.
+    app.handle_key(key(KeyCode::Esc));
+    app.notices.clear();
+    app.handle_key(space());
+    app.focus = Focus::Explorer;
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.focus, Focus::Editor);
+    typ(&mut app, "i");
+    assert!(
+        !app.edit_mode(),
+        "the pending space was dropped when the focus left"
+    );
+}
+
+const SPACE_HINT: &str = "space i: edit · space space: commands";
+
+/// A real mouse click on the editor between `space` and the second key forgets the space.
+#[test]
+fn a_click_between_space_and_the_next_key_drops_the_space() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let (_d, _p, mut app, _) = one("ab\ncd\n");
+    draw(&mut app, 80, 24);
+    let ed = app.layout.editor;
+    app.handle_key(key(KeyCode::Char(' ')));
+    assert!(app.space_pending);
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: ed.x + ed.width / 2,
+        row: ed.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.focus, Focus::Editor, "the click stays on the editor");
+    assert!(!app.space_pending);
+    typ(&mut app, "i");
+    assert!(!app.edit_mode(), "i after the click is a plain refused key");
+    assert_eq!(text(&app), "ab\ncd\n");
+}
+
+/// Esc after a pending space cancels the space and then does what Esc does (dismisses the
+/// notice), with no space hint.
+#[test]
+fn esc_after_space_cancels_it_and_dismisses_the_notice() {
+    let (_d, _p, mut app, _) = one("ab\n");
+    app.warn("something to read");
+    app.handle_key(key(KeyCode::Char(' ')));
+    app.handle_key(key(KeyCode::Esc));
+    assert!(!app.space_pending);
+    assert!(
+        app.notices.is_empty(),
+        "Esc dismissed the notice and added no hint: {:?}",
+        app.notices
+    );
+    typ(&mut app, "i");
+    assert!(!app.edit_mode());
+}
+
+/// A paste between `space` and the next key forgets the space (a paste is no second key).
+#[test]
+fn a_paste_between_space_and_the_next_key_drops_the_space() {
+    let (_d, _p, mut app, _) = one("ab\n");
+    app.handle_key(key(KeyCode::Char(' ')));
+    app.handle_paste("zz");
+    assert!(!app.space_pending);
+    assert_eq!(text(&app), "ab\n", "read mode refuses the paste");
+    typ(&mut app, "i");
+    assert!(!app.edit_mode(), "i after the paste does not edit");
+}
+
+/// D266: the read-mode Tab cycle skips an open find bar; the bar is reached with ctrl+f only.
+#[test]
+fn tab_cycle_skips_the_open_find_bar() {
+    for enhanced in [false, true] {
+        let (_d, _p, mut app, _) = one("alpha beta\n");
+        app.keyboard_enhanced = enhanced;
+        app.explorer.visible = true;
+        app.handle_key(ctrl('f'));
+        typ(&mut app, "alpha");
+        crate::app_tests::press(&mut app, "ctrl+b");
+        assert_eq!(app.focus, Focus::Explorer);
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.focus, Focus::Editor);
+        assert!(app.find.open, "the bar stays open");
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            app.handle_key(key(KeyCode::Tab));
+            seen.push(app.focus);
+            assert_ne!(app.focus, Focus::FindBar, "Tab never lands in the bar");
+            if app.focus == Focus::Editor {
+                typ(&mut app, "q");
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                Focus::Explorer,
+                Focus::Editor,
+                Focus::Explorer,
+                Focus::Editor,
+                Focus::Explorer,
+                Focus::Editor
+            ]
+        );
+        assert_eq!(
+            app.find.input.text(),
+            "alpha",
+            "no letter reached the field"
+        );
+        assert_eq!(text(&app), "alpha beta\n");
+        app.handle_key(ctrl('f'));
+        assert_eq!(app.focus, Focus::FindBar, "ctrl+f reaches the bar");
+    }
+}
+
+/// ctrl+r with no file open (the welcome screen) is the project replace.
+#[test]
+fn ctrl_r_with_no_file_open_is_the_project_replace() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = test_app(dir.path());
+    assert!(app.active_doc().is_none());
+    crate::app_tests::press(&mut app, "ctrl+r");
+    assert!(app.search.visible && app.search.replace_mode);
+    assert_eq!(app.focus, Focus::Search);
+    assert!(!app.find.open);
 }
 
 #[test]
 fn esc_returns_to_read_mode_and_clears_the_selection() {
     let (_d, _p, mut app, _) = one("abc\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     app.handle_key(with(KeyCode::Right, KeyModifiers::SHIFT));
     assert_eq!(selection(&app), (0, 1));
     app.handle_key(key(KeyCode::Esc));
@@ -140,7 +348,7 @@ fn esc_returns_to_read_mode_and_clears_the_selection() {
 #[test]
 fn esc_in_edit_mode_goes_to_read_even_with_a_notice_shown() {
     let (_d, _p, mut app, _) = one("abc\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     app.warn("something to read");
     app.handle_key(key(KeyCode::Esc));
     typ(&mut app, "x");
@@ -155,7 +363,7 @@ fn esc_in_edit_mode_goes_to_read_even_with_a_notice_shown() {
 fn tab_switch_returns_to_read_mode() {
     let (_d, paths, mut app, _) = project(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
     app.open_path(&paths[1]).unwrap();
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     typ(&mut app, "1");
     assert_eq!(text(&app), "1b\n");
     crate::app_tests::press(&mut app, "shift+f9");
@@ -173,7 +381,7 @@ fn tab_switch_returns_to_read_mode() {
 #[test]
 fn back_from_the_explorer_is_read_mode() {
     let (_d, _p, mut app, _) = one("a\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     app.handle_key(ctrl('e'));
     assert_eq!(app.focus, Focus::Explorer);
     app.handle_key(ctrl('e'));
@@ -185,7 +393,7 @@ fn back_from_the_explorer_is_read_mode() {
 #[test]
 fn palette_esc_returns_to_read_mode() {
     let (_d, _p, mut app, _) = one("a\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     app.handle_key(key(KeyCode::F(1)));
     assert_eq!(app.focus, Focus::Palette);
     app.handle_key(key(KeyCode::Esc));
@@ -198,7 +406,7 @@ fn palette_esc_returns_to_read_mode() {
 fn palette_click_outside_returns_to_read_mode() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let (_d, _p, mut app, _) = one("a\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     app.handle_key(key(KeyCode::F(1)));
     draw(&mut app, 80, 24);
     let area = app.palette.as_ref().unwrap().area;
@@ -218,7 +426,7 @@ fn palette_click_outside_returns_to_read_mode() {
 #[test]
 fn palette_go_to_file_on_the_active_tab_lands_in_read_mode() {
     let (_d, _p, mut app, _) = one("a\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     crate::commands::palette::open_files(&mut app);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while app.index_rx.is_some() {
@@ -278,7 +486,7 @@ fn read_mode_blocks_every_text_changing_key_and_command() {
     let (_d, _p, mut app, mut clip) = one(body);
     clip.set("PASTED").unwrap();
     // Undo and redo history first (q stays, r is undone), then leave edit mode.
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     typ(&mut app, "q");
     app.handle_key(key(KeyCode::Right));
     typ(&mut app, "r");
@@ -294,7 +502,6 @@ fn read_mode_blocks_every_text_changing_key_and_command() {
         ("ctrl+x", ctrl('x')),
         ("ctrl+z", ctrl('z')),
         ("ctrl+y", ctrl('y')),
-        ("ctrl+]", ctrl(']')),
         ("shift+tab", with(KeyCode::BackTab, KeyModifiers::SHIFT)),
     ];
     for (name, k) in blocked {
@@ -306,7 +513,7 @@ fn read_mode_blocks_every_text_changing_key_and_command() {
         assert_eq!(text(&app), body, "{name} changed the text in read mode");
         assert_eq!(hints(&app), 1, "{name}: no hint {:?}", app.notices);
     }
-    // The line keys that change text are refused with the same hint (D250).
+    // The line keys that change text are refused with the same hint (T21).
     for k in ["ctrl+d", "ctrl+l", "ctrl+/", "ctrl+up", "ctrl+down"] {
         app.handle_key(key(KeyCode::Down));
         app.notices.clear();
@@ -336,26 +543,47 @@ fn find_works_in_read_mode_and_replace_is_refused() {
     app.handle_key(key(KeyCode::Esc));
     assert_eq!(app.focus, Focus::Editor, "Esc closes the bar");
     assert!(!app.find.open);
-    // Replace: field switch and typing in the bar still work, the replace itself is refused.
-    // With a query already typed, ctrl+u puts the keys in the replace field.
-    crate::app_tests::press(&mut app, "ctrl+u");
-    typ(&mut app, "X");
+    // Replace one / all from the palette in read mode are refused with the hint.
     app.notices.clear();
-    app.handle_key(key(KeyCode::Enter));
-    assert_eq!(text(&app), "foo bar foo\n", "replace one in read mode");
-    crate::app_tests::press(&mut app, "shift+f7");
+    app.run_command("find.replace_all", crate::commands::CmdArgs::None);
     assert_eq!(text(&app), "foo bar foo\n", "replace all in read mode");
     assert!(hints(&app) >= 1, "{:?}", app.notices);
-    // ctrl+i from the bar enters edit mode; the replace then works.
-    app.handle_key(ctrl_i());
-    crate::app_tests::press(&mut app, "shift+f7");
-    assert_eq!(text(&app), "foo X foo\n");
+}
+
+/// AC-21c: ctrl+r in the editor opens the in-file replace in edit mode; the bar says how to
+/// replace one (Enter) or all (ctrl+a).
+#[test]
+fn ctrl_r_opens_the_in_file_replace_in_edit_mode() {
+    for enhanced in [false, true] {
+        let (_d, _p, mut app, _) = one("foo bar foo\n");
+        app.keyboard_enhanced = enhanced;
+        app.handle_key(ctrl('f'));
+        typ(&mut app, "foo");
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.edit_mode());
+        crate::app_tests::press(&mut app, "ctrl+r");
+        assert!(app.find.open && app.find.replace_mode);
+        assert_eq!(app.focus, Focus::FindBar);
+        assert_eq!(app.find.field, crate::commands::find::Field::Replace);
+        assert!(app.edit_mode(), "ctrl+r enters edit mode");
+        let screen = format!("{:?}", draw(&mut app, 80, 10).backend().buffer());
+        assert!(screen.contains("enter one"), "{screen}");
+        assert!(screen.contains("ctrl+a all"), "{screen}");
+        typ(&mut app, "X");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(text(&app), "X bar foo\n", "Enter replaces one");
+        app.handle_key(ctrl('a'));
+        assert_eq!(text(&app), "X bar X\n", "ctrl+a replaces all");
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.focus, Focus::Editor);
+        assert!(app.edit_mode(), "closing the bar keeps edit mode");
+    }
 }
 
 #[test]
 fn esc_in_the_find_bar_keeps_edit_mode() {
     let (_d, _p, mut app, _) = one("ab\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     app.handle_key(ctrl('f'));
     app.handle_key(key(KeyCode::Esc));
     assert!(!app.find.open, "Esc closes the bar");
@@ -380,7 +608,7 @@ fn read_mode_allows_moving_selecting_copying_and_saving() {
     assert_eq!(selection(&app), (0, 8));
     assert_eq!(hints(&app), 0, "{:?}", app.notices);
     // An edit made in edit mode is saved from read mode.
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     typ(&mut app, "z");
     app.handle_key(key(KeyCode::Esc));
     app.handle_key(ctrl('s'));
@@ -405,7 +633,7 @@ fn narrow_status_bar_shrinks_the_badge_before_dropping_eol_and_encoding() {
     for edit in [false, true] {
         let (_d, _p, mut app, _) = one("abc\n");
         if edit {
-            app.handle_key(ctrl_i());
+            space_i(&mut app);
         }
         let mut dropped = false;
         for w in (28..=50).rev() {
@@ -443,7 +671,7 @@ fn status_bar_shows_read_and_edit() {
         let (_d, _p, mut app, _) = one("abc\n");
         let row = status_row(&mut app, w, h);
         assert!(row.contains("READ"), "{w}x{h}: {row:?}");
-        app.handle_key(ctrl_i());
+        space_i(&mut app);
         let row = status_row(&mut app, w, h);
         assert!(
             row.contains("EDIT") && !row.contains("READ"),
@@ -457,7 +685,7 @@ fn status_bar_shows_read_and_edit() {
 fn cursor_is_a_block_in_read_mode_and_a_bar_where_text_is_typed() {
     let (_d, _p, mut app, _) = one("abc\n");
     assert!(!app.wants_bar_cursor(), "read mode: block");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     assert!(app.wants_bar_cursor(), "edit mode: bar");
     app.handle_key(key(KeyCode::Esc));
     assert!(!app.wants_bar_cursor());
@@ -475,12 +703,12 @@ fn cursor_is_a_block_in_read_mode_and_a_bar_where_text_is_typed() {
 fn closing_the_edited_tab_leaves_the_next_one_in_read_mode() {
     let (_d, paths, mut app, _) = project(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
     app.open_path(&paths[1]).unwrap();
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     app.handle_key(ctrl('w'));
     assert_eq!(app.docs.len(), 1);
     typ(&mut app, "x");
     assert_eq!(text(&app), "a\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     typ(&mut app, "x");
     assert_eq!(text(&app), "xa\n");
 }
@@ -488,7 +716,7 @@ fn closing_the_edited_tab_leaves_the_next_one_in_read_mode() {
 #[test]
 fn save_as_and_the_external_change_prompt_return_in_read_mode_and_keep_the_edits() {
     let (d, path, mut app, _) = one("old\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     typ(&mut app, "mine ");
     std::fs::write(&path, "theirs\n").unwrap();
     app.handle_fs_event(vr_core::FsEvent::Modified(path.clone()));
@@ -512,7 +740,7 @@ fn save_as_and_the_external_change_prompt_return_in_read_mode_and_keep_the_edits
     typ(&mut app, "x");
     assert_eq!(text(&app), "mine old\n", "back from the dialog: read mode");
     // Save As from read mode writes the buffer and returns in read mode.
-    crate::app_tests::press(&mut app, "f12");
+    crate::app_tests::run(&mut app, "file.save_as");
     assert!(app.dialog.is_some(), "save as prompt");
     for _ in 0..10 {
         app.handle_key(key(KeyCode::Backspace));
@@ -531,7 +759,7 @@ fn save_as_and_the_external_change_prompt_return_in_read_mode_and_keep_the_edits
 #[test]
 fn quit_from_edit_mode_still_asks_about_unsaved_changes() {
     let (_d, _p, mut app, _) = one("a\n");
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     typ(&mut app, "x");
     app.handle_key(ctrl('q'));
     assert!(!app.quit && app.dialog.is_some(), "quit guard");
@@ -556,16 +784,27 @@ fn has_notice(app: &App, text: &str) -> bool {
 }
 
 #[test]
-fn read_only_file_stays_in_read_mode_on_ctrl_i_tab_and_palette() {
+fn read_only_file_stays_in_read_mode_on_space_i_ctrl_r_and_palette() {
     let (_d, mut app) = read_only_app();
-    app.handle_key(ctrl_i());
-    assert!(!app.edit_mode(), "ctrl+i");
+    space_i(&mut app);
+    assert!(!app.edit_mode(), "space i");
     assert!(!app.wants_bar_cursor(), "block cursor stays");
     assert!(has_notice(&app, RO_WARNING), "{:?}", app.notices);
     app.notices.clear();
-    app.handle_key(key(KeyCode::Tab));
-    assert!(!app.edit_mode(), "Tab");
+    crate::app_tests::press(&mut app, "ctrl+r");
+    assert!(!app.edit_mode(), "ctrl+r");
     assert!(has_notice(&app, RO_WARNING), "{:?}", app.notices);
+    assert!(
+        !app.find.open && !app.find.replace_mode,
+        "no replace row on a read-only file"
+    );
+    assert_eq!(app.focus, Focus::Editor);
+    let before = app.active_doc().unwrap().buffer.text().to_string();
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(ctrl('a'));
+    assert_eq!(app.active_doc().unwrap().buffer.text().to_string(), before);
+    assert!(!app.edit_mode());
+    app.handle_key(key(KeyCode::Esc));
     app.notices.clear();
     app.run_command("app.palette", crate::commands::CmdArgs::None);
     typ(&mut app, "edit mode");
@@ -581,7 +820,7 @@ fn notice_esc_hint_is_only_shown_when_esc_dismisses_it() {
     app.warn("careful");
     assert_eq!(notice_text(&app).unwrap(), "careful  (Esc)");
     // In edit mode the first Esc leaves it (D151): no hint that promises a dismissal.
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     assert_eq!(notice_text(&app).unwrap(), "careful");
     app.warn("second");
     assert_eq!(notice_text(&app).unwrap(), "careful  (+1 more)");
@@ -602,7 +841,7 @@ fn read_only_warning_names_the_real_encoding() {
     app.open_path(&path).unwrap();
     assert!(app.active_doc().unwrap().read_only);
     app.notices.clear();
-    app.handle_key(ctrl_i());
+    space_i(&mut app);
     assert!(!app.edit_mode());
     let n = &app.notices.front().expect("a warning").text;
     assert_eq!(n, "wide.txt: read-only (UTF-16LE, not UTF-8)");

@@ -255,11 +255,7 @@ pub fn handle_builtin_key(app: &mut App, key: &KeyEvent) -> bool {
             }
         }
         KeyCode::Enter if !ctrl => insert_newline(app),
-        // Terminals without the kitty protocol send ctrl+i as Tab: in read mode it is the
-        // edit-mode key, in edit mode it indents as before (D145).
-        KeyCode::Tab if !ctrl && !shift && !app.edit_mode() => {
-            app.run_command("editor.edit_mode", CmdArgs::None);
-        }
+        // Edit mode: Tab indents. Read mode's Tab (focus cycle) is taken before this (T21).
         KeyCode::Tab if !ctrl && !shift => insert_tab(app),
         KeyCode::Backspace if !ctrl => {
             if let Some(doc) = app.editable_doc() {

@@ -1,6 +1,6 @@
 //! Key chord -> command name, per focus context. Built-in `defaults/keymap.toml` (vr-ide's own
-//! key set, USER-5, D250) overridden per key by the user's `keymap.toml`. Every binding is one
-//! key; there are no key sequences (D250).
+//! key set, USER-5, D261) overridden per key by the user's `keymap.toml`. Every binding is one
+//! key; there are no key sequences (D250, D261).
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;

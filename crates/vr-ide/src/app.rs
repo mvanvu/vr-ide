@@ -38,9 +38,9 @@ pub enum Focus {
 }
 
 impl Focus {
-    /// Keymap context. The find bar sits on the editor, so the editor's keys (f3, ctrl+u, f7)
-    /// work in it; the search panel has no table of its own and gets the global keys (f4,
-    /// ctrl+t, ctrl+f1).
+    /// Keymap context. The find bar sits on the editor, so the editor's keys (f3, ctrl+r)
+    /// work in it; the search panel has no table of its own and gets the global keys (ctrl+r
+    /// there is the project replace, T21).
     pub fn context(self) -> Context {
         match self {
             Focus::Editor | Focus::FindBar => Context::Editor,
@@ -97,6 +97,9 @@ pub const RECENT_MAX: usize = 8;
 /// The key that dismisses a notice. Built in like the cursor keys (the plan keeps those out
 /// of the keymap); see decisions.md.
 pub const DISMISS_KEY: KeyCode = KeyCode::Esc;
+
+/// Shown for `space` + a key that is not a read-mode sequence.
+pub const SPACE_HINT: &str = "space i: edit · space space: commands";
 
 /// Lines one wheel notch scrolls.
 pub const WHEEL_LINES: usize = 3;
@@ -179,6 +182,8 @@ pub struct App {
     /// The tab that had the editor focus at the last [`App::sync_mode`] (None: the keys were
     /// elsewhere), to tell when the editor gains the keys on a tab.
     editor_seen: Option<usize>,
+    /// Read mode got a `space` and waits for the second key (T21: `space i`, `space space`).
+    pub(crate) space_pending: bool,
     /// Syntax highlighting of the open documents (M4).
     pub syntax: crate::syntax::Syntax,
     /// Resource monitor of the welcome screen; samples only while that screen is shown.
@@ -253,6 +258,7 @@ impl App {
             find: Default::default(),
             search: Default::default(),
             editor_seen: None,
+            space_pending: false,
             syntax: crate::syntax::Syntax::new(crate::syntax::builtin_registry()),
             monitor: Default::default(),
             recent: Vec::new(),
@@ -723,7 +729,7 @@ impl App {
         self.warn(format!("{name}: read-only ({what})"));
     }
 
-    /// Edit mode on the active tab (ctrl+i); a read-only document stays in read mode.
+    /// Edit mode on the active tab (space i in read mode, T21); a read-only document stays in read mode.
     pub fn enter_edit_mode(&mut self) {
         if self.active_doc().is_some_and(|d| d.read_only) {
             self.read_only_warning();
@@ -766,6 +772,43 @@ impl App {
             until_next: true,
             detail: None,
         });
+    }
+
+    /// Built-in keys of the editor in read (normal) mode (T21, D261), also on the welcome
+    /// screen: `space i` edits, `space space` opens the palette, `space` + another key only
+    /// shows [`SPACE_HINT`]; Tab moves the focus to the next part. These are not keymap
+    /// sequences (a user keymap still has single keys only). True when the key was used.
+    fn read_mode_key(&mut self, key: &KeyEvent) -> bool {
+        if self.focus != Focus::Editor || self.edit_mode() {
+            return false;
+        }
+        if std::mem::take(&mut self.space_pending) {
+            // Esc only cancels the space, then does what Esc does (dismiss a notice).
+            if key.code == KeyCode::Esc {
+                return false;
+            }
+            match key.code {
+                KeyCode::Char('i') if key.modifiers.is_empty() => {
+                    self.run_command("editor.edit_mode", CmdArgs::None);
+                }
+                KeyCode::Char(' ') if key.modifiers.is_empty() => {
+                    self.run_command("app.palette", CmdArgs::None);
+                }
+                _ => self.info(SPACE_HINT),
+            }
+            return true;
+        }
+        match key.code {
+            KeyCode::Char(' ') if key.modifiers.is_empty() => {
+                self.space_pending = true;
+                true
+            }
+            KeyCode::Tab if key.modifiers.is_empty() => {
+                self.run_command("focus.cycle", CmdArgs::None);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// After a palette key or click: a palette closed without running anything (`dismissed`)
@@ -870,9 +913,10 @@ impl App {
         }
     }
 
-    /// The one key every place shows for `cmd` (USER-5, D250). The default keymap has one key
+    /// The one key every place shows for `cmd` (USER-5, D261). The default keymap has one key
     /// per command; with a user keymap that adds more, the shortest key this terminal can send
-    /// wins (a key it cannot send only when nothing else is bound). `None` when unbound.
+    /// wins (a key it cannot send only when nothing else is bound). Without a keymap key, the
+    /// built-in key of the editor (T21: `space i`, `tab`); `None` when there is neither.
     pub fn display_key(&self, cmd: &str) -> Option<String> {
         // Each key with whether a legacy terminal sends it.
         let keys: Vec<(bool, String)> = self
@@ -887,7 +931,9 @@ impl App {
                 .map(|(_, s)| s.clone())
                 .min_by_key(String::len)
         };
-        pick(!self.keyboard_enhanced).or_else(|| pick(false))
+        pick(!self.keyboard_enhanced)
+            .or_else(|| pick(false))
+            .or_else(|| builtin_key(cmd).map(str::to_owned))
     }
 
     /// The key to name in a notice or hint for `cmd` (never hard-coded, USER-1).
@@ -981,6 +1027,10 @@ impl App {
             return;
         }
         self.dirty = true;
+        // A pending read-mode space only pairs with the next key the reading editor gets.
+        if self.focus != Focus::Editor || self.edit_mode() || self.dialog.is_some() {
+            self.space_pending = false;
+        }
         let enter_ignored = key.code == KeyCode::Enter && self.enter_is_not_deliberate(&key, now);
         if key.code == KeyCode::Enter {
             self.last_enter = Some(now);
@@ -1027,6 +1077,9 @@ impl App {
                 self.run_command("editor.read_mode", CmdArgs::None);
                 return;
             }
+        }
+        if self.read_mode_key(&key) {
+            return;
         }
         if key.code == DISMISS_KEY && key.modifiers.is_empty() && !self.notices.is_empty() {
             self.notices.pop_front();
@@ -1076,6 +1129,8 @@ impl App {
     /// Bracketed paste from the terminal.
     pub fn handle_paste(&mut self, text: &str) {
         self.dirty = true;
+        // A paste is not the second key of a read-mode `space` sequence.
+        self.space_pending = false;
         if let Some(d) = &mut self.dialog {
             d.widget.handle_paste(text);
             return;
@@ -1100,6 +1155,7 @@ impl App {
     }
 
     fn route_mouse(&mut self, ev: MouseEvent) {
+        self.space_pending = false;
         let inside = |r: ratatui::layout::Rect| {
             ev.column >= r.x
                 && ev.column < r.x + r.width
@@ -1409,5 +1465,15 @@ pub fn encoding_name(doc: &Document) -> String {
         vr_core::Encoding::Utf8 => "UTF-8".to_string(),
         vr_core::Encoding::Utf8Bom => "UTF-8 BOM".to_string(),
         vr_core::Encoding::Other(name) => name.clone(),
+    }
+}
+
+/// Keys built into the editor that run a command (T21): read mode's `space i` and Tab, edit
+/// mode's Tab. Shown where a command has no keymap key.
+fn builtin_key(cmd: &str) -> Option<&'static str> {
+    match cmd {
+        "editor.edit_mode" => Some("space i"),
+        "focus.cycle" | "edit.indent" => Some("tab"),
+        _ => None,
     }
 }

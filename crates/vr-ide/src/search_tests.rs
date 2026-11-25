@@ -60,7 +60,7 @@ fn wait_search(app: &mut App) {
 
 /// Opens the panel, types `query` and runs it to the end.
 fn search_for(app: &mut App, query: &str) {
-    press(app, "ctrl+t");
+    crate::app_tests::run(app, "search.project");
     typ(app, query);
     app.handle_key(key(KeyCode::Enter));
     wait_search(app);
@@ -128,7 +128,7 @@ fn project_search_lists_results_grouped_by_file() {
         ("src/b/c.rs", "// needle\n"),
         ("d.txt", "nothing\n"),
     ]);
-    press(&mut app, "ctrl+t");
+    crate::app_tests::run(&mut app, "search.project");
     assert!(app.search.visible);
     assert_eq!(app.focus, Focus::Search);
     assert_eq!(app.search.field, Field::Query);
@@ -155,7 +155,7 @@ fn project_search_lists_results_grouped_by_file() {
 fn project_search_streams_batches() {
     let (d, mut app) = project(&[]);
     let root = d.path().to_path_buf();
-    press(&mut app, "ctrl+t");
+    crate::app_tests::run(&mut app, "search.project");
     let (tx, rx) = mpsc::channel();
     search::attach(&mut app, rx, Arc::new(AtomicBool::new(false)));
     assert_eq!(app.search.status, Status::Running);
@@ -214,7 +214,7 @@ fn enter_on_result_opens_file_at_line_col() {
     // Line 2, column 7: the match is selected.
     assert_eq!((r.from(), r.to()), (2 + 6, 2 + 6 + 6));
     // f4 / shift+f4 walk the results from the editor, wrapping.
-    app.handle_key(key(KeyCode::F(4)));
+    crate::app_tests::run(&mut app, "search.next_result");
     let name = |app: &App| app.active_name();
     let other = name(&app);
     assert_ne!(other, "a.rs");
@@ -227,9 +227,9 @@ fn enter_on_result_opens_file_at_line_col() {
             .from(),
         0
     );
-    app.handle_key(key(KeyCode::F(4)));
+    crate::app_tests::run(&mut app, "search.next_result");
     assert_eq!(name(&app), "a.rs");
-    app.handle_key(KeyEvent::new(KeyCode::F(4), KeyModifiers::SHIFT));
+    crate::app_tests::run(&mut app, "search.prev_result");
     assert_eq!(name(&app), other);
 }
 
@@ -238,7 +238,7 @@ fn search_panel_cancel_on_new_query() {
     // Through the channel: a new search drops what the old one still sends.
     let (d, mut app) = project(&[]);
     let root = d.path().to_path_buf();
-    press(&mut app, "ctrl+t");
+    crate::app_tests::run(&mut app, "search.project");
     let (tx1, rx1) = mpsc::channel();
     let cancel1 = Arc::new(AtomicBool::new(false));
     search::attach(&mut app, rx1, cancel1.clone());
@@ -266,7 +266,7 @@ fn search_panel_cancel_on_new_query() {
         .map(|(a, b)| (a.as_str(), b.as_str()))
         .collect();
     let (_d, mut app) = project(&refs);
-    press(&mut app, "ctrl+t");
+    crate::app_tests::run(&mut app, "search.project");
     typ(&mut app, "aaa");
     app.handle_key(key(KeyCode::Enter));
     let first = app.search.run.as_ref().unwrap().cancel.clone();
@@ -293,7 +293,7 @@ fn search_panel_cancel_on_new_query() {
 #[test]
 fn search_errors_are_shown() {
     let (_d, mut app) = project(&[]);
-    press(&mut app, "ctrl+t");
+    crate::app_tests::run(&mut app, "search.project");
     let (tx, rx) = mpsc::channel();
     search::attach(&mut app, rx, Arc::new(AtomicBool::new(false)));
     for e in [
@@ -336,7 +336,7 @@ fn search_errors_are_shown() {
 /// Opens the replace panel, searches `query`, types `replacement` and asks for the
 /// preview (Enter in the replace field); waits for it.
 fn preview(app: &mut App, query: &str, replacement: &str) {
-    press(app, "ctrl+r");
+    crate::app_tests::run(app, "search.replace_project");
     assert!(app.search.visible && app.search.replace_mode);
     typ(app, query);
     app.handle_key(key(KeyCode::Tab));
@@ -442,7 +442,7 @@ fn project_replace_preview_and_confirm() {
     // The open file's change is one undo step.
     app.set_active(ci);
     app.focus = Focus::Editor;
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     app.handle_key(ctrl('z'));
     assert_eq!(app.docs[ci].buffer.text().to_string(), "foo c\n");
     assert!(!app.docs[ci].buffer.history().can_undo());
@@ -483,7 +483,7 @@ fn project_replace_never_writes_behind_a_tab() {
         .unwrap();
     app.set_active(bi);
     app.focus = Focus::Editor;
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "mine ");
     let ci = app
         .docs
@@ -614,7 +614,7 @@ fn project_replace_never_loses_a_concurrent_write() {
 fn search_panel_takes_the_side_column() {
     let (_d, mut app) = project(&[("a.txt", "x\n")]);
     app.explorer.visible = true;
-    press(&mut app, "ctrl+t");
+    crate::app_tests::run(&mut app, "search.project");
     draw(&mut app, 80, 24);
     assert!(app.layout.search.width > 0);
     assert_eq!(app.layout.explorer.width, 0);
@@ -629,10 +629,10 @@ fn search_panel_takes_the_side_column() {
     assert_eq!(app.focus, Focus::Explorer);
     draw(&mut app, 80, 24);
     assert!(app.layout.explorer.width > 0);
-    // f6 cycles editor -> side panel -> editor with the search panel too.
-    press(&mut app, "ctrl+t");
+    // focus.cycle (tab in read mode) goes editor -> side panel -> editor with the search panel too.
+    crate::app_tests::run(&mut app, "search.project");
     app.handle_key(key(KeyCode::Esc));
-    app.handle_key(key(KeyCode::F(6)));
+    crate::app_tests::run(&mut app, "focus.cycle");
     assert_eq!(app.focus, Focus::Search);
 }
 
@@ -655,7 +655,7 @@ fn project_replace_preview_dropped_when_fields_change() {
             app.handle_paste("zz");
         }),
         ("option", |app| {
-            press(app, "ctrl+f1");
+            crate::app_tests::run(app, "find.toggle_case");
         }),
     ];
     for (what, edit) in edits {
@@ -712,7 +712,7 @@ fn narrow_click_on_result_gives_keys_to_the_editor() {
     assert!(!app.search.visible);
     assert_eq!(app.focus, Focus::Editor);
     app.handle_key(key(KeyCode::End));
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "X");
     assert!(
         app.active_doc()
@@ -991,7 +991,7 @@ fn quit_is_refused_while_a_replace_runs() {
     let (d, mut app, hold, names) = held_apply(40, 0);
     app.open_path(Path::new("f000.txt")).unwrap();
     app.focus = Focus::Editor;
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     app.handle_key(key(KeyCode::Char('x')));
     app.run_command("app.quit", crate::commands::CmdArgs::None);
     assert!(!app.quit, "quit during a replace");
@@ -1066,8 +1066,8 @@ fn requests_are_refused_while_replacing() {
         app.search.regex,
         app.search.whole_word,
     );
-    for k in ["ctrl+f1", "ctrl+f3", "ctrl+f2"] {
-        press(&mut app, k);
+    for k in ["find.toggle_case", "find.toggle_regex", "find.toggle_word"] {
+        crate::app_tests::run(&mut app, k);
     }
     assert_eq!(
         (
@@ -1135,7 +1135,7 @@ fn tab_opened_during_a_replace_is_never_written() {
     let (d, mut app, hold, names) = held_apply(40, 0);
     app.open_path(Path::new("f005.txt")).unwrap();
     app.focus = Focus::Editor;
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     app.handle_key(key(KeyCode::Char('x')));
     let i = app.active;
     hold.store(usize::MAX, Ordering::SeqCst);
@@ -1307,15 +1307,24 @@ fn rename_during_a_running_search_says_search_again() {
     assert!(shown.contains("search again"), "{shown}");
 }
 
-/// D250: ctrl+t opens the project search with and without the kitty protocol.
+/// AC-21c (T21): project search has no key (palette); ctrl+r with the panel focused is the project
+/// replace, also when a file is open (in the editor ctrl+r is the in-file replace).
 #[test]
-fn ctrl_t_opens_the_project_search_panel() {
+fn ctrl_r_in_the_search_panel_is_the_project_replace() {
     for enhanced in [true, false] {
-        let (_d, mut app) = project(&[("a.txt", "x\n")]);
+        let (d, mut app) = project(&[("a.txt", "x\n")]);
+        app.open_path(&d.path().join("a.txt")).unwrap();
         app.keyboard_enhanced = enhanced;
         assert!(!app.search.visible);
-        press(&mut app, "ctrl+t");
-        assert!(app.search.visible, "enhanced={enhanced}");
+        crate::app_tests::run(&mut app, "search.project");
+        assert!(
+            app.search.visible && !app.search.replace_mode,
+            "enhanced={enhanced}"
+        );
         assert_eq!(app.focus, Focus::Search, "enhanced={enhanced}");
+        press(&mut app, "ctrl+r");
+        assert!(app.search.replace_mode, "enhanced={enhanced}");
+        assert_eq!(app.focus, Focus::Search);
+        assert!(!app.find.open, "not the in-file replace");
     }
 }

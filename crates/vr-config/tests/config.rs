@@ -15,25 +15,44 @@ fn write_user(contents: &str) -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-/// D250: the approved direct-key table, one key per command, by context.
-const D250: &[(&str, &str, &str)] = &[
-    ("global", "ctrl+t", "search.project"),
-    ("global", "ctrl+r", "search.replace_project"),
-    ("editor", "ctrl+u", "find.replace_open"),
-    ("editor", "f7", "find.replace_one"),
-    ("editor", "shift+f7", "find.replace_all"),
-    ("global", "ctrl+b", "explorer.focus"),
-    ("global", "ctrl+e", "explorer.toggle_focus"),
-    ("global", "f12", "file.save_as"),
-    ("global", "f5", "file.reload"),
+/// Keyset v2 (T21, D261, spec 01_spec_T21.md): every default key, (context, key, command).
+/// Each command has exactly this one key. Built-in keys (cursor movement, typing, tab, the
+/// read-mode `space` sequences) are not in the keymap.
+const KEYSET_V2: &[(&str, &str, &str)] = &[
+    // Edit mode (editor table; refused with the read-mode hint in read mode).
+    ("editor", "ctrl+z", "edit.undo"),
+    ("editor", "ctrl+y", "edit.redo"),
+    ("editor", "ctrl+x", "edit.cut"),
+    ("editor", "ctrl+v", "edit.paste"),
     ("editor", "ctrl+d", "edit.delete_line"),
     ("editor", "ctrl+l", "edit.duplicate_line"),
     ("editor", "ctrl+up", "edit.move_line_up"),
     ("editor", "ctrl+down", "edit.move_line_down"),
     ("editor", "ctrl+/", "edit.toggle_comment"),
+    ("editor", "shift+tab", "edit.outdent"),
+    ("editor", "escape", "editor.read_mode"),
+    // Both modes.
+    ("editor", "ctrl+a", "edit.select_all"),
+    ("editor", "ctrl+c", "edit.copy"),
+    ("editor", "ctrl+f", "find.open"),
+    ("editor", "f3", "find.next"),
+    ("editor", "shift+f3", "find.prev"),
+    ("editor", "ctrl+r", "find.replace_open"),
+    ("global", "ctrl+r", "search.replace_project"),
+    ("global", "ctrl+s", "file.save"),
+    ("global", "ctrl+o", "file.open"),
+    ("global", "ctrl+p", "file.goto"),
+    ("global", "ctrl+n", "explorer.new_file"),
+    ("global", "ctrl+w", "file.close"),
+    ("editor", "ctrl+g", "nav.goto_line"),
     ("global", "f9", "tab.next"),
     ("global", "shift+f9", "tab.prev"),
-    ("editor", "ctrl+g", "nav.goto_line"),
+    ("global", "ctrl+e", "explorer.toggle_focus"),
+    ("global", "ctrl+b", "explorer.focus"),
+    ("global", "ctrl+k", "explorer.reveal"),
+    ("global", "ctrl+h", "explorer.toggle_hidden"),
+    ("global", "ctrl+f6", "explorer.toggle_ignored"),
+    ("global", "ctrl+`", "terminal.toggle"),
     ("global", "ctrl+f12", "terminal.new"),
     ("global", "shift+f12", "terminal.hide"),
     ("global", "ctrl+f4", "terminal.close"),
@@ -41,15 +60,22 @@ const D250: &[(&str, &str, &str)] = &[
     ("global", "shift+f8", "terminal.prev"),
     ("global", "ctrl+f8", "terminal.grow"),
     ("global", "ctrl+f9", "terminal.shrink"),
-    ("global", "ctrl+k", "explorer.reveal"),
-    ("explorer", "ctrl+f2", "explorer.new_folder"),
-    ("explorer", "f2", "explorer.rename"),
-    ("global", "ctrl+f5", "explorer.toggle_hidden"),
-    ("global", "ctrl+f6", "explorer.toggle_ignored"),
-    ("global", "ctrl+f1", "find.toggle_case"),
-    ("global", "ctrl+f2", "find.toggle_word"),
-    ("global", "ctrl+f3", "find.toggle_regex"),
     ("global", "f1", "app.palette"),
+    ("global", "ctrl+q", "app.quit"),
+    // Explorer focus. ctrl+n there asks File / Folder first (user change to the spec).
+    ("explorer", "f2", "explorer.rename"),
+    ("explorer", "ctrl+n", "explorer.new"),
+    ("explorer", "delete", "explorer.delete"),
+    ("explorer", "ctrl+c", "explorer.copy"),
+    ("explorer", "ctrl+x", "explorer.cut"),
+    ("explorer", "ctrl+v", "explorer.paste"),
+];
+
+/// Keys the spec removed (T21 "Removed"; ctrl+f2 by the user's later change; ctrl+f7 kept free
+/// for T19): bound nowhere.
+const REMOVED_V2: &[&str] = &[
+    "ctrl+i", "ctrl+]", "ctrl+u", "f7", "shift+f7", "ctrl+t", "f4", "shift+f4", "f6", "ctrl+f1",
+    "ctrl+f2", "ctrl+f3", "ctrl+f5", "ctrl+f7", "f12", "f5",
 ];
 
 /// Every command name the plan's registry lists, plus the M5 reserved one.
@@ -83,6 +109,7 @@ const KNOWN: &[&str] = &[
     "explorer.toggle_focus",
     "explorer.focus",
     "explorer.reveal",
+    "explorer.new",
     "explorer.new_file",
     "explorer.new_folder",
     "explorer.rename",
@@ -239,29 +266,47 @@ fn chord_new_normalizes_uppercase_letters() {
 fn defaults_load_without_user_file() {
     let (km, warnings) = Keymap::load(None);
     assert!(warnings.is_empty(), "{warnings:?}");
-    let expect = [
-        ("ctrl+s", "file.save"),
-        ("f1", "app.palette"),
-        ("ctrl+p", "file.goto"),
-        ("ctrl+q", "app.quit"),
-        ("ctrl+w", "file.close"),
-        ("ctrl+e", "explorer.toggle_focus"),
-        ("ctrl+z", "edit.undo"),
-        ("ctrl+y", "edit.redo"),
-        ("f3", "find.next"),
-        ("shift+f3", "find.prev"),
-        ("ctrl+]", "edit.indent"),
-        ("shift+tab", "edit.outdent"),
-        ("ctrl+g", "nav.goto_line"),
-    ];
-    for (k, cmd) in expect {
-        assert_eq!(km.command_for(&chord(k)), Some(cmd), "{k}");
-    }
-    // D250: each command has exactly this one key, in this context.
-    for &(ctx, k, cmd) in D250 {
+    // T21: each command has exactly this one key, in this context.
+    for &(ctx, k, cmd) in KEYSET_V2 {
         let ctx = Context::from_name(ctx).unwrap();
         assert_eq!(km.command_for_in(ctx, &chord(k)), Some(cmd), "{ctx} {k}");
         assert_eq!(km.keys_for(cmd), [chord(k)], "{cmd} has one key");
+    }
+    // Nothing is bound that the table does not list (the terminal table repeats ctrl+`, D8).
+    for (ctx, k, cmd) in km.bindings() {
+        let listed = KEYSET_V2.iter().any(|&(c, key, command)| {
+            Context::from_name(c) == Some(ctx) && chord(key) == *k && command == cmd
+        });
+        let terminal_toggle = ctx == Context::Terminal && cmd == "terminal.toggle";
+        assert!(
+            listed || terminal_toggle,
+            "{ctx} {k} = {cmd} is not in the T21 table"
+        );
+    }
+    // AC-21d: removed keys are free everywhere.
+    for k in REMOVED_V2 {
+        for ctx in [Context::Editor, Context::Explorer, Context::Global] {
+            assert_eq!(km.command_for_in(ctx, &chord(k)), None, "{ctx} {k}");
+        }
+    }
+    // Commands that lost their key run from the palette; the read-mode keys are built in.
+    for cmd in [
+        "search.project",
+        "search.next_result",
+        "search.prev_result",
+        "find.replace_one",
+        "find.replace_all",
+        "find.toggle_case",
+        "find.toggle_word",
+        "find.toggle_regex",
+        "explorer.new_folder",
+        "edit.indent",
+        "focus.cycle",
+        "file.save_as",
+        "file.reload",
+        "editor.edit_mode",
+    ] {
+        assert!(km.keys_for(cmd).is_empty(), "{cmd} has no key");
     }
     // Explorer-only keys act in the explorer and not in the editor.
     assert_eq!(

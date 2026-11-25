@@ -71,6 +71,8 @@ pub enum DialogAction {
     Deleted(DocRef),
     /// Explorer: name of a new file or folder in `dir`.
     NewEntry { dir: PathBuf, folder: bool },
+    /// Explorer: File / Folder for a new entry in `dir` (ctrl+n in the explorer).
+    NewKind { dir: PathBuf },
     /// Explorer: new name for `path`.
     Rename(PathBuf),
     /// Explorer: folder to move `paths` into.
@@ -115,6 +117,9 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
         }
         (DialogAction::Deleted(doc), Outcome::Chosen(b)) => {
             super::file::answer_deleted(app, &doc, b)
+        }
+        (DialogAction::NewKind { dir }, Outcome::Chosen(b)) => {
+            super::explorer::prompt_new_in(app, dir, b == 1);
         }
         (DialogAction::NewEntry { dir, folder }, Outcome::Submitted(text)) => {
             super::explorer::answer_new(app, widget, dir, folder, &text);

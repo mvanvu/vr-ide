@@ -23,7 +23,13 @@ pub(crate) fn test_app(root: &Path) -> (App, MemoryClipboard) {
     (app, clip)
 }
 
-/// A temp project with one file, opened in the app and put in edit mode with ctrl+i (D145),
+/// Read mode's built-in edit key (T21): space, then i.
+pub(crate) fn space_i(app: &mut App) {
+    app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
+}
+
+/// A temp project with one file, opened in the app and put in edit mode with space i (D145),
 /// the state the editing tests start from; `mode_tests` covers read mode.
 pub(crate) fn app_with_file(content: &str) -> (tempfile::TempDir, PathBuf, App, MemoryClipboard) {
     let dir = tempfile::tempdir().unwrap();
@@ -31,7 +37,7 @@ pub(crate) fn app_with_file(content: &str) -> (tempfile::TempDir, PathBuf, App, 
     std::fs::write(&path, content).unwrap();
     let (mut app, clip) = test_app(dir.path());
     app.open_path(&path).unwrap();
-    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL));
+    space_i(&mut app);
     (dir, path, app, clip)
 }
 
@@ -43,7 +49,7 @@ fn ctrl(c: char) -> KeyEvent {
     key(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-/// The crossterm event for a key written as in the keymap ("ctrl+t", "shift+f7", "ctrl+up"),
+/// The crossterm event for a key written as in the keymap ("ctrl+r", "shift+f9", "ctrl+up"),
 /// as crossterm reports it from a legacy terminal: ctrl+/ arrives as the byte 0x1f, which
 /// crossterm reports as ctrl+7; every other key used here arrives as itself.
 pub(crate) fn key_event(text: &str) -> KeyEvent {
@@ -77,7 +83,12 @@ pub(crate) fn key_event(text: &str) -> KeyEvent {
     key(code, mods)
 }
 
-/// Presses the key written as in the keymap ("ctrl+t", "shift+f12").
+/// Runs `cmd` as the palette would (for commands with no default key, T21).
+pub(crate) fn run(app: &mut App, cmd: &str) {
+    app.run_command(cmd, CmdArgs::None);
+}
+
+/// Presses the key written as in the keymap ("ctrl+r", "shift+f12").
 pub(crate) fn press(app: &mut App, text: &str) {
     app.handle_key(key_event(text));
 }
@@ -164,7 +175,7 @@ fn unknown_command_in_keymap_shows_notice_not_crash() {
     // The rest of the keymap still works and the unknown key does nothing.
     std::fs::write(dir.path().join("f.txt"), "1").unwrap();
     app.open_path(Path::new("f.txt")).unwrap();
-    app.handle_key(ctrl('i'));
+    space_i(&mut app);
     app.handle_key(key(KeyCode::F(10), KeyModifiers::NONE));
     typ(&mut app, "x");
     app.handle_key(ctrl('s'));
@@ -492,7 +503,7 @@ fn rescan_renamed_and_error_events() {
     let (mut app, _) = test_app(dir.path());
     app.open_path(&a).unwrap();
     app.open_path(&b).unwrap();
-    app.handle_key(ctrl('i'));
+    space_i(&mut app);
     typ(&mut app, "mine ");
     std::fs::write(&a, "a2\n").unwrap();
     std::fs::write(&b, "b2\n").unwrap();
@@ -604,10 +615,12 @@ fn recent_files_are_most_recent_first_unique_and_bounded() {
     assert!(!app.recent.iter().any(|p| p.ends_with("missing.txt")));
 }
 
-/// USER-5 / D250: the default keymap is one separate key set. One key per command (no
+/// USER-5 / D261: the default keymap is one separate key set. One key per command (no
 /// exception), every key a single key deliverable by a legacy terminal, none taken by GNOME
-/// Terminal or the desktop, none that shares a byte with another key, no alt and no ctrl+shift
-/// anywhere; F keys alone or with ctrl or shift.
+/// Terminal or the desktop, none that shares a byte with another key (except ctrl+h, approved
+/// by the user: GNOME Terminal's Backspace sends 0x7f, ctrl+h 0x08), no alt and no ctrl+shift
+/// anywhere; F keys alone or with ctrl or shift. The other approved exception, the `space`
+/// prefix in read mode, is built in and not in the keymap.
 #[test]
 fn default_keymap_obeys_user_5() {
     use crate::event_loop::legacy_unreachable;
@@ -629,12 +642,12 @@ fn default_keymap_obeys_user_5() {
         "alt+f8",
         "alt+space",
     ];
-    // Share a byte with Tab, Enter, Escape, Backspace, Enter (ctrl+j) or NUL. ctrl+i is allowed
-    // (D249): Tab in read mode enters edit mode too (D145).
+    // Share a byte with Tab, Enter, Escape, Enter (ctrl+j) or NUL. ctrl+h is the approved
+    // exception (T21).
     const AMBIGUOUS: [&str; 7] = [
         "ctrl+m",
         "ctrl+[",
-        "ctrl+h",
+        "ctrl+i",
         "ctrl+j",
         "ctrl+2",
         "ctrl+space",
@@ -678,25 +691,42 @@ fn default_keymap_obeys_user_5() {
     }
 }
 
-/// D250: the approved table, (context, key, command). Every entry is the command's one key.
-pub(crate) const D250: &[(&str, &str, &str)] = &[
-    ("global", "ctrl+t", "search.project"),
-    ("global", "ctrl+r", "search.replace_project"),
-    ("editor", "ctrl+u", "find.replace_open"),
-    ("editor", "f7", "find.replace_one"),
-    ("editor", "shift+f7", "find.replace_all"),
-    ("global", "ctrl+b", "explorer.focus"),
-    ("global", "ctrl+e", "explorer.toggle_focus"),
-    ("global", "f12", "file.save_as"),
-    ("global", "f5", "file.reload"),
+/// Keyset v2 (T21, D261): every default key, (context, key, command); each entry is the
+/// command's one key. "editor" keys run in the editor, "global" ones anywhere a panel does not
+/// bind the key, "explorer" ones with the explorer focused.
+pub(crate) const KEYSET_V2: &[(&str, &str, &str)] = &[
+    ("editor", "ctrl+z", "edit.undo"),
+    ("editor", "ctrl+y", "edit.redo"),
+    ("editor", "ctrl+x", "edit.cut"),
+    ("editor", "ctrl+v", "edit.paste"),
     ("editor", "ctrl+d", "edit.delete_line"),
     ("editor", "ctrl+l", "edit.duplicate_line"),
     ("editor", "ctrl+up", "edit.move_line_up"),
     ("editor", "ctrl+down", "edit.move_line_down"),
     ("editor", "ctrl+/", "edit.toggle_comment"),
+    ("editor", "shift+tab", "edit.outdent"),
+    ("editor", "escape", "editor.read_mode"),
+    ("editor", "ctrl+a", "edit.select_all"),
+    ("editor", "ctrl+c", "edit.copy"),
+    ("editor", "ctrl+f", "find.open"),
+    ("editor", "f3", "find.next"),
+    ("editor", "shift+f3", "find.prev"),
+    ("editor", "ctrl+r", "find.replace_open"),
+    ("editor", "ctrl+g", "nav.goto_line"),
+    ("global", "ctrl+r", "search.replace_project"),
+    ("global", "ctrl+s", "file.save"),
+    ("global", "ctrl+o", "file.open"),
+    ("global", "ctrl+p", "file.goto"),
+    ("global", "ctrl+n", "explorer.new_file"),
+    ("global", "ctrl+w", "file.close"),
     ("global", "f9", "tab.next"),
     ("global", "shift+f9", "tab.prev"),
-    ("editor", "ctrl+g", "nav.goto_line"),
+    ("global", "ctrl+e", "explorer.toggle_focus"),
+    ("global", "ctrl+b", "explorer.focus"),
+    ("global", "ctrl+k", "explorer.reveal"),
+    ("global", "ctrl+h", "explorer.toggle_hidden"),
+    ("global", "ctrl+f6", "explorer.toggle_ignored"),
+    ("global", "ctrl+`", "terminal.toggle"),
     ("global", "ctrl+f12", "terminal.new"),
     ("global", "shift+f12", "terminal.hide"),
     ("global", "ctrl+f4", "terminal.close"),
@@ -704,58 +734,227 @@ pub(crate) const D250: &[(&str, &str, &str)] = &[
     ("global", "shift+f8", "terminal.prev"),
     ("global", "ctrl+f8", "terminal.grow"),
     ("global", "ctrl+f9", "terminal.shrink"),
-    ("global", "ctrl+k", "explorer.reveal"),
-    ("explorer", "ctrl+f2", "explorer.new_folder"),
-    ("explorer", "f2", "explorer.rename"),
-    ("global", "ctrl+f5", "explorer.toggle_hidden"),
-    ("global", "ctrl+f6", "explorer.toggle_ignored"),
-    ("global", "ctrl+f1", "find.toggle_case"),
-    ("global", "ctrl+f2", "find.toggle_word"),
-    ("global", "ctrl+f3", "find.toggle_regex"),
     ("global", "f1", "app.palette"),
+    ("global", "ctrl+q", "app.quit"),
+    ("explorer", "f2", "explorer.rename"),
+    ("explorer", "ctrl+n", "explorer.new"),
+    ("explorer", "delete", "explorer.delete"),
+    ("explorer", "ctrl+c", "explorer.copy"),
+    ("explorer", "ctrl+x", "explorer.cut"),
+    ("explorer", "ctrl+v", "explorer.paste"),
 ];
 
-/// D250: each key of the table, pressed as crossterm reports it from a legacy terminal, runs
-/// its command (global keys from the editor, the editor's in edit mode, the explorer's with the
-/// explorer focused); the same with the kitty protocol.
+/// Keys the spec removed (T21; ctrl+f2, f12 and f5 by the user's later changes; ctrl+f7 kept
+/// free for T19).
+pub(crate) const REMOVED_V2: &[&str] = &[
+    "ctrl+i", "ctrl+]", "ctrl+u", "f7", "shift+f7", "ctrl+t", "f4", "shift+f4", "f6", "ctrl+f1",
+    "ctrl+f2", "ctrl+f3", "ctrl+f5", "ctrl+f7", "f12", "f5",
+];
+
+/// The bytes GNOME Terminal (VTE) sends for `k` without the kitty protocol, and the event
+/// crossterm 0.29 parses from them (event/sys/unix/parse.rs): C0 bytes 0x01..=0x1a are
+/// ctrl+letter except 0x09 (Tab) and 0x0d (Enter), 0x1c..=0x1f are ctrl+4..7, NUL is
+/// ctrl+space, 0x7f is Backspace; escape sequences (F keys, arrows, delete) carry their
+/// modifiers as the `key_event` helper builds them, except a CSI sequence ending in `R` with
+/// parameters (shift+f3 = ESC [ 1 ; 2 R), which crossterm reads as a cursor position report:
+/// no key reaches the app (`None`).
+pub(crate) fn legacy_event(k: &str) -> (Vec<u8>, Option<KeyEvent>) {
+    let plain = KeyModifiers::NONE;
+    let ctrl_byte = |b: u8| match b {
+        0x00 => key(KeyCode::Char(' '), KeyModifiers::CONTROL),
+        0x09 => key(KeyCode::Tab, plain),
+        0x0d => key(KeyCode::Enter, plain),
+        0x1b => key(KeyCode::Esc, plain),
+        0x7f => key(KeyCode::Backspace, plain),
+        0x01..=0x1a => key(KeyCode::Char((b - 1 + b'a') as char), KeyModifiers::CONTROL),
+        0x1c..=0x1f => key(
+            KeyCode::Char((b - 0x1c + b'4') as char),
+            KeyModifiers::CONTROL,
+        ),
+        _ => key(KeyCode::Char(b as char), plain),
+    };
+    let byte = match k {
+        "ctrl+`" | "ctrl+space" => Some(0x00),
+        "ctrl+/" => Some(0x1f),
+        "escape" => Some(0x1b),
+        "backspace" => Some(0x7f),
+        "tab" => Some(0x09),
+        "space" => Some(b' '),
+        _ => k
+            .strip_prefix("ctrl+")
+            .filter(|c| c.len() == 1 && c.as_bytes()[0].is_ascii_lowercase())
+            .map(|c| c.as_bytes()[0] - b'a' + 1),
+    };
+    if let Some(b) = byte {
+        return (vec![b], Some(ctrl_byte(b)));
+    }
+    if k.len() == 1 {
+        return (k.as_bytes().to_vec(), Some(ctrl_byte(k.as_bytes()[0])));
+    }
+    let seq = match k {
+        "shift+tab" => "\x1b[Z",
+        "delete" => "\x1b[3~",
+        "ctrl+up" => "\x1b[1;5A",
+        "ctrl+down" => "\x1b[1;5B",
+        "f1" => "\x1bOP",
+        "f2" => "\x1bOQ",
+        "f3" => "\x1bOR",
+        "shift+f3" => "\x1b[1;2R",
+        "f8" => "\x1b[19~",
+        "shift+f8" => "\x1b[19;2~",
+        "ctrl+f8" => "\x1b[19;5~",
+        "f9" => "\x1b[20~",
+        "shift+f9" => "\x1b[20;2~",
+        "ctrl+f9" => "\x1b[20;5~",
+        "ctrl+f4" => "\x1b[1;5S",
+        "ctrl+f6" => "\x1b[17;5~",
+        "ctrl+f12" => "\x1b[24;5~",
+        "shift+f12" => "\x1b[24;2~",
+        other => panic!("no legacy bytes for {other}"),
+    };
+    let cursor_report = seq.starts_with("\x1b[") && seq.ends_with('R');
+    (
+        seq.as_bytes().to_vec(),
+        (!cursor_report).then(|| key_event(k)),
+    )
+}
+
+/// The event a terminal with the kitty protocol reports for `k`.
+pub(crate) fn kitty_event(k: &str) -> KeyEvent {
+    match k {
+        "ctrl+/" => key(KeyCode::Char('/'), KeyModifiers::CONTROL),
+        "ctrl+`" => key(KeyCode::Char('`'), KeyModifiers::CONTROL),
+        "escape" => key(KeyCode::Esc, KeyModifiers::NONE),
+        _ => key_event(k),
+    }
+}
+
+/// AC-21a: each key of the T21 table runs its command, as GNOME Terminal sends it without the
+/// kitty protocol and as the kitty protocol reports it: editor keys in edit and in read mode
+/// (an edit key in read mode runs its command, which refuses with the hint), global keys from
+/// the editor and from the explorer (unless the explorer binds the key), explorer keys with
+/// the explorer focused.
 #[test]
-fn every_d250_key_runs_its_command() {
+fn every_keyset_v2_key_runs_its_command() {
+    let binds = |ctx: &str, k: &str| KEYSET_V2.iter().any(|&(c, key, _)| c == ctx && key == k);
+    let mut lost = Vec::new();
     for enhanced in [false, true] {
-        for &(ctx, k, cmd) in D250 {
+        for &(ctx, k, cmd) in KEYSET_V2 {
+            // A global key runs wherever the focused part does not bind it; the search panel has
+            // no table of its own (AC-21c: ctrl+r there is the project replace).
+            let places: Vec<&str> = match ctx {
+                "explorer" => vec!["explorer"],
+                "editor" => vec!["edit", "read"],
+                _ => ["edit", "read", "explorer", "search"]
+                    .into_iter()
+                    .filter(|p| match *p {
+                        "explorer" => !binds("explorer", k),
+                        "search" => true,
+                        _ => !binds("editor", k),
+                    })
+                    .collect(),
+            };
+            for place in places {
+                let (_d, _p, mut app, _) = app_with_file("one\ntwo\n");
+                app.terminal.shell = Some(PathBuf::from("/bin/sh"));
+                app.terminal.env = vec![("ENV".into(), "/dev/null".into())];
+                app.keyboard_enhanced = enhanced;
+                match place {
+                    "explorer" => {
+                        app.explorer.visible = true;
+                        app.focus = crate::app::Focus::Explorer;
+                    }
+                    "read" => {
+                        app.run_command("editor.read_mode", CmdArgs::None);
+                    }
+                    "search" => {
+                        app.run_command("search.project", CmdArgs::None);
+                        assert_eq!(app.focus, crate::app::Focus::Search);
+                    }
+                    _ => {}
+                }
+                app.ran.clear();
+                let (bytes, ev) = if enhanced {
+                    (Vec::new(), Some(kitty_event(k)))
+                } else {
+                    legacy_event(k)
+                };
+                let Some(ev) = ev else {
+                    lost.push(format!("{k} in {place}"));
+                    continue;
+                };
+                app.handle_key(ev);
+                assert_eq!(
+                    app.ran.first().map(String::as_str),
+                    Some(cmd),
+                    "{ctx} {k} in {place} (kitty {enhanced}, bytes {bytes:02x?}): ran {:?}",
+                    app.ran
+                );
+            }
+        }
+    }
+    // Known gap, reported as a T21 blocker (needs the user's decision): without the kitty
+    // protocol GNOME Terminal sends shift+f3 as ESC [ 1 ; 2 R, which crossterm 0.29 reads as a
+    // cursor position report, so find.prev never arrives (pty walk: qa-artifacts/T21/dev).
+    assert_eq!(lost, ["shift+f3 in edit", "shift+f3 in read"]);
+}
+
+/// AC-21d: the removed keys run nothing, in either mode and in the explorer.
+#[test]
+fn removed_keys_run_nothing() {
+    for k in REMOVED_V2 {
+        for place in ["edit", "read", "explorer"] {
             let (_d, _p, mut app, _) = app_with_file("one\ntwo\n");
-            app.terminal.shell = Some(PathBuf::from("/bin/sh"));
-            app.terminal.env = vec![("ENV".into(), "/dev/null".into())];
-            app.keyboard_enhanced = enhanced;
-            if ctx == "explorer" {
-                app.explorer.visible = true;
-                app.focus = crate::app::Focus::Explorer;
+            app.keyboard_enhanced = true;
+            match place {
+                "explorer" => {
+                    app.explorer.visible = true;
+                    app.focus = crate::app::Focus::Explorer;
+                }
+                "read" => {
+                    app.run_command("editor.read_mode", CmdArgs::None);
+                }
+                _ => {}
             }
             app.ran.clear();
-            let mut ev = key_event(k);
-            if enhanced && k == "ctrl+/" {
-                ev = key(KeyCode::Char('/'), KeyModifiers::CONTROL);
-            }
-            app.handle_key(ev);
-            assert_eq!(
-                app.ran.first().map(String::as_str),
-                Some(cmd),
-                "{ctx} {k} (kitty {enhanced}): ran {:?}",
-                app.ran
-            );
+            app.handle_key(key_event(k));
+            assert!(app.ran.is_empty(), "{k} in {place} ran {:?}", app.ran);
         }
     }
 }
 
-/// D250: every place shows a command's one key.
+/// Legacy ctrl+h (0x08) toggles hidden files; Backspace (0x7f) deletes, in edit mode.
+#[test]
+fn legacy_ctrl_h_and_backspace_are_different_keys() {
+    let (_d, _p, mut app, _) = app_with_file("ab\n");
+    app.keyboard_enhanced = false;
+    app.handle_key(key(KeyCode::End, KeyModifiers::NONE));
+    let hidden = app.explorer.tree.show_hidden();
+    let (bytes, ev) = legacy_event("ctrl+h");
+    assert_eq!(bytes, [0x08]);
+    app.handle_key(ev.unwrap());
+    assert_ne!(
+        app.explorer.tree.show_hidden(),
+        hidden,
+        "0x08 toggles hidden files"
+    );
+    assert_eq!(text(&app), "ab\n", "0x08 deletes nothing");
+    let (bytes, ev) = legacy_event("backspace");
+    assert_eq!(bytes, [0x7f]);
+    app.handle_key(ev.unwrap());
+    assert_eq!(text(&app), "a\n", "0x7f deletes");
+}
+
+/// T21: every place shows a command's one key; the read-mode built-ins show theirs.
 #[test]
 fn display_key_is_the_one_key_of_a_command() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = test_app(dir.path());
-    let mut cases: Vec<(&str, &str)> = D250.iter().map(|&(_, k, c)| (c, k)).collect();
+    let mut cases: Vec<(&str, &str)> = KEYSET_V2.iter().map(|&(_, k, c)| (c, k)).collect();
     cases.extend([
-        ("file.save", "ctrl+s"),
-        ("edit.redo", "ctrl+y"),
-        ("terminal.toggle", "ctrl+`"),
+        ("editor.edit_mode", "space i"),
+        ("focus.cycle", "tab"),
+        ("edit.indent", "tab"),
     ]);
     for enhanced in [true, false] {
         app.keyboard_enhanced = enhanced;

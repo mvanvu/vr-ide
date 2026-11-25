@@ -65,7 +65,7 @@ fn leave(app: &mut App) {
     }
 }
 
-/// Hides the panel from the editor: shift+f12 (D250).
+/// Hides the panel from the editor: shift+f12 (D250, D261).
 fn hide_panel(app: &mut App) {
     crate::app_tests::press(app, "shift+f12");
 }

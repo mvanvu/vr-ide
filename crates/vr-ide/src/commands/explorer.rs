@@ -38,6 +38,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         run: reveal,
     },
     CommandSpec {
+        name: "explorer.new",
+        title: "Explorer: New File or Folder",
+        run: new_entry,
+    },
+    CommandSpec {
         name: "explorer.new_file",
         title: "Explorer: New File",
         run: new_file,
@@ -478,6 +483,11 @@ pub fn handle_builtin_key(app: &mut App, key: &KeyEvent) -> bool {
         KeyCode::Enter if key.kind == KeyEventKind::Repeat => {}
         KeyCode::Enter => activate(app, true),
         KeyCode::Esc => app.focus = Focus::Editor,
+        // Tab moves the focus on, as in the reading editor (T21).
+        KeyCode::Tab if m.is_empty() => {
+            app.run_command("focus.cycle", CmdArgs::None);
+            return true;
+        }
         KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Tab | KeyCode::BackTab
             if m.difference(KeyModifiers::SHIFT).is_empty() =>
         {
@@ -725,9 +735,26 @@ fn new_folder(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
+/// ctrl+n in the explorer: File / Folder (File first), then the name prompt.
+fn new_entry(app: &mut App, _: CmdArgs) -> CmdResult {
+    ensure_loaded(app);
+    let dir = target_dir(app);
+    let message = format!("Create a file or a folder {}?", place(app, &dir));
+    app.open_dialog(
+        DialogWidget::Confirm(ConfirmDialog::new("New", message, &["File", "Folder"])),
+        DialogAction::NewKind { dir },
+    );
+    Ok(())
+}
+
 fn prompt_new(app: &mut App, folder: bool) {
     ensure_loaded(app);
     let dir = target_dir(app);
+    prompt_new_in(app, dir, folder);
+}
+
+/// The name prompt for a new file or folder in `dir`.
+pub fn prompt_new_in(app: &mut App, dir: PathBuf, folder: bool) {
     let (title, what) = if folder {
         ("New Folder", "Folder name")
     } else {
@@ -1442,14 +1469,20 @@ fn toggle_hidden(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
-/// Editor → find bar (when open) → side panel (search or explorer, when shown) → editor.
+/// Editor → side panel (search or explorer, when shown) → terminal (when shown with a
+/// terminal in it) → editor (D266). The find bar is not in the cycle: it keeps Tab for its own
+/// fields and is reached with ctrl+f. A focused terminal keeps Tab for its program; ctrl+`
+/// gives the keys back.
 fn focus_cycle(app: &mut App, _: CmdArgs) -> CmdResult {
+    let terminal = app.terminal.visible && !app.terminal.tabs.is_empty();
     app.focus = match app.focus {
-        Focus::Editor if app.find.open && app.active_doc().is_some() => Focus::FindBar,
         Focus::Editor | Focus::FindBar if app.search.visible => Focus::Search,
         Focus::Editor | Focus::FindBar if app.explorer.visible => {
             ensure_loaded(app);
             Focus::Explorer
+        }
+        Focus::Editor | Focus::FindBar | Focus::Search | Focus::Explorer if terminal => {
+            Focus::Terminal
         }
         _ => {
             super::search::focus_editor(app);

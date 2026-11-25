@@ -1,13 +1,13 @@
 //! `find.*` commands and the in-file find / replace bar (AC-10). Rendering: `ui::find_bar`.
 //!
 //! Built-in keys while the bar has focus (like the palette's, not in the keymap): typing and
-//! line editing, Enter = next match (in the replace field: replace one), shift+Enter =
-//! previous, Tab / shift+Tab switch between the fields, Esc closes the bar. Match case, whole
-//! word and regex are the `find.toggle_*` commands (ctrl+f1 / ctrl+f2 / ctrl+f3, D250), which act
-//! on the open bar wherever the keys are. A key the keymap binds for the editor runs its command
-//! first (f3, ctrl+u, f7, shift+f7, D111), except
-//! the `edit.*` commands, which would change the file behind the bar: there ctrl+v pastes
-//! into the field and the others do nothing.
+//! line editing, Enter = next match (in the replace field: replace one; ctrl+a there replaces
+//! all, T21), shift+Enter = previous, Tab / shift+Tab switch between the fields, Esc closes
+//! the bar. Match case, whole word and regex are the `find.toggle_*` commands (palette only
+//! since T21), which act on the open bar wherever the keys are. A key the keymap binds for the
+//! editor runs its command first (f3, ctrl+r, D111), except the `edit.*` commands, which would
+//! change the file behind the bar: there ctrl+v pastes into the field and the others do
+//! nothing (ctrl+a in the replace field is replace all).
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -372,7 +372,20 @@ fn open(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
+/// ctrl+r in the editor (T21): the replace field, in edit mode. A read-only file only warns
+/// and keeps read mode, with no replace row. With no file open (the welcome screen) there is
+/// nothing to replace in, so it is the project replace.
 fn replace_open(app: &mut App, _: CmdArgs) -> CmdResult {
+    let Some(doc) = app.active_doc() else {
+        app.run_command("search.replace_project", CmdArgs::None);
+        return Ok(());
+    };
+    if doc.read_only {
+        // Warns and keeps read mode.
+        app.enter_edit_mode();
+        return Ok(());
+    }
+    app.enter_edit_mode();
     open_bar(app, true);
     Ok(())
 }
@@ -530,7 +543,7 @@ fn pick_from_origin(app: &mut App) {
     }
 }
 
-/// The option toggles (ctrl+f1 / ctrl+f2 / ctrl+f3, D250) act on the panel that has the keys;
+/// The option toggles (palette commands since T21) act on the panel that has the keys;
 /// from elsewhere on the open find bar, else on the shown project search panel. With neither,
 /// a hint names the key that opens Find.
 fn toggle_option_key(app: &mut App, c: char) -> CmdResult {
@@ -597,6 +610,9 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         KeyCode::Esc if plain => close_bar(app),
         KeyCode::Enter if plain && app.find.field == Field::Replace => {
             let _ = run(app, replace_one);
+        }
+        KeyCode::Char('a') if m == KeyModifiers::CONTROL && app.find.field == Field::Replace => {
+            let _ = run(app, replace_all);
         }
         KeyCode::Enter if plain => step(app, true),
         KeyCode::Enter if shift_only => step(app, false),

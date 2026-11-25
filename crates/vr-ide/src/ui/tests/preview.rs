@@ -250,7 +250,7 @@ fn scenes() -> Vec<Scene> {
                 let (d, _p, mut app, _) = app_with_file(
                     "fn alpha() {}\nfn beta() {}\n// alpha again: alpha\nfn gamma() {}\n",
                 );
-                crate::app_tests::press(&mut app, "ctrl+u");
+                crate::app_tests::run(&mut app, "find.replace_open");
                 for c in "alpha".chars() {
                     key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
                 }
@@ -289,7 +289,7 @@ fn scenes() -> Vec<Scene> {
             "Confirm dialog",
             Box::new(|| {
                 let (d, _p, mut app, _) = app_with_file("one\n");
-                key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+                crate::app_tests::space_i(&mut app);
                 key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
                 std::fs::write(d.path().join("second.rs"), "fn a() {}\n").unwrap();
                 app.open_path(std::path::Path::new("second.rs")).unwrap();

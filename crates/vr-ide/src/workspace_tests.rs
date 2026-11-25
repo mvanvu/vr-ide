@@ -222,7 +222,7 @@ fn add_and_remove_root_update_index_search_and_watches_live() {
     app.start_index();
     wait_index(&mut app);
     assert_eq!(index_files(&app), ["one.txt"]);
-    app.handle_key(ctrl('t'));
+    crate::app_tests::run(&mut app, "search.project");
     typ(&mut app, "needle");
     app.handle_key(key(KeyCode::Enter));
     wait_search(&mut app);
@@ -245,7 +245,7 @@ fn add_and_remove_root_update_index_search_and_watches_live() {
     let two = roots[1].join("two.txt");
     app.open_path(&two).unwrap();
     app.refocus_editor_in_read_mode();
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "x");
     let removed = app.remove_root(id).unwrap();
     assert_eq!(removed.path, roots[1]);
@@ -320,7 +320,7 @@ fn open_workspace_asks_for_unsaved_files_then_replaces_the_roots() {
     app.recovery_dir = Some(state.path().join("recovery"));
     app.recent_workspaces_file = Some(state.path().join("recent.toml"));
     app.open_path(&roots[0].join("one.txt")).unwrap();
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "x");
 
     let target = Workspace::from_paths(&roots[1..]).unwrap().0;
@@ -362,7 +362,7 @@ fn open_workspace_asks_for_unsaved_files_then_replaces_the_roots() {
     assert!(app.dialog.is_none());
     assert_eq!(app.workspace.paths(), roots[..1]);
     app.open_path(&roots[0].join("one.txt")).unwrap();
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "y");
     app.open_workspace(target);
     choose(&mut app, "Save all");
@@ -418,7 +418,7 @@ fn recovery_entries_record_the_root_of_each_file() {
     app.recovery_dir = Some(state.path().join("recovery"));
     for r in &roots {
         app.open_path(&r.join("x.txt")).unwrap();
-        app.handle_key(ctrl('i'));
+        crate::app_tests::space_i(&mut app);
         typ(&mut app, "z");
     }
     let written = app.keep_discarded(&[0, 1]).unwrap();
@@ -445,7 +445,7 @@ fn open_workspace_switches_nothing_when_unsaved_work_cannot_be_kept() {
     let blocker = tempfile::NamedTempFile::new().unwrap();
     app.recovery_dir = Some(blocker.path().join("recovery"));
     app.open_path(&roots[0].join("one.txt")).unwrap();
-    app.handle_key(ctrl('i'));
+    crate::app_tests::space_i(&mut app);
     typ(&mut app, "x");
     app.open_workspace(Workspace::single(roots[1].clone()));
     choose(&mut app, "Discard");

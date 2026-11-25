@@ -15,8 +15,8 @@
 //! Up/Down/PageUp/PageDown/Home/End move in the list (Down leaves a field for the list),
 //! Enter searches / previews / opens the result, Space checks a preview file, Esc returns to
 //! the editor (closes a preview first). Case, whole word and regex are the `find.toggle_*`
-//! commands (ctrl+f1 / ctrl+f2 / ctrl+f3, D250). A key the keymap binds globally (f4, ctrl+t)
-//! runs its command first.
+//! commands (palette only since T21). A key the keymap binds globally (ctrl+r: project replace,
+//! ctrl+h, f1) runs its command first.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -710,7 +710,7 @@ pub fn focus_editor(app: &mut App) {
     app.dirty = true;
 }
 
-/// f4 / shift+f4: the next (previous) result after the selected row, wrapping; opens it.
+/// search.next_result / search.prev_result (palette): the next (previous) result after the selected row, wrapping; opens it.
 fn step_result(app: &mut App, forward: bool) {
     let rows = app.search.rows();
     let matches: Vec<usize> = (0..rows.len())

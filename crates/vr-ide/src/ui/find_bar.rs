@@ -1,7 +1,7 @@
 //! The find / replace bar between the tab bar and the editor (AC-10): the query, the match
 //! count ("3/12") and the case / regex / whole-word toggles; a second row holds the
-//! replacement. Toggles that are on are drawn like a selected button, so they read on
-//! monochrome terminals too.
+//! replacement and how to replace one or all. Toggles that are on are drawn like a selected
+//! button, so they read on monochrome terminals too.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -15,6 +15,9 @@ use crate::ui::dialog::LineInput;
 
 /// Below this width the labels shrink to one letter.
 const NARROW: u16 = 36;
+
+/// Shown at the end of the replace row: Enter replaces the current match, ctrl+a every match.
+const REPLACE_HELP: &str = "enter one · ctrl+a all";
 
 /// Rows the bar takes: 0 closed, 1 find, 2 find and replace.
 pub fn rows(app: &App) -> u16 {
@@ -98,7 +101,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         let label = if narrow { "R " } else { "Replace " };
         let label_w = label.len() as u16;
         buf.set_string(area.x, y, label, theme.status);
-        let w = area.width.saturating_sub(label_w + 1).max(1);
+        // How to replace one or all (T21), when the row has room for it and a usable field.
+        let help = if narrow { "" } else { REPLACE_HELP };
+        let help_w = Span::raw(help).width() as u16;
+        let show_help = !help.is_empty() && area.width >= label_w + help_w + 2 + 10;
+        let reserved = if show_help { help_w + 2 } else { 1 };
+        let w = area.width.saturating_sub(label_w + reserved).max(1);
+        if show_help {
+            let hx = area.x + area.width - help_w;
+            buf.set_string(hx, y, help, theme.status.patch(theme.dim));
+        }
         if let Some(c) = draw_input(buf, area.x + label_w, y, w, &f.replace, theme)
             && focused
             && f.field == Field::Replace

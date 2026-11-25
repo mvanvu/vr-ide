@@ -110,13 +110,13 @@ fn welcome_shows_the_dashboard_parts_at_120x40() {
         "Command palette",
         "ctrl+e",
         "Explorer",
-        "Search",
+        "Open file",
         "ctrl+q",
         "Quit",
     ] {
         assert!(screen.contains(needle), "{needle:?} missing:\n{screen}");
     }
-    assert!(screen.contains("ctrl+t"), "ctrl+t missing:\n{screen}");
+    assert!(screen.contains("ctrl+o"), "ctrl+o missing:\n{screen}");
 }
 
 #[test]
@@ -146,8 +146,8 @@ fn compact_drops_everything_but_cpu_ram_and_four_keys() {
     ] {
         assert!(screen.contains(kept), "{kept:?} missing:\n{screen}");
     }
-    // The row the project root used to take shows one more key (Search).
-    assert!(screen.contains("Search"), "{screen}");
+    // The row the project root used to take shows one more key (Open file).
+    assert!(screen.contains("Open file"), "{screen}");
 }
 
 #[test]
@@ -339,7 +339,7 @@ fn compact_shows_every_hint_when_rows_allow() {
             "Go to file",
             "Command palette",
             "Explorer",
-            "Search",
+            "Open file",
             "Quit",
         ] {
             assert!(screen.contains(title), "{w}x{h} lacks {title:?}:\n{screen}");
@@ -389,11 +389,11 @@ fn legacy_keyboard_welcome_shows_the_same_reachable_keys() {
     app.keyboard_enhanced = false;
     let screen = lines(&mut app, 120, 40).join("\n");
     // Every default key is deliverable by a legacy terminal (USER-5): nothing is left out.
-    let search = screen
+    let open = screen
         .lines()
-        .find(|l| l.contains("Search"))
-        .expect("Search hint");
-    assert!(search.contains("ctrl+t"), "{search}");
+        .find(|l| l.contains("Open file"))
+        .expect("Open file hint");
+    assert!(open.contains("ctrl+o"), "{open}");
     for kept in ["ctrl+p", "f1", "ctrl+e", "ctrl+q", "ctrl+`"] {
         assert!(screen.contains(kept), "{kept}:\n{screen}");
     }
@@ -418,7 +418,7 @@ fn compact_welcome_does_not_repeat_the_root_and_shows_one_more_hint() {
         "Command palette",
         "Explorer",
         "Quit",
-        "Search",
+        "Open file",
         "Terminal",
     ]
     .iter()

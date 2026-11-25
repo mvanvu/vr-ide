@@ -17,17 +17,15 @@ fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-use crate::app_tests::press;
-
-/// A find option toggle (D250): ctrl+f1 match case, ctrl+f2 whole word, ctrl+f3 regex.
+/// A find option toggle (palette commands since T21): match case, whole word, regex.
 fn opt(app: &mut App, c: char) {
-    let k = match c {
-        'c' => "ctrl+f1",
-        'w' => "ctrl+f2",
-        'r' => "ctrl+f3",
+    let cmd = match c {
+        'c' => "find.toggle_case",
+        'w' => "find.toggle_word",
+        'r' => "find.toggle_regex",
         _ => unreachable!(),
     };
-    press(app, k);
+    crate::app_tests::run(app, cmd);
 }
 
 fn shift(code: KeyCode) -> KeyEvent {
@@ -179,7 +177,7 @@ fn find_toggles_regex_case_word() {
     assert!(row.contains("Aa") && row.contains(".*"), "{row}");
 }
 
-/// D250 / review finding 7: the option keys act on the open find bar also while the editor
+/// D250 / review finding 7 (palette commands since T21): the option commands act on the open find bar also while the editor
 /// has the keys, on the open project search panel when there is no find bar, and say what to
 /// do when neither is open.
 #[test]
@@ -234,7 +232,7 @@ fn replace_one_and_all_single_undo() {
     const ORIGINAL: &str = "fn alpha() {}\nfn beta() {}\nfn gamma() {}\n";
     const ALL: &str = "fn new_alpha() {}\nfn new_beta() {}\nfn new_gamma() {}\n";
     let (_d, _p, mut app, _) = app_with_file(ORIGINAL);
-    press(&mut app, "ctrl+u");
+    crate::app_tests::run(&mut app, "find.replace_open");
     assert!(app.find.open && app.find.replace_mode);
     assert_eq!(app.find.field, Field::Find);
     opt(&mut app, 'r');
@@ -257,9 +255,9 @@ fn replace_one_and_all_single_undo() {
     assert!(!app.active_doc().unwrap().buffer.history().can_undo());
 
     // AC-10: replace all with the regex is one undo step.
-    press(&mut app, "ctrl+u");
+    crate::app_tests::run(&mut app, "find.replace_open");
     assert_eq!(app.find.field, Field::Replace);
-    press(&mut app, "shift+f7");
+    crate::app_tests::run(&mut app, "find.replace_all");
     assert_eq!(text(&app), ALL);
     assert!(app.notices.iter().any(|n| n.text.contains('3')));
     app.handle_key(key(KeyCode::Esc));
@@ -297,17 +295,18 @@ fn replace_in_read_only_file_is_refused() {
     let (mut app, _) = crate::app_tests::test_app(dir.path());
     app.open_path(std::path::Path::new("l1.txt")).unwrap();
     app.notices.clear();
-    press(&mut app, "ctrl+u");
+    crate::app_tests::run(&mut app, "find.replace_open");
+    assert!(!app.find.open, "a read-only file gets no replace row");
+    assert!(app.notices.iter().any(|n| n.text.contains("read-only")));
+    app.notices.clear();
+    app.handle_key(ctrl('f'));
     typ(&mut app, "caf");
     assert_eq!(
         app.find.matches.len(),
         2,
         "finding works in a read-only file"
     );
-    app.handle_key(key(KeyCode::Tab));
-    typ(&mut app, "X");
-    app.handle_key(key(KeyCode::Enter));
-    press(&mut app, "shift+f7");
+    crate::app_tests::run(&mut app, "find.replace_all");
     assert!(!app.active_doc().unwrap().is_modified());
     assert!(app.notices.iter().any(|n| n.text.contains("read-only")));
 }

@@ -35,7 +35,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     }
 }
 
-/// The key shown for `cmd` (hints never hard-code keys, USER-1; D250).
+/// The key shown for `cmd` (hints never hard-code keys, USER-1; D261).
 fn first_key(app: &App, cmd: &str) -> String {
     app.key_hint(cmd)
 }

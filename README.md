@@ -84,7 +84,8 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
 - The explorer starts hidden: `ctrl+e` shows it with the keys in the tree (arrows move, `enter`
   opens) and hides it again.
 - A file opens in **read mode** (status bar `READ`): you can move, select, copy, find and save, but
-  typing does nothing. Press `ctrl+i` to edit (`EDIT`) and `esc` to go back to reading. A new file
+  typing does nothing. Press `space` then `i` to edit (`EDIT`) and `esc` to go back to reading;
+  `space` `space` opens the command palette and `tab` moves the focus to the next part. A new file
   from `ctrl+n` opens ready to type.
 - With no file open, the welcome dashboard shows the project, the keys to start with and, on Linux,
   a live resource monitor (CPU with history and per core, RAM, swap, load, uptime, vr-ide's own CPU
@@ -107,7 +108,9 @@ key. Press `ctrl+q` to quit. If any file has unsaved changes, vr-ide asks first 
 
 vr-ide has its own key set: one key per command, each a single key: `ctrl` with a letter, or an F
 key alone, with `ctrl` or with `shift` (no `alt`, no `ctrl+shift`, no key sequences), and every key
-works in any terminal. The complete list, with command names, is in
+works in any terminal. Two exceptions: read mode's built-in `space` keys (`space i`, `space space`)
+and `ctrl+h` (the terminal sends Backspace as a different byte). The complete list, with command
+names, is in
 [docs/keymap.md](docs/keymap.md); every key can be overridden ([Configuration](#configuration)).
 Commands without a default key can be run from the palette (`F1`).
 
@@ -119,8 +122,8 @@ Commands without a default key can be run from the palette (`F1`).
 | Go to File (fuzzy search by name) | `ctrl+p` |
 | New file (created on disk at once; there are no untitled buffers) | `ctrl+n` |
 | Save | `ctrl+s` |
-| Save As (a new file name, relative to the project root) | `f12` |
-| Reload the file from disk | `f5` |
+| Save As (a new file name, relative to the project root) | palette: Save As |
+| Reload the file from disk | palette: Reload File from Disk |
 | Close the tab | `ctrl+w` |
 | Next / previous tab | `f9` / `shift+f9` |
 | Command palette | `F1` |
@@ -130,18 +133,24 @@ changes in the [recovery folder](#recovery).
 
 ### Editing
 
-Files open in read mode, so a stray key never changes them. `ctrl+i` switches the tab to edit mode
-and `esc` back to read mode (it also clears the selection). The tab returns to read mode whenever
+Files open in read mode, so a stray key never changes them. `space` then `i` switches the tab to
+edit mode and `esc` back to read mode (it also clears the selection). In read mode `space` `space`
+opens the command palette, `space` followed by any other key only shows a short hint, and `tab`
+moves the focus (editor, side panel, terminal; the find bar is reached with `ctrl+f` and keeps
+`tab` for its fields); in edit mode `tab` / `shift+tab` indent
+and outdent. The tab returns to read mode whenever
 the editor gets the keys on it again: switching tabs, coming back from the explorer, the search
 panel or a dialog, or closing the palette without running a command. In read mode, typing and the
-editing keys below show the hint "Read mode: ctrl+i to edit"; moving, selecting, copying, find,
+editing keys below show the hint "Read mode: space i to edit"; moving, selecting, copying, find,
 Go to Line and save work as usual. The status bar shows `READ` or `EDIT`, and where the terminal
 supports it the cursor is a block in read mode and a bar in edit mode. Project replace and reloads
 from disk still update open files in either mode.
 
 | Task | Keys |
 |---|---|
-| Edit mode / read mode | `ctrl+i` / `esc` |
+| Edit mode / read mode | `space` `i` (in read mode) / `esc` |
+| Command palette from read mode | `space` `space` (or `F1` anywhere) |
+| Focus the next part (read mode) | `tab` |
 | Undo / redo | `ctrl+z` / `ctrl+y` |
 | Copy / cut / paste | `ctrl+c` / `ctrl+x` / `ctrl+v` |
 | Select all | `ctrl+a` |
@@ -149,7 +158,7 @@ from disk still update open files in either mode.
 | Move by word / to start or end of the file | `ctrl+left` `ctrl+right` / `ctrl+home` `ctrl+end` |
 | Delete line / duplicate line | `ctrl+d` / `ctrl+l` |
 | Move line up / down | `ctrl+up` / `ctrl+down` |
-| Indent / outdent | `ctrl+]` / `shift+tab` |
+| Indent / outdent (edit mode) | `tab` / `shift+tab` |
 | Toggle line comment | `ctrl+/` |
 | Go to Line | `ctrl+g` |
 
@@ -162,10 +171,10 @@ Terminals send `ctrl+[` as `Esc`, so outdent is `shift+tab`.
 | Task | Keys |
 |---|---|
 | Find | `ctrl+f` |
-| Replace | `ctrl+u` |
+| Replace (switches the tab to edit mode; find works in read mode) | `ctrl+r` |
 | Next / previous match | `enter` / `shift+enter` in the find bar, or `f3` / `shift+f3` |
-| Replace one / replace all (edit mode only; find works in read mode) | `f7` / `shift+f7` (or `enter` in the replace field to replace one) |
-| Match case / whole word / regex (while the bar is open; in the explorer `ctrl+f2` is New Folder) | `ctrl+f1` / `ctrl+f2` / `ctrl+f3` |
+| Replace one / replace all (in the replace field; the bar shows "enter one · ctrl+a all") | `enter` / `ctrl+a` |
+| Match case / whole word / regex (while the bar is open) | palette: Find: Toggle ... |
 | Switch between the find and replace fields | `tab` / `shift+tab` |
 | Close the bar | `esc` |
 
@@ -173,19 +182,20 @@ Terminals send `ctrl+[` as `Esc`, so outdent is `shift+tab`.
 
 | Task | Keys |
 |---|---|
-| Search in Project | `ctrl+t` |
-| Replace in Project | `ctrl+r` |
-| Next / previous result | `f4` / `shift+f4` |
-| Match case / whole word / regex (while the panel is shown and no find bar is open) | `ctrl+f1` / `ctrl+f2` / `ctrl+f3` |
+| Search in Project | palette: Search in Project |
+| Replace in Project | `ctrl+r` outside the editor (for example in the search panel, or with no file open) |
+| Next / previous result | palette: Search: Next Result / Search: Previous Result |
+| Match case / whole word / regex (while the panel is shown and no find bar is open) | palette: Find: Toggle ... |
 
 In the panel, type in the search field and press `enter` to search; results stream in as the files
-are scanned. `ctrl+f1`, `ctrl+f2`, `ctrl+f3` toggle case, whole word and regex. `down` moves into the
+are scanned. The palette's Find: Toggle commands switch case, whole word and regex. `down` moves into the
 results; `enter` on a result opens it. Files matched by `.gitignore` are not searched; hidden
 files are. `esc` leaves the panel.
 
 Replacing across files is always previewed first:
 
-1. Press `ctrl+r`, fill in the search and the replace field.
+1. Run Replace in Project (`ctrl+r` from the search panel, or the palette), fill in the search and
+   the replace field.
 2. Press `enter` in the replace field: the panel shows a preview per file. Nothing is written yet.
 3. Move through the preview; `space` checks or unchecks a file (unchecked files are left alone).
 4. Press `enter` to confirm. A dialog asks Replace or Cancel; Cancel is the default button.
@@ -204,16 +214,15 @@ not overwritten.
 | Show the explorer and focus it / hide it (the editor gets the keys) | `ctrl+e` |
 | Focus the explorer | `ctrl+b` |
 | Reveal the active file in the tree | `ctrl+k` |
-| Cycle focus between the parts | `f6` |
+| Cycle focus between the parts (from the explorer or the editor in read mode) | `tab` |
 | Back to the editor | `esc` |
 | Move, expand, collapse | `up` `down` `pageup` `pagedown` `home` `end`; `right` expands, `left` collapses or goes to the parent |
 | Open a file / toggle a folder | `enter` |
-| New file | `ctrl+n` |
-| New folder | `ctrl+f2` |
+| New file or folder (asks File / Folder, File first, then the name) | `ctrl+n` |
 | Rename | `f2` |
 | Delete (asks first, moves to the system trash) | `delete` |
 | Copy / cut / paste | `ctrl+c` / `ctrl+x` / `ctrl+v` |
-| Show / hide hidden files, ignored files | `ctrl+f5` / `ctrl+f6` |
+| Show / hide hidden files, ignored files | `ctrl+h` / `ctrl+f6` |
 
 `Explorer: Reveal Active File` expands the tree down to the file in the active tab.
 `Explorer: Toggle` (show or hide, focus stays where it is) and `Explorer: Move` (asks for the
@@ -360,9 +369,12 @@ Environment overrides:
 - **A key does nothing.** The default keys work in every terminal, but your window manager or
   terminal may take one (rebind it in `keymap.toml`). If your own keymap binds a key the terminal
   cannot send, vr-ide shows a notice at start-up; use the palette (`F1`) or rebind it.
-- **Typing does nothing and "Read mode: ctrl+i to edit" appears.** The tab is in read mode;
-  press `ctrl+i` (or `tab`, which is what `ctrl+i` arrives as in a terminal without the kitty
-  keyboard protocol) to edit.
+- **Typing does nothing and "Read mode: space i to edit" appears.** The tab is in read mode;
+  press `space` then `i` to edit. (`space` followed by another key shows "space i: edit · space
+  space: commands" and does nothing else.)
+- **Backspace toggles hidden files.** Your terminal sends Backspace as `ctrl+h` (byte 0x08);
+  GNOME Terminal sends 0x7f. Set the terminal's Backspace to send ASCII DEL (0x7f), or rebind
+  `explorer.toggle_hidden` in `keymap.toml`.
 - **`ctrl+[` does not outdent.** Terminals send it as `Esc`; use `shift+tab`.
 - **Copy does not reach the clipboard over SSH.** vr-ide uses OSC 52 there, which your local
   terminal must allow (it is off by default in some, for example tmux needs `set -g set-clipboard
