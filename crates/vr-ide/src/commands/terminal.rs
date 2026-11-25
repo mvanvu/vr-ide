@@ -79,6 +79,7 @@ pub const HEIGHT_MAX: u16 = 90;
 const FALLBACK_SHELL: &str = "/bin/sh";
 
 pub const QUIT_ANYWAY: &str = "Quit anyway";
+const CLOSE: &str = "Close";
 
 /// One terminal tab: the running (or exited) program and what the panel last showed of it.
 pub struct TermTab {
@@ -128,6 +129,14 @@ impl TermTab {
         self.term
             .as_ref()
             .is_some_and(Terminal::shell_in_foreground)
+    }
+
+    /// Name of the program holding the terminal's foreground (`/proc/<pgid>/comm`).
+    pub fn foreground_name(&self) -> Option<String> {
+        let pgid = self.term.as_ref()?.foreground_pgid()?;
+        let name = std::fs::read_to_string(format!("/proc/{pgid}/comm")).ok()?;
+        let name = name.trim();
+        (!name.is_empty()).then(|| name.to_string())
     }
 
     /// Columns and rows of the PTY (of the grid for a fake tab).
@@ -327,8 +336,38 @@ fn new_tab_dir(app: &App) -> PathBuf {
         .unwrap_or(active)
 }
 
-/// A tab's 'x' in the tab bar (D280): closes that terminal (its process group is hung up, no
-/// question, as the close key did); the last one hides the panel.
+/// A tab's 'x' in the tab bar (D280, D296): closes that terminal (its process group is hung
+/// up) at once, unless a program other than the shell holds its foreground: then "Close
+/// terminal?" asks first, Cancel selected. When the foreground cannot be told on a running
+/// terminal it asks too, naming "A program"; an exited terminal closes at once.
+pub fn close_tab_asking(app: &mut App, i: usize) {
+    let Some(tab) = app.terminal.tabs.get(i) else {
+        return;
+    };
+    if !tab.running() || tab.shell_in_foreground() {
+        close_tab(app, i);
+        return;
+    }
+    let program = tab.foreground_name().unwrap_or_else(|| "A program".into());
+    let message = format!("{program} is running; closing the terminal ends it.");
+    let mut dialog = ConfirmDialog::new("Close terminal?", message, &[CLOSE, CANCEL]);
+    dialog.selected = 1;
+    let pid = tab.pid();
+    app.open_dialog(
+        DialogWidget::Confirm(dialog),
+        DialogAction::CloseTerminal(pid),
+    );
+}
+
+/// Close was chosen: the terminal asked about goes (found by pid; already gone = nothing).
+pub fn answer_close(app: &mut App, pid: Option<u32>) {
+    if let Some(i) = app.terminal.tabs.iter().position(|t| t.pid() == pid) {
+        close_tab(app, i);
+    }
+}
+
+/// Closes terminal `i` without asking: its process group is hung up; the last one hides the
+/// panel.
 pub fn close_tab(app: &mut App, i: usize) {
     let p = &mut app.terminal;
     if i >= p.tabs.len() {
@@ -1103,7 +1142,7 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
         if ev.kind == MK::Down(MB::Left) {
             match bar_hit(app, ev.column - area.x) {
                 Some(BarHit::New) => new_terminal(app),
-                Some(BarHit::Close(i)) => close_tab(app, i),
+                Some(BarHit::Close(i)) => close_tab_asking(app, i),
                 Some(BarHit::Tab(i)) => {
                     app.terminal.active = i;
                     app.terminal.selection = None;

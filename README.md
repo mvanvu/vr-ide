@@ -308,7 +308,8 @@ open one.
   window). The status bar shows `TERM` while the terminal has the keys (read and edit mode do not
   apply there).
 - The `+` after the tabs opens another terminal (in the active file's workspace folder); the `x`
-  at the end of a tab closes that terminal (the last one hides the panel). `f8` / `shift+f8` move
+  at the end of a tab closes that terminal (the last one hides the panel); while a program other than
+  the shell runs in it, the `x` first asks "Close terminal?" (Close / Cancel, Cancel is the default). `f8` / `shift+f8` move
   to the next / previous one and `ctrl+f8` / `ctrl+f9` grow / shrink the panel (from the editor).
   The tab bar shows each terminal's title (set
   by the program, or the shell's name) and `[N]` once it exited. Long titles such as bash's

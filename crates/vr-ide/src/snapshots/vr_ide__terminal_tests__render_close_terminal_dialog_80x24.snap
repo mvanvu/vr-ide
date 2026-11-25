@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/terminal_tests.rs
+expression: t.backend()
+---
+" a.txt                                                                          "
+"  1 fn main() {}                                                                "
+"  2                                                                             "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"            ┌ Close terminal? ────────────────────────────────────┐             "
+"            │ A program is running; closing the terminal ends it. │             "
+"            │                                                     │             "
+"            │ [Close] [Cancel]                                    │             "
+" 1 sh x  +  └─────────────────────────────────────────────────────┘ ctrl+` hide "
+"$ ls --color                                                                    "
+"docs  src  README.md  run.sh                                                    "
+"$ echo 'xin chào 世界'                                                          " Hidden by multi-width symbols: [(18, " "), (20, " ")]
+"xin chào 世界                                                                   " Hidden by multi-width symbols: [(10, " "), (12, " ")]
+"$                                                                               "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" READ a.txt · Ln 1, Col 1 · LF · UTF-8                                          "

@@ -565,6 +565,109 @@ fn plus_and_x_open_and_close_terminals_and_f8_steps() {
     assert_eq!(app.focus, Focus::Editor);
 }
 
+/// Runs `cat` (job control on, so it takes the foreground) in the first terminal and waits for it.
+fn start_cat(app: &mut App) {
+    app.keyboard_enhanced = true;
+    draw(app, 80, 24);
+    ctrl_backtick(app);
+    typ(app, "set -m; cat\n");
+    let deadline = Instant::now() + WAIT;
+    while tab(app).shell_in_foreground() {
+        assert!(Instant::now() < deadline, "cat never took the terminal");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// D296: the 'x' asks "Close terminal?" while a program holds the terminal; Cancel (default,
+/// Esc) keeps it running, Close ends it.
+#[test]
+fn x_asks_while_a_program_holds_the_terminal() {
+    let (_d, mut app, _) = term_app();
+    start_cat(&mut app);
+    let pid = tab(&app).pid().unwrap();
+    assert_eq!(tab(&app).foreground_name().as_deref(), Some("cat"));
+    draw(&mut app, 80, 24);
+    click_close(&mut app, 0);
+    let d = app.dialog.as_ref().expect("the question");
+    assert!(matches!(
+        d.action,
+        crate::commands::dialog::DialogAction::CloseTerminal(Some(p)) if p == pid
+    ));
+    assert_eq!(app.terminal.tabs.len(), 1);
+    let t = draw(&mut app, 80, 24);
+    let text = frame_text(&t);
+    assert!(
+        text.contains("Close terminal?") && text.contains("cat is running"),
+        "{text}"
+    );
+    // Enter on the default button is Cancel.
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.dialog.is_none());
+    assert_eq!(app.terminal.tabs.len(), 1);
+    assert!(proc_alive(pid));
+    // Esc is Cancel too.
+    click_close(&mut app, 0);
+    assert!(app.dialog.is_some());
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.terminal.tabs.len(), 1);
+    // Close: Left to the first button, Enter.
+    click_close(&mut app, 0);
+    key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.terminal.tabs.is_empty());
+    assert!(!app.terminal.visible);
+    let deadline = Instant::now() + WAIT;
+    while proc_alive(pid) {
+        assert!(Instant::now() < deadline, "closed terminal's shell alive");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// D296: an idle shell and an exited terminal close at once, with no question.
+#[test]
+fn x_closes_an_idle_shell_and_an_exited_terminal_at_once() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    leave(&mut app);
+    draw(&mut app, 80, 24);
+    click_plus(&mut app);
+    assert_eq!(app.terminal.tabs.len(), 2);
+    typ(&mut app, "exit 2\n");
+    wait_status(&app, TermStatus::Exited(2));
+    draw(&mut app, 80, 24);
+    click_close(&mut app, 1);
+    assert!(app.dialog.is_none());
+    assert_eq!(app.terminal.tabs.len(), 1);
+    // The idle shell (first tab), once it is up.
+    let deadline = Instant::now() + WAIT;
+    while !tab(&app).shell_in_foreground() {
+        assert!(Instant::now() < deadline, "shell never in the foreground");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    click_close(&mut app, 0);
+    assert!(app.dialog.is_none());
+    assert!(app.terminal.tabs.is_empty());
+}
+
+/// D296: the question at 80x24.
+#[test]
+fn render_close_terminal_dialog_80x24() {
+    let (_d, _p, mut app, _) = app_with_file("fn main() {}\n");
+    use_sh(&mut app);
+    app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
+    app.terminal.visible = true;
+    draw(&mut app, 80, 24);
+    click_close(&mut app, 0);
+    assert!(
+        app.dialog.is_some(),
+        "a running tab that cannot be inspected asks"
+    );
+    let t = draw(&mut app, 80, 24);
+    insta::assert_snapshot!("render_close_terminal_dialog_80x24", t.backend());
+}
+
 #[test]
 fn grow_and_shrink_step_the_panel_height() {
     let (_d, mut app, _) = term_app();

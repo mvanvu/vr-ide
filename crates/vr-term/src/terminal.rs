@@ -346,6 +346,12 @@ impl Terminal {
         }
     }
 
+    /// The terminal's foreground process group id (`tcgetpgrp`); `None` when it cannot be told.
+    pub fn foreground_pgid(&self) -> Option<u32> {
+        let pgid = self.master.as_ref()?.process_group_leader()?;
+        u32::try_from(pgid).ok().filter(|p| *p > 0)
+    }
+
     /// The child's pid (also its process group id).
     pub fn pid(&self) -> Option<u32> {
         self.pid.map(|p| p.as_raw_nonzero().get() as u32)

@@ -91,6 +91,8 @@ pub enum DialogAction {
     QuitStuckReplaceDiscard,
     /// `/q!`: [`DialogAction::QuitTerminals`] whose Quit anyway goes on discarding.
     QuitTerminalsDiscard,
+    /// A terminal tab's 'x' while a program holds it (D296): Close / Cancel; the tab's pid.
+    CloseTerminal(Option<u32>),
     /// Find box, File scope (D279): Replace: One / All / Cancel.
     ReplaceInFile,
     /// Unsaved files before the roots are replaced (W-1): Save all / Discard / Cancel.
@@ -152,6 +154,9 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
         (DialogAction::ReplaceInFiles, Outcome::Chosen(0)) => super::search::apply(app),
         (DialogAction::QuitStuckReplace, Outcome::Chosen(0)) => super::app::answer_quit_stuck(app),
         (DialogAction::QuitTerminals, Outcome::Chosen(b)) => super::terminal::answer_quit(app, b),
+        (DialogAction::CloseTerminal(pid), Outcome::Chosen(0)) => {
+            super::terminal::answer_close(app, pid);
+        }
         (DialogAction::QuitStuckReplaceDiscard, Outcome::Chosen(0)) => {
             super::search::allow_quit(app);
             super::app::quit_discarding(app);
