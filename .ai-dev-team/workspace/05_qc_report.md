@@ -1290,3 +1290,35 @@ Docs: docs/commands.md, docs/keymap.md, README.md, defaults/settings.toml commen
 | BASE-19 results written as checked | pass | this section, logs |
 | COST heavy via run-heavy | pass | test, clippy, release via run-heavy.sh |
 | Scope | pass | nothing committed, stashed or restored; FR-13 files untouched |
+
+## W-2
+Engine: own pty walks (python pty, TERM=xterm-256color, legacy bytes, SGR mouse) on the release binary; scripts and screens in qa-artifacts/W-2/qc/ (walk1/2/3.py, probe*.py, w1_*, w2_*, w4_* screens, logs).
+Guards: fmt --check rc 0; clippy --workspace --all-targets -D warnings rc 0; full `cargo test --workspace` rc 0 (vr-ide 518 passed, 0 failed, no flaky), release build rc 0 (binary newer than all sources).
+| Criterion | Evidence | Result |
+|---|---|---|
+| AC-W1 `vr-ide a b`: two root nodes, open from both, status bar | w1_02..04: `a/alpha.txt`, `b/beta.txt` in status bar | pass |
+| AC-W1 ctrl+p both roots | w1_05: rows `mv.txt  b`, `alpha.txt  a`, `deep.txt  a/sub` (name + dim root/dir, not literal `root/rel`) | pass (note) |
+| AC-W2 UI: project search grouped by root | probe: groups a / b / c, then file | pass |
+| AC-W3 /ws add live (explorer, index, search) | w1_09..11 (Go to file and project search find c after add; the first search check in the walk was a timing slip in my script, confirmed in a separate probe) | pass |
+| AC-W3 Remove Folder keeps files and tabs; edit+save in tab of removed root | w4_01/02: file on disk "beta\nZ" | pass |
+| AC-W3 missing root | w2: `c (missing)` row, welcome "missing", removable; one startup notice | pass |
+| Edge: nested / same twice / symlinked root | ws file with b twice, a/inner, lnk->real, real: one b, inner refused with notice, lnk/real shown once; /ws add dup ignored, nested refused | pass |
+| AC-W4 /ws save + /ws open | file `roots = ["a","b","c"]`; fresh instance with `a` + /ws open shows a b c | pass |
+| AC-W4 welcome WORKSPACES + click | list shows recent sets (current set hidden, numbers keep gaps); click on a row opened a b c | pass |
+| AC-W5 cut/paste across roots refused, incl. via folder link; copy works; rename confined | w1_07/08, w4: files unchanged on disk; /rename ../b/x refused | pass |
+| AC-W6 terminal in active file root | pwd = .../a (key), dev walk covers palette root pick and web | pass |
+Findings (all minor/cosmetic, none blocking):
+- minor: welcome PROJECT prints "1 files" (singular not handled), crates/vr-ide/src/ui/welcome.rs (repro: root with one file).
+- minor: with 3+ roots on a short window the PROJECT block collapses to "+N more" (by design for height); informational.
+- info: Go to file shows `name  root/dir` rather than the spec's `root/relative/path` string; same information.
+## Rule check W-2
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-4/5 | pass | fmt, clippy -D warnings, full suite, release rc 0 |
+| BASE-10 | pass | one full suite run |
+| BASE-14/15 | pass | background chain + Monitor, no polling, only own processes |
+| BASE-17 | pass | temp dirs under /tmp, private config/state dirs, nothing left running |
+| BASE-18 | pass | no sub-agents |
+| BASE-19 | pass | written incrementally to this section |
+| BASE-24 | pass | no commit/stash/checkout; only files under .ai-dev-team/workspace written |
+| COST | pass | heavy via run-heavy.sh |
