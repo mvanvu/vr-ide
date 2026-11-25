@@ -1420,3 +1420,47 @@ Observation (not a defect): reopening `/git` keeps the session's last focus (a f
 | BASE-14/15/17/18/19 | pass | gates through run-heavy in the background, no sleep polling, only own processes, temp HOME/repos only, no agents, results written per flow |
 | BASE-24 | pass | nothing changed in the shared tree outside .ai-dev-team/workspace |
 | Docs | pass | README, commands.md, keymap.md match |
+
+## M7-4b
+
+QC M7-4b (Git popup History and Blame tabs) after dev Round 1 — verdict: QC_PASS (1 minor, 1 note).
+Engines: python pty (TERM=xterm-256color, legacy key bytes + SGR mouse) on the fresh release binary; temp HOME/XDG and temp repos (fix.py, built by subprocess git); no browser (terminal UI). Artifacts: qa-artifacts/M7-4b/qc/ (fmt.txt, clippy.txt, build.txt, suite.txt, walk.py, probe*.py, walk_*.txt, probe2_out.txt, screens/).
+
+### Commands
+- `cargo fmt --all --check` exit 0; `run-heavy clippy --workspace --all-targets -D warnings` exit 0; `run-heavy cargo build --release -p vr-ide` exit 0 (up to date: no source newer than the binary); `run-heavy cargo test --workspace` exit 0, 1168 passed / 0 failed / 18 ignored (the three known flaky tests passed).
+
+### Walk results (own fixtures: renamed file, merge, binary, rename+edit, submodule, 400 KB one-line file, hostile author/message, uncommitted blame line, 900-commit repo with 4-hex collisions)
+| Check | 120x40 | 80x24 | 40x12 |
+|---|---|---|---|
+| /git log file == git log --follow (4 commits, rename followed, noise excluded) | pass | pass | pass |
+| /git log count == git log (17) | pass | pass | pass |
+| paging: 200+ -> End selects index 199/399/599/799/899, title 900 at the end, oldest subject shown | pass | pass | pass |
+| Enter from list opens selected commit, Esc back; click selects row, wheel moves | pass | pass | pass (click not run: 7-row list) |
+| commit view: merge (`Merge:` + first-parent diff), binary (`binary file`), rename (`R093 old new` + hunk), submodule (.gitmodules + gitlink) | pass | pass | pass (header rows, diff after scroll) |
+| blame per line == git blame --porcelain; uncommitted line = `+ You, uncommitted` / status `You, uncommitted`; Enter opens line's commit | pass | pass | pass (author column hidden by design, shown in status row) |
+| slow git shim (4 s): `blaming…`, `2` switches in <1.2 s, result arrives, exit while blaming prompt, no process left | pass | pass | pass |
+| /git show: short sha, branch name, `:/rename to b`, bad rev refused, ambiguous 4-hex prefix refused with hint, `--output=` refused (no file), `HEAD^{tree}` refused | pass | pass | pass (notice see minor) |
+| hostile author/subject/body: placeholders, no OSC 52 / RLO in app output | pass | pass | pass |
+| 400 KB one-line file commit view: Down/Right/Right/PgDn handled < 1 s, idle CPU ~0, Esc back | pass | pass | pass |
+| keys 1/2/3, tab-bar clicks (History, Blame, Changes) | pass | pass | keys pass; names not clickable (only shown tab named, D308) |
+| exit leaves no process with cwd in the repo, no shim sleep left | pass | pass | pass |
+
+### Findings
+1. minor — crates/vr-ide/src/ui/git_popup.rs (popup height at 40x12): the `/git show <bad>` refusal notice ("git show: zzzz: no such commit") is drawn on the row the popup covers, so while the popup stays open on History the user sees no refusal until Esc closes the popup (then the notice shows). At 80x24 and 120x40 it shows below the popup. Repro: 40x12, open any file, F1 `/git show zzzz`, Enter; probe_notice.py output in probe_notice_40x12.txt. AC-16/SEC-5 intact (nothing runs), only visibility.
+2. note — docs (README "or click a tab name") do not say that below ~16 title cells only the shown tab is named (so no click target at 40x12; keys 1/2/3 work). Optional.
+
+### Rule check M7-4b
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-16c history = log --follow | pass | rename walk at 3 sizes == `git log --follow` |
+| AC-16c blame = blame --porcelain | pass | per-line sha, uncommitted line |
+| AC-16c commit = git show | pass | merge/binary/rename/submodule/diff views |
+| AC-16e never blocks / `blaming…` | pass | 4 s shim, key switch < 1.2 s, exit prompt, 400 KB line responsive |
+| SEC-5 revision text | pass | bad, option-like, ambiguous, tree refused; `:/text` and short sha ok |
+| SEC-15 hostile text | pass | placeholders, no OSC 52/RLO in output |
+| SEC-7 / paging bounded | pass | 200 per page up to 900 |
+| D297 keys 1/2/3, Enter, Esc | pass | walk |
+| D308 / Round 1 fixes (M1-M3, m4-m8) | pass | big line, many files via suite tests, `:/` search works, exit kills blame |
+| Docs (README, commands.md, keymap.md) | pass (note 2) | match observed behaviour |
+| BASE-11/15/17 | pass | nothing committed/stashed; only my own processes; temp repos only |
+| fmt / clippy -D warnings / full suite / release build | pass | commands above |
