@@ -4,7 +4,7 @@ expression: t.backend()
 ---
 " a.txt                                                                          "
 " File  alpha                                                                2/3 "
-"Replace omega                                             enter one · ctrl+a all"
+"Replace omega                                                      enter replace"
 "1  fn alpha() {}                                                                "
 "3  // alpha again: alpha                                                        "
 "3  // alpha again: alpha                                                        "

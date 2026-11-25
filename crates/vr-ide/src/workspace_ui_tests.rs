@@ -404,36 +404,58 @@ fn wait_screen(app: &App, ok: impl Fn(&str) -> bool) -> String {
     }
 }
 
+/// D291: the palette lists no Terminal: New / Close; the tab bar's '+' starts the shell in the
+/// active file's root (no pick list), ctrl+` the first terminal likewise.
 #[test]
-fn new_terminal_from_the_palette_picks_a_root() {
-    let (_d, roots) = folders(&[("rootA", &[]), ("rootB", &[("f.txt", "x\n")])]);
+fn the_plus_button_starts_a_terminal_in_the_active_files_root() {
+    let (_d, roots) = folders(&[
+        ("rootA", &[("a.txt", "a\n")]),
+        ("rootB", &[("f.txt", "x\n")]),
+    ]);
     let mut app = ws_app(&roots);
     use_sh(&mut app);
     app.keyboard_enhanced = true;
+    key(&mut app, KeyCode::F(1));
+    typ(&mut app, "Terminal");
+    let titles: Vec<String> = app
+        .palette
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.title.clone())
+        .collect();
+    assert!(
+        titles
+            .iter()
+            .all(|t| !t.contains("New Terminal") && !t.contains("Close Terminal")),
+        "{titles:?}"
+    );
+    key(&mut app, KeyCode::Esc);
+    let pwd_of_active = |app: &mut App| {
+        draw(app, 120, 30);
+        wait_screen(app, |s| s.contains('$'));
+        typ(app, "pwd\n");
+        wait_screen(app, |s| s.contains("/root"))
+    };
     app.open_path(&roots[1].join("f.txt")).unwrap();
     draw(&mut app, 120, 30);
-    palette_run(&mut app, "Terminal: New Terminal");
-    // The roots to pick from; the active file's root is highlighted.
-    assert!(
-        app.terminal.tabs.is_empty(),
-        "nothing starts before the pick"
-    );
-    assert_eq!(crate::slash_tests::input(&app), "/term new ");
-    let titles = crate::slash_tests::titles(&app);
-    assert_eq!(titles.len(), 2, "{titles:?}");
-    assert!(titles[0].starts_with("rootA") && titles[1].starts_with("rootB"));
-    assert_eq!(app.palette.as_ref().unwrap().selected, 1);
-    // Up picks rootA.
-    key(&mut app, KeyCode::Up);
-    key(&mut app, KeyCode::Enter);
-    assert!(app.palette.is_none());
+    crate::terminal_tests::ctrl_backtick(&mut app);
     assert_eq!(app.terminal.tabs.len(), 1);
+    let s = pwd_of_active(&mut app);
+    assert!(s.contains("rootB") && !s.contains("rootA"), "{s}");
+    // The file of rootA active, then '+'.
+    app.open_path(&roots[0].join("a.txt")).unwrap();
     draw(&mut app, 120, 30);
-    wait_screen(&app, |s| s.contains('$'));
-    typ(&mut app, "pwd\n");
-    let s = wait_screen(&app, |s| s.contains("/root"));
+    let bar = crate::ui::terminal_view::tab_bar(&app, app.layout.terminal.width);
+    let plus = app.layout.terminal.x + bar.plus.expect("the + is drawn");
+    let y = app.layout.terminal.y;
+    crate::terminal_tests::click(&mut app, plus + 1, y);
+    assert_eq!(app.terminal.tabs.len(), 2);
+    assert_eq!(app.terminal.active, 1);
+    assert_eq!(app.focus, Focus::Terminal);
+    let s = pwd_of_active(&mut app);
     assert!(s.contains("rootA") && !s.contains("rootB"), "{s}");
-    // `/term new rootB` names it; the key (ctrl+f12) takes the active file's root.
     crate::commands::terminal::shutdown(&mut app);
 }
 

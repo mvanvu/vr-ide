@@ -20,8 +20,8 @@ use crate::ui::search_panel;
 /// Below this width the labels shrink to one letter.
 const NARROW: u16 = 36;
 
-/// Shown at the end of the replace row: Enter replaces the current match, ctrl+a every match.
-const REPLACE_HELP: &str = "enter one · ctrl+a all";
+/// Shown at the end of the replace row: Enter asks whether to replace this match or all of them.
+const REPLACE_HELP: &str = "enter replace";
 /// Project scope: Enter in the replace field shows the preview.
 const PREVIEW_HELP: &str = "enter preview";
 

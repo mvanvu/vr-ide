@@ -60,61 +60,67 @@ fn width_of(s: &str) -> usize {
     Span::raw(s).width()
 }
 
-/// How a focused terminal gives the keys back (D230): ctrl+`, which reaches vr-ide from a focused
-/// terminal always with the kitty protocol and, in a legacy terminal, while NUL is not passed to
-/// the program (D214); otherwise only a click on the editor does. When the panel covers the
-/// whole editor the same key hides the panel.
+/// How a focused terminal gives the keys back (D280): ctrl+` hides the panel; it reaches vr-ide
+/// from a focused terminal always with the kitty protocol and, in a legacy terminal, while NUL is
+/// not passed to the program (D214); otherwise only a click on the editor does.
 fn leave_text(app: &App) -> String {
     if term::hide_key_works(app) {
-        let what = if term::editor_covered(app) {
-            "hide"
-        } else {
-            "editor"
-        };
-        format!("{} {what}", first_key(app, "terminal.toggle"))
+        format!("{} hide", first_key(app, "terminal.toggle"))
     } else {
         "click editor".to_string()
     }
 }
 
-/// What the panel's key hint says, in the state the panel is in.
+/// What the panel's key hint says, in the state the panel is in: ctrl+` hides a shown panel
+/// wherever the keys are (D280).
 fn hint(app: &App) -> String {
     if !term::has_keys(app) {
-        format!("{} focus ", first_key(app, "terminal.toggle"))
+        format!("{} hide ", first_key(app, "terminal.toggle"))
     } else {
         format!("{} ", leave_text(app))
     }
 }
 
 /// One drawn tab of the bar: which terminal, its label and where it sits (offset from the
-/// bar's left edge, in cells).
+/// bar's left edge, in cells); `close` is the offset of its 'x' inside the label, `None` when
+/// the label is cut before it.
 pub struct BarTab {
     pub index: usize,
     pub label: String,
     pub x: u16,
     pub width: u16,
+    pub close: Option<u16>,
 }
 
-/// The tab bar laid out for a width: the tabs drawn, a `+N` marker for those left out, and the
-/// hint when it fits. Rendering and the mouse hit test both use it.
+/// The tab bar laid out for a width: the tabs drawn, a `+N` marker for those left out, the '+'
+/// (new terminal, D280) and the hint when it fits. Rendering and the mouse hit test both use
+/// it.
 pub struct TabBar {
     pub tabs: Vec<BarTab>,
     pub more: Option<String>,
+    /// Offset of the '+' button from the bar's left edge, [`PLUS_WIDTH`] cells wide.
+    pub plus: Option<u16>,
     pub hint: Option<String>,
 }
 
-/// A label never gets narrower than this while another layout is possible (" 3 …/alpha ").
-const MIN_LABEL: usize = 12;
+/// The '+' button after the tabs.
+pub const PLUS: &str = " + ";
+pub const PLUS_WIDTH: u16 = 3;
+/// The end of each tab label: its close button and a space.
+const CLOSE: &str = "x ";
+
+/// A label never gets narrower than this while another layout is possible (" 3 …/alpha x ").
+const MIN_LABEL: usize = 14;
 /// A title alone never takes more than this, so one long title does not fill the bar.
 const TITLE_MAX: usize = 32;
 
-/// " 1 bash ", " 2 htop [0] " (exited with code 0); the title is cut keeping its end (the
-/// directory of `user@host: dir`) so the label is at most `cap` cells wide.
+/// " 1 bash x ", " 2 htop [0] x " (exited with code 0; 'x' closes it); the title is cut keeping
+/// its end (the directory of `user@host: dir`) so the label is at most `cap` cells wide.
 fn tab_label(n: usize, title: &str, exit: &str, cap: usize) -> String {
-    let fixed = width_of(&format!(" {n} {exit} "));
+    let fixed = width_of(&format!(" {n} {exit} {CLOSE}"));
     let room = cap.saturating_sub(fixed).min(TITLE_MAX);
     let title = crate::ui::status_bar::shorten_left(title, room);
-    format!(" {n} {title}{exit} ")
+    format!(" {n} {title}{exit} {CLOSE}")
 }
 
 /// Labels for tabs `range` within `avail` cells, all cut to one common cap (the widest that
@@ -163,31 +169,45 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
     let width = usize::from(width);
     let active = panel.active.min(n.saturating_sub(1));
     let hint = hint(app);
+    let plus_w = usize::from(PLUS_WIDTH);
     let build = |range: std::ops::Range<usize>,
                  labels: Vec<String>,
                  more: Option<String>,
                  hint: Option<String>| {
         let mut x = 0u16;
-        let tabs = range
+        let tabs: Vec<BarTab> = range
             .zip(labels)
             .map(|(index, label)| {
                 let w = width_of(&label) as u16;
+                // The 'x' is clickable only when the whole label is drawn.
+                let close = (label.ends_with(CLOSE) && usize::from(x + w) <= width)
+                    .then(|| w - width_of(CLOSE) as u16);
                 let t = BarTab {
                     index,
                     label,
                     x,
                     width: w,
+                    close,
                 };
                 x += w;
                 t
             })
             .collect();
-        TabBar { tabs, more, hint }
+        let end = usize::from(x) + more.as_deref().map_or(0, width_of);
+        let plus = (end + plus_w <= width).then_some(end as u16);
+        TabBar {
+            tabs,
+            more,
+            plus,
+            hint,
+        }
     };
-    // Detail gives way in this order: long titles (cut keeping the end), the hint, then tabs
-    // other than the active one (behind a `+N` marker), then the hint again.
-    let avail_with =
-        |hint: &Option<String>| width.saturating_sub(hint.as_ref().map_or(0, |h| width_of(h) + 1));
+    // The '+' always keeps its cells. Detail gives way in this order: long titles (cut keeping
+    // the end), the hint, then tabs other than the active one (behind a `+N` marker), then the
+    // hint again.
+    let avail_with = |hint: &Option<String>| {
+        width.saturating_sub(plus_w + hint.as_ref().map_or(0, |h| width_of(h) + 1))
+    };
     for hint in [Some(hint.clone()), None] {
         if let Some(labels) = fit_labels(&items, 0..n, avail_with(&hint)) {
             return build(0..n, labels, None, hint);
@@ -206,10 +226,18 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
             }
         }
     }
-    // Narrower than one short label: the active tab alone, cut by the bar's edge.
+    // Narrower than one short label: the active tab alone, cut by the bar's edge (the '+' too
+    // when it does not fit after it).
     let labels = items
         .get(active)
-        .map(|(title, exit)| vec![tab_label(active + 1, title, exit, width)])
+        .map(|(title, exit)| {
+            vec![tab_label(
+                active + 1,
+                title,
+                exit,
+                width.saturating_sub(plus_w),
+            )]
+        })
         .unwrap_or_default();
     build(active..active + labels.len(), labels, None, None)
 }
@@ -238,6 +266,12 @@ fn render_tab_bar(buf: &mut Buffer, row: Rect, panel: &TerminalPanel, bar: &TabB
             style
         };
         let (nx, _) = buf.set_stringn(x, row.y, &t.label, usize::from(right - x), style);
+        // The close button in the muted colour, apart from the title (" 1 tmux x ").
+        if let (Some(c), Some(fg)) = (t.close, theme.dim.fg)
+            && x + c < right
+        {
+            buf.set_style(Rect::new(x + c, row.y, 1, 1), Style::default().fg(fg));
+        }
         x = nx;
     }
     if let Some(more) = &bar.more
@@ -245,6 +279,14 @@ fn render_tab_bar(buf: &mut Buffer, row: Rect, panel: &TerminalPanel, bar: &TabB
     {
         let (nx, _) = buf.set_stringn(x, row.y, more, usize::from(right - x), theme.dim);
         x = nx;
+    }
+    if let Some(p) = bar.plus {
+        let px = row.x + p;
+        if px < right {
+            let (nx, _) =
+                buf.set_stringn(px, row.y, PLUS, usize::from(right - px), theme.tab_inactive);
+            x = nx;
+        }
     }
     if let Some(hint) = &bar.hint {
         let hw = width_of(hint) as u16;

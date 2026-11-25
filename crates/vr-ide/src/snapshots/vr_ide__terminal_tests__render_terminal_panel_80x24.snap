@@ -15,7 +15,7 @@ expression: t.backend()
 "  ctrl+`  Terminal                                                              "
 "  ctrl+q  Quit                                                                  "
 "                                                                                "
-" 1 sh  2 htop [0]                                                 ctrl+` editor "
+" 1 sh x  2 htop [0] x  +                                            ctrl+` hide "
 "$ ls --color                                                                    "
 "docs  src  README.md  run.sh                                                    "
 "$ echo 'xin chào 世界'                                                          " Hidden by multi-width symbols: [(18, " "), (20, " ")]
@@ -25,4 +25,4 @@ expression: t.backend()
 "                                                                                "
 "                                                                                "
 "                                                                                "
-" TERM  sh                                            1/2 · 80×9 · ctrl+` editor "
+" TERM  sh                                              1/2 · 80×9 · ctrl+` hide "

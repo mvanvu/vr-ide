@@ -56,13 +56,45 @@ fn nul(app: &mut App) {
     key(app, KeyCode::Char(' '), KeyModifiers::CONTROL);
 }
 
-/// The one key a focused terminal keeps: ctrl+` (NUL for a legacy terminal) gives the keys back (D230).
+/// The editor gets the keys and the panel stays shown, as a click on the editor does (ctrl+`
+/// hides the panel since D280).
 fn leave(app: &mut App) {
-    if app.keyboard_enhanced {
-        ctrl_backtick(app);
-    } else {
-        nul(app);
+    app.run_command("focus.editor", CmdArgs::None);
+    assert_ne!(app.focus, Focus::Terminal);
+}
+
+/// A left click (press and release) at screen cell (`column`, `row`).
+pub(crate) fn click(app: &mut App, column: u16, row: u16) {
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
     }
+}
+
+/// Clicks the '+' of the terminal tab bar (D280).
+fn click_plus(app: &mut App) {
+    let bar = crate::ui::terminal_view::tab_bar(app, app.layout.terminal.width);
+    let x = app.layout.terminal.x + bar.plus.expect("the + is drawn");
+    click(app, x + 1, app.layout.terminal.y);
+}
+
+/// Clicks the 'x' of terminal `i`'s tab (D280).
+fn click_close(app: &mut App, i: usize) {
+    let bar = crate::ui::terminal_view::tab_bar(app, app.layout.terminal.width);
+    let t = bar
+        .tabs
+        .iter()
+        .find(|t| t.index == i)
+        .expect("the tab is drawn");
+    let x = app.layout.terminal.x + t.x + t.close.expect("its x is drawn");
+    click(app, x, app.layout.terminal.y);
 }
 
 /// Hides the panel from the editor: shift+f12 (D250, D261).
@@ -150,10 +182,12 @@ fn no_terminal_is_spawned_at_startup() {
     assert!(!frame_text(&t).contains("TERM"));
 }
 
-// ---- toggle state machine (AC-14a) ------------------------------------------------------------
+// ---- toggle state machine (AC-14a, D280) ------------------------------------------------------
 
+/// D280: ctrl+` shows and focuses a hidden panel (a first terminal starts when there is none)
+/// and hides a shown one, whatever has the keys; the terminals keep running.
 #[test]
-fn ctrl_backtick_shows_hides_and_focuses_the_panel() {
+fn ctrl_backtick_shows_and_hides_the_panel_wherever_the_keys_are() {
     let (_d, mut app, _) = term_app();
     app.keyboard_enhanced = true;
     draw(&mut app, 80, 24);
@@ -163,13 +197,8 @@ fn ctrl_backtick_shows_hides_and_focuses_the_panel() {
     assert_eq!(app.focus, Focus::Terminal);
     assert_eq!(app.terminal.tabs.len(), 1);
     let pid = tab(&app).pid().expect("running shell");
-    // Shown and focused → the editor gets the keys, the panel stays (D230).
+    // Shown and focused → hidden, the editor gets the keys, the shell runs on.
     ctrl_backtick(&mut app);
-    assert!(app.terminal.visible);
-    assert_eq!(app.focus, Focus::Editor);
-    assert_eq!(tab(&app).pid(), Some(pid));
-    // shift+f12 hides it; the shell keeps running.
-    hide_panel(&mut app);
     assert!(!app.terminal.visible);
     assert_eq!(app.focus, Focus::Editor);
     assert_eq!(tab(&app).pid(), Some(pid));
@@ -179,18 +208,27 @@ fn ctrl_backtick_shows_hides_and_focuses_the_panel() {
     assert_eq!(app.focus, Focus::Terminal);
     assert_eq!(app.terminal.tabs.len(), 1);
     assert_eq!(tab(&app).pid(), Some(pid));
+    // Shown with the editor focused → hidden (no focus step first).
     leave(&mut app);
-    assert_eq!(app.focus, Focus::Editor);
     assert!(app.terminal.visible);
-    // Shown but not focused → focused.
+    assert!(panel_bar(&mut app).contains("ctrl+` hide"));
     ctrl_backtick(&mut app);
-    assert_eq!(app.focus, Focus::Terminal);
-    assert!(app.terminal.visible);
-    // From the explorer too.
+    assert!(!app.terminal.visible);
+    assert_eq!(app.focus, Focus::Editor);
+    // Shown with the explorer focused → hidden; the explorer keeps the keys.
+    ctrl_backtick(&mut app);
+    app.explorer.visible = true;
     app.focus = Focus::Explorer;
     ctrl_backtick(&mut app);
-    assert_eq!(app.focus, Focus::Terminal);
+    assert!(!app.terminal.visible);
+    assert_eq!(app.focus, Focus::Explorer);
     assert_eq!(app.terminal.tabs.len(), 1);
+    assert_eq!(tab(&app).pid(), Some(pid));
+    // shift+f12 from the editor still hides.
+    ctrl_backtick(&mut app);
+    leave(&mut app);
+    hide_panel(&mut app);
+    assert!(!app.terminal.visible);
 }
 
 /// The panel's tab bar row as drawn at 80x24.
@@ -199,43 +237,90 @@ fn panel_bar(app: &mut App) -> String {
     row_text(&t, app.layout.terminal.y)
 }
 
+/// Legacy terminals send ctrl+` as NUL: the same show / hide from the editor, the explorer and a
+/// focused terminal (D214, D280).
 #[test]
-fn legacy_nul_toggles_everywhere_and_gives_the_keys_back_from_a_terminal() {
+fn legacy_nul_shows_and_hides_from_everywhere() {
     let (_d, mut app, _) = term_app();
     app.keyboard_enhanced = false;
     draw(&mut app, 80, 24);
-    // In the editor, NUL is ctrl+`.
     nul(&mut app);
     assert!(app.terminal.visible);
     assert_eq!(app.focus, Focus::Terminal);
     let pid = tab(&app).pid().expect("running shell");
     // The hint promises what NUL does in here.
     let bar = panel_bar(&mut app);
-    assert!(bar.contains("ctrl+` editor"), "{bar}");
-    // D230: inside a focused terminal NUL gives the keys back; the panel stays, the shell runs.
+    assert!(bar.contains("ctrl+` hide"), "{bar}");
+    // Inside a focused terminal NUL hides the panel; the shell runs.
     nul(&mut app);
-    assert!(app.terminal.visible);
+    assert!(!app.terminal.visible);
     assert_eq!(app.focus, Focus::Editor);
     assert_eq!(tab(&app).pid(), Some(pid));
-    assert!(panel_bar(&mut app).contains("ctrl+` focus"));
-    // NUL from the editor focuses the shown panel (palette alike).
+    // From the editor with the panel shown: hidden.
     nul(&mut app);
-    assert_eq!(app.focus, Focus::Terminal);
     leave(&mut app);
-    app.run_command("terminal.toggle", CmdArgs::None);
-    assert_eq!(app.focus, Focus::Terminal);
-    assert!(app.terminal.visible);
-    // From the explorer, NUL focuses the shown panel too.
-    leave(&mut app);
+    nul(&mut app);
+    assert!(!app.terminal.visible);
+    // From the explorer: shown, then hidden.
+    app.explorer.visible = true;
     app.focus = Focus::Explorer;
     nul(&mut app);
-    assert_eq!(app.focus, Focus::Terminal);
-    // ...and gives the keys back from there; shift+f12 hides the panel.
-    nul(&mut app);
     assert!(app.terminal.visible);
-    hide_panel(&mut app);
+    assert_eq!(app.focus, Focus::Terminal);
+    app.focus = Focus::Explorer;
+    nul(&mut app);
     assert!(!app.terminal.visible);
     assert_eq!(tab(&app).pid(), Some(pid));
+}
+
+/// D280: with every terminal closed, ctrl+` opens a first one again.
+#[test]
+fn ctrl_backtick_opens_a_first_terminal_after_the_last_was_closed() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    draw(&mut app, 80, 24);
+    click_close(&mut app, 0);
+    assert!(app.terminal.tabs.is_empty());
+    assert!(!app.terminal.visible);
+    ctrl_backtick(&mut app);
+    assert_eq!(app.terminal.tabs.len(), 1);
+    assert!(app.terminal.visible);
+    assert_eq!(app.focus, Focus::Terminal);
+}
+
+/// D279: F1 opens the command window from a focused terminal (legacy ESC O P and kitty); Esc
+/// gives the keys back to the terminal. Other F keys still reach the program.
+#[test]
+fn f1_opens_the_command_window_from_a_focused_terminal() {
+    for enhanced in [false, true] {
+        let (_d, mut app, _) = term_app();
+        app.keyboard_enhanced = enhanced;
+        draw(&mut app, 80, 24);
+        ctrl_backtick(&mut app);
+        assert_eq!(app.focus, Focus::Terminal);
+        let ev = if enhanced {
+            crate::app_tests::kitty_event("f1")
+        } else {
+            let (bytes, ev) = crate::app_tests::legacy_event("f1");
+            assert_eq!(bytes, b"\x1bOP");
+            ev.unwrap()
+        };
+        app.ran.clear();
+        app.handle_key(ev);
+        assert_eq!(app.ran, ["app.palette"], "kitty {enhanced}");
+        assert!(app.palette.is_some());
+        assert_eq!(app.focus, Focus::Palette);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.palette.is_none());
+        assert_eq!(app.focus, Focus::Terminal, "back to the terminal");
+        // f2 is the program's.
+        app.ran.clear();
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+        assert!(app.ran.is_empty(), "{:?}", app.ran);
+        assert_eq!(app.focus, Focus::Terminal);
+    }
 }
 
 #[test]
@@ -275,9 +360,9 @@ fn kitty_ctrl_backtick_leaves_and_ctrl_space_reaches_the_program() {
     typ(&mut app, "y\n");
     wait_text(&app, "^@y");
     assert!(app.terminal.visible);
-    assert!(panel_bar(&mut app).contains("ctrl+` editor"));
+    assert!(panel_bar(&mut app).contains("ctrl+` hide"));
     ctrl_backtick(&mut app);
-    assert!(app.terminal.visible, "the panel stays shown");
+    assert!(!app.terminal.visible, "ctrl+` hides the panel (D280)");
     assert_eq!(app.focus, Focus::Editor);
 }
 
@@ -403,45 +488,86 @@ fn shift_pageup_scrolls_back_and_a_key_returns_to_the_bottom() {
 
 // ---- tabs, exited state ----------------------------------------------------------------------
 
+/// D280 / D291: the tab bar's '+' opens a terminal, each tab's 'x' closes that one (its shell
+/// hung up, no question); f8 / shift+f8 step; ctrl+f12 and ctrl+f4 do nothing any more.
 #[test]
-fn new_close_next_and_previous_terminal() {
+fn plus_and_x_open_and_close_terminals_and_f8_steps() {
     let (_d, mut app, _) = term_app();
     app.keyboard_enhanced = true;
     draw(&mut app, 80, 24);
-    crate::app_tests::press(&mut app, "ctrl+f12");
-    assert!(app.terminal.visible);
-    assert_eq!(app.focus, Focus::Terminal);
+    for gone in ["ctrl+f12", "ctrl+f4"] {
+        crate::app_tests::press(&mut app, gone);
+        assert!(app.terminal.tabs.is_empty(), "{gone}");
+        assert!(!app.terminal.visible, "{gone}");
+    }
+    ctrl_backtick(&mut app);
     assert_eq!(app.terminal.tabs.len(), 1);
-    // ctrl+f12 from the editor opens another one (a focused terminal keeps every key).
+    let bar = panel_bar(&mut app);
+    assert!(bar.contains(" 1 sh x ") && bar.contains(" + "), "{bar}");
+    // '+' from the editor too: a second terminal, active, with the keys.
     leave(&mut app);
-    crate::app_tests::press(&mut app, "ctrl+f12");
+    click_plus(&mut app);
     assert_eq!(app.terminal.tabs.len(), 2);
     assert_eq!(app.terminal.active, 1);
-    let t = draw(&mut app, 80, 24);
-    let bar = row_text(&t, app.layout.terminal.y);
-    assert!(bar.contains("1 sh") && bar.contains("2 sh"), "{bar}");
+    assert_eq!(app.focus, Focus::Terminal);
+    click_plus(&mut app);
+    assert_eq!(app.terminal.tabs.len(), 3);
+    assert_eq!(app.terminal.active, 2);
+    let bar = panel_bar(&mut app);
+    assert!(
+        bar.contains("1 sh") && bar.contains("2 sh") && bar.contains("3 sh"),
+        "{bar}"
+    );
     app.run_command("terminal.prev", CmdArgs::None);
-    assert_eq!(app.terminal.active, 0);
-    app.run_command("terminal.next", CmdArgs::None);
     assert_eq!(app.terminal.active, 1);
     app.run_command("terminal.next", CmdArgs::None);
+    assert_eq!(app.terminal.active, 2);
+    app.run_command("terminal.next", CmdArgs::None);
     assert_eq!(app.terminal.active, 0);
-    let pid = tab(&app).pid().unwrap();
-    app.run_command("terminal.close", CmdArgs::None);
-    assert_eq!(app.terminal.tabs.len(), 1);
+    // The 'x' of an inactive tab closes that one; the active terminal stays active.
+    let first = app.terminal.tabs[0].pid().unwrap();
+    let second = app.terminal.tabs[1].pid().unwrap();
+    app.run_command("terminal.next", CmdArgs::None);
+    assert_eq!(app.terminal.active, 1);
+    draw(&mut app, 80, 24);
+    click_close(&mut app, 0);
+    assert_eq!(app.terminal.tabs.len(), 2);
+    assert_eq!(app.terminal.active, 0);
+    assert_eq!(
+        tab(&app).pid(),
+        Some(second),
+        "the same terminal stays active"
+    );
     let deadline = Instant::now() + WAIT;
-    while proc_alive(pid) {
+    while proc_alive(first) {
         assert!(
             Instant::now() < deadline,
             "closed terminal's shell still alive"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    // The 'x' of the active (first) tab: the next one becomes active.
+    draw(&mut app, 80, 24);
+    click_close(&mut app, 0);
+    assert_eq!(app.terminal.tabs.len(), 1);
+    assert_eq!(app.terminal.active, 0);
+    assert_ne!(tab(&app).pid(), Some(second));
+    // A click on the label (not its 'x') only activates.
+    draw(&mut app, 80, 24);
+    let (x, y) = (app.layout.terminal.x, app.layout.terminal.y);
+    click(&mut app, x + 2, y);
+    assert_eq!(app.terminal.tabs.len(), 1);
     // Closing the last one hides the panel and gives the editor the keys.
-    app.run_command("terminal.close", CmdArgs::None);
+    draw(&mut app, 80, 24);
+    click_close(&mut app, 0);
     assert!(app.terminal.tabs.is_empty());
     assert!(!app.terminal.visible);
     assert_eq!(app.focus, Focus::Editor);
+}
+
+#[test]
+fn grow_and_shrink_step_the_panel_height() {
+    let (_d, mut app, _) = term_app();
     // Grow / shrink change the height in 5 % steps within 10..=90 %.
     app.run_command("terminal.grow", CmdArgs::None);
     assert_eq!(app.terminal.height_percent, 45);
@@ -464,7 +590,7 @@ fn inactive_tab_titles_are_fresh_when_the_panel_is_shown_again() {
     wait_text(&app, "$");
     // Tab 1 sets its title a moment later, while tab 2 is active and the panel is hidden.
     typ(&mut app, "sleep 0.3; printf '\\033]2;late-title\\007'\n");
-    app.run_command("terminal.new", CmdArgs::None);
+    crate::commands::terminal::new_terminal(&mut app);
     leave(&mut app);
     hide_panel(&mut app);
     assert!(!app.terminal.visible);
@@ -796,7 +922,7 @@ fn long_titles_keep_the_active_tab_the_hint_and_the_status_in_view() {
     for dir in ["alpha", "beta", "gamma", "delta"] {
         assert!(bar.contains(dir), "{dir} missing: {bar}");
     }
-    assert!(bar.contains("ctrl+` editor"), "hint dropped: {bar}");
+    assert!(bar.contains("ctrl+` hide"), "hint dropped: {bar}");
     let status = row_text(&t, 23);
     assert!(status.contains(" 4/4 · 80×9 "), "{status}");
     // A click on a label activates that tab (hit test matches the drawing).
@@ -959,6 +1085,18 @@ fn render_long_titles_80x24() {
     insta::assert_snapshot!("render_terminal_long_titles_80x24", t.backend());
 }
 
+/// D291: the palette's terminal commands, without New / Close Terminal.
+#[test]
+fn render_palette_terminal_commands_80x24() {
+    let (mut app, _) = test_app(Path::new("/p"));
+    app.run_command("app.palette", CmdArgs::None);
+    typ(&mut app, "terminal:");
+    let t = draw(&mut app, 80, 24);
+    let screen = frame_text(&t);
+    assert!(!screen.contains("New Terminal") && !screen.contains("Close Terminal"));
+    insta::assert_snapshot!("render_palette_terminal_commands_80x24", t.backend());
+}
+
 #[test]
 fn panel_cursor_shows_only_while_focused() {
     let (_d, mut app) = snapshot_app();
@@ -1091,7 +1229,7 @@ fn the_status_bar_names_the_way_out_before_the_size() {
     for w in [30, 36, 40, 80] {
         let t = draw(&mut app, w, 12);
         let status = row_text(&t, 11);
-        assert!(status.contains("ctrl+` editor"), "{w}: {status}");
+        assert!(status.contains("ctrl+` hide"), "{w}: {status}");
         if w <= 36 {
             assert!(!status.contains('×'), "{w}: {status}");
         }
@@ -1121,10 +1259,9 @@ fn a_zero_row_editor_never_gets_the_keys_or_a_monitor() {
     app.focus = Focus::Terminal;
     let t = draw(&mut app, 80, 7);
     assert_eq!(app.layout.editor.height, 0, "{:?}", app.layout);
-    // No editor row to give the keys to: ctrl+` hides the panel instead, and the hint says so.
+    // No editor row to give the keys to: ctrl+` hides the panel (as everywhere, D280).
     let screen = frame_text(&t);
     assert!(screen.contains("ctrl+` hide"), "{screen}");
-    assert!(!screen.contains("ctrl+` editor"), "{screen}");
     let now = std::time::Instant::now();
     app.tick(now);
     assert!(!app.monitor.running());
@@ -1133,7 +1270,11 @@ fn a_zero_row_editor_never_gets_the_keys_or_a_monitor() {
         app.terminal.visible = true;
         app.focus = Focus::Terminal;
         draw(&mut app, 80, 7);
-        leave(&mut app);
+        if enhanced {
+            ctrl_backtick(&mut app);
+        } else {
+            nul(&mut app);
+        }
         assert!(!app.terminal.visible, "kitty {enhanced}");
         assert_eq!(app.focus, Focus::Editor, "kitty {enhanced}");
     }
@@ -1239,4 +1380,29 @@ fn a_new_terminal_starts_in_the_root_of_the_active_file() {
     let screen = wait_screen(&app, "pwd output", |s| s.contains("/root"));
     assert!(screen.contains("rootB"), "{screen}");
     assert!(!screen.contains("rootA"), "{screen}");
+}
+
+/// T24 review: the close 'x' is drawn in the muted colour, apart from the title, so
+/// " 1 tmux x " does not read as one word; the title keeps the tab's own colour.
+#[test]
+fn the_close_x_is_styled_apart_from_the_title() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    let t = draw(&mut app, 80, 24);
+    let bar = crate::ui::terminal_view::tab_bar(&app, app.layout.terminal.width);
+    let tab = &bar.tabs[0];
+    let y = app.layout.terminal.y;
+    let x0 = app.layout.terminal.x + tab.x;
+    let close = x0 + tab.close.expect("its x is drawn");
+    let buf = t.backend().buffer();
+    assert_eq!(buf[(close, y)].symbol(), "x");
+    assert_eq!(buf[(close - 1, y)].symbol(), " ", "a space before the x");
+    let dim_fg = crate::theme::Theme::from_name(&app.settings.theme).dim.fg;
+    assert_eq!(buf[(close, y)].fg, dim_fg.unwrap(), "x in the muted colour");
+    // The tab number keeps the active tab's colour, which is not the muted one.
+    assert_ne!(buf[(x0 + 1, y)].fg, buf[(close, y)].fg, "title vs x");
+    // Same background as the rest of the label.
+    assert_eq!(buf[(close, y)].bg, buf[(x0 + 1, y)].bg);
 }

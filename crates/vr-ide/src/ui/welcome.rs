@@ -227,6 +227,13 @@ fn thousands(n: usize) -> String {
     out
 }
 
+/// "1 file", "1,284 files"; `more` (the index stopped at its cap) adds a "+" and is plural.
+fn files_text(n: usize, more: bool) -> String {
+    let plus = if more { "+" } else { "" };
+    let noun = if n == 1 && !more { "file" } else { "files" };
+    format!("{}{plus} {noun}", thousands(n))
+}
+
 fn block_for(pct: f32) -> char {
     BLOCKS[((pct.clamp(0.0, 100.0) / 100.0 * 7.0).round() as usize).min(7)]
 }
@@ -373,11 +380,7 @@ fn root_line(pen: &mut Pen, row: u16, root: &Path, p: &Palette) {
 /// `branch · N files` (either part may be missing).
 fn project_line(pen: &mut Pen, row: u16, app: &App, p: &Palette) {
     let files = match &app.file_index {
-        Some(i) => Some(format!(
-            "{}{} files",
-            thousands(i.len()),
-            if i.truncated() { "+" } else { "" }
-        )),
+        Some(i) => Some(files_text(i.len(), i.truncated())),
         None if app.index_rx.is_some() => Some("indexing…".to_string()),
         None => None,
     };
@@ -443,7 +446,7 @@ fn root_rows(pen: &mut Pen, row: u16, app: &App, cap: usize, p: &Palette) -> u16
             continue;
         }
         let files = match app.root_files.get(&r.name) {
-            Some(n) => Some(format!("{} files", thousands(*n))),
+            Some(n) => Some(files_text(*n, false)),
             None if app.index_rx.is_some() => Some("indexing…".to_string()),
             None => None,
         };

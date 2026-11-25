@@ -91,6 +91,8 @@ pub enum DialogAction {
     QuitStuckReplaceDiscard,
     /// `/q!`: [`DialogAction::QuitTerminals`] whose Quit anyway goes on discarding.
     QuitTerminalsDiscard,
+    /// Find box, File scope (D279): Replace: One / All / Cancel.
+    ReplaceInFile,
     /// Unsaved files before the roots are replaced (W-1): Save all / Discard / Cancel.
     OpenWorkspace(Box<crate::workspace::Workspace>),
 }
@@ -98,7 +100,16 @@ pub enum DialogAction {
 pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
     let Dialog { widget, action } = dialog;
     match (action, outcome) {
-        (_, Outcome::Cancelled | Outcome::Pending) => {}
+        (_, Outcome::Pending) => {}
+        // Every answer, Esc included, gives the replace row its edit mode back.
+        (DialogAction::ReplaceInFile, o) => {
+            let button = match o {
+                Outcome::Chosen(b) => Some(b),
+                _ => None,
+            };
+            super::find::answer_replace(app, button);
+        }
+        (_, Outcome::Cancelled) => {}
         (DialogAction::GotoLine, Outcome::Submitted(text)) => {
             if let Err(e) = super::nav::goto(app, &text) {
                 reopen_with_error(app, widget, DialogAction::GotoLine, e);

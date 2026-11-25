@@ -519,6 +519,31 @@ fn welcome_lists_each_root_and_the_recent_workspaces() {
     assert!(!screen.contains("PROJECT"), "{screen}");
 }
 
+/// W-2 QC: one file is "1 file", in the PROJECT block and on the one-root project line.
+#[test]
+fn one_file_is_singular() {
+    let mut app = multi_root_app();
+    let files = vec![
+        PathBuf::from("shop/src/main.rs"),
+        PathBuf::from("web/a.ts"),
+        PathBuf::from("web/b.ts"),
+    ];
+    app.file_index = Some(vr_fs::FileIndex::from_paths(ROOT, files));
+    app.count_root_files();
+    let screen = lines(&mut app, 120, 40).join("\n");
+    assert!(screen.contains("main · 1 file "), "{screen}");
+    assert!(screen.contains("feature/login · 2 files"), "{screen}");
+    assert!(!screen.contains("1 files"), "{screen}");
+    let mut one = welcome_app();
+    one.file_index = Some(vr_fs::FileIndex::from_paths(
+        ROOT,
+        vec![PathBuf::from("src/main.rs")],
+    ));
+    let screen = lines(&mut one, 120, 40).join("\n");
+    assert!(screen.contains("main · 1 file"), "{screen}");
+    assert!(!screen.contains("1 files"), "{screen}");
+}
+
 #[test]
 fn a_click_on_a_recent_workspace_opens_it() {
     let d = tempfile::tempdir().unwrap();

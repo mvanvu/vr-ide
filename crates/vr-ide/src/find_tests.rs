@@ -1,6 +1,6 @@
 //! The find box through the `App` (AC-10, T22 AC-22a..e): File scope (in-file find /
 //! replace and its match list), the scope switch, Project scope from the box, the query
-//! syntax, f3 / shift+f3 and Esc back to read mode.
+//! syntax, f4 / shift+f4 and Esc back to read mode.
 
 use std::time::{Duration, Instant};
 
@@ -290,15 +290,15 @@ fn selection_seeds_a_literal_query() {
 }
 
 #[test]
-fn f3_and_shift_f3_step_and_wrap() {
+fn f4_and_shift_f4_step_and_wrap() {
     let (_d, _p, mut app, _) = app_with_file("x foo\nfoo\nfoo y\n");
     app.handle_key(ctrl('f'));
     typ(&mut app, "foo");
     assert_eq!(count_text(&app), "1/3");
-    // In the box: shift+f3 previous, f3 next, both wrap.
-    app.handle_key(shift(KeyCode::F(3)));
+    // In the box: shift+f4 previous, f4 next, both wrap.
+    app.handle_key(shift(KeyCode::F(4)));
     assert_eq!(count_text(&app), "3/3");
-    app.handle_key(key(KeyCode::F(3)));
+    app.handle_key(key(KeyCode::F(4)));
     assert_eq!(count_text(&app), "1/3");
     assert_eq!(app.focus, Focus::FindBar);
     // shift+Enter in the find field: the previous match, the box keeps the keys (D116, D275).
@@ -307,21 +307,21 @@ fn f3_and_shift_f3_step_and_wrap() {
     assert_eq!(app.focus, Focus::FindBar);
     app.handle_key(shift(KeyCode::Enter));
     assert_eq!(count_text(&app), "2/3");
-    app.handle_key(key(KeyCode::F(3)));
+    app.handle_key(key(KeyCode::F(4)));
     assert_eq!(count_text(&app), "3/3");
-    app.handle_key(key(KeyCode::F(3)));
+    app.handle_key(key(KeyCode::F(4)));
     assert_eq!(count_text(&app), "1/3");
-    // From the editor (box open or closed) f3 / shift+f3 keep the last query.
+    // From the editor (box open or closed) f4 / shift+f4 keep the last query.
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.focus, Focus::Editor);
-    app.handle_key(key(KeyCode::F(3)));
+    app.handle_key(key(KeyCode::F(4)));
     assert_eq!(count_text(&app), "2/3");
     app.handle_key(ctrl('f'));
     app.handle_key(key(KeyCode::Esc));
-    app.handle_key(key(KeyCode::F(3)));
-    app.handle_key(key(KeyCode::F(3)));
+    app.handle_key(key(KeyCode::F(4)));
+    app.handle_key(key(KeyCode::F(4)));
     assert_eq!(count_text(&app), "1/3");
-    app.handle_key(shift(KeyCode::F(3)));
+    app.handle_key(shift(KeyCode::F(4)));
     assert_eq!(count_text(&app), "3/3");
     assert_eq!(selection(&app), (10, 13));
     // A cursor between matches: next is the first one after it, the count says "?".
@@ -330,12 +330,26 @@ fn f3_and_shift_f3_step_and_wrap() {
         .buffer
         .set_selection(vr_core::Selection::point(7));
     assert_eq!(count_text(&app), "?/3");
-    app.handle_key(key(KeyCode::F(3)));
+    app.handle_key(key(KeyCode::F(4)));
     assert_eq!(selection(&app), (10, 13));
 }
 
-/// AC-22d (File scope): ctrl+r opens the replace row in edit mode; Enter replaces one,
-/// ctrl+a all, each one undo step; Esc returns to read mode.
+/// The Replace dialog (D279): (title, message, buttons, default).
+fn replace_dialog(app: &App) -> Option<(String, String, Vec<String>, usize)> {
+    match &app.dialog.as_ref()?.widget {
+        crate::ui::dialog::DialogWidget::Confirm(c) => Some((
+            c.title.clone(),
+            c.message.clone(),
+            c.buttons.clone(),
+            c.selected,
+        )),
+        _ => None,
+    }
+}
+
+/// AC-22d (File scope): ctrl+r opens the replace row in edit mode; Enter in the replace field
+/// asks Replace: One / All / Cancel (D279, One first), each replacement one undo step; Esc
+/// returns to read mode.
 #[test]
 fn replace_one_and_all_single_undo() {
     const ORIGINAL: &str = "fn alpha() {}\nfn beta() {}\nfn gamma() {}\n";
@@ -350,8 +364,32 @@ fn replace_one_and_all_single_undo() {
     app.handle_key(key(KeyCode::Tab));
     assert_eq!(app.find.field, Field::Replace);
     typ(&mut app, "fn new_$1");
-    // Enter in the replace field replaces the current match and moves to the next one.
+    // ctrl+a no longer replaces anything (it would select the file behind the box: nothing).
+    app.handle_key(ctrl('a'));
+    assert_eq!(text(&app), ORIGINAL);
+    assert!(app.dialog.is_none());
+    // Enter in the replace field asks; Esc and Cancel replace nothing.
     app.handle_key(key(KeyCode::Enter));
+    let (title, message, buttons, selected) = replace_dialog(&app).expect("the Replace dialog");
+    assert_eq!(title, "Replace");
+    assert_eq!(buttons, ["One", "All", "Cancel"]);
+    assert_eq!(buttons[selected], "One", "One is the default");
+    assert!(message.contains("3 matches"), "{message}");
+    assert!(message.contains("fn new_$1"), "{message}");
+    app.handle_key(key(KeyCode::Esc));
+    assert!(app.dialog.is_none());
+    assert_eq!(text(&app), ORIGINAL, "Esc replaces nothing");
+    assert_eq!(app.focus, Focus::FindBar, "the box keeps the keys");
+    assert_eq!(app.find.field, Field::Replace);
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Left));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(text(&app), ORIGINAL, "Cancel replaces nothing");
+    // One: the current match is replaced and the next one selected.
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.dialog.is_none());
+    assert_eq!(app.focus, Focus::FindBar);
     assert_eq!(
         text(&app),
         "fn new_alpha() {}\nfn beta() {}\nfn gamma() {}\n"
@@ -368,7 +406,9 @@ fn replace_one_and_all_single_undo() {
     // AC-10: replace all with the regex is one undo step.
     app.handle_key(ctrl('r'));
     assert_eq!(app.find.field, Field::Replace);
-    app.handle_key(ctrl('a'));
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Right));
+    app.handle_key(key(KeyCode::Enter));
     assert_eq!(text(&app), ALL);
     assert!(app.notices.iter().any(|n| n.text.contains('3')));
     app.handle_key(key(KeyCode::Esc));
@@ -379,6 +419,40 @@ fn replace_one_and_all_single_undo() {
     // Redo brings the whole replacement back.
     app.handle_key(ctrl('y'));
     assert_eq!(text(&app), ALL);
+}
+
+/// D279: with no match the replace field's Enter says so instead of asking; the box keeps the
+/// keys.
+#[test]
+fn replace_enter_without_matches_does_not_ask() {
+    let (_d, _p, mut app, _) = app_with_file("one two\n");
+    app.handle_key(ctrl('r'));
+    typ(&mut app, "zzz");
+    app.handle_key(key(KeyCode::Tab));
+    typ(&mut app, "y");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.dialog.is_none());
+    assert!(
+        app.notices.iter().any(|n| n.text.contains("no results")),
+        "{:?}",
+        app.notices
+    );
+    assert_eq!(app.focus, Focus::FindBar);
+    assert_eq!(text(&app), "one two\n");
+}
+
+/// Snapshot of the Replace dialog over the find box (D279), 80x24.
+#[test]
+fn render_replace_dialog_80x24() {
+    let (_d, _p, mut app, _) = app_with_file("fn alpha() {}\nfn beta() {}\n");
+    app.handle_key(ctrl('r'));
+    typ(&mut app, "fn");
+    app.handle_key(key(KeyCode::Tab));
+    typ(&mut app, "pub fn");
+    app.handle_key(key(KeyCode::Enter));
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    t.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    insta::assert_snapshot!("render_replace_dialog_80x24", t.backend());
 }
 
 #[test]
@@ -431,7 +505,7 @@ fn find_caps_matches_at_20000() {
     typ(&mut app, "e");
     assert_eq!(app.find.matches.len(), 20_000);
     assert_eq!(count_text(&app), "1/20000+");
-    app.handle_key(shift(KeyCode::F(3)));
+    app.handle_key(shift(KeyCode::F(4)));
     assert_eq!(
         count_text(&app),
         "20000/20000+",
@@ -541,8 +615,8 @@ fn ctrl_f_switches_scope_project_results_open_at_the_match() {
     assert_eq!(selection(&app), (13, 19), "line 3, the match");
     assert!(app.find.project(), "the box stays on the project");
 
-    // f3 / shift+f3 from the editor step through the project results.
-    app.handle_key(key(KeyCode::F(3)));
+    // f4 / shift+f4 from the editor step through the project results.
+    app.handle_key(key(KeyCode::F(4)));
     assert!(
         app.active_doc()
             .unwrap()
@@ -551,7 +625,7 @@ fn ctrl_f_switches_scope_project_results_open_at_the_match() {
             .unwrap()
             .ends_with("src/a.rs")
     );
-    app.handle_key(shift(KeyCode::F(3)));
+    app.handle_key(shift(KeyCode::F(4)));
     assert_eq!(selection(&app), (13, 19));
 
     // ctrl+f from the editor: File scope on the open file; in the box again: Project.
@@ -577,7 +651,7 @@ fn ctrl_f_switches_scope_project_results_open_at_the_match() {
 }
 
 /// The scope switch also works with the bytes a terminal without the kitty protocol sends
-/// for ctrl+f (0x06), f3 and Esc.
+/// for ctrl+f (0x06), f4 and Esc.
 #[test]
 fn legacy_ctrl_f_switches_scope() {
     let (_d, mut app) = project_app();
@@ -707,9 +781,9 @@ fn ctrl_r_after_opening_a_result_keeps_the_project_query() {
     assert!(app.find.project());
     assert_eq!(app.search.input.text(), "/ne+dle/i", "query kept");
     assert_eq!(app.search.total, 3, "results kept");
-    // f3 opens a result the same way: still no seed.
+    // f4 opens a result the same way: still no seed.
     app.focus = Focus::Editor;
-    app.handle_key(key(KeyCode::F(3)));
+    app.handle_key(key(KeyCode::F(4)));
     app.handle_key(ctrl('r'));
     assert_eq!(app.search.input.text(), "/ne+dle/i");
     // A selection of the user's own seeds the query as before.
@@ -867,8 +941,8 @@ fn find_box_in_1m_line_file_stays_responsive() {
             worst = worst.max(t.elapsed());
         }
     }
-    // Last match: line 20 000 of 1M, then f3 wraps.
-    app.handle_key(shift(KeyCode::F(3)));
+    // Last match: line 20 000 of 1M, then f4 wraps.
+    app.handle_key(shift(KeyCode::F(4)));
     let t = Instant::now();
     draw(&mut app, 120, 40);
     worst = worst.max(t.elapsed());
@@ -905,7 +979,7 @@ fn find_in_100mb_file_stays_responsive() {
         draw(&mut app, 120, 40);
         worst = worst.max(t.elapsed());
     }
-    // A query with no match scans the whole file once (an explicit command, e.g. f3).
+    // A query with no match scans the whole file once (an explicit command, e.g. f4).
     app.focus = Focus::FindBar;
     app.find.input.set("zqzq");
     let t = Instant::now();

@@ -15,7 +15,7 @@ expression: t.backend()
 "  ctrl+`  Terminal                                                              "
 "  ctrl+q  Quit                                                                  "
 "                                                                                "
-" 1 …~/DEV/alpha  2 … ~/DEV/beta  3 …~/DEV/gamma  4 …~/DEV/delta   ctrl+` editor "
+" 1 …DEV/alpha x  2 …/DEV/beta x  3 …DEV/gamma x  4 …DEV/delta x  +  ctrl+` hide "
 "$ ls --color                                                                    "
 "docs  src  README.md  run.sh                                                    "
 "$ echo 'xin chào 世界'                                                          " Hidden by multi-width symbols: [(18, " "), (20, " ")]
@@ -25,4 +25,4 @@ expression: t.backend()
 "                                                                                "
 "                                                                                "
 "                                                                                "
-" TERM  rainy@rainy-Lenovo-IdeaPad-5: ~/DEV/delta     4/4 · 80×9 · ctrl+` editor "
+" TERM  rainy@rainy-Lenovo-IdeaPad-5: ~/DEV/delta       4/4 · 80×9 · ctrl+` hide "

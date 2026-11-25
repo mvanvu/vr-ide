@@ -39,7 +39,7 @@ pub enum Focus {
 
 impl Focus {
     /// Keymap context. The find box in File scope sits on the editor, so the editor's keys
-    /// (f3, ctrl+r) work in it; in Project scope it gets the global keys (ctrl+r there is the
+    /// (f4, ctrl+r) work in it; in Project scope it gets the global keys (ctrl+r there is the
     /// project replace, T21) plus the box's own editor keys (`search::handle_key`).
     pub fn context(self) -> Context {
         match self {
@@ -135,6 +135,9 @@ pub struct App {
     pub notices: VecDeque<Notice>,
     pub keymap: Keymap,
     pub settings: Settings,
+    /// What settings.toml said when it was last applied (start, live reload): a reload applies
+    /// only the settings whose value in the file differs from this (T24).
+    pub(crate) settings_file: Settings,
     pub clipboard: Box<dyn Clipboard>,
     pub fs_rx: Option<Receiver<FsEvent>>,
     pub(crate) watcher: Option<Watcher>,
@@ -269,6 +272,7 @@ impl App {
             focus: Focus::Editor,
             notices: VecDeque::new(),
             keymap,
+            settings_file: settings.clone(),
             settings,
             clipboard,
             fs_rx: None,
@@ -461,6 +465,7 @@ impl App {
                 }
                 self.watcher = Some(w);
                 self.fs_rx = Some(rx);
+                self.watch_config_files();
                 for e in failed {
                     self.warn(format!("file watching: {e}"));
                 }
@@ -680,7 +685,9 @@ impl App {
                 .filter(|d| d.path.as_deref() == Some(p))
                 .count()
         };
-        let drop_old = old.filter(|p| still_open(p) == 0).map(Path::to_path_buf);
+        let drop_old = old
+            .filter(|p| still_open(p) == 0 && !self.is_config_file(p))
+            .map(Path::to_path_buf);
         let Some(w) = &mut self.watcher else {
             return;
         };
@@ -729,7 +736,9 @@ impl App {
         let shared = doc
             .path
             .as_deref()
-            .is_some_and(|p| self.docs.iter().any(|d| d.path.as_deref() == Some(p)));
+            .is_some_and(|p| self.docs.iter().any(|d| d.path.as_deref() == Some(p)))
+            // settings.toml and keymap.toml stay watched for the live reload (T24).
+            || doc.path.as_deref().is_some_and(|p| self.is_config_file(p));
         if let (Some(w), Some(p), false) = (&mut self.watcher, &doc.path, shared) {
             w.unwatch(p);
         }
@@ -1449,6 +1458,14 @@ impl App {
     /// [`App::handle_fs_event`] without re-reading the explorer folders it touched.
     fn apply_fs_event(&mut self, ev: FsEvent) {
         commands::explorer::on_fs_event(self, &ev);
+        // settings.toml / keymap.toml changed by another program (T24): applied at once. A file
+        // removed or renamed away is not read (editors do that for a moment while saving).
+        match &ev {
+            FsEvent::Modified(p) | FsEvent::Created(p) | FsEvent::Renamed(_, p) => {
+                self.config_file_changed(p, false)
+            }
+            FsEvent::Removed(_) | FsEvent::Rescan(_) | FsEvent::Error(_) => {}
+        }
         match ev {
             FsEvent::Modified(p) | FsEvent::Created(p) | FsEvent::Removed(p) => self.recheck(&p),
             FsEvent::Renamed(from, to) => {

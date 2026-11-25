@@ -3,7 +3,7 @@ source: crates/vr-ide/src/terminal_right_tests.rs
 expression: t.backend()
 ---
 " /home/user/DEV/shop                                                            "
-" vr-ide v0.1.0                                 │ 1 sh  2 htop [0]  ctrl+` focus "
+" vr-ide v0.1.0                                 │ 1 sh x  2 htop [0] x  +        "
 "                                               │$ ls --color                    "
 " CPU                                         — │docs  src  README.md  run.sh    "
 " RAM ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    — │$ echo 'xin chào 世界'          " Hidden by multi-width symbols: [(66, " "), (68, " ")]

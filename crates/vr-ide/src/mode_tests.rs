@@ -572,13 +572,16 @@ fn ctrl_r_opens_the_in_file_replace_in_edit_mode() {
         assert_eq!(app.find.field, crate::commands::find::Field::Replace);
         assert!(app.edit_mode(), "ctrl+r enters edit mode");
         let screen = format!("{:?}", draw(&mut app, 80, 10).backend().buffer());
-        assert!(screen.contains("enter one"), "{screen}");
-        assert!(screen.contains("ctrl+a all"), "{screen}");
+        assert!(screen.contains("enter replace"), "{screen}");
         typ(&mut app, "X");
+        // D279: Enter asks Replace: One / All / Cancel, One first.
         app.handle_key(key(KeyCode::Enter));
-        assert_eq!(text(&app), "X bar foo\n", "Enter replaces one");
-        app.handle_key(ctrl('a'));
-        assert_eq!(text(&app), "X bar X\n", "ctrl+a replaces all");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(text(&app), "X bar foo\n", "One replaces one");
+        app.handle_key(key(KeyCode::Enter));
+        app.handle_key(key(KeyCode::Right));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(text(&app), "X bar X\n", "All replaces all");
         app.handle_key(key(KeyCode::Esc));
         assert_eq!(app.focus, Focus::Editor);
         assert!(

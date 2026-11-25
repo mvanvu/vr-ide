@@ -195,9 +195,9 @@ visible under the box and highlights the matches while the box is open.
 | Move in the result list (the editor shows the match) | `up` / `down` / `pageup` / `pagedown` |
 | Go to the selected match (read mode; the box stays open) | `enter` |
 | Previous match, staying in the box (kitty keyboard protocol terminals) | `shift+enter` |
-| Next / previous match or project result | `f3` / `shift+f3` |
+| Next / previous match or project result | `f4` / `shift+f4` |
 | Replace in the box's scope (File: switches the tab to edit mode; find works in read mode) | `ctrl+r` |
-| Replace one / replace all in the file (the box shows "enter one · ctrl+a all") | `enter` / `ctrl+a` in the replace field |
+| Replace in the file: asks Replace: One / All / Cancel (the box shows "enter replace") | `enter` in the replace field |
 | Switch between the find and replace fields | `tab` / `shift+tab` |
 | Close the box (back to read mode) | `esc` |
 
@@ -297,17 +297,19 @@ SIGKILL for a program that ignores it).
 ### Terminal
 
 ``ctrl+` `` opens a terminal panel under the editor, running your `$SHELL` (`/bin/sh` if it is
-unset or does not start) in the project root with `TERM=xterm-256color`. Press it again in the
-terminal to give the keys back to the editor (the panel stays shown); from the editor or explorer it
-focuses a shown panel. `shift+f12` hides the panel (the shells keep running). In a window so short
-that the panel covers the whole editor, ``ctrl+` `` in the terminal hides the panel instead (the
-hint says ``ctrl+` hide``). No terminal starts until you open one.
+unset or does not start) in the project root with `TERM=xterm-256color`. Press it again, wherever
+the keys are, to hide the panel (the shells keep running); click the editor to leave the terminal
+with the panel shown. `shift+f12` from the editor hides the panel too. No terminal starts until you
+open one.
 
 - A focused terminal receives every key, `ctrl+s`, `ctrl+w` and `ctrl+p` included, so `vim`, `htop`
-  or `lazygit` work as in any terminal; ``ctrl+` `` is the only key vr-ide keeps. The status bar
-  shows `TERM` while the terminal has the keys (read and edit mode do not apply there).
-- `ctrl+f12` opens another terminal tab; `ctrl+f4` closes it, `f8` / `shift+f8` move to the next /
-  previous one and `ctrl+f8` / `ctrl+f9` grow / shrink the panel. The tab bar shows each terminal's title (set
+  or `lazygit` work as in any terminal; vr-ide keeps only ``ctrl+` `` and `F1` (the command
+  window). The status bar shows `TERM` while the terminal has the keys (read and edit mode do not
+  apply there).
+- The `+` after the tabs opens another terminal (in the active file's workspace folder); the `x`
+  at the end of a tab closes that terminal (the last one hides the panel). `f8` / `shift+f8` move
+  to the next / previous one and `ctrl+f8` / `ctrl+f9` grow / shrink the panel (from the editor).
+  The tab bar shows each terminal's title (set
   by the program, or the shell's name) and `[N]` once it exited. Long titles such as bash's
   `user@host: ~/dir` are cut from the left so the directory stays; when the tabs do not fit, the
   active one stays in view and `+N` counts the others. Click a tab to switch; drag the tab bar to
@@ -329,10 +331,10 @@ hint says ``ctrl+` hide``). No terminal starts until you open one.
   `dark` and `light` leave your terminal's colours.
 - With the kitty keyboard protocol `ctrl+space` is a separate key that reaches the program.
 - Without it your terminal sends ``ctrl+` `` as NUL, the same byte as `ctrl+space` and `ctrl+@`.
-  vr-ide takes NUL as ``ctrl+` `` everywhere, so it gives the keys back from inside a terminal too,
+  vr-ide takes NUL as ``ctrl+` `` everywhere, so it hides the panel from inside a terminal too,
   and programs never get `ctrl+space`. If a program needs it (Emacs's mark, a shell binding), set
   `terminal_pass_nul = true`: NUL then goes to the program, a click on the editor leaves the terminal, ``ctrl+` ``
-  from the editor focuses the panel again, and `shift+f12` from the editor hides it. The tab bar's
+  from the editor shows or hides the panel, and `shift+f12` from the editor hides it. The tab bar's
   hint shows the way out that works in your setup.
 
 ### Clipboard
@@ -352,7 +354,10 @@ with your terminal's own paste shortcut (bracketed paste is supported).
 | `~/.config/vr-ide/languages.toml` | File patterns → language for syntax highlighting; see [Syntax highlighting](#syntax-highlighting). Built-in table: `crates/vr-config/defaults/languages.toml` |
 
 These files are optional; a missing key keeps its default. A bad entry is reported in a startup notice
-and the rest of the file still applies. Example:
+and the rest of the file still applies. Saving `settings.toml` or `keymap.toml` while vr-ide runs (`/config`,
+`/keymap`, or any other editor) applies it at once: only the settings whose value in the file
+changed, and the whole keymap. A file with an error then changes nothing (the old values stay) and
+the error is shown. Example:
 
 ```toml
 # ~/.config/vr-ide/settings.toml

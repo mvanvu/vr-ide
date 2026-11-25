@@ -11,9 +11,10 @@
 //! Built-in keys while the box has the keys in File scope (like the palette's, not in the
 //! keymap): typing and line editing, Up/Down/PageUp/PageDown move in the list (the editor
 //! shows the match), Enter in the find field goes to the match and gives the editor the keys
-//! in read mode, shift+Enter there selects the previous match (D116), Enter in the replace field replaces one and ctrl+a there replaces all
-//! (D265), Tab / shift+Tab switch between the fields, Esc closes the box and returns to read
-//! mode. A key the keymap binds for the editor runs its command first (ctrl+f, f3, ctrl+r,
+//! in read mode, shift+Enter there selects the previous match (D116), Enter in the replace
+//! field asks Replace: One / All / Cancel (D279, [`ask_replace`]), Tab / shift+Tab switch
+//! between the fields, Esc closes the box and returns to read
+//! mode. A key the keymap binds for the editor runs its command first (ctrl+f, f4, ctrl+r,
 //! D111), except the `edit.*` commands, which would change the file behind the box: there
 //! ctrl+v pastes into the field and the others do nothing.
 
@@ -27,10 +28,11 @@ use vr_core::ropey::Rope;
 use vr_core::{Selection, Transaction};
 use vr_search::Query;
 
+use super::dialog::DialogAction;
 use super::registry::{CmdArgs, CmdResult, CommandSpec};
 use crate::app::{App, Focus};
 use crate::event_loop::chord_from_key;
-use crate::ui::dialog::LineInput;
+use crate::ui::dialog::{ConfirmDialog, DialogWidget, LineInput};
 
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
@@ -735,12 +737,7 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     let page = app.find.list_area.height.max(1) as isize;
     match key.code {
         KeyCode::Esc if plain => close_box(app),
-        KeyCode::Enter if plain && app.find.field == Field::Replace => {
-            let _ = run(app, replace_one);
-        }
-        KeyCode::Char('a') if m == KeyModifiers::CONTROL && app.find.field == Field::Replace => {
-            let _ = run(app, replace_all);
-        }
+        KeyCode::Enter if plain && app.find.field == Field::Replace => ask_replace(app),
         KeyCode::Enter if plain => jump(app),
         KeyCode::Enter if m == KeyModifiers::SHIFT && app.find.field == Field::Find => {
             step(app, false);
@@ -783,6 +780,49 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     }
     app.dirty = true;
     true
+}
+
+pub const ONE: &str = "One";
+pub const ALL: &str = "All";
+
+/// Enter in the replace field (D279): asks Replace: One / All / Cancel. One is the default:
+/// an in-file replacement is one undo step and Enter, Enter goes on to the next match. With no
+/// match it only says so; the box keeps the keys either way.
+fn ask_replace(app: &mut App) {
+    refresh_now(app);
+    let n = app.find.matches.len();
+    if n == 0 {
+        let msg = format!("Replace: no results for {:?}", app.find.input.text());
+        app.info(msg);
+        return;
+    }
+    let name = app.active_name();
+    let message = format!(
+        "Replace {:?} with {:?} in {name} ({n} match{})?",
+        app.find.input.text(),
+        app.find.replace.text(),
+        if n == 1 { "" } else { "es" }
+    );
+    let dialog = ConfirmDialog::new("Replace", message, &[ONE, ALL, super::file::CANCEL]);
+    app.open_dialog(DialogWidget::Confirm(dialog), DialogAction::ReplaceInFile);
+}
+
+/// The Replace dialog's answer: `Some(0)` = One, `Some(1)` = All; Cancel and Esc replace
+/// nothing. The dialog took the keys and with them edit mode: the replace row gets it back
+/// whatever the answer, as the box was before the question.
+pub fn answer_replace(app: &mut App, button: Option<usize>) {
+    if app.find.open && app.focus == Focus::FindBar && app.active_doc().is_some() {
+        app.enter_edit_mode();
+    }
+    match button {
+        Some(0) => {
+            let _ = run(app, replace_one);
+        }
+        Some(1) => {
+            let _ = run(app, replace_all);
+        }
+        _ => {}
+    }
 }
 
 /// Runs a command function, turning an error into a notice like `App::run_command`.

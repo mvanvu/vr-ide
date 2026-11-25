@@ -713,8 +713,8 @@ pub(crate) const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("editor", "ctrl+a", "edit.select_all"),
     ("editor", "ctrl+c", "edit.copy"),
     ("editor", "ctrl+f", "find.open"),
-    ("editor", "f3", "find.next"),
-    ("editor", "shift+f3", "find.prev"),
+    ("editor", "f4", "find.next"),
+    ("editor", "shift+f4", "find.prev"),
     ("editor", "ctrl+r", "find.replace_open"),
     ("editor", "ctrl+g", "nav.goto_line"),
     ("global", "ctrl+r", "search.replace_project"),
@@ -731,9 +731,7 @@ pub(crate) const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("global", "ctrl+h", "explorer.toggle_hidden"),
     ("global", "ctrl+f6", "explorer.toggle_ignored"),
     ("global", "ctrl+`", "terminal.toggle"),
-    ("global", "ctrl+f12", "terminal.new"),
     ("global", "shift+f12", "terminal.hide"),
-    ("global", "ctrl+f4", "terminal.close"),
     ("global", "f8", "terminal.next"),
     ("global", "shift+f8", "terminal.prev"),
     ("global", "ctrl+f8", "terminal.grow"),
@@ -749,11 +747,11 @@ pub(crate) const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("explorer", "ctrl+v", "explorer.paste"),
 ];
 
-/// Keys the spec removed (T21; ctrl+f2, f12 and f5 by the user's later changes). ctrl+f7,
-/// kept free for T19, is the panel position key now.
+/// Keys the spec removed (T21; ctrl+f2, f12 and f5 by the user's later changes; f3 / shift+f3,
+/// ctrl+f4 and ctrl+f12 by D279 / D280). ctrl+f7, kept free for T19, is the panel position key.
 pub(crate) const REMOVED_V2: &[&str] = &[
-    "ctrl+i", "ctrl+]", "ctrl+u", "f7", "shift+f7", "ctrl+t", "f4", "shift+f4", "f6", "ctrl+f1",
-    "ctrl+f2", "ctrl+f3", "ctrl+f5", "f12", "f5",
+    "ctrl+i", "ctrl+]", "ctrl+u", "f7", "shift+f7", "ctrl+t", "f3", "shift+f3", "f6", "ctrl+f1",
+    "ctrl+f2", "ctrl+f3", "ctrl+f5", "f12", "f5", "ctrl+f4", "ctrl+f12",
 ];
 
 /// The bytes GNOME Terminal (VTE) sends for `k` without the kitty protocol, and the event
@@ -805,6 +803,8 @@ pub(crate) fn legacy_event(k: &str) -> (Vec<u8>, Option<KeyEvent>) {
         "f2" => "\x1bOQ",
         "f3" => "\x1bOR",
         "shift+f3" => "\x1b[1;2R",
+        "f4" => "\x1bOS",
+        "shift+f4" => "\x1b[1;2S",
         "f8" => "\x1b[19~",
         "shift+f8" => "\x1b[19;2~",
         "ctrl+f8" => "\x1b[19;5~",
@@ -899,10 +899,29 @@ fn every_keyset_v2_key_runs_its_command() {
             }
         }
     }
-    // Known gap, reported as a T21 blocker (needs the user's decision): without the kitty
-    // protocol GNOME Terminal sends shift+f3 as ESC [ 1 ; 2 R, which crossterm 0.29 reads as a
-    // cursor position report, so find.prev never arrives (pty walk: qa-artifacts/T21/dev).
-    assert_eq!(lost, ["shift+f3 in edit", "shift+f3 in read"]);
+    // D264 closed by D279: find.prev moved from shift+f3 (ESC [ 1 ; 2 R, read by crossterm 0.29
+    // as a cursor position report) to shift+f4 (ESC [ 1 ; 2 S), which arrives: no key is lost.
+    assert!(lost.is_empty(), "{lost:?}");
+}
+
+/// D279: shift+f4 arrives from a terminal without the kitty protocol (ESC [ 1 ; 2 S) and steps
+/// back through the matches; shift+f3 (ESC [ 1 ; 2 R) is still read as a cursor report and is
+/// bound to nothing anyway.
+#[test]
+fn legacy_shift_f4_reaches_find_prev() {
+    let (bytes, ev) = legacy_event("shift+f4");
+    assert_eq!(bytes, b"\x1b[1;2S");
+    let ev = ev.expect("shift+f4 is a key event");
+    assert_eq!(ev, key_event("shift+f4"));
+    assert!(legacy_event("shift+f3").1.is_none());
+    let (_d, _p, mut app, _) = app_with_file("ab ab ab\n");
+    app.keyboard_enhanced = false;
+    app.run_command("find.open", CmdArgs::None);
+    app.handle_paste("ab");
+    app.ran.clear();
+    app.handle_key(legacy_event("f4").1.unwrap());
+    app.handle_key(ev);
+    assert_eq!(app.ran, ["find.next", "find.prev"]);
 }
 
 /// AC-21d: the removed keys run nothing, in either mode and in the explorer.

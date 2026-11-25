@@ -57,13 +57,12 @@
 # replace, see [editor]; in the find box on the project (and elsewhere) the project replace.
 "ctrl+r" = "search.replace_project"
 # Integrated terminal (M5). Hidden: show and focus it (a terminal starts if there is none);
-# shown elsewhere: focus it; focused: the editor gets the keys and the panel stays shown.
+# shown: hide it, whatever has the keys (D280). The "+" and "x" of the panel's tab bar open and
+# close terminals (no keys, D291).
 # Terminals without the kitty protocol send ctrl+` as NUL (the same byte as ctrl+space); that
 # byte toggles too (in a focused terminal as well, unless the setting terminal_pass_nul = true).
 "ctrl+`" = "terminal.toggle"
-"ctrl+f12" = "terminal.new"
 "shift+f12" = "terminal.hide"
-"ctrl+f4" = "terminal.close"
 "f8" = "terminal.next"
 "shift+f8" = "terminal.prev"
 # grow / shrink change the panel's height at the bottom, its width on the right.
@@ -93,10 +92,11 @@
 # One find box for the file and the project, with a result list; ctrl+f in the box switches
 # the scope. Query syntax: /re/ regex, a trailing /i ignores case, \/ is a slash.
 "ctrl+f" = "find.open"
-"f3" = "find.next"
-"shift+f3" = "find.prev"
-# The replace row of the find box in its scope; in the file it switches to edit mode: Enter
-# replaces one, ctrl+a replaces all.
+# f4 / shift+f4: without the kitty protocol shift+f3 never reaches vr-ide (D279).
+"f4" = "find.next"
+"shift+f4" = "find.prev"
+# The replace row of the find box in its scope; in the file it switches to edit mode: Enter in
+# the replace field asks Replace: One / All / Cancel.
 "ctrl+r" = "find.replace_open"
 
 [explorer]
@@ -113,10 +113,10 @@
 
 [terminal]
 # D8: a focused terminal receives every key except these (global keys do not apply here).
-# ctrl+` is the one reserved key: it gives the keys back to the editor and leaves the panel shown
-# (shift+f12 from the editor hides it). When the panel covers the whole editor (a short window),
-# ctrl+` hides the panel instead. Without the kitty protocol ctrl+` arrives as NUL and does the
-# same, unless terminal_pass_nul = true sends it to the program (then click the editor to leave);
-# a "ctrl+space" key added here wins over that. Built in, not listed: shift+pageup / shift+pagedown
-# scroll back, ctrl+shift+v pastes.
+# ctrl+` hides the panel and the editor gets the keys. Without the kitty protocol ctrl+` arrives
+# as NUL and does the same, unless terminal_pass_nul = true sends it to the program (then click
+# the editor to leave); a "ctrl+space" key added here wins over that. f1 opens the command window
+# from a focused terminal too (D279). Built in, not listed: shift+pageup / shift+pagedown scroll
+# back, ctrl+shift+v pastes.
 "ctrl+`" = "terminal.toggle"
+"f1" = "app.palette"

@@ -8,6 +8,7 @@ mod app_workspace;
 pub mod cli;
 pub mod clipboard;
 pub mod commands;
+mod config_reload;
 pub mod event_loop;
 pub mod monitor;
 mod recent_files;
@@ -19,6 +20,8 @@ pub mod workspace;
 
 #[cfg(test)]
 mod app_tests;
+#[cfg(test)]
+mod config_reload_tests;
 #[cfg(test)]
 mod dialog_tests;
 #[cfg(test)]

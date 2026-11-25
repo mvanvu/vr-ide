@@ -19,7 +19,7 @@
 //! the list), Enter searches / previews / opens the result, Space checks a preview file, Esc
 //! closes a preview first, then the box (read mode). A key the keymap binds globally (ctrl+r:
 //! project replace, ctrl+h, f1) runs its command first; so do the box's editor keys (ctrl+f
-//! switches the scope, f3 / shift+f3 step through the results).
+//! switches the scope, f4 / shift+f4 step through the results).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -787,7 +787,7 @@ pub fn focus_editor(app: &mut App) {
     app.dirty = true;
 }
 
-/// search.next_result / search.prev_result (palette), and f3 / shift+f3 while the find box
+/// search.next_result / search.prev_result (palette), and f4 / shift+f4 while the find box
 /// is on the project: the next (previous) result after the selected row, wrapping; opens it.
 pub(crate) fn step_result(app: &mut App, forward: bool) {
     let rows = app.search.rows();
@@ -1692,8 +1692,8 @@ fn escape(app: &mut App) {
     }
 }
 
-/// The find box commands whose keys the editor table holds (ctrl+f switches the scope, f3 /
-/// shift+f3 step through the results): they work in the box on the project too.
+/// The find box commands whose keys the editor table holds (ctrl+f switches the scope, f4 /
+/// shift+f4 step through the results): they work in the box on the project too.
 const BOX_COMMANDS: &[&str] = &["find.open", "find.next", "find.prev"];
 
 /// Keys while the box has the keys in Project scope; true when used.

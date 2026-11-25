@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/terminal_tests.rs
+expression: t.backend()
+---
+" /p                                                                             "
+"    ┌ Command Palette ─────────────────────────────────────────────────────┐    "
+"  vr│> terminal:                                                           │──  "
+"  /p│ Terminal: Decrease Panel Size  terminal.shrink               ctrl+f9 │ —  "
+"    │ Terminal: Focus Next Terminal  terminal.next                      f8 │    "
+"    │ Terminal: Focus Previous Terminal  terminal.prev            shift+f8 │ —  "
+"  ST│ Terminal: Hide Terminal  terminal.hide                     shift+f12 │ —  "
+"  ct│ Terminal: Increase Panel Size  terminal.grow                 ctrl+f8 │ —  "
+"  f1│ Terminal: Toggle Panel Position  terminal.toggle_position    ctrl+f7 │ —  "
+"  ct│ Terminal: Toggle Terminal  terminal.toggle                    ctrl+` │    "
+"  ct└──────────────────────────────────────────────────────────────────────┘──  "
+"  ctrl+`  Terminal                      │ CPU                                —  "
+"  ctrl+q  Quit                          │ RSS                                —  "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+" /p                                                                             "

@@ -448,7 +448,7 @@ fn a_new_terminal_starts_at_the_right_panel_size() {
     let (_d, mut app, _) = term_app();
     right(&mut app);
     draw(&mut app, 120, 40);
-    app.run_command("terminal.new", CmdArgs::None);
+    crate::commands::terminal::new_terminal(&mut app);
     assert_eq!(tab(&app).size(), (48, 37));
 }
 

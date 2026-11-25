@@ -34,7 +34,8 @@ discards.
 (Terminal: Toggle Panel Position) does; set `terminal_position` in `settings.toml` to keep it.
 On the right the panel takes `terminal_width_percent` of the editor column (drag the separator,
 or `ctrl+f8` / `ctrl+f9`, to change it) and falls back to the bottom while the editor column is
-under 60 columns wide. `/wrap` is listed but not available yet.
+under 60 columns wide. A new terminal and closing one: the `+` and the `x` of each tab in the
+panel's tab bar (no slash command, no key).
 
 File commands act on the active tab. `/rename <name>` renames its file in the same folder with the
 explorer's checks (one name, no `/`; an existing name is never replaced) and the tab follows,
@@ -59,8 +60,11 @@ written); the value is checked as in the file (type, range, theme names). Only t
 applied: explorer toggles and the terminal height you changed stay as they are.
 `/config` and `/keymap` open your `settings.toml` and `keymap.toml`; a missing one is first
 made from the built-in defaults with every line commented out, so it changes nothing until you
-uncomment a line. Changes in those files apply when vr-ide starts again. `/keys` shows the
-keys of the keymap in use in a read-only tab (keys a terminal without the kitty keyboard
+uncomment a line. Saving either file, in vr-ide or in another editor, reads it again at once:
+of `settings.toml` only the settings whose value in the file changed are applied (as `/set`
+does, so a `/set` or a toggle of this session on another setting stays); `keymap.toml` replaces
+the keys in use. A file with an error (bad TOML, an unknown name, a wrong value) changes
+nothing: the old values stay and the error is shown. `/keys` shows the keys of the keymap in use in a read-only tab (keys a terminal without the kitty keyboard
 protocol does not send are marked).
 
 <!-- slash-commands:start (generated from the registry; a test checks it) -->
@@ -80,8 +84,6 @@ protocol does not send are marked).
 | `/indent 2\|4\|tab` | Re-indent; set the file's indent unit |
 | `/eol lf\|crlf` | Convert the file's line breaks |
 | `/lang <id>` | Highlight the file as another language |
-| `/term new [root]` | Open a new terminal tab in a workspace folder (default: the active file's) |
-| `/term close` | Close the active terminal tab |
 | `/term right` | Terminal panel on the right, for this session |
 | `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
@@ -92,7 +94,6 @@ protocol does not send are marked).
 | `/ws open <file>` | Open a .vr-workspace file |
 | `/ws recent [n]` | Open a recent workspace (no number: list them) |
 | `/theme synthwave\|dracula\|dark\|light` | Switch the colour theme for this session |
-| `/wrap` | Toggle soft line wrap (not available yet) |
 | `/hidden` | Show or hide hidden files in the explorer |
 | `/ignored` | Show or hide ignored files in the explorer |
 | `/set <name> <value>` | Change a setting for this session |

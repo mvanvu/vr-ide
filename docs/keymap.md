@@ -33,7 +33,8 @@ Project replace and reloads from disk still update open files in either mode.
 A single `space` in read mode waits for the second key. The `space` keys are built in, not keymap
 entries (a keymap binding is always one key). `ctrl+i` is not an edit key: without the kitty
 protocol the terminal sends it as `tab`. From the explorer `tab` also moves the focus on; a focused
-terminal keeps `tab` for its program (``ctrl+` `` gives the keys back).
+terminal keeps `tab` for its program (``ctrl+` `` hides the panel; a click on the editor gives the
+keys back with the panel shown).
 
 ## Default keys
 
@@ -57,9 +58,7 @@ terminal keeps `tab` for its program (``ctrl+` `` gives the keys back).
 | `explorer.toggle_ignored` | Explorer: Toggle Ignored Files | `ctrl+f6` |
 | `search.replace_project` | Replace in Project | `ctrl+r` (outside the editor, e.g. in the find box on the project; in the editor `ctrl+r` is the replace of the find box's scope) |
 | `terminal.toggle` | Terminal: Toggle Terminal | ``ctrl+` `` (see below) |
-| `terminal.new` | Terminal: New Terminal | `ctrl+f12` |
 | `terminal.hide` | Terminal: Hide Terminal | `shift+f12` |
-| `terminal.close` | Terminal: Close Terminal | `ctrl+f4` |
 | `terminal.next` | Terminal: Focus Next Terminal | `f8` |
 | `terminal.prev` | Terminal: Focus Previous Terminal | `shift+f8` |
 | `terminal.grow` | Terminal: Increase Panel Size | `ctrl+f8` (height at the bottom, width on the right) |
@@ -90,9 +89,9 @@ under 60 columns wide the panel is shown at the bottom.
 | `editor.read_mode` | Enter Read Mode (also clears the selection) | `escape` (in the find box, palette, dialogs and panels `esc` keeps its own meaning) |
 | `nav.goto_line` | Go to Line | `ctrl+g` |
 | `find.open` | Find | `ctrl+f` (opens the find box on the file, on the project when no file is open; in the box it switches the scope File ↔ Project, see [The find box](#the-find-box)) |
-| `find.next` | Find Next | `f3` (next match; in Project scope the next result) |
-| `find.prev` | Find Previous | `shift+f3` (previous match or result) |
-| `find.replace_open` | Replace | `ctrl+r` (the replace row of the box in its scope: File scope switches the tab to edit mode, `enter` replaces one, `ctrl+a` replaces all; Project scope, or no file open, is the project replace) |
+| `find.next` | Find Next | `f4` (next match; in Project scope the next result) |
+| `find.prev` | Find Previous | `shift+f4` (previous match or result) |
+| `find.replace_open` | Replace | `ctrl+r` (the replace row of the box in its scope: File scope switches the tab to edit mode and `enter` in the replace field asks Replace: One / All / Cancel; Project scope, or no file open, is the project replace) |
 
 ### `[explorer]`
 
@@ -111,27 +110,28 @@ No keymap entries; the palette's keys are built in (see below).
 
 ### `[terminal]`
 
-A focused terminal receives every key except one: ``ctrl+` ``. Global keys such as `ctrl+s`,
-`ctrl+w` or `ctrl+p` go to the program. Add your own keys to `[terminal]` to take them from
-programs.
+A focused terminal receives every key except two: ``ctrl+` `` and `f1` (the command window, from
+the terminal too). Global keys such as `ctrl+s`, `ctrl+w` or `ctrl+p` go to the program. Add your
+own keys to `[terminal]` to take them from programs.
 
-| Where | ``ctrl+` `` does |
+| Panel | ``ctrl+` `` does (wherever the keys are) |
 |---|---|
-| Editor, panel hidden | shows the panel and focuses it (a terminal starts if none runs) |
-| Editor, panel shown | focuses the panel |
-| Focused terminal | gives the keys back to the editor; the panel stays shown |
-| Focused terminal, window so short that the panel covers the whole editor | hides the panel (there is no editor row to give the keys to); the panel's hint then reads ``ctrl+` hide`` |
+| hidden | shows the panel and focuses it (a terminal starts if none runs) |
+| shown | hides the panel; a focused terminal gives the keys to the editor; the terminals keep running |
 
-`shift+f12` (from the editor, explorer or find box) hides the panel; the terminals
-keep running. Without the kitty protocol the terminal sends ``ctrl+` `` as NUL, the same byte as
+To leave a terminal with the panel shown, click the editor. The panel's tab bar has a `+` after the
+tabs (a new terminal in the active file's workspace folder) and an `x` at the end of each tab
+(closes that terminal, its programs are hung up; the last one hides the panel); there are no keys
+for them. `shift+f12` (from the editor, explorer or find box) hides the panel too.
+Without the kitty protocol the terminal sends ``ctrl+` `` as NUL, the same byte as
 `ctrl+space`; vr-ide takes NUL as ``ctrl+` `` too, inside a focused terminal as well, unless
 `terminal_pass_nul = true` (then the program gets NUL and a click on the editor gives the keys
 back):
 
 | Terminal | ``ctrl+` `` in a focused terminal | `ctrl+space` in a focused terminal |
 |---|---|---|
-| kitty protocol | gives the keys back | goes to the program |
-| legacy (default) | arrives as NUL and gives the keys back | sends the same NUL: gives the keys back |
+| kitty protocol | hides the panel | goes to the program |
+| legacy (default) | arrives as NUL and hides the panel | sends the same NUL: hides the panel |
 | legacy, `terminal_pass_nul = true` | arrives as NUL and goes to the program | goes to the program |
 
 A `ctrl+space` binding you add to `[terminal]` wins over the NUL rule.
@@ -161,8 +161,8 @@ A `ctrl+space` binding you add to `[terminal]` wins over the NUL rule.
 | `workspace.open_recent` | Workspace: Open Recent (opens `/ws recent `; the welcome screen lists them too, a click opens one) |
 
 Match case and regex are part of the query (see [The find box](#the-find-box)); there are no
-option commands. With several workspace folders, "Terminal: New Terminal" from the palette first asks
-which folder the shell starts in (`/term new [root]`); its key uses the active file's folder.
+option commands. A new terminal starts in the active file's workspace folder (the first one still on disk
+when that one is gone); there is no key, palette entry or slash command for it: the panel's `+`.
 
 ## The find box
 
@@ -207,8 +207,8 @@ Typing and cursor movement are built in and not listed in `keymap.toml`.
 | Explorer menu | A right click on a row (or below the rows, for the project folder) opens a menu of the `[explorer]` actions with their keys; dimmed ones do not apply there. `up`/`down`, `home`/`end` move over the others; `enter` or a left click runs one; `esc` or a click outside closes it; any other key closes it and does its usual job |
 | Palette | `up`/`down`, `pageup`/`pagedown` move; `enter` runs; `esc` closes |
 | Dialogs | `left`/`right`/`tab`/`shift+tab` choose a button; `enter` confirms; `esc` cancels. A held (repeating) `enter` never confirms |
-| Find box, File scope | typing searches as you type; `up`/`down`/`pageup`/`pagedown` move in the list (the editor shows the match); `enter` in the find field goes to the match and gives the editor the keys in read mode (the box stays open: `f3`/`shift+f3` go on); `shift+enter` there selects the previous match and keeps the box (terminals with the kitty keyboard protocol; others send it as `enter`); in the replace field `enter` replaces one and `ctrl+a` replaces all (the box shows "enter one · ctrl+a all"); `tab`/`shift+tab` switch field; `esc` closes the box and returns to read mode. A click on a row selects that match |
-| Terminal | Every key goes to the program except ``ctrl+` `` and these: `shift+pageup`/`shift+pagedown` scroll back (main screen only; any key or new output returns to the bottom); `ctrl+shift+v` pastes the clipboard (bracketed when the program asked for it). After the program exits, `enter` starts a new shell in the tab and the Close File key (`ctrl+w`) closes it. Mouse: drag selects and copies, the wheel scrolls back (programs that ask for the mouse get it; hold `shift` to select anyway), a click on a tab switches to it, dragging the tab bar (at the bottom) or the separator (on the right) resizes the panel |
+| Find box, File scope | typing searches as you type; `up`/`down`/`pageup`/`pagedown` move in the list (the editor shows the match); `enter` in the find field goes to the match and gives the editor the keys in read mode (the box stays open: `f4`/`shift+f4` go on); `shift+enter` there selects the previous match and keeps the box (terminals with the kitty keyboard protocol; others send it as `enter`); in the replace field `enter` asks "Replace: One / All / Cancel" (One first; the box shows "enter replace"; each replacement is one undo step); `tab`/`shift+tab` switch field; `esc` closes the box and returns to read mode. A click on a row selects that match |
+| Terminal | Every key goes to the program except ``ctrl+` ``, `f1` and these: `shift+pageup`/`shift+pagedown` scroll back (main screen only; any key or new output returns to the bottom); `ctrl+shift+v` pastes the clipboard (bracketed when the program asked for it). After the program exits, `enter` starts a new shell in the tab and the Close File key (`ctrl+w`) closes it. Mouse: drag selects and copies, the wheel scrolls back (programs that ask for the mouse get it; hold `shift` to select anyway), a click on a tab switches to it, on its `x` closes it, on the `+` opens a new terminal, dragging the tab bar (at the bottom) or the separator (on the right) resizes the panel |
 | Find box, Project scope | `tab`/`shift+tab` switch field; `enter` in the search field searches, in the replace field shows the replace preview, on a result opens it (read mode; the box stays open), and on a shown preview confirms the replace; `down` moves into the results; `up`/`down`/`pageup`/`pagedown`/`home`/`end` move in the list; `space` checks or unchecks a replace preview row; `esc` closes a preview (cancels a running replace), otherwise closes the box and returns to read mode |
 
 A user binding for a plain key in a context wins over that context's built-in key.

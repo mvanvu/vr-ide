@@ -39,16 +39,6 @@ pub const COMMANDS: &[CommandSpec] = &[
         run: hide_terminal,
     },
     CommandSpec {
-        name: "terminal.new",
-        title: "Terminal: New Terminal",
-        run: new_terminal,
-    },
-    CommandSpec {
-        name: "terminal.close",
-        title: "Terminal: Close Terminal",
-        run: close_terminal,
-    },
-    CommandSpec {
         name: "terminal.next",
         title: "Terminal: Focus Next Terminal",
         run: next,
@@ -293,22 +283,16 @@ impl TerminalPanel {
 
 // ---- commands ------------------------------------------------------------------------------
 
-/// ctrl+`, the one key a focused terminal keeps (D230). Hidden: show and focus (a terminal
-/// starts when there is none); shown elsewhere: focus it; focused: the editor gets the keys and
-/// the panel stays shown. When the panel covers the whole editor there is nothing to give the
-/// keys to, so it hides the panel instead: otherwise a keyboard user could not leave.
-fn toggle(app: &mut App, args: CmdArgs) -> CmdResult {
-    if app.terminal.visible && app.focus == Focus::Terminal {
-        if editor_covered(app) {
-            hide(app);
-            Ok(())
-        } else {
-            focus_editor(app, args)
-        }
+/// ctrl+`, the one key a focused terminal keeps (D280): hidden, show the panel and give it the
+/// keys (a terminal starts when there is none); shown, hide it, whatever has the keys. The
+/// terminals keep running while hidden.
+fn toggle(app: &mut App, _: CmdArgs) -> CmdResult {
+    if app.terminal.visible {
+        hide(app);
     } else {
         show(app);
-        Ok(())
     }
+    Ok(())
 }
 
 /// Hides the panel (shift+f12); the terminals keep running.
@@ -317,23 +301,50 @@ fn hide_terminal(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
-fn new_terminal(app: &mut App, _: CmdArgs) -> CmdResult {
-    if add_tab(app) {
-        reveal(app);
-    }
-    Ok(())
-}
-
-/// `terminal.new` with the shell started in `cwd` (the root picked in the F1 window, W-2).
-pub fn new_terminal_in(app: &mut App, cwd: &Path) {
-    if add_tab_in(app, cwd) {
+/// The tab bar's '+' (D280, D291; no key, no palette entry): a new terminal tab, shown with
+/// the keys, its shell started in the active file's root (the first root still on disk when
+/// that one is gone).
+pub fn new_terminal(app: &mut App) {
+    let cwd = new_tab_dir(app);
+    if add_tab_in(app, &cwd) {
         reveal(app);
     }
 }
 
-fn close_terminal(app: &mut App, _: CmdArgs) -> CmdResult {
-    close_active(app);
-    Ok(())
+/// Where the '+' starts a shell: the active file's root, else the first root whose folder
+/// exists; the active root when none does (the start then fails with a notice). One stat per
+/// click.
+fn new_tab_dir(app: &App) -> PathBuf {
+    let active = app.active_root().path.clone();
+    if active.is_dir() {
+        return active;
+    }
+    app.workspace
+        .roots()
+        .iter()
+        .map(|r| r.path.clone())
+        .find(|p| p.is_dir())
+        .unwrap_or(active)
+}
+
+/// A tab's 'x' in the tab bar (D280): closes that terminal (its process group is hung up, no
+/// question, as the close key did); the last one hides the panel.
+pub fn close_tab(app: &mut App, i: usize) {
+    let p = &mut app.terminal;
+    if i >= p.tabs.len() {
+        return;
+    }
+    let tab = p.tabs.remove(i);
+    drop_later(tab.term);
+    p.selection = None;
+    p.captured = false;
+    if p.tabs.is_empty() {
+        p.active = 0;
+        hide(app);
+    } else if i < p.active || p.active >= p.tabs.len() {
+        p.active = p.active.saturating_sub(1).min(p.tabs.len() - 1);
+    }
+    app.dirty = true;
 }
 
 fn next(app: &mut App, _: CmdArgs) -> CmdResult {
@@ -473,7 +484,7 @@ fn right_now(app: &App) -> bool {
     right_in(app, column)
 }
 
-/// The editor gets the keys; the panel stays (ctrl+` in a focused terminal, D230).
+/// The editor gets the keys; the panel stays (`focus.editor`, also what a click on the editor does).
 fn focus_editor(app: &mut App, _: CmdArgs) -> CmdResult {
     // A panel that covers the whole editor keeps the keys: nothing would show them.
     if editor_covered(app) && has_keys(app) {
@@ -558,7 +569,7 @@ fn step(app: &mut App, forward: bool) {
 /// Starts a terminal in a new tab and makes it active; a failure becomes an error notice.
 /// A new terminal tab in the root of the active file, else the first root (spec W).
 fn add_tab(app: &mut App) -> bool {
-    let cwd = app.active_root().path.clone();
+    let cwd = new_tab_dir(app);
     add_tab_in(app, &cwd)
 }
 
@@ -609,21 +620,8 @@ fn restart(app: &mut App) {
 
 /// Closes the active terminal (its process group is hung up); the last one hides the panel.
 fn close_active(app: &mut App) {
-    let p = &mut app.terminal;
-    if p.active >= p.tabs.len() {
-        return;
-    }
-    let tab = p.tabs.remove(p.active);
-    drop_later(tab.term);
-    p.selection = None;
-    p.captured = false;
-    if p.tabs.is_empty() {
-        p.active = 0;
-        hide(app);
-    } else {
-        p.active = p.active.min(p.tabs.len() - 1);
-    }
-    app.dirty = true;
+    let i = app.terminal.active;
+    close_tab(app, i);
 }
 
 /// Drops a terminal off the UI thread: vr-term's Drop waits up to a grace period for a child
@@ -1103,8 +1101,10 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
     }
     if ev.row == area.y {
         if ev.kind == MK::Down(MB::Left) {
-            match tab_at(app, ev.column - area.x) {
-                Some(i) => {
+            match bar_hit(app, ev.column - area.x) {
+                Some(BarHit::New) => new_terminal(app),
+                Some(BarHit::Close(i)) => close_tab(app, i),
+                Some(BarHit::Tab(i)) => {
                     app.terminal.active = i;
                     app.terminal.selection = None;
                     app.terminal.captured = false;
@@ -1209,13 +1209,33 @@ fn clamp_cell(grid: Rect, column: u16, row: u16) -> (usize, usize) {
     (usize::from(r), usize::from(c))
 }
 
-/// The tab under column `x` of the tab bar, as the bar is drawn at the panel's width.
-fn tab_at(app: &App, x: u16) -> Option<usize> {
+/// What a click on the tab bar hits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BarHit {
+    /// The '+' after the tabs: a new terminal.
+    New,
+    /// The 'x' of terminal `i`'s tab.
+    Close(usize),
+    /// The rest of terminal `i`'s tab.
+    Tab(usize),
+}
+
+/// What column `x` of the tab bar holds, as the bar is drawn at the panel's width.
+fn bar_hit(app: &App, x: u16) -> Option<BarHit> {
     let bar = crate::ui::terminal_view::tab_bar(app, app.layout.terminal.width);
+    if bar
+        .plus
+        .is_some_and(|p| x >= p && x < p + crate::ui::terminal_view::PLUS_WIDTH)
+    {
+        return Some(BarHit::New);
+    }
     bar.tabs
         .iter()
         .find(|t| x >= t.x && x < t.x + t.width)
-        .map(|t| t.index)
+        .map(|t| match t.close {
+            Some(c) if x == t.x + c => BarHit::Close(t.index),
+            _ => BarHit::Tab(t.index),
+        })
 }
 
 /// Dragging the edge: at the bottom the panel reaches from the mouse row to its bottom; on the

@@ -63,8 +63,6 @@ fn registry_has_the_phase_1_commands_once() {
     let want = [
         "save-as",
         "reload",
-        "term new",
-        "term close",
         "term right",
         "term bottom",
         "run",
@@ -75,7 +73,6 @@ fn registry_has_the_phase_1_commands_once() {
         "ws open",
         "ws recent",
         "theme",
-        "wrap",
         "hidden",
         "ignored",
         "help",
@@ -157,17 +154,9 @@ fn slash_lists_matching_commands_with_arguments_and_descriptions() {
     assert_eq!(p.items[0].detail, SLASH_COMMANDS[0].description);
     assert!(p.items.iter().all(|i| i.keys.is_empty()));
     typ(&mut app, "te");
-    assert_eq!(
-        titles(&app),
-        [
-            "/term new [root]",
-            "/term close",
-            "/term right",
-            "/term bottom",
-        ]
-    );
-    typ(&mut app, "rm c");
-    assert_eq!(titles(&app), ["/term close"]);
+    assert_eq!(titles(&app), ["/term right", "/term bottom",]);
+    typ(&mut app, "rm b");
+    assert_eq!(titles(&app), ["/term bottom"]);
 }
 
 #[test]
@@ -252,7 +241,7 @@ fn tab_completes_the_command_name() {
     slash(&mut app, "/term");
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Tab);
-    assert_eq!(input(&app), "/term close");
+    assert_eq!(input(&app), "/term bottom");
     assert_eq!(app.focus, Focus::Palette, "tab stays in the window");
 }
 
@@ -443,16 +432,31 @@ fn term_right_and_bottom_set_the_panel_position() {
     );
 }
 
+/// D279 / D290: /wrap, /term new and /term close are gone; Enter on them says so and starts
+/// or closes nothing (new / close: the '+' and 'x' of the terminal tab bar).
 #[test]
-fn unavailable_commands_say_so_and_change_nothing() {
-    let (mut app, _) = test_app(Path::new("/p"));
-    slash(&mut app, "/wrap");
+fn removed_commands_are_unknown_and_change_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let (mut app, _) = test_app(d.path());
+    use_sh(&mut app);
+    for gone in ["/wrap", "/term new", "/term close"] {
+        assert!(
+            parse(gone).unwrap_err().starts_with("unknown command"),
+            "{gone}"
+        );
+        slash(&mut app, gone);
+        assert!(
+            titles(&app).iter().all(|t| !t.starts_with(gone)),
+            "{gone}: {:?}",
+            titles(&app)
+        );
+        key(&mut app, KeyCode::Esc);
+    }
+    crate::commands::terminal::new_terminal(&mut app);
+    slash(&mut app, "/term close");
     key(&mut app, KeyCode::Enter);
-    assert_eq!(
-        error(&app).as_deref(),
-        Some("available after the soft wrap feature")
-    );
-    assert!(app.terminal.tabs.is_empty());
+    assert_eq!(app.terminal.tabs.len(), 1, "nothing closed");
+    assert!(app.terminal.visible);
 }
 
 #[test]
@@ -502,26 +506,6 @@ fn q_bang_discards_with_a_recovery_copy() {
         1,
         "the unsaved buffer is in the recovery folder"
     );
-}
-
-#[test]
-fn term_new_and_close() {
-    let d = tempfile::tempdir().unwrap();
-    let (mut app, _) = test_app(d.path());
-    use_sh(&mut app);
-    slash(&mut app, "/term close");
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(error(&app).as_deref(), Some("no terminal is open"));
-    key(&mut app, KeyCode::Esc);
-    slash(&mut app, "/term new");
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.terminal.tabs.len(), 1);
-    assert!(app.terminal.visible);
-    assert_eq!(app.focus, Focus::Terminal);
-    app.run_command("app.palette", crate::commands::CmdArgs::None);
-    typ(&mut app, "/term close");
-    key(&mut app, KeyCode::Enter);
-    assert!(app.terminal.tabs.is_empty());
 }
 
 fn use_sh(app: &mut App) {
@@ -629,8 +613,7 @@ fn run_in_an_exited_terminal_opens_a_new_one() {
 #[test]
 fn ai_runs_the_tool_in_a_new_tab_through_the_shell() {
     let (_d, mut app) = sh_app();
-    slash(&mut app, "/term new");
-    key(&mut app, KeyCode::Enter);
+    crate::commands::terminal::new_terminal(&mut app);
     app.run_command("app.palette", crate::commands::CmdArgs::None);
     typ(&mut app, "/ai echo tool-ran");
     key(&mut app, KeyCode::Enter);
@@ -949,8 +932,7 @@ fn q_bang_with_a_running_terminal_asks_once_and_discards() {
     let rec = d.path().join("recovery");
     app.recovery_dir = Some(rec.clone());
     typ(&mut app, "x");
-    slash(&mut app, "/term new");
-    key(&mut app, KeyCode::Enter);
+    crate::commands::terminal::new_terminal(&mut app);
     assert_eq!(app.terminal.running(), 1);
     app.run_command("app.palette", crate::commands::CmdArgs::None);
     typ(&mut app, "/q!");
@@ -979,8 +961,7 @@ fn q_bang_cancelled_leaves_no_discard_behind() {
     let (_d, path, mut app, _) = app_with_file("a\n");
     use_sh(&mut app);
     typ(&mut app, "x");
-    slash(&mut app, "/term new");
-    key(&mut app, KeyCode::Enter);
+    crate::commands::terminal::new_terminal(&mut app);
     app.run_command("app.palette", crate::commands::CmdArgs::None);
     typ(&mut app, "/q!");
     key(&mut app, KeyCode::Enter);

@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/find_tests.rs
+expression: t.backend()
+---
+" a.txt                                                                          "
+" File  fn                                                                   1/2 "
+"Replace pub fn                                                     enter replace"
+"1  fn alpha() {}                                                                "
+"2  fn beta() {}                                                                 "
+"                                                                                "
+"  1 fn alpha() {}                                                               "
+"  2 fn beta() {}                                                                "
+"  3                                                                             "
+"              ┌ Replace ─────────────────────────────────────────┐              "
+"              │ Replace "fn" with "pub fn" in a.txt (2 matches)? │              "
+"              │                                                  │              "
+"              │ [One] [All] [Cancel]                             │              "
+"              └──────────────────────────────────────────────────┘              "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" READ a.txt · Ln 1, Col 3 · LF · UTF-8                                          "

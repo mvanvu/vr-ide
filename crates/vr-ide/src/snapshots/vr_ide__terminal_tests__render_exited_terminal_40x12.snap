@@ -8,9 +8,9 @@ expression: t.backend()
 " CPU                                  — "
 " RAM ░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    — "
 "                                        "
-" 1 sh  2 htop [3]         ctrl+` editor "
+" 1 sh x  2 htop [3] x  +    ctrl+` hide "
 "$ ls --color                            "
 "docs  src  README.md  run.sh            "
 "$ echo 'xin chào 世界'                  " Hidden by multi-width symbols: [(18, " "), (20, " ")]
 " exited 3 · Enter restart · ctrl+w close"
-" TERM  …d 3] 2/2 · 80×9 · ctrl+` editor "
+" TERM  …ted 3] 2/2 · 80×9 · ctrl+` hide "

@@ -35,8 +35,8 @@ const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("editor", "ctrl+a", "edit.select_all"),
     ("editor", "ctrl+c", "edit.copy"),
     ("editor", "ctrl+f", "find.open"),
-    ("editor", "f3", "find.next"),
-    ("editor", "shift+f3", "find.prev"),
+    ("editor", "f4", "find.next"),
+    ("editor", "shift+f4", "find.prev"),
     ("editor", "ctrl+r", "find.replace_open"),
     ("global", "ctrl+r", "search.replace_project"),
     ("global", "ctrl+s", "file.save"),
@@ -53,9 +53,7 @@ const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("global", "ctrl+h", "explorer.toggle_hidden"),
     ("global", "ctrl+f6", "explorer.toggle_ignored"),
     ("global", "ctrl+`", "terminal.toggle"),
-    ("global", "ctrl+f12", "terminal.new"),
     ("global", "shift+f12", "terminal.hide"),
-    ("global", "ctrl+f4", "terminal.close"),
     ("global", "f8", "terminal.next"),
     ("global", "shift+f8", "terminal.prev"),
     ("global", "ctrl+f8", "terminal.grow"),
@@ -72,11 +70,12 @@ const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("explorer", "ctrl+v", "explorer.paste"),
 ];
 
-/// Keys the spec removed (T21 "Removed"; ctrl+f2 by the user's later change): bound nowhere.
-/// ctrl+f7, kept free for T19, is the panel position key now.
+/// Keys the spec removed (T21 "Removed"; ctrl+f2 by the user's later change; f3 / shift+f3,
+/// ctrl+f4 and ctrl+f12 by D279 / D280): bound nowhere. ctrl+f7, kept free for T19, is the
+/// panel position key now.
 const REMOVED_V2: &[&str] = &[
-    "ctrl+i", "ctrl+]", "ctrl+u", "f7", "shift+f7", "ctrl+t", "f4", "shift+f4", "f6", "ctrl+f1",
-    "ctrl+f2", "ctrl+f3", "ctrl+f5", "f12", "f5",
+    "ctrl+i", "ctrl+]", "ctrl+u", "f7", "shift+f7", "ctrl+t", "f3", "shift+f3", "f6", "ctrl+f1",
+    "ctrl+f2", "ctrl+f3", "ctrl+f5", "f12", "f5", "ctrl+f4", "ctrl+f12",
 ];
 
 /// Every command name the plan's registry lists, plus the M5 reserved one.
@@ -135,8 +134,6 @@ const KNOWN: &[&str] = &[
     "focus.cycle",
     "focus.editor",
     "terminal.toggle",
-    "terminal.new",
-    "terminal.close",
     "terminal.next",
     "terminal.prev",
     "terminal.grow",
@@ -271,14 +268,18 @@ fn defaults_load_without_user_file() {
         assert_eq!(km.command_for_in(ctx, &chord(k)), Some(cmd), "{ctx} {k}");
         assert_eq!(km.keys_for(cmd), [chord(k)], "{cmd} has one key");
     }
-    // Nothing is bound that the table does not list (the terminal table repeats ctrl+`, D8).
+    // Nothing is bound that the table does not list (the terminal table repeats ctrl+`, D8, and
+    // f1, D279).
     for (ctx, k, cmd) in km.bindings() {
         let listed = KEYSET_V2.iter().any(|&(c, key, command)| {
             Context::from_name(c) == Some(ctx) && chord(key) == *k && command == cmd
         });
-        let terminal_toggle = ctx == Context::Terminal && cmd == "terminal.toggle";
+        let terminal_repeat = ctx == Context::Terminal
+            && [("ctrl+`", "terminal.toggle"), ("f1", "app.palette")]
+                .iter()
+                .any(|&(key, command)| chord(key) == *k && command == cmd);
         assert!(
-            listed || terminal_toggle,
+            listed || terminal_repeat,
             "{ctx} {k} = {cmd} is not in the T21 table"
         );
     }
@@ -331,7 +332,16 @@ fn defaults_load_without_user_file() {
         km.command_for_in(Context::Explorer, &chord("ctrl+s")),
         Some("file.save")
     );
-    // D8/D230: a focused terminal gets every key except ctrl+`.
+    // D8/D230: a focused terminal gets every key except ctrl+` and f1 (D279: the command window
+    // opens from the terminal too).
+    assert_eq!(
+        km.command_for_in(Context::Terminal, &chord("f1")),
+        Some("app.palette")
+    );
+    assert_eq!(
+        km.command_for_in(Context::Terminal, &chord("shift+f1")),
+        None
+    );
     assert_eq!(km.command_for_in(Context::Terminal, &chord("alt+q")), None);
     assert_eq!(km.command_for_in(Context::Terminal, &chord("ctrl+s")), None);
     // M5 (D185): ctrl+` toggles the panel everywhere, in a focused terminal too; ctrl+space

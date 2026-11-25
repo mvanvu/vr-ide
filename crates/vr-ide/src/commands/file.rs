@@ -76,6 +76,8 @@ pub fn save_doc(app: &mut App, i: usize) -> SaveOutcome {
         Ok(saved) => {
             if let Some(p) = app.docs[i].path.clone() {
                 super::explorer::note_written(app, &p);
+                // settings.toml / keymap.toml apply when saved (T24).
+                app.config_file_changed(&p, true);
             }
             hard_link_notice(app, &name, saved);
             SaveOutcome::Saved
@@ -466,6 +468,7 @@ pub fn save_as_doc(
     app.rewatch(old.as_deref(), target);
     super::explorer::note_written(app, target);
     hard_link_notice(app, &name, saved);
+    app.config_file_changed(target, true);
     app.dirty = true;
     Ok(())
 }
@@ -612,6 +615,8 @@ fn keep_mine(app: &mut App, i: usize, seen: Option<&DiskVersion>) {
         Ok(saved) => {
             if let Some(p) = app.docs[i].path.clone() {
                 super::explorer::note_written(app, &p);
+                // settings.toml / keymap.toml apply when saved (T24).
+                app.config_file_changed(&p, true);
             }
             hard_link_notice(app, &name, saved);
         }

@@ -205,20 +205,6 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         lang,
     ),
     cmd(
-        "term new",
-        "[root]",
-        ArgKind::Root,
-        "Open a new terminal tab in a workspace folder (default: the active file's)",
-        term_new,
-    ),
-    cmd(
-        "term close",
-        "",
-        NO_ARG,
-        "Close the active terminal tab",
-        term_close,
-    ),
-    cmd(
         "term right",
         "",
         NO_ARG,
@@ -296,13 +282,6 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         ArgKind::Choice(THEMES),
         "Switch the colour theme for this session",
         theme,
-    ),
-    cmd(
-        "wrap",
-        "",
-        NO_ARG,
-        "Toggle soft line wrap (not available yet)",
-        wrap,
     ),
     cmd(
         "hidden",
@@ -866,50 +845,6 @@ fn reload(app: &mut App, _: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// No root: the root of the active file (as the key does); a named root starts the shell there.
-fn term_new(app: &mut App, arg: &str) -> Result<(), String> {
-    if arg.is_empty() {
-        app.run_command("terminal.new", CmdArgs::None);
-        return Ok(());
-    }
-    let root =
-        find_root(app, arg).ok_or_else(|| format!("/term new: no workspace folder named {arg}"))?;
-    super::terminal::new_terminal_in(app, &root);
-    Ok(())
-}
-
-/// The root named `arg` (its display name, or its path as typed).
-fn find_root(app: &App, arg: &str) -> Option<PathBuf> {
-    let path = resolve_arg(app, arg);
-    app.workspace
-        .roots()
-        .iter()
-        .find(|r| r.name == arg || r.path == path)
-        .map(|r| r.path.clone())
-}
-
-/// "Terminal: New Terminal" from the palette with several roots (W-2): the F1 window lists the
-/// roots with the active file's one highlighted; Enter starts the terminal there.
-pub fn pick_terminal_root(app: &mut App) {
-    let active = app.active_root().id;
-    palette::open(app);
-    set_input(app, "/term new ");
-    let i = app.workspace.roots().iter().position(|r| r.id == active);
-    if let (Some(p), Some(i)) = (&mut app.palette, i)
-        && i < p.items.len()
-    {
-        p.selected = i;
-    }
-}
-
-fn term_close(app: &mut App, _: &str) -> Result<(), String> {
-    if app.terminal.tabs.is_empty() {
-        return Err("no terminal is open".into());
-    }
-    app.run_command("terminal.close", CmdArgs::None);
-    Ok(())
-}
-
 fn term_right(app: &mut App, _: &str) -> Result<(), String> {
     super::terminal::set_position(app, vr_config::TerminalPosition::Right);
     Ok(())
@@ -1049,11 +984,6 @@ fn theme(app: &mut App, name: &str) -> Result<(), String> {
         "theme {name} for this session (settings.toml `theme` keeps it)"
     ));
     Ok(())
-}
-
-/// Listed now; the editor has no soft wrap yet.
-fn wrap(_: &mut App, _: &str) -> Result<(), String> {
-    Err("available after the soft wrap feature".into())
 }
 
 fn hidden(app: &mut App, _: &str) -> Result<(), String> {
@@ -1383,7 +1313,7 @@ fn set(app: &mut App, arg: &str) -> Result<(), String> {
 /// and position. A key that did not change leaves the current view alone (ctrl+h, terminal
 /// grow / shrink, ctrl+f7).
 /// `scrollback` and `max_highlight_bytes` apply to terminals and files opened from now on.
-fn apply_settings(app: &mut App, new: vr_config::Settings) {
+pub(crate) fn apply_settings(app: &mut App, new: vr_config::Settings) {
     let before = app.buffer_options();
     let old = std::mem::replace(&mut app.settings, new);
     let after = app.buffer_options();
@@ -1431,6 +1361,8 @@ fn open_user_file(app: &mut App, name: &str, defaults: &str) -> Result<(), Strin
     let path = dir.join(name);
     if path.symlink_metadata().is_err() {
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        // A folder made just now was not there to watch at start (T24 live reload).
+        app.watch_config_files();
         let made = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -1451,7 +1383,7 @@ fn open_user_file(app: &mut App, name: &str, defaults: &str) -> Result<(), Strin
     }
     app.open_path(&path).map_err(|e| e.to_string())?;
     app.focus = crate::app::Focus::Editor;
-    app.info(format!("{name}: changes apply when vr-ide starts again"));
+    app.info(format!("{name}: changes are applied when you save it"));
     Ok(())
 }
 
