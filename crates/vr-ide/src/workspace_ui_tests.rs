@@ -568,13 +568,33 @@ fn add_folder_checks_run_off_the_ui_thread() {
         app.drain_ws_job();
     }
     assert!(notices(&app).contains("added web"), "{}", notices(&app));
-    // A refusal that comes late is a notice.
+    // A refusal that comes late is a notice. The gate holds the worker until released, so
+    // the check is slower than the wait on every run.
+    let (release, gate) = std::sync::mpsc::channel();
+    app.ws_check_gate = Some(gate);
     crate::slash_tests::slash(
         &mut app,
         &format!("/ws add {}", d.path().join("none").display()),
     );
     key(&mut app, KeyCode::Enter);
+    assert!(
+        app.ws_job.is_some(),
+        "Enter must return while the check runs"
+    );
+    assert!(
+        notices(&app).contains("waiting for the file system"),
+        "{}",
+        notices(&app)
+    );
+    assert!(
+        !notices(&app).contains("does not exist"),
+        "{}",
+        notices(&app)
+    );
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
     while app.ws_job.is_some() {
+        assert!(Instant::now() < deadline, "{}", notices(&app));
         std::thread::sleep(Duration::from_millis(5));
         app.drain_ws_job();
     }

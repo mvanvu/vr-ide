@@ -570,6 +570,8 @@ fn each_root_shows_its_own_repo() {
     let mut app = git_app(&a, ws);
     app.open_path(&pa).unwrap();
     wait(&mut app, "root a", |x| status_text(x) == "main");
+    // Its marks too: a's first status answer may still be in flight when b opens.
+    assert_eq!(wait_marks(&mut app), vec![]);
     app.open_path(&pb).unwrap();
     wait(&mut app, "root b", |x| status_text(x) == "dev");
     std::fs::write(&pb, "B\n").unwrap();

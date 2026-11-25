@@ -505,6 +505,13 @@ fn window(text: &str, left: usize, w: usize) -> Window {
             if skipped < left {
                 skipped += cw;
                 win.hidden_left = true;
+                // A wide char cut by the edge leaves its right half visible: blank cells keep
+                // the rest of the line at its column.
+                for _ in left..skipped {
+                    win.cells.push((" ".to_string(), i));
+                    win.lens.push(ch.len_utf8());
+                    total += 1;
+                }
                 continue;
             }
             win.cells.push((s.to_string(), i));
@@ -570,5 +577,41 @@ fn draw_window(buf: &mut Buffer, x: u16, y: u16, w: usize, win: &Window, styles:
     }
     if win.cut {
         put(buf, x + used as u16, y, "…", 1, last);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cells `draw_window` paints for `text` scrolled by `left`, as a string.
+    fn drawn(text: &str, left: usize, w: usize) -> String {
+        let win = window(text, left, w);
+        let styles = vec![Style::default(); win.cells.len()];
+        let mut buf = Buffer::empty(Rect::new(0, 0, w as u16, 1));
+        draw_window(&mut buf, 0, 0, w, &win, &styles);
+        let mut out = String::new();
+        let mut x = 0u16;
+        while x < w as u16 {
+            let s = buf[(x, 0)].symbol();
+            x += width(s).max(1) as u16;
+            out.push_str(s);
+        }
+        out
+    }
+
+    #[test]
+    fn a_wide_char_cut_by_the_left_edge_keeps_the_rest_at_its_column() {
+        // "日本語abc": cells 0-1 日, 2-3 本, 4-5 語, 6 a. Scrolled by 1 the right half of 日
+        // is the first visible cell: a blank keeps 本 one column
+        // right of where it is with the even scroll.
+        let even = drawn("日本語abc", 2, 12);
+        let odd = drawn("日本語abc", 1, 12);
+        assert!(even.starts_with("…本語abc"), "{even:?}");
+        assert!(odd.starts_with("… 本語abc"), "{odd:?}");
+        // 本 is one column further right than with the even scroll (it is one cell further
+        // from the left edge), not on the same column as before the fix.
+        let cols = |s: &str| s.chars().position(|c| c == '本').unwrap();
+        assert_eq!(cols(&odd), cols(&even) + 1);
     }
 }

@@ -1116,3 +1116,41 @@ fn a_failed_page_keeps_the_list_and_retries_only_on_r() {
     assert!(popup(&app).history.error.is_none());
     assert!(popup(&app).history.complete);
 }
+
+/// A refusal is drawn inside the popup while it is open: at 40x12 the popup covers the notice row.
+#[test]
+fn git_show_refusal_is_visible_in_a_small_popup() {
+    let f = Fixture::new();
+    f.commit("a.txt", "1\n", "add a");
+    let mut app = popup_app(&f);
+    slash_run(&mut app, "/git show zzzz");
+    wait(&mut app, "refusal", |a| errors(a).contains("zzzz"));
+    assert!(app.git_popup_shown());
+    for (w, h) in [(120, 40), (80, 24), (40, 12)] {
+        let t = draw(&mut app, w, h);
+        let s = screen(&t);
+        let inside = s.lines().filter(|l| l.contains("no such commit")).count();
+        assert!(inside >= 1, "{w}x{h}\n{s}");
+    }
+}
+
+/// A click on a tab clears a drawn refusal like a key does.
+#[test]
+fn a_tab_click_clears_the_refusal() {
+    let f = Fixture::new();
+    f.commit("a.txt", "1\n", "add a");
+    let mut app = popup_app(&f);
+    slash_run(&mut app, "/git show zzzz");
+    wait(&mut app, "refusal", |a| errors(a).contains("zzzz"));
+    assert!(popup(&app).refusal.is_some());
+    draw(&mut app, 120, 40);
+    let (r, _) = popup(&app)
+        .areas
+        .tabs
+        .iter()
+        .find(|(_, t)| *t == Tab::History)
+        .cloned()
+        .unwrap();
+    click(&mut app, r.x, r.y);
+    assert!(popup(&app).refusal.is_none());
+}

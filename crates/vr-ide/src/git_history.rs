@@ -632,6 +632,7 @@ fn load_blame(app: &mut App, path: PathBuf, force: bool) {
 
 /// Opens the commit view of `rev`; Esc goes back to `back`.
 fn load_commit(p: &mut GitPopup, rev: &str, back: Tab) {
+    p.refusal = None;
     p.commit_gen += 1;
     p.commit = Some(CommitView::loading(rev, back, p.commit_gen));
     let req = HistReq::Show {
@@ -856,6 +857,7 @@ fn answer(app: &mut App, m: HistMsg) {
                     let back = c.back;
                     p.commit = None;
                     p.tab = back;
+                    p.refusal = Some(msg.clone());
                     app.error(msg);
                 }
             }
@@ -1153,6 +1155,9 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
 
 /// The status line of the History / Blame tabs and the commit view.
 pub fn status_line(p: &GitPopup, now: i64, at: Instant) -> String {
+    if let Some(r) = p.refusal.as_ref().filter(|_| p.commit.is_none()) {
+        return r.clone();
+    }
     if let Some(c) = &p.commit {
         if c.loading {
             return format!("loading {}…", c.rev);

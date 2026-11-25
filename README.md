@@ -396,7 +396,8 @@ stays on that repository until you open it on another one.
 - If vr-ide was killed in the middle of a discard, the next `/git` offers the hidden
   `.vr-ide-discard-*` file it left: restore an `.old` one under a name, delete an unused `.new` one.
 
-`1`, `2`, `3` switch between the Changes, History and Blame tabs (or click a tab name):
+`1`, `2`, `3` switch between the Changes, History and Blame tabs (or click a tab name). On a narrow
+popup the tab bar names only the current tab, so there is nothing to click: use `1`, `2`, `3`:
 
 - History (`2`, `/git log`): the repository's commits, newest first, with short id, date, author
   and subject; more load as you scroll. `/git log file` lists the commits of the active file and

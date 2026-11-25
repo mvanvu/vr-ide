@@ -568,7 +568,13 @@ fn race_enter_on(
     };
     for &mode in modes {
         let (mut ok_count, mut refused) = (0, 0);
-        for offset in sweep_offsets(40, Duration::from_micros(300)) {
+        // Under load the writer's timing drifts against Enter and one sweep can see only one
+        // outcome: sweep again (up to 5 times) until both occurred. Every run is checked.
+        let sweeps = (0..5).flat_map(|_| sweep_offsets(40, Duration::from_micros(300)));
+        for (i, offset) in sweeps.enumerate() {
+            if i > 0 && i % 40 == 0 && ok_count > 0 && refused > 0 {
+                break;
+            }
             let (d, own, mut app, _) = app_with_file("old\n");
             let path = prepare(&mut app, &own);
             if shown.is_empty() {

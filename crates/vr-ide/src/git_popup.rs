@@ -454,6 +454,9 @@ pub struct GitPopup {
     pub show_output: bool,
     /// The latest result line (sanitized).
     pub note: String,
+    /// Why `/git show` was refused, drawn on the History and Blame status row until the next
+    /// key (a small screen covers the notice row below the popup).
+    pub refusal: Option<String>,
     pub leftovers: VecDeque<LeftoverDiscard>,
     /// Absolute paths whose discard runs: saves of them wait (D305(4)).
     pub discarding: Vec<PathBuf>,
@@ -1206,6 +1209,7 @@ pub fn open(app: &mut App, root: &str) -> Result<(), String> {
         output: Vec::new(),
         show_output: false,
         note: String::new(),
+        refusal: None,
         leftovers: VecDeque::new(),
         discarding: Vec::new(),
         orphan: false,
@@ -2101,6 +2105,7 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) {
     let Some(p) = &mut app.git_popup else {
         return;
     };
+    p.refusal = None;
     app.dirty = true;
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -2301,6 +2306,7 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
     if matches!(ev.kind, MouseEventKind::Down(MouseButton::Left))
         && let Some(&(_, tab)) = a.tabs.iter().find(|(r, _)| inside(*r, x, y))
     {
+        p.refusal = None;
         crate::git_history::switch(app, tab);
         return;
     }

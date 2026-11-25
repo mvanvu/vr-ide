@@ -223,6 +223,9 @@ pub struct App {
     /// How long the UI thread waits for such a check before it goes on and the result comes
     /// in later ([`crate::app_workspace::JOB_WAIT`]; tests set zero).
     pub ws_job_wait: Duration,
+    /// Test hook: the next Add Folder check waits for this signal on its worker thread.
+    #[cfg(test)]
+    pub ws_check_gate: Option<std::sync::mpsc::Receiver<()>>,
     /// Git context of the editor (M7-4a): per-root repos, gutter marks, branch, inline blame.
     pub git: crate::git::GitState,
     /// The Git popup session (M7-3): bound to one repo; kept while hidden so a push or a
@@ -329,6 +332,8 @@ impl App {
             welcome_hits: Vec::new(),
             ws_job: None,
             ws_job_wait: crate::app_workspace::JOB_WAIT,
+            #[cfg(test)]
+            ws_check_gate: None,
             git: Default::default(),
             git_popup: None,
             git_drafts: Vec::new(),

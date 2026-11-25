@@ -137,7 +137,13 @@ impl App {
     pub fn add_root_checked(&mut self, path: &Path) -> Option<Result<RootId, WorkspaceError>> {
         let roots = self.workspace.named_paths();
         let target = path.to_path_buf();
+        #[cfg(test)]
+        let gate = self.ws_check_gate.take();
         let done = self.run_ws_job(format!("Add Folder {}", path.display()), move || {
+            #[cfg(test)]
+            if let Some(g) = gate {
+                let _ = g.recv_timeout(Duration::from_secs(20));
+            }
             JobDone::Add(Workspace::check_folder(&target, &roots))
         })?;
         match done {
