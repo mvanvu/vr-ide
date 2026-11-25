@@ -1164,3 +1164,22 @@ Verdict: QC_PASS. Engine: release binary driven through a python pty (TERM=xterm
 | AC-21d removed keys inert, docs match keymap | pass | walk + docs_check.py |
 | Tests / clippy / fmt | pass | 771 passed, clippy -D warnings, fmt clean |
 | Test data cleanup | pass | walk uses mkdtemp dirs only, no repo or DB data |
+
+## T20 — slash commands phase 1 (QC, after review round 1)
+Engine: python pty walk on the fresh release binary (TERM=xterm-256color, legacy bytes) + cargo. Artifacts: qa-artifacts/T20/qc/ (qwalk.py, qwalk.txt, q_NN.txt screens, fmt/clippy/full-suite/release txt).
+
+Evidence
+- fmt --check clean; clippy --workspace --all-targets -D warnings exit 0; full suite via run-heavy.sh: 26 result lines all ok, 816 passed, exit 0; release build exit 0.
+- Docs table: test docs_table_matches_the_registry ok; script parse of the docs table finds 20 rows = 20 registry commands.
+- qwalk: 54 checks, 53 PASS; the one FAIL was my own check (list shows 12 of 20 rows at 30 rows tall, `/help` is below the fold; list scrolls) — not an app defect.
+- AC-20a: F1 and space space open the window, "/" lists commands with hints, Esc returns to READ, no-slash palette unchanged (q_01..06).
+- AC-20b: /save-as (prompt, path saves, folder error kept), /reload (file re-read, no-file error), /term new/close (+ close without terminal error, bogus arg error), /term right|bottom "not available", /ws add (good, duplicate, bad dir, no arg), /ws save (new file, own file, refused after hand edit with file kept, other existing file refused), /ws recent, /ws remove (named, last root, bad name), /ws open (good, missing), /theme x4 + bad name (text kept), /hidden, /ignored, /help, /nope, bare "/" + Enter runs nothing.
+- AC-20c: /run echo printed exactly once; busy terminal (/ai cat) -> second tab + notice, output once; /ai missing tool -> bash "command not found"; /q with unsaved -> Quit dialog and process still running; /q! exits, a.txt on disk unchanged ('alpha\n').
+- 40x12: list, error with input kept, Esc -> READ (q_52..55).
+
+Findings
+1. LOW — app_workspace.rs:123: `/ws save <other existing file>` says "exists; it is replaced only when confirmed", but /ws save has no confirmation path (the notes list this as open), so the message promises something unreachable. Repro: /ws save ../third, then /ws save ../team (team exists) -> q_31.txt. Suggest wording "exists; /ws save does not replace it" or add the Replace prompt.
+
+Known, not findings: D264/D265, D267 (/wrap unavailable), D271 (F1 inside a focused terminal goes to the program; the walk used ctrl+` to leave the terminal first).
+
+Verdict T20: QC_PASS (one LOW finding).
