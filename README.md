@@ -135,6 +135,7 @@ the list is in [docs/commands.md](docs/commands.md).
 | Task | Keys |
 |---|---|
 | Open a file by path (relative to the project root) | `ctrl+o` |
+| Show a file in the explorer (shows, expands, selects and focuses it) | double left click on its tab (two clicks within 400 ms; tabs without a file do nothing extra), or `ctrl+k` |
 | Go to File (fuzzy search by name) | `ctrl+p` |
 | New file (created on disk at once; there are no untitled buffers) | `ctrl+n` |
 | Save | `ctrl+s` |

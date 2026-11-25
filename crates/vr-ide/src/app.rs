@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+/// Two presses on the same tab within this gap are a double click.
+const TAB_DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -170,6 +173,8 @@ pub struct App {
     last_enter: Option<Instant>,
     /// Time of the key event being handled (injectable clock for tests).
     event_time: Option<Instant>,
+    /// Last left press on a tab bar tab (index, time): the first half of a double click.
+    last_tab_click: Option<(usize, Instant)>,
     /// The project tree panel (AC-1, AC-8).
     pub explorer: Explorer,
     /// Where `explorer.delete` sends paths (D9); tests swap in `vr_fs::FakeTrash`.
@@ -293,6 +298,7 @@ impl App {
             modal_since: None,
             last_enter: None,
             event_time: None,
+            last_tab_click: None,
             explorer,
             trash: Box::new(vr_fs::SystemTrash),
             file_index: None,
@@ -1299,7 +1305,14 @@ impl App {
     /// Click places the cursor (shift+click extends), drag selects, the wheel scrolls the
     /// view without moving the cursor, a click on a tab activates it.
     pub fn handle_mouse(&mut self, ev: MouseEvent) {
+        self.handle_mouse_at(ev, Instant::now());
+    }
+
+    /// `handle_mouse` with an injectable clock (double click timing).
+    pub fn handle_mouse_at(&mut self, ev: MouseEvent, now: Instant) {
+        self.event_time = Some(now);
         self.route_mouse(ev);
+        self.event_time = None;
         self.sync_mode();
         self.sync_explorer_watches();
     }
@@ -1365,6 +1378,18 @@ impl App {
                     if let Some(i) = crate::ui::tabs::hit(self, ev.column - l.tabs.x, l.tabs.width)
                     {
                         self.set_active(i);
+                        let now = self.now();
+                        let double = self.last_tab_click.is_some_and(|(j, t)| {
+                            j == i && now.saturating_duration_since(t) <= TAB_DOUBLE_CLICK
+                        });
+                        if double {
+                            self.last_tab_click = None;
+                            if self.docs[i].path.is_some() {
+                                self.run_command("explorer.reveal", CmdArgs::None);
+                            }
+                        } else {
+                            self.last_tab_click = Some((i, now));
+                        }
                     }
                 } else if self.docs.is_empty() && inside(l.editor) {
                     // The welcome screen: a recent workspace row opens it (W-2).

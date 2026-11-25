@@ -834,3 +834,133 @@ fn a_missing_root_is_named_once_when_watches_start_before_the_explorer() {
     let last = app.explorer.rows.last().unwrap();
     assert_eq!((last.path.clone(), last.missing), (gone, true));
 }
+
+// ---- tab bar: double click reveals the file in the explorer (T25) ---------------------------
+
+/// Left press + release on the tab of document `i` at time `at` (drawn at 100x30 first).
+fn tab_click(app: &mut App, i: usize, at: Instant) {
+    draw(app, 100, 30);
+    let t = app.layout.tabs;
+    let (_, x, _) = crate::ui::tabs::positions(app, t.width)
+        .into_iter()
+        .find(|(j, ..)| *j == i)
+        .unwrap();
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_mouse_at(
+            MouseEvent {
+                kind,
+                column: t.x + x + 1,
+                row: t.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            at,
+        );
+    }
+}
+
+fn two_tabs() -> (tempfile::TempDir, Vec<PathBuf>, App) {
+    let (d, roots) = folders(&[
+        ("api", &[("src/a.rs", "a\n")]),
+        ("web", &[("src/deep/b.ts", "b\n"), ("c.ts", "c\n")]),
+    ]);
+    let mut app = ws_app(&roots);
+    app.open_path(&roots[0].join("src/a.rs")).unwrap();
+    app.open_path(&roots[1].join("src/deep/b.ts")).unwrap();
+    app.explorer.visible = false;
+    app.focus = Focus::Editor;
+    (d, roots, app)
+}
+
+#[test]
+fn double_click_on_a_tab_reveals_its_file_in_the_hidden_explorer() {
+    let (_d, roots, mut app) = two_tabs();
+    let t0 = Instant::now();
+    tab_click(&mut app, 0, t0);
+    assert!(!app.explorer.visible, "a single click leaves the explorer");
+    assert_eq!(app.active, 0);
+    tab_click(&mut app, 0, t0 + Duration::from_millis(300));
+    assert!(app.explorer.visible);
+    assert_eq!(app.focus, Focus::Explorer);
+    let cur = &app.explorer.rows[app.explorer.cursor];
+    assert_eq!(cur.path, roots[0].join("src/a.rs"));
+}
+
+#[test]
+fn double_click_picks_the_root_of_the_tab_and_activates_it() {
+    let (_d, roots, mut app) = two_tabs();
+    app.run_command("explorer.focus", CmdArgs::None);
+    let t0 = Instant::now();
+    tab_click(&mut app, 0, t0);
+    tab_click(&mut app, 1, t0 + Duration::from_millis(100));
+    assert_eq!(
+        app.focus,
+        Focus::Editor,
+        "different tabs are two single clicks"
+    );
+    tab_click(&mut app, 1, t0 + Duration::from_millis(200));
+    assert_eq!(app.active, 1);
+    assert_eq!(app.focus, Focus::Explorer);
+    let cur = &app.explorer.rows[app.explorer.cursor];
+    assert_eq!(cur.path, roots[1].join("src/deep/b.ts"));
+    assert!(
+        tree(&app).iter().any(|r| r.trim() == "deep"),
+        "{:?}",
+        tree(&app)
+    );
+}
+
+#[test]
+fn slow_second_click_is_a_single_click_and_a_triple_is_not_two_doubles() {
+    let (_d, _r, mut app) = two_tabs();
+    let t0 = Instant::now();
+    tab_click(&mut app, 0, t0);
+    tab_click(&mut app, 0, t0 + Duration::from_millis(401));
+    assert!(!app.explorer.visible);
+    // That second press started a new pair; the third completes it.
+    tab_click(&mut app, 0, t0 + Duration::from_millis(500));
+    assert!(app.explorer.visible);
+    app.explorer.visible = false;
+    app.focus = Focus::Editor;
+    tab_click(&mut app, 0, t0 + Duration::from_millis(600));
+    assert!(!app.explorer.visible, "a double click consumes its presses");
+}
+
+#[test]
+fn double_click_on_a_tab_without_a_file_does_nothing_extra() {
+    let (_d, _r, mut app) = two_tabs();
+    let (cmd, arg) = crate::commands::slash::parse("/keys").unwrap();
+    (cmd.run)(&mut app, &arg).unwrap();
+    let keys = app.docs.len() - 1;
+    assert!(app.docs[keys].path.is_none());
+    app.explorer.visible = false;
+    app.focus = Focus::Editor;
+    let t0 = Instant::now();
+    tab_click(&mut app, keys, t0);
+    tab_click(&mut app, keys, t0 + Duration::from_millis(100));
+    assert_eq!(app.active, keys);
+    assert!(!app.explorer.visible);
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+#[test]
+fn double_click_on_a_hidden_file_tab_keeps_the_reveal_rule() {
+    let (d, roots) = folders(&[("p", &[(".github/ci.yml", "x\n"), ("a.txt", "a\n")])]);
+    let _ = &d;
+    let mut app = ws_app(&roots);
+    app.open_path(&roots[0].join(".github/ci.yml")).unwrap();
+    app.run_command("explorer.toggle_hidden", CmdArgs::None);
+    assert!(!app.explorer.tree.show_hidden());
+    app.explorer.visible = false;
+    app.focus = Focus::Editor;
+    app.notices.clear();
+    let t0 = Instant::now();
+    tab_click(&mut app, 0, t0);
+    tab_click(&mut app, 0, t0 + Duration::from_millis(50));
+    assert!(app.explorer.visible);
+    assert_eq!(app.focus, Focus::Explorer);
+    assert!(!app.explorer.expanded.contains(&roots[0].join(".github")));
+    assert!(notices(&app).contains("ctrl+h"), "{}", notices(&app));
+}
