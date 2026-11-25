@@ -99,7 +99,9 @@ mod tests {
         let file = d.path().join(vr_config::RECENT_FILES_FILE);
         let w = RecentWriter::start(file.clone());
         w.record(PathBuf::from("/x.rs"));
-        w.close(Duration::from_millis(500));
+        // `close` returns as soon as the writer has answered; the bound only caps a stuck
+        // writer, so a generous one keeps the test from depending on machine load.
+        w.close(Duration::from_secs(30));
         let (list, _) = vr_config::RecentFiles::load(&file);
         assert_eq!(list.entries, vec![PathBuf::from("/x.rs")]);
     }

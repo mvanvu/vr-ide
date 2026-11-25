@@ -99,13 +99,7 @@ fn changing_an_injection_language_drops_the_old_layer() {
 }
 
 fn highlighter(lang: &str, text: &str) -> Highlighter {
-    let h = Highlighter::new(
-        registry(),
-        lang,
-        Rope::from_str(text),
-        HighlightOptions::default(),
-        None,
-    );
+    let h = Highlighter::new(registry(), lang, Rope::from_str(text), options(), None);
     assert!(h.wait(PARSE_WAIT), "{lang}: parse did not land");
     assert_eq!(h.status(), HighlightStatus::Ready);
     h
@@ -133,11 +127,25 @@ fn assert_class(h: &Highlighter, text: &str, needle: &str, want: Capture) {
     );
 }
 
+/// The product options, except that a `spans()` call and a parse may take as long as the
+/// machine needs. The 50 ms query budget (D162) cuts a list short on a loaded machine (a debug
+/// build at load 12–18 lost every span past one point of a 262-byte Vue file), and the 10 s
+/// parse limit leaves a 2 MB debug-build parse plain; a comparison against a cut or plain result
+/// says nothing about the spans themselves. Both limits have their own tests
+/// (`spans_call_is_bounded_by_the_query_timeout`, `parse_timeout_stays_plain_and_reports`).
+fn options() -> HighlightOptions {
+    HighlightOptions {
+        query_timeout: PARSE_WAIT,
+        parse_timeout: PARSE_WAIT,
+        ..HighlightOptions::default()
+    }
+}
+
 /// Options whose fresh-parse check of text with errors starts right after each reparse.
 fn no_idle() -> HighlightOptions {
     HighlightOptions {
         verify_idle: Duration::ZERO,
-        ..HighlightOptions::default()
+        ..options()
     }
 }
 
@@ -526,13 +534,7 @@ fn incremental_equals_full(lang: &str, sample: &str, seed: u64, steps: usize) {
     ];
     let mut rng = Lcg(seed);
     let mut rope = Rope::from_str(sample);
-    let mut h = Highlighter::new(
-        registry(),
-        lang,
-        rope.clone(),
-        HighlightOptions::default(),
-        None,
-    );
+    let mut h = Highlighter::new(registry(), lang, rope.clone(), options(), None);
     for step in 1..=steps {
         let len = rope.len_chars();
         let from = rng.below(len + 1);
@@ -932,11 +934,11 @@ fn edit_during_the_initial_parse_never_returns_stale_spans() {
         reg.clone(),
         "rust",
         Rope::from_str("fn a() {}"),
-        HighlightOptions::default(),
+        options(),
         None,
     );
     assert!(warm.wait(PARSE_WAIT));
-    let mut h = Highlighter::new(reg, "rust", rope.clone(), HighlightOptions::default(), None);
+    let mut h = Highlighter::new(reg, "rust", rope.clone(), options(), None);
     // Let the worker start on version 0, so the edit arrives while that parse runs (otherwise
     // the worker would take both messages at once and only ever parse version 1).
     std::thread::sleep(Duration::from_millis(50));
@@ -1000,13 +1002,7 @@ fn edit_during_the_initial_parse_never_returns_stale_spans() {
 fn edits_after_a_parse_shift_old_spans_until_the_reparse_lands() {
     let text = rust_source(1_000_000);
     let mut rope = Rope::from_str(&text);
-    let mut h = Highlighter::new(
-        registry(),
-        "rust",
-        rope.clone(),
-        HighlightOptions::default(),
-        None,
-    );
+    let mut h = Highlighter::new(registry(), "rust", rope.clone(), options(), None);
     assert!(h.wait(PARSE_WAIT));
     let mut stale_checks = 0;
     for round in 0..20 {
