@@ -1464,3 +1464,56 @@ Engines: python pty (TERM=xterm-256color, legacy key bytes + SGR mouse) on the f
 | Docs (README, commands.md, keymap.md) | pass (note 2) | match observed behaviour |
 | BASE-11/15/17 | pass | nothing committed/stashed; only my own processes; temp repos only |
 | fmt / clippy -D warnings / full suite / release build | pass | commands above |
+
+## Sign-off (2026-11-26)
+Scope: every task since 9c45cd1 (T18, W-1, T21, T20, T20b, T22, T23, FR-13, T19, W-2, T24, T25, FR-14, T26, M7-1, M7-2, M7-4a, M7-3, M7-4b, FR-15). Engine: python pty + VT model on the release binary (legacy key bytes, SGR mouse), temp HOME/XDG/config/state, temp repos with a bare remote; no browser. Artifacts: qa-artifacts/signoff-2/ (gates.sh, fmt/clippy/release/suite.txt, bench.sh/bench.txt, rss3.py/rss3.txt, walk1.py, walk2.py, walk1_*.txt, walk2_*.txt, docs_check*.py, screens/).
+
+| Gate | Result | Evidence |
+|---|---|---|
+| cargo fmt --check | pass | fmt.txt exit 0 |
+| clippy --workspace --all-targets -D warnings | pass | clippy.txt exit 0, 0 warnings |
+| release build | pass | release.txt exit 0 |
+| cargo test --workspace (once, via run-heavy) | pass | 1171 passed, 0 failed, 18 ignored (suite.txt exit 0); includes the generated slash-table test |
+| AC-1 startup first frame < 100 ms | pass | one root 23/23/25 ms, three roots of 5000 files 41/28/23 ms (bench.txt, includes pty setup) |
+| AC-1 RSS < 60 MB | pass | one root 7 MB at first frame, 8 MB open 6 s; three roots 7 MB / 9 MB; with explorer expanded, project search and ctrl+p on 3x5000 files: peak 12 MB (rss3.txt); during the walks VmHWM 18-20 MB |
+
+### Pty walk part 1 (walk1.py): 120x40 46/46, 80x24 44/46 (both script-side, see notes)
+| Flow | Result |
+|---|---|
+| open two roots (welcome lists both, explorer shows both) | pass |
+| read mode: typing shows hint, space i -> EDIT, edit, esc -> READ, ctrl+s writes the file | pass |
+| ctrl+f file find (1/2), enter, f4 / shift+f4 move and return | pass |
+| ctrl+f twice: project scope, results in both roots; f4 / shift+f4 on results | pass |
+| ctrl+r: replace row (focus goes straight to the replace field when a query exists, by design), Replace One/All/Cancel dialog, One applied | pass |
+| ctrl+e explorer; right-click menu (New, Rename, Copy, Cut, Paste, Delete with keys); esc closes | pass |
+| explorer ctrl+n File/Folder dialog: file and folder created on disk | pass |
+| double-click on a tab reveals the file in the explorer | pass |
+| ctrl+` (NUL) toggle, `+` opens a 2nd terminal, `x` asks "Close terminal?" with a running program (Cancel keeps it), `x` on an idle shell closes it, ctrl+f7 right and back, ctrl+` hides | pass |
+| F1 and space space open the command window; /theme dracula, /run (command ran, output file written), /ws save (file has both roots), /set ok, /set bad value "not a valid value", /keys, /config -> edit + save -> "settings.toml applied: tab_width"; bad settings.toml -> error notice and old values kept | pass |
+| /q! exits | pass |
+80x24 notes: (a) the right-panel check looks for the "ctrl+` hide" label that does not fit in the 23-column panel (panel itself present, tab "1 bash x +"); (b) the "applied" notice sits behind three earlier notices ("+3 more"); Esc steps to it, confirmed in ex9.py (notice queue behaviour, not a defect).
+
+### Pty walk part 2, git (walk2.py): 120x40 21/21, 80x24 21/21
+| Flow | Result |
+|---|---|
+| status bar `main ↑1 ↓1` (fetched remote ahead, local ahead); `↑3`/`↑0` follow merge, rescan, push | pass |
+| gutter marks on changed/added lines only (live, external edit) | pass |
+| /git blame line: `You, uncommitted` on a dirty line, `Tester ... initial` on a committed line | pass |
+| /git popup: Changes tab, Tab to diff, Enter stages the hunk (`git diff --cached` shows it), `c` + ctrl+s commits (git log has message) | pass |
+| popup Pull on diverged branches: git's own hint shown, app alive | pass |
+| push asks "Push main of <repo> to origin/main?" [Push] [Cancel]; Enter pushes; bare remote main == local HEAD (changed), no ↑ afterwards | pass |
+| /git log (5 commits == git log), Enter opens commit view (Author, Merge:, diff), /git blame (per-line author/age), /git show HEAD~1, /git show nosuchrev refused "no such commit" | pass |
+| exit leaves no process with cwd in the fixture | pass |
+
+### Docs vs keymap.toml and registry (docs_check.py, docs_check2.py)
+- 48 keymap bindings: every command and key present in docs/keymap.md with the same key. Slash table in docs/commands.md is generated and covered by the passing suite. README keys not in keymap.toml are all built-in keys (ctrl+home/end/left/right, shift+pageup/down, shift+enter, ctrl+shift+v, ctrl+space).
+- Finding (minor, docs): `focus.editor` ("Focus Editor", crates/vr-ide/src/commands/terminal.rs:67) is registered and listed in the palette but is missing from docs/keymap.md; the other 50 registry commands match by name and title.
+- Observations (not defects): after a commit, reopening `/git` keeps focus in the message box (draft is kept by design), so a `p` pressed there is typed into the message; the push ask shows the full path when it is not under `~`.
+
+### Rule check sign-off
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-4/5 fmt, clippy, full suite, release build | pass | commands above |
+| AC-1 perf | pass | bench |
+| USER-5 legacy bytes + SGR mouse | pass | both walks |
+| BASE-11/15/17 | pass | no commit/stash/checkout; only own pty sessions; temp repos and HOME only; none left |

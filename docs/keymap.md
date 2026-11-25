@@ -64,6 +64,7 @@ keys back with the panel shown).
 | `terminal.grow` | Terminal: Increase Panel Size | `ctrl+f8` (height at the bottom, width on the right) |
 | `terminal.shrink` | Terminal: Decrease Panel Size | `ctrl+f9` (height at the bottom, width on the right) |
 | `terminal.toggle_position` | Terminal: Toggle Panel Position | `ctrl+f7` (bottom ↔ right for this session; `terminal_position` in settings keeps it) |
+| `focus.editor` | Focus Editor | (palette only) |
 
 On the right the panel takes the editor's full height under the tab bar and
 `terminal_width_percent` (40 % by default, at least 20 columns) of the editor column; drag the
