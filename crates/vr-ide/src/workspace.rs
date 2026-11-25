@@ -32,11 +32,6 @@ impl Root {
     pub fn missing(&self) -> bool {
         !self.path.is_dir()
     }
-
-    /// The checked-out git branch, read when asked (never at startup).
-    pub fn branch(&self) -> Option<String> {
-        crate::monitor::git_branch(&self.path)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

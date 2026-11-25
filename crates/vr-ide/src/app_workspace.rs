@@ -212,7 +212,7 @@ impl App {
             .iter()
             .map(|r| RootInfo {
                 path: r.path.clone(),
-                branch: r.branch(),
+                branch: self.git.branch_of_root(&r.path),
                 missing: r.missing(),
             })
             .collect();

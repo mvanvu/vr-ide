@@ -1020,3 +1020,98 @@ fn render_git_gutter_status_and_blame() {
         );
     }
 }
+
+// ---- final review 2 (FR-16) ---------------------------------------------------------------
+
+#[test]
+fn an_explorer_rename_and_move_update_recent_files_and_drop_the_old_marks() {
+    let f = Fixture::new();
+    let p = f.commit("a.txt", "one\ntwo\n", "init");
+    f.write("a.txt", "one\nTWO\n");
+    std::fs::create_dir(f.dir.join("sub")).unwrap();
+    let state = f.base.join("state");
+    std::fs::create_dir(&state).unwrap();
+    let list = state.join(vr_config::RECENT_FILES_FILE);
+    let mut app = single(&f, &f.dir);
+    app.recent_files_file = Some(list.clone());
+    app.open_path(&p).unwrap();
+    wait_marks(&mut app);
+    // Rename (F2 / the menu's Rename / `/rename` all go through `rename_in`).
+    let b = crate::commands::explorer::rename_in(&mut app, &f.dir.clone(), &p, "b.txt")
+        .unwrap()
+        .unwrap();
+    assert_eq!(app.git.marks_for(&p), None, "the old path's marks are gone");
+    app.flush_recent_files();
+    let (on_disk, _) = vr_config::RecentFiles::load(&list);
+    assert_eq!(on_disk.entries.first(), Some(&b), "{:?}", on_disk.entries);
+    assert!(!on_disk.entries.contains(&p), "{:?}", on_disk.entries);
+    assert!(app.recent_files.entries.contains(&b) && !app.recent_files.entries.contains(&p));
+    // The new path gets its own marks, which the move below must drop again.
+    wait_marks(&mut app);
+    // Cut + paste moves it into sub/.
+    app.explorer.visible = true;
+    crate::commands::explorer::ensure_loaded(&mut app);
+    app.run_command("explorer.focus", CmdArgs::None);
+    let at = |app: &mut App, path: &Path| {
+        crate::commands::explorer::ensure_loaded(app);
+        let i = app
+            .explorer
+            .rows
+            .iter()
+            .position(|r| r.path == path)
+            .expect("explorer row");
+        app.explorer.cursor = i;
+        app.explorer.selected.clear();
+    };
+    at(&mut app, &b);
+    key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+    at(&mut app, &f.dir.join("sub"));
+    key(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL);
+    let c = f.dir.join("sub/b.txt");
+    assert!(c.is_file() && !b.exists());
+    assert_eq!(app.git.marks_for(&b), None, "the old path's marks are gone");
+    app.flush_recent_files();
+    let (on_disk, _) = vr_config::RecentFiles::load(&list);
+    assert_eq!(on_disk.entries.first(), Some(&c), "{:?}", on_disk.entries);
+    assert!(!on_disk.entries.contains(&b), "{:?}", on_disk.entries);
+    // The new path gets its own marks.
+    wait_marks(&mut app);
+}
+
+#[test]
+fn the_welcome_branch_comes_from_vr_git_not_a_planted_parent_head() {
+    // A `.git` above the root that git does not accept as a repository.
+    let f = Fixture::bare_dir("proj");
+    let planted = f.base.join(".git");
+    std::fs::create_dir(&planted).unwrap();
+    std::fs::write(planted.join("HEAD"), "ref: refs/heads/planted\u{1b}[31m\n").unwrap();
+    let mut app = single(&f, &f.dir);
+    wait(&mut app, "discovery", |a| !a.git.discovering());
+    assert_eq!(app.git.branch_of_root(&f.dir), None);
+    let t = Instant::now();
+    for i in 0..3 {
+        app.tick(t + Duration::from_secs(5 * i));
+    }
+    assert_eq!(app.monitor.branch, None);
+    // A real repo root: the branch vr-git read, sanitized.
+    let g = Fixture::new();
+    g.commit("a.txt", "1\n", "c1");
+    // git refuses control characters in branch names; the read is sanitized all the same.
+    g.git(&["checkout", "-q", "-b", "feat/x"]);
+    let mut app = single(&g, &g.dir);
+    wait(&mut app, "branch", |a| {
+        a.git.branch_of_root(&g.dir).is_some()
+    });
+    let b = app.git.branch_of_root(&g.dir).unwrap();
+    assert_eq!(b, "feat/x");
+    let end = Instant::now() + Duration::from_secs(15);
+    while app.monitor.branch.as_deref() != Some(b.as_str()) {
+        assert!(
+            Instant::now() < end,
+            "welcome branch {:?}",
+            app.monitor.branch
+        );
+        app.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

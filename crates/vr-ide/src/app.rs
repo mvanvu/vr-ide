@@ -435,43 +435,54 @@ impl App {
     /// the bound chords it cannot deliver.
     pub fn report_keyboard(&mut self, keyboard_enhanced: bool) {
         self.keyboard_enhanced = keyboard_enhanced;
+        if let Some(n) = self.unreachable_keys_notice() {
+            self.push_notice(n);
+        }
+    }
+
+    /// Without the kitty protocol, the notice naming the keys the keymap binds that this
+    /// terminal cannot send (startup and a live keymap reload); `None` when every command
+    /// has a key that arrives.
+    pub(crate) fn unreachable_keys_notice(&self) -> Option<Notice> {
+        if self.keyboard_enhanced {
+            return None;
+        }
         let names = commands::command_names();
-        if !keyboard_enhanced {
-            // The default keymap is deliverable everywhere (USER-5); this lists the keys a user
-            // keymap binds that this terminal cannot send, unless the command has another one.
-            let mut lost: Vec<String> = Vec::new();
-            for (_, k, c) in self.keymap.bindings() {
-                let has_reachable = self
-                    .keymap
-                    .keys_for(c)
-                    .iter()
-                    .any(|k| !legacy_unreachable(k));
-                let name = k.to_string();
-                if legacy_unreachable(k)
-                    && names.contains(&c)
-                    && !has_reachable
-                    && !lost.contains(&name)
-                {
-                    lost.push(name);
-                }
-            }
-            if !lost.is_empty() {
-                let palette = self
-                    .display_key("app.palette")
-                    .filter(|s| s.parse().is_ok_and(|k| !legacy_unreachable(&k)));
-                let remedy = match palette {
-                    Some(key) => format!("use the command palette ({key})"),
-                    None => "run them from the command palette".to_string(),
-                };
-                self.push_notice(Notice {
-                    level: NoticeLevel::Warning,
-                    text: format!("Keyboard: this terminal cannot send some keys; {remedy}."),
-                    expires: Some(Instant::now() + KEYBOARD_NOTICE_TTL),
-                    until_next: true,
-                    detail: Some(format!("Unavailable: {}", lost.join(", "))),
-                });
+        // The default keymap is deliverable everywhere (USER-5); this lists the keys a user
+        // keymap binds that this terminal cannot send, unless the command has another one.
+        let mut lost: Vec<String> = Vec::new();
+        for (_, k, c) in self.keymap.bindings() {
+            let has_reachable = self
+                .keymap
+                .keys_for(c)
+                .iter()
+                .any(|k| !legacy_unreachable(k));
+            let name = k.to_string();
+            if legacy_unreachable(k)
+                && names.contains(&c)
+                && !has_reachable
+                && !lost.contains(&name)
+            {
+                lost.push(name);
             }
         }
+        if lost.is_empty() {
+            return None;
+        }
+        let palette = self
+            .display_key("app.palette")
+            .filter(|s| s.parse().is_ok_and(|k| !legacy_unreachable(&k)));
+        let remedy = match palette {
+            Some(key) => format!("use the command palette ({key})"),
+            None => "run them from the command palette".to_string(),
+        };
+        Some(Notice {
+            level: NoticeLevel::Warning,
+            text: format!("Keyboard: this terminal cannot send some keys; {remedy}."),
+            expires: Some(Instant::now() + KEYBOARD_NOTICE_TTL),
+            until_next: true,
+            detail: Some(format!("Unavailable: {}", lost.join(", "))),
+        })
     }
 
     /// Starts the file watcher; open documents and later opens are watched.
@@ -630,6 +641,14 @@ impl App {
 
     /// The file `from` is now `to`: the recent-files list follows (in memory and on disk).
     pub fn recent_file_renamed(&mut self, from: &Path, to: &Path) {
+        if self.recent.iter().any(|p| p == from) {
+            self.recent.retain(|p| p != to);
+            for p in &mut self.recent {
+                if p == from {
+                    *p = to.to_path_buf();
+                }
+            }
+        }
         self.recent_files.renamed(from, to.to_path_buf());
         let Some(file) = self.recent_files_file.clone() else {
             return;
@@ -1084,7 +1103,7 @@ impl App {
         let covered = self.layout.status.height > 0 && self.layout.editor.height == 0;
         let welcome_drawn = self.docs.is_empty() && !covered;
         if self.monitor.tick(now, welcome_drawn) {
-            self.monitor.branch = self.active_root().branch();
+            self.monitor.branch = self.git.branch_of_root(&self.active_root().path);
             if self.workspace.is_multi() {
                 self.refresh_root_info();
             }

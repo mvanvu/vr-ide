@@ -1278,9 +1278,57 @@ fn close_session(mut p: GitPopup, wait: bool) {
     p.writer.shutdown();
 }
 
-/// Exit: running writes get a moment to finish, push/pull and commit hooks are cancelled.
+/// A push, pull or commit the session runs, which quitting cancels (D309): the git command
+/// ("push") and what the user sees of it ("push → origin/main", sanitized).
+pub struct RunningWrite {
+    pub op: &'static str,
+    pub label: String,
+}
+
+impl GitPopup {
+    pub fn running_write(&self) -> Option<RunningWrite> {
+        if let Some(j) = &self.job {
+            let op = match j.kind {
+                JobKind::Push => "push",
+                JobKind::Pull => "pull",
+            };
+            return Some(RunningWrite {
+                op,
+                label: j.label.clone(),
+            });
+        }
+        self.commit_cancel.as_ref().map(|_| RunningWrite {
+            op: "commit",
+            label: "commit".into(),
+        })
+    }
+}
+
+/// The running push, pull or commit of the session, if any.
+pub fn running_write(app: &App) -> Option<RunningWrite> {
+    app.git_popup.as_ref()?.running_write()
+}
+
+/// The status bar segment while the popup is hidden and a push, pull or commit runs:
+/// (full, short), e.g. ("push → origin/main…", "push…").
+pub fn status_segment(app: &App) -> Option<(String, String)> {
+    let p = app.git_popup.as_ref().filter(|p| !p.visible)?;
+    let w = p.running_write()?;
+    Some((format!("{}…", w.label), format!("{}…", w.op)))
+}
+
+/// Exit: running writes get a moment to finish, push/pull and commit hooks are cancelled; a
+/// cancelled push, pull or commit is named on stderr after the exit (D309).
 pub fn shutdown(app: &mut App) {
     if let Some(p) = app.git_popup.take() {
+        if let Some(w) = p.running_write() {
+            let what = if w.label == w.op {
+                format!("git {}", w.op)
+            } else {
+                format!("git {}", w.label)
+            };
+            app.exit_messages.push(format!("{what} was cancelled"));
+        }
         close_session(p, true);
     }
 }

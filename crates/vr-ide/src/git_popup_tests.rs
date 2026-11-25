@@ -1753,3 +1753,117 @@ fn a_session_closed_on_root_removal_keeps_its_message_draft() {
         app.git_drafts
     );
 }
+
+// ---- final review 2 (D309): quit while a git write runs ----------------------------------
+
+/// A `hook` in `f` that waits until the returned flag file exists.
+fn blocking_hook(f: &Fixture, hook: &str) -> PathBuf {
+    let flag = f.base.join("go");
+    let path = f.dir.join(".git/hooks").join(hook);
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.05; done\n",
+            flag.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    flag
+}
+
+/// The status bar row of a 120x40 frame.
+fn status_bar(app: &mut App) -> String {
+    let t = draw(app, 120, 40);
+    let s = screen(&t);
+    s.lines().last().unwrap_or_default().to_string()
+}
+
+#[test]
+fn quit_during_a_push_asks_and_quit_anyway_says_it_was_cancelled() {
+    let f = Fixture::new();
+    let remote = with_remote(&f);
+    f.commit("a.txt", "one\ntwo\n", "second");
+    let flag = blocking_hook(&f, "pre-push");
+    let mut app = popup_app(&f);
+    open(&mut app);
+    push_dialog(&mut app);
+    key(&mut app, KeyCode::Enter);
+    assert!(popup(&app).job.is_some());
+    // Hidden, the popup's running job is in the status bar.
+    key(&mut app, KeyCode::Esc);
+    assert!(!popup(&app).visible);
+    let bar = status_bar(&mut app);
+    assert!(bar.contains("push → origin/main…"), "{bar}");
+    // ctrl+q asks, Cancel first; Cancel keeps vr-ide and the push.
+    ctrl(&mut app, 'q');
+    assert!(!app.quit);
+    let (msg, buttons, sel) = confirm(&app);
+    assert!(msg.contains("A git push is running"), "{msg}");
+    assert_eq!(buttons, ["Quit anyway", "Cancel"]);
+    assert_eq!(sel, 1);
+    key(&mut app, KeyCode::Enter);
+    assert!(!app.quit && app.dialog.is_none());
+    assert!(popup(&app).job.is_some());
+    // Quit anyway quits; the exit cancels the push and says so.
+    ctrl(&mut app, 'q');
+    key(&mut app, KeyCode::Left);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.quit);
+    crate::git_popup::shutdown(&mut app);
+    let msgs = app.exit_messages.join(" | ");
+    assert!(
+        msgs.contains("git push → origin/main was cancelled"),
+        "{msgs}"
+    );
+    std::fs::write(&flag, "").unwrap();
+    assert_ne!(
+        g(&f, &f.dir, &["rev-parse", "HEAD"]),
+        g(&f, &remote, &["rev-parse", "main"]),
+        "the push was cancelled"
+    );
+}
+
+#[test]
+fn slash_q_bang_during_a_commit_asks_and_names_the_cancelled_commit() {
+    let f = Fixture::new();
+    f.commit("a.txt", "one\n", "base");
+    f.write("a.txt", "one\ntwo\n");
+    f.git(&["add", "a.txt"]);
+    let flag = blocking_hook(&f, "pre-commit");
+    let mut app = popup_app(&f);
+    open(&mut app);
+    key(&mut app, KeyCode::Char('c'));
+    typ(&mut app, "held");
+    ctrl(&mut app, 's');
+    key(&mut app, KeyCode::Esc);
+    assert!(!popup(&app).visible);
+    let bar = status_bar(&mut app);
+    assert!(bar.contains("commit…"), "{bar}");
+    crate::commands::app::quit_discarding(&mut app);
+    assert!(!app.quit);
+    let (msg, _, sel) = confirm(&app);
+    assert!(msg.contains("A git commit is running"), "{msg}");
+    assert_eq!(sel, 1);
+    key(&mut app, KeyCode::Left);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.quit);
+    crate::git_popup::shutdown(&mut app);
+    let msgs = app.exit_messages.join(" | ");
+    assert!(msgs.contains("git commit was cancelled"), "{msgs}");
+    std::fs::write(&flag, "").unwrap();
+    assert_eq!(g(&f, &f.dir, &["log", "-1", "--format=%s"]).trim(), "base");
+}
+
+#[test]
+fn quit_with_no_git_write_running_does_not_ask() {
+    let f = Fixture::new();
+    f.commit("a.txt", "one\n", "base");
+    let mut app = popup_app(&f);
+    open(&mut app);
+    key(&mut app, KeyCode::Esc);
+    ctrl(&mut app, 'q');
+    assert!(app.quit, "{:?}", app.dialog.as_ref().map(|d| &d.action));
+    crate::git_popup::shutdown(&mut app);
+    assert!(app.exit_messages.is_empty(), "{:?}", app.exit_messages);
+}

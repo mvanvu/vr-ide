@@ -1138,8 +1138,8 @@ fn rename(app: &mut App, name: &str) -> Result<(), String> {
                 path.display()
             )
         })?;
+    // `rename_in` moves the recent-files entry too.
     if let Some(to) = super::explorer::rename_in(app, &root, &path, name)? {
-        app.recent_file_renamed(&path, &to);
         let shown = app.display_path(&to);
         app.info(format!("renamed to {shown}"));
     }

@@ -171,6 +171,14 @@ impl App {
         }
         self.keymap = keymap;
         self.dirty = true;
-        self.info(format!("{KEYMAP_FILE} applied"));
+        // The startup check (`report_keyboard`) again: a key a legacy terminal cannot send
+        // is named rather than silently applied.
+        match self.unreachable_keys_notice() {
+            Some(mut n) => {
+                n.text = format!("{KEYMAP_FILE} applied. {}", n.text);
+                self.push_notice(n);
+            }
+            None => self.info(format!("{KEYMAP_FILE} applied")),
+        }
     }
 }

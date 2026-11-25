@@ -291,6 +291,21 @@ impl GitState {
         }
     }
 
+    /// The checked-out branch of root `root`'s repo (a short hash when HEAD is detached),
+    /// sanitized, once vr-git read it; the welcome screen shows it. The repo is the one
+    /// vr-git discovered (SEC-6 boundaries and owner checks), so the welcome and the status
+    /// bar never disagree.
+    pub fn branch_of_root(&self, root: &Path) -> Option<String> {
+        let r = self.roots.iter().find(|r| r.path == root)?;
+        let RootState::Repo { serial, .. } = &r.state else {
+            return None;
+        };
+        Some(match self.entry(*serial)?.head.as_ref()? {
+            Head::Branch { name, .. } => sanitize(name),
+            Head::Detached { short, .. } => sanitize(short),
+        })
+    }
+
     /// The blame of the active document's current text has arrived (as of the last tick).
     pub fn blame_ready(&self) -> bool {
         let (Some((path, version)), Some(b)) = (&self.track.key, &self.blame) else {
@@ -1161,6 +1176,21 @@ pub fn status_label(app: &App) -> Option<StatusLabel> {
         short.push_str(" · parent repo");
     }
     Some(StatusLabel { full, short })
+}
+
+/// [`status_label`] followed by the Git popup's running push, pull or commit while the popup
+/// is hidden (D309: nothing else would say it runs).
+pub fn status_bar_label(app: &App) -> Option<StatusLabel> {
+    let job = crate::git_popup::status_segment(app);
+    match (status_label(app), job) {
+        (Some(l), None) => Some(l),
+        (Some(l), Some((full, short))) => Some(StatusLabel {
+            full: format!("{} · {full}", l.full),
+            short: format!("{} · {short}", l.short),
+        }),
+        (None, Some((full, short))) => Some(StatusLabel { full, short }),
+        (None, None) => None,
+    }
 }
 
 /// `s` cut to `max` chars with an ellipsis.
