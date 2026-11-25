@@ -1385,3 +1385,38 @@ Notes (not defects): at 40x12 the 60k-typing probe missed the last 3 chars only 
 | BASE-19 | pass | report appended |
 | SEC-15 | pass | hostile branch probes above |
 | SEC-17 | pass | two-root probe: each root shows its own repo / nothing |
+
+## M7-3 (Git popup, Changes tab) — QC
+Verdict: QC_PASS (one minor finding)
+Engine: python pty (xterm-256color, legacy key bytes + SGR mouse) on target/release/vr-ide (22:26, newer than every source), temp HOME/XDG/state, temp repos + bare remotes, a twin repo per op running the plain git commands (identical oids via fixed identity/dates). Scripts and screens: qa-artifacts/M7-3/qc/ (lib.py, walk.py, walk_small.py, walk_*.txt, out120/, out80/, out40/).
+
+### Gates
+- cargo fmt --all --check: exit 0
+- cargo clippy --workspace --all-targets -- -D warnings (run-heavy): exit 0
+- cargo build --release -p vr-ide (run-heavy): exit 0
+- cargo test --workspace -j 4 (run-heavy, once): 1145 passed, 0 failed, 18 ignored (the three known flaky tests passed)
+
+### Walks (after-state compared with `git status --porcelain=v2 --untracked-files=all` + `git diff --cached` of the twin, AC-16f)
+- 120x40 (walk.py, 62 checks) and 80x24 (62 checks): all pass except the 2 banner-text checks at 80x24 (finding 1). Covers: stage/unstage file by space (modified, deleted, untracked in subdir) == git add / git restore --staged; hunk 2 stage and unstage by enter; selected lines (shift+down, X,Y of X,Y,Z) stage and unstage; discard file and hunk (dialog names path, Cancel default, Esc keeps, Right+Enter discards, recovery file == old content, notice names the copy, hunk discard reverts only that hunk and the recovery copy holds the whole old file); unsaved-edit refusal (disk file unchanged, notice shown); a multi-line message "Subject / blank / # hash / body" == `git commit --cleanup=whitespace -F` (same commit id); Amend loads the last message, Sign off == `git commit --amend --signoff -F` (same commit id); push dialog names main -> origin/main, Esc runs nothing, Enter lands on the bare remote; rejected push (remote ahead) shows git's rejection, remote not forced; /git pull with a conflict: "merge in progress" banner + "pull stopped", stage of the conflicted file and commit refused (index unchanged, MERGE_HEAD kept); rescan `r` picks up an outside file; two roots (popup on alpha, active file in beta): p dialog names alpha, alpha's remote got the push, beta's did not; hostile names (ESC ] 52, BEL, U+202E) drawn as `^G` / `<U+202E>`, no OSC 52 / RLO / BIDI byte in the app's output; SEC-19 banner with filter.x.clean + pre-push hook; wide diff line ends with `…` and right scrolls to `// END`; no process left in the temp repos.
+- 40x12: the stacked layout shows one row per list, so the mouse walk is not meaningful there; keyboard-only walk (walk_small.py): 18/18 (space stage, tab to diff + 7 downs + enter == hunk 2 staged, shift+down lines, message with blank and # line == git -F, discard dialog Cancel/Discard readable, discard with recovery copy, push dialog names origin/main and lands on the bare remote, hostile names with placeholders while walking the list, no OSC 52 / RLO). The mouse walk at 40x12 (45/62) failed only on my script's row picking (one visible row), not on the app.
+- Docs: README Git section, docs/commands.md (table rows + paragraph), docs/keymap.md (popup row) match the behaviour seen (keys, dialogs, `…` + left/right scroll, push question, Cancel default, `r`, `1`, esc keeps the draft).
+
+### Findings
+1. [minor | SEC-19 visibility] crates/vr-ide/src/ui/git_popup.rs (banner row) — the SEC-19 banner is one row cut at the popup width with no `…` and no wrap. 120x40: "filter.x.clean, hook pre-push" fully shown. 80x24: "... filter.x.clean, hook pre" (hook name cut mid-word, no marker). 40x12: "! this repo's config runs programs on " — no program is named. The warning is visible, but the names are what SEC-19 wants the user to see. Repro: repo with `git config filter.x.clean cat` and an executable `.git/hooks/pre-push`, open /git at 80x24 / 40x12 (qa-artifacts/M7-3/qc/out80/80x24_hostile_open.txt, out40/40x12_hostile_open.txt). Suggested: wrap the banner to two rows when it does not fit, or shorten the lead-in and end with `…`. The bottom hint row is cut without a marker too (cosmetic).
+
+Observation (not a defect): reopening `/git` keeps the session's last focus (a focused message box gets the next keys), by design (D306, session survives).
+
+## Rule check M7-3
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-16f | pass | twin-repo comparison of status v2, diff --cached, log -1 for stage/unstage file, hunk, lines, commit, amend+signoff at 120x40, 80x24, 40x12 |
+| SEC-15 | pass | hostile names/escapes: no OSC 52/RLO/BIDI byte in output at 3 sizes; visible placeholders |
+| SEC-16 | pass | discard dialog names repo+path(+hunks), Cancel default, Esc keeps, recovery copy equals old content, notice names it; push dialog names origin/main |
+| SEC-17 | pass | popup on alpha, active file in beta: p pushes alpha only |
+| SEC-18 | pass | after-state equality; live: mid-merge stage/commit refused; stale paths covered by the green suite |
+| SEC-19 | pass (minor) | banner names filter+hook at 120x40; truncated at 80x24/40x12 (finding 1) |
+| SEC-20 | pass | no tracing in the popup (dev source check; suite green); URL userinfo redaction not exercised live |
+| D297-D307 | pass | keys, tab ring, one-column lists, push/pull flows, drafts, queue, `…` scroll as decided |
+| BASE-14/15/17/18/19 | pass | gates through run-heavy in the background, no sleep polling, only own processes, temp HOME/repos only, no agents, results written per flow |
+| BASE-24 | pass | nothing changed in the shared tree outside .ai-dev-team/workspace |
+| Docs | pass | README, commands.md, keymap.md match |
