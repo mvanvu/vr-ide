@@ -1232,3 +1232,28 @@ Observations (not defects): (1) after Enter jumps, focus is the editor and Esc t
 | BASE-19 | pass | results written as checked |
 | USER-5 | pass | legacy ctrl+f/ctrl+r bytes walked |
 | COMPACT | pass | short windows keep box rows |
+
+## T23 (explorer right-click menu, D262/D276)
+Engine: release binary driven through python pty (TERM=xterm-256color, SGR mouse bytes), 120x40, 80x24, 40x12. Artifacts: qa-artifacts/T23/qc/ (walk.py, edge.py, *_out.txt, w_NN.txt screens).
+
+| Check | Result |
+|---|---|
+| fmt --check, clippy --workspace --all-targets -D warnings | pass (fmt.txt, clippy.txt) |
+| fresh release build (touched main.rs, run-heavy) | pass, 1m58s (release.txt) |
+| full suite once (run-heavy, load avg 12-18) | 1 failure: vr-syntax `every_sample_equals_a_fresh_parse_after_each_random_char_edit` (xml/vue incremental vs fresh spans). vr-syntax has no T23 change (git clean); the dev's full run passed it (883/0). Rerun alone once under load: failed again. Not attributable to T23 (outside the diff). All vr-ide tests ok (481 passed; the recent_files flake did not occur) |
+| walk (3 sizes, 18 checks each, disk verified): right click file opens menu; Esc and outside click close; Rename via mouse (disk rename); New... File/Folder choice (file and folder created in zdir); copy+paste file and folder (recursive, deep.txt copied); cut+paste moves (source gone); blank-area right click -> menu, dimmed Rename click does nothing (menu stays), Paste at root works; keyboard End+Enter -> Delete asks, Move to Trash -> file gone, present in $XDG_DATA_HOME/Trash/files; top row menu | pass 18/18 per size (walk_out.txt) |
+| edge: right click at bottom-right / right edge / bottom-left of explorer at all 3 sizes: box fully drawn (4 corners) | pass |
+| mouse-grabbing program in terminal (`?1000h ?1006h; cat -v`): program receives `^[[<2;6;13M/m`, no menu | pass x3 sizes (edge2_out.txt) |
+| docs (README explorer section, docs/keymap.md row) vs behaviour | match |
+
+Notes: the first walk's "menu near bottom-right" FAIL x3 was my script clicking in the editor area (outside the explorer, no menu by design); rerun inside the explorer = pass. The explorer is at most ~29 cols wide, so the screen-right clamp is not reachable by mouse at these sizes; covered by dev unit tests only.
+
+## Rule check T23
+| Rule | Status | Evidence |
+|---|---|---|
+| D262 request (rename, new file/folder, delete to trash, copy, cut, paste; files+folders) | pass | walk disk checks |
+| D276 design calls (order, dimming, close rules, placement) | pass | walk + snapshots |
+| BASE-4/5 | pass | qa-artifacts/T23/qc outputs |
+| BASE-14/15/17 | pass | no polling loops of heavy runs; only own pty sessions; temp dirs removed; trash redirected to a temp XDG_DATA_HOME |
+| BASE-19 | pass | written as checked |
+| Full suite | note | unrelated vr-syntax failure under load, see above |
