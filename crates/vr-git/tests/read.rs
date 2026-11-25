@@ -676,6 +676,35 @@ fn gutter_follows_git_line_ending_conversion() {
             "case {i}: {attrs:?} {autocrlf:?}"
         );
     }
+    // Every spelling git reads as true (a valueless key, 2, -1) or as input converts.
+    for (i, spelling) in [
+        "\tautocrlf\n",
+        "\tautocrlf = 2\n",
+        "\tautocrlf = -1\n",
+        "\tautocrlf = INPUT\n",
+        "\tautocrlf = off\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let f = Fixture::new();
+        let cfg = f.dir.join(".git/config");
+        let mut text = std::fs::read_to_string(&cfg).unwrap();
+        text.push_str("[core]\n");
+        text.push_str(spelling);
+        std::fs::write(&cfg, text).unwrap();
+        f.write("a.txt", "one\ntwo\n");
+        f.commit_all("base");
+        let r = f.repo();
+        let buffer = "one\r\nTWO\r\n";
+        let ours = r.line_changes(Path::new("a.txt"), buffer).unwrap().unwrap();
+        f.write("a.txt", buffer);
+        assert_eq!(
+            ours,
+            marks_from_git(&f, "a.txt"),
+            "spelling {i}: {spelling:?}"
+        );
+    }
     // The case the review found: a CRLF checkout must not mark every line.
     let f = Fixture::new();
     f.write(".gitattributes", "*.bat eol=crlf\n");

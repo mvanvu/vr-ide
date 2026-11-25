@@ -141,6 +141,19 @@ impl Repo {
         }))
     }
 
+    /// The same repo with a runner of its own: its shutdown and process registry are not
+    /// shared with this handle's clones (a reader's worker drop must not kill a write).
+    pub(crate) fn with_own_runner(&self) -> Result<Repo> {
+        let git = Git::new(self.git.opts().clone())?;
+        git.watch_config(&self.git_dir, &self.common_dir);
+        Ok(Repo {
+            workdir: self.workdir.clone(),
+            git_dir: self.git_dir.clone(),
+            common_dir: self.common_dir.clone(),
+            git,
+        })
+    }
+
     /// The work tree root (canonical).
     pub fn workdir(&self) -> &Path {
         &self.workdir
