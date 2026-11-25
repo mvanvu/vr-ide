@@ -1322,3 +1322,26 @@ Findings (all minor/cosmetic, none blocking):
 | BASE-19 | pass | written incrementally to this section |
 | BASE-24 | pass | no commit/stash/checkout; only files under .ai-dev-team/workspace written |
 | COST | pass | heavy via run-heavy.sh |
+
+## T24
+Engine: own pty walks (python pty, TERM=xterm-256color, legacy bytes + SGR mouse, temp config/state/HOME) on the release binary; script and screens in qa-artifacts/T24/qc/ (walk.py, qc_*.txt, reload_result.txt, keys_term_result.txt).
+Guards: fmt --check rc 0; clippy --workspace --all-targets -D warnings rc 0; release build rc 0. Full suite: first run stopped at vr-core `watch_debounces_burst` (timing under load, untouched crate; passes alone twice) so the suite was run again with --no-fail-fast: 939 passed, 0 failed (full2.log). Flaky noted, not hidden.
+| Criterion | Evidence | Result |
+|---|---|---|
+| f4 / shift+f4 (ESC[1;2S) next/prev; f3/shift+f3 nothing | K1-K5 | pass |
+| Replace dialog One/All/Cancel, One default, Esc, undo after All is one step | K6-K12 (K10/K11 script asserts were wrong; screens show "X X X", "Replaced 2 occurrences", one ctrl+z back to pre-All text) | pass |
+| /wrap, /term new, /term close unknown; palette without New/Close Terminal; ctrl+f12/ctrl+f4 nothing | K13-K16 | pass |
+| F1 from focused terminal, Esc back | covered by dev walk 31/31 and unit test; not re-walked by me | pass (indirect) |
+| ctrl+` from editor / explorer / find box / terminal, first terminal created | T[...] at 120x40, 80x24, 40x12, right 120x40, 80x24: 65/65 | pass |
+| '+' opens terminal in active file's root (rootB, multi-root), 'x' closes tab, last 'x' hides | same 65/65 | pass |
+| Live reload: external settings (theme, tab_width), broken file keeps old + error, unknown theme refused, /config save, keymap.toml external, symlinked settings.toml with real file open (external, ctrl+s, after tab close) | reload_result.txt 13/13 | pass |
+| Welcome "1 file" | W1 | pass |
+Findings: none blocking. Open D295 (terminal 'x' closes running program without asking) is known.
+## Rule check T24
+| Rule | Status | Evidence |
+|---|---|---|
+| BASE-4/5 | pass | fmt, clippy, release rc 0; suite 939/0 (one flaky vr-core timing test, passes alone) |
+| BASE-10 | pass | full suite run once plus a --no-fail-fast rerun after the first stopped early |
+| BASE-14/15 | pass | run-heavy, background + monitor, own walk processes killed; foreign pid 1456662 untouched |
+| BASE-17 | pass | temp config/state/HOME dirs only |
+| BASE-18/19/24 | pass | no sub-agents, written incrementally, no commit/stash/checkout |
