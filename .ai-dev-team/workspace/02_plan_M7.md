@@ -23,4 +23,4 @@ Spec: `.ai-dev-team/workspace/01_spec_M7.md`.
    commands `:git blame`, `:git show`, `:git log`, `:git blame line` (after W-2 and T20).
 4. M7-4 (fe, opus) Git GUI view, `:git gui` (after M7-2, M7-3).
 5. Sign-off qc + Phase 5 (correctness + security + ui).
-Order: M7-TM and M7-1 now (worktree .worktrees/M7-1, own crate) → M7-2 → M7-3 → M7-4.
+Status: DRAFT, not approved. The user proposes M7 and T20 step by step; nothing is built until the user approves (M7-1/M7-TM agents were started without approval and stopped; branch m7-1-vr-git kept, unmerged).

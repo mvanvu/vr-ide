@@ -1,34 +1,36 @@
-# Spec — T20 Command line (':')
+# Spec — T20 Command window: slash commands in the F1 palette
 
 flags: has_ui=true (terminal UI), security_sensitive=false, platforms=linux
-source: user 2026-11-25 (D254); readings D255, D256.
+source: user 2026-11-25 step by step (D258, D259, D260) + "follow the proposal, also drop f12 and f5" (D263).
 
-## Goal
-Run any command by name instead of remembering key combos, vim-style: ':' opens a command line.
+## Window
+- F1 (everywhere, edit mode included) and `space space` in normal mode open the palette (built in T21).
+- Typing `/` starts a slash command: the list shows matching commands with their argument hint and
+  description; Tab completes; Enter runs; Esc closes and returns to normal (read) mode.
+- Unknown command / bad argument: an error line under the input, the text stays for correction.
+- Without `/` the palette behaves as today (fuzzy command list).
 
-## Scope
-- ':' (shift+; — a plain character, reachable from every terminal) opens a one-line prompt ':' on the bottom
-  row (over the status bar) when focus is the editor in read mode, the explorer or the welcome screen.
-  In edit mode ':' inserts text; terminal, find bar, palette and dialogs keep their own keys.
-- Enter runs the command; Esc closes the line and returns to read (normal) mode; Backspace on an empty
-  line closes it.
-- Commands: every palette command has a command-line name (lower-case words, `terminal new`, `explorer`,
-  `theme dracula`, `search <text>`, `workspace add <path>`…); vim shorthands `w`, `q`, `wq`, `q!`, `<n>` (go to
-  line), `e <path>` (open file, path completion); later features register their own names (M7: `git gui`,
-  `git blame`, `git show`, `git log`, `git blame line`).
-- Tab completes the command (and paths for path arguments); a suggestion list above the line shows matching
-  commands with their key binding (if any) and a one-line description; Up/Down recall history (last 100,
-  `$XDG_STATE_HOME/vr-ide/history`, written off the UI thread).
-- Unknown command / bad argument: an error notice, the text stays for correction.
-- docs/keymap.md and README: a "Command line" section with the command table (generated test checks it
-  matches the registry); welcome hint shows `: command`.
+## Phase 1 (this task) — the recommended groups
+- File: `/save-as [path]`, `/reload` (f12 and f5 are removed as keys, D263).
+- Terminal: `/term new`, `/term close`, `/term right`, `/term bottom` (the last two only once T19 lands;
+  until then listed as unavailable), `/run <command>` (sends the command line + Enter to the active
+  terminal, opening one if needed; typed by the user, nothing auto-run), `/ai <tool>` (opens a terminal running
+  that tool, e.g. `claude`; a missing tool shows the shell's own error).
+- Workspace: `/ws add <dir>` (path completion), `/ws remove`, `/ws save [file]`, `/ws open <file>`, `/ws recent`.
+- View: `/theme synthwave|dracula|dark|light`, `/wrap`, `/hidden`, `/ignored`.
+- Help: `/help` (every slash command with its arguments and description; the docs table is generated from
+  the same registry and a test checks they match).
+- Quit: `/q` (unsaved guard), `/q!` (discard).
+
+## Phase 2 (task T20b, queued) — the rest of the proposal
+`/rename <name>`, `/copy-path`, `/copy-relpath`, `/recent`, `/sort`, `/unique`, `/upper`, `/lower`, `/trim`,
+`/indent 2|4|tab`, `/eol lf|crlf`, `/lang <id>`, `/set <name> <value>`, `/config`, `/keymap`, `/keys`.
+
+## Later
+`/git …` with M7 (waiting for the user).
 
 ## Acceptance criteria
-- AC-20a: In read mode ':' shows the prompt; `git gui`-style names resolve (until M7 lands, an unknown-feature
-  notice); `terminal` + Enter toggles the terminal; Esc returns to read mode with nothing run.
-- AC-20b: Every palette command is reachable by a name; the docs table matches the registry (test).
-- AC-20c: `:w`, `:q`, `:wq`, `:q!`, `:42`, `:e src/main.rs` behave as save / quit (with unsaved guard) /
-  save+quit / quit discarding / go to line 42 / open file.
-- AC-20d: In edit mode ':' types a colon; in a focused terminal ':' goes to the shell.
-- AC-20e: Tab completion, suggestion list and history work at 80x24 and 40x12 (snapshots).
-- AC-1 still holds.
+- AC-20a: F1 / space space open the window; `/` lists slash commands; Enter runs, Esc returns to normal mode.
+- AC-20b: every phase-1 command works with its arguments; bad arguments show an error and keep the text.
+- AC-20c: `/run` and `/ai` never run anything without the user's Enter; `/q` keeps the unsaved guard.
+- AC-20d: `/help` and docs match the registry (test); snapshots 80x24, 120x40, 40x12.

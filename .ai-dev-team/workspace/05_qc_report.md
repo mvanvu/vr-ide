@@ -1142,3 +1142,25 @@ Verdict: PASS. Defects: none (S4 cosmetic: InvalidKey wording for sequences, cra
 | BASE-14/15 | pass | foreground runs, only own pty children killed |
 | BASE-17 | pass | fixtures in /tmp, private config/state dirs, ~/.config not touched |
 | BASE-19 | pass | results written to this report after the walks |
+
+## T21 — keyset v2 (QC)
+
+Verdict: QC_PASS. Engine: release binary driven through a python pty (TERM=xterm-256color), legacy bytes and kitty-encoded keys; cargo for the suites. Artifacts: qa-artifacts/T21/qc/ (walk.py, docs_check.py, legacy_*.txt / kitty_*.txt screens, run.txt, test_full.txt, clippy.txt, fmt.txt, f3only_*.txt).
+
+- cargo test --workspace: 771 passed, 0 failed (test_full.txt). clippy --all-targets -D warnings: clean. fmt --check: clean. Fresh release build ok.
+- Own pty walk (walk.py), 48 checks per run: legacy 48/48, kitty 48/48 (after fixing my script's kitty bytes for f3/shift+f3; f3only.py shows kitty shift+f3 steps back, legacy shift+f3 does not = D264, known).
+- Covered both modes: space x hint, space space and f1 palette, tab cycle editor<->explorer, tab with find bar open (field unchanged), space i, edit tab / shift+tab, ctrl+l/d, ctrl+up/down, ctrl+a/x/v, ctrl+z/y, ctrl+/, esc, ctrl+r in editor (READ -> EDIT, replace field, one then all gives 1 then 2 OMEGA), ctrl+r on a non-UTF-8 read-only file (refused, stays READ, typing and disk unchanged), ctrl+r in search panel (project REPLACE), ctrl+h hidden toggle, explorer ctrl+n File/Folder (folder and file created on disk), explorer copy and cut/paste of a folder (recursive copy keeps source; cut moves), f2, delete, f3. Removed keys inert: f5 f12 ctrl+t ctrl+u f7 f4 f6 ctrl+f1 ctrl+f2 ctrl+f3 ctrl+f5 ctrl+i ctrl+] (no edit, no panel, no file change).
+- docs_check.py: every keymap.toml binding has a docs/keymap.md row with the same key and appears in README; no removed key listed as a binding (docs/keymap.md:33 mentions ctrl+i only to say it is not an edit key; README f1 is written `F1`). Existing guard test config.rs passes in the suite.
+- Known, not findings: D264 (legacy shift+f3), D265.
+- Notes (info): the status bar does not show which pane has focus, so focus was probed by cursor movement.
+
+## Rule check T21
+| Rule | Result | Evidence |
+|---|---|---|
+| USER-5 keys work without kitty (ctrl+letter / F keys, 2 approved exceptions) | pass (D264 known for shift+f3) | legacy walk 48/48 |
+| AC-21a each key runs its command, with and without kitty | pass | legacy 48/48, kitty 48/48 |
+| AC-21b space i / space space / tab / edit tab / esc | pass | walk screens |
+| AC-21c ctrl+r in-file and project | pass | walk screens, read-only refusal |
+| AC-21d removed keys inert, docs match keymap | pass | walk + docs_check.py |
+| Tests / clippy / fmt | pass | 771 passed, clippy -D warnings, fmt clean |
+| Test data cleanup | pass | walk uses mkdtemp dirs only, no repo or DB data |
