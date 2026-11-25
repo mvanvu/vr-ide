@@ -47,6 +47,15 @@ dim `Author, 3 days ago • subject` after the cursor line once the cursor rests
 uncommitted` for lines not committed yet); it hides while you type. It is off by default and
 changes for this session; set `git_inline_blame = true` in `settings.toml` to keep it on.
 
+Git popup: `/git` opens it on the repository of the active file's workspace folder (or of the
+first folder when no file is open); `/git <name>` on the workspace folder with that name (names
+only: `/git ../x` says "no such root"). The popup stays on that repository; opening it again keeps
+your message draft. `/git push` asks "Push main of ~/repo to origin/main?" (with "and make it the
+upstream" for a branch without one) and pushes in the background; `/git pull` pulls in the
+background. Both show the popup with git's progress; a second `/git push` or `/git pull` while
+one runs offers to cancel it. A pull that stops on conflicts leaves the merge to the terminal and
+the popup says so. Keys inside the popup are listed in `docs/keymap.md`.
+
 File commands act on the active tab. `/rename <name>` renames its file in the same folder with the
 explorer's checks (one name, no `/`; an existing name is never replaced) and the tab follows,
 unsaved changes included. `/copy-relpath` copies the path relative to the workspace folder that
@@ -111,6 +120,9 @@ protocol does not send are marked).
 | `/keymap` | Open keymap.toml (made when missing) |
 | `/keys` | Show the key table (read-only tab) |
 | `/git blame line` | Show or hide the cursor line's blame, for this session |
+| `/git [root]` | Git popup: changes, stage, discard, commit, push (default: the active file's repo) |
+| `/git push` | Push the current branch in the background (the target is shown first) |
+| `/git pull` | Pull in the background (conflicts are resolved in the terminal) |
 | `/help` | List the slash commands |
 | `/q` | Quit (asks about unsaved files) |
 | `/q!` | Quit, discarding unsaved changes (copy kept in recovery) |

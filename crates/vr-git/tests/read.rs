@@ -717,3 +717,24 @@ fn gutter_follows_git_line_ending_conversion() {
         Some(vec![])
     );
 }
+
+#[test]
+fn the_staged_fingerprint_follows_the_index_only() {
+    let f = Fixture::new();
+    let r = f.repo();
+    // Unborn branch: compared with the empty tree.
+    let empty = r.staged_fingerprint().unwrap();
+    f.write("a.txt", "one\n");
+    f.git(&["add", "a.txt"]);
+    let one = r.staged_fingerprint().unwrap();
+    assert_ne!(one, empty);
+    // A worktree change alone leaves it.
+    f.write("a.txt", "two\n");
+    assert_eq!(r.staged_fingerprint().unwrap(), one);
+    // New content of a staged path (the list stays the same) moves it.
+    f.git(&["add", "a.txt"]);
+    let two = r.staged_fingerprint().unwrap();
+    assert_ne!(two, one);
+    f.commit_all("c");
+    assert_eq!(r.staged_fingerprint().unwrap(), empty);
+}

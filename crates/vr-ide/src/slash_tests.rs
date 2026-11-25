@@ -97,6 +97,10 @@ fn registry_has_the_phase_1_commands_once() {
         "keys",
         // M7-4a.
         "git blame line",
+        // M7-3.
+        "git",
+        "git push",
+        "git pull",
     ];
     let names: Vec<&str> = SLASH_COMMANDS.iter().map(|c| c.name).collect();
     for w in want {

@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/git_popup_tests.rs
+expression: t.backend()
+---
+" w.rs                                                                           "
+"  1 ┌─ Git · ~/repo · main ────────────────────────────────────── Changes ─┐    "
+"  2▎│Unstaged (1)                │w.rs (unstaged)                          │xxxx"
+"  3 │ M w.rs                     │@@ -1 +1,2 @@                            │    "
+"    │                            │ short                                   │    "
+"    │                            │+let wide = "xxxxxxxxxxxxxxxxxxxxxxxxxxx…│    "
+"    │                            │                                         │    "
+"    │                            │                                         │    "
+"    │Staged (0)                  │                                         │    "
+"    │                            │                                         │    "
+"    │                            │                                         │    "
+"    │                            │                                         │    "
+"    │                            │                                         │    "
+"    │                            │                                         │    "
+"    ├─ Message ──────────────────┴─────────────────────────────────────────┤    "
+"    │commit message (c to write, ctrl+s to commit)                         │    "
+"    │                                                                      │    "
+"    │[ ] Amend [ ] Sign off [Commit] [Push] [Pull] [Rescan]                │    "
+"    │                                                                      │    "
+"    │↑↓ move · ←→ scroll · shift+↑↓ lines · enter stage/unstage · d discard│    "
+"    └──────────────────────────────────────────────────────────────────────┘    "
+"                                                                                "
+"                                                                                "
+" READ w.rs · main · Ln 1, Col 1 · LF · UTF-8                                    "

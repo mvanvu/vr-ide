@@ -279,6 +279,18 @@ impl GitState {
         }
     }
 
+    /// The repo of root `root` and, when it was found above the root, its `~` path (D298), for
+    /// the Git popup. The popup writes through its own `vr_git::Writer` (D304).
+    pub fn repo_info_of_root(&self, root: &Path) -> Option<(Repo, Option<String>)> {
+        let r = self.roots.iter().find(|r| r.path == root)?;
+        match &r.state {
+            RootState::Repo { serial, parent } => self
+                .entry(*serial)
+                .map(|e| (e.repo.clone(), parent.clone())),
+            _ => None,
+        }
+    }
+
     /// The blame of the active document's current text has arrived (as of the last tick).
     pub fn blame_ready(&self) -> bool {
         let (Some((path, version)), Some(b)) = (&self.track.key, &self.blame) else {
@@ -489,7 +501,7 @@ fn kill_children_of_thread(tid: i32) {
 }
 
 /// `path` with the home folder written `~`, sanitized for display.
-fn home_relative(path: &Path) -> String {
+pub(crate) fn home_relative(path: &Path) -> String {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let shown = match home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
@@ -692,13 +704,16 @@ pub fn on_fs_event(app: &mut App, ev: &FsEvent) {
         }
         FsEvent::Error(_) => return,
     };
-    for p in paths {
-        if let Some(serial) = git.serial_for(&p) {
+    for p in &paths {
+        if let Some(serial) = git.serial_for(p) {
             if let Some(e) = git.entry(serial) {
-                e.worker.invalidate_path(&p);
+                e.worker.invalidate_path(p);
             }
-            git.forget_path(&p);
+            git.forget_path(p);
         }
+    }
+    for p in &paths {
+        crate::git_popup::on_change(app, p);
     }
 }
 
@@ -788,7 +803,33 @@ fn drain_git_events(app: &mut App) {
             }
         }
     }
+    let mut workdirs = Vec::new();
     for serial in changed {
+        if let Some(e) = git.entry(serial) {
+            e.worker.invalidate();
+            workdirs.push(e.repo.workdir().to_path_buf());
+        }
+        git.forget_repo(serial);
+        git.request(serial, Request::Head, Pending::Head);
+        git.request(serial, Request::AheadBehind, Pending::AheadBehind);
+    }
+    // The Git popup on that repo scans again too.
+    for wd in workdirs {
+        crate::git_popup::on_change(app, &wd);
+    }
+}
+
+/// The Git popup wrote to the repo at `workdir`: gutter marks, blame and the status bar's
+/// branch are asked again (the `.git` watcher may see it later or, on some filesystems, not).
+pub fn repo_written(app: &mut App, workdir: &Path) {
+    let git = &mut app.git;
+    let serials: Vec<u64> = git
+        .repos
+        .iter()
+        .filter(|e| e.repo.workdir() == workdir)
+        .map(|e| e.serial)
+        .collect();
+    for serial in serials {
         if let Some(e) = git.entry(serial) {
             e.worker.invalidate();
         }
@@ -796,6 +837,7 @@ fn drain_git_events(app: &mut App) {
         git.request(serial, Request::Head, Pending::Head);
         git.request(serial, Request::AheadBehind, Pending::AheadBehind);
     }
+    app.dirty = true;
 }
 
 fn event_under(ev: &FsEvent, dir: &Path) -> bool {

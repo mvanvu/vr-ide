@@ -1,0 +1,29 @@
+---
+source: crates/vr-ide/src/git_popup_tests.rs
+assertion_line: 1153
+expression: t.backend()
+---
+" app.rs                                                                         "
+"  1 ┌─ Git · ~/repo · main ────────────────────────────────────── Changes ─┐    "
+"  2▎│Unstaged (2)                │src/app.rs (unstaged)                    │    "
+"  3▎│ M src/app.rs               │@@ -1,3 +1,4 @@                          │    "
+"  4 │ ? notes.md                 │ fn main() {                             │    "
+"  5 │                            │-    old();                              │    "
+"    │                            │+    new();                              │    "
+"    │                            │+    more();                             │    "
+"    │Staged (1)                  │ }                                       │    "
+"    │ M README.md                │                                         │    "
+"    │                            │                                         │    "
+"    │                            │                                         │    "
+"    │                            │                                         │    "
+"    │                            │                                         │    "
+"    ├─ Message ──────────────────┴─────────────────────────────────────────┤    "
+"    │Fix the find box                                                      │    "
+"    │                                                                      │    "
+"    │[ ] Amend [ ] Sign off [Commit] [Push] [Pull] [Rescan]                │    "
+"    │                                                                      │    "
+"    │ctrl+s commit · tab next · esc close                                  │    "
+"    └──────────────────────────────────────────────────────────────────────┘    "
+"                                                                                "
+"                                                                                "
+" READ src/app.rs · main · Ln 1, Col 1 · LF · UTF-8                              "

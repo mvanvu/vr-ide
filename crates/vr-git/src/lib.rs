@@ -22,6 +22,7 @@ mod diff;
 mod log;
 mod parse;
 mod patch;
+mod programs;
 mod recovery;
 mod remote;
 mod repo;

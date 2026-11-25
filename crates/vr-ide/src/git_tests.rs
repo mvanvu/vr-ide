@@ -580,7 +580,9 @@ fn each_root_shows_its_own_repo() {
     wait(&mut app, "discovery", |x| !x.git.discovering());
     assert_eq!(crate::git::status_label(&app), None);
     assert_eq!(app.git.marks_for(&pc), None);
-    assert_eq!(app.git.marks_for(&pa).map(|(_, m)| m.len()), Some(0));
+    // Drawn marks: a late .git event of repo a (under load) may mark them not fresh, and
+    // only the active file is asked again; what is drawn for a stays its own.
+    assert_eq!(app.git.shown_marks(&pa).map(<[_]>::len), Some(0));
     assert_eq!(app.git.repo_count(), 2);
 }
 

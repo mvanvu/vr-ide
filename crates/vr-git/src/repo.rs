@@ -284,6 +284,26 @@ impl Repo {
         }
     }
 
+    /// What a commit would record now: the index against HEAD as `git diff --cached --raw`
+    /// lists it (modes, full object ids, paths; an unborn branch compares with the empty
+    /// tree). Two equal answers mean the same staged content, so a UI can tell whether what it
+    /// showed is still what a commit takes (SEC-18). Opaque; compare only.
+    pub fn staged_fingerprint(&self) -> Result<Vec<u8>> {
+        let args = [
+            "diff",
+            "--cached",
+            "--raw",
+            "-z",
+            "--no-renames",
+            "--no-abbrev",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+        ]
+        .map(os);
+        self.run(&args, false)
+    }
+
     /// Staged and unstaged changes (`git status --porcelain=v2 -z`, untracked files listed one by one).
     pub fn status(&self) -> Result<Status> {
         let args = [

@@ -339,6 +339,63 @@ open one.
   from the editor shows or hides the panel, and `shift+f12` from the editor hides it. The tab bar's
   hint shows the way out that works in your setup.
 
+### Git
+
+In a git repository the gutter marks changed lines and the status bar shows the branch with
+`↑n ↓n` against its upstream (see `docs/commands.md`). `/git` (command window, `F1`) opens the
+Git popup on the repository of the active file's workspace folder; `/git <folder name>` on another
+workspace folder's (folder names only). The header names the repository and the branch, and says
+`parent repo of <folder>` when the repository was found above the workspace folder. The popup
+stays on that repository until you open it on another one.
+
+```
+┌─ Git · ~/repo · main ↑1 ↓0 ──────────────────────── Changes ─┐
+│Unstaged (2)          │src/app.rs (unstaged)                   │
+│ M src/app.rs         │@@ -1,3 +1,4 @@                         │
+│ ? notes.md           │-    old();                             │
+│Staged (1)            │+    new();                             │
+│ M README.md          │                                        │
+├─ Message ────────────┴────────────────────────────────────────┤
+│Fix the find box                                               │
+│[ ] Amend [ ] Sign off [Commit] [Push] [Pull] [Rescan]         │
+└───────────────────────────────────────────────────────────────┘
+```
+
+- The two lists are one column: `up`/`down` move through the unstaged files and on into the staged
+  ones. `space` stages or unstages the selected file. `tab` moves to the diff, the message box,
+  the toggles and buttons and back.
+- In the diff, the cursor's hunk is the selection; `shift+up`/`shift+down` (or `shift`+click, or
+  a drag) select lines of one hunk. `enter` stages them (unstages them in a staged diff). A line
+  wider than the pane ends in `…`; `left`/`right` scroll the diff sideways.
+- `d` discards the selected file (in the list) or the hunk or lines (in the diff), after a question
+  whose default is Cancel. The file's current content is first moved to
+  `~/.local/state/vr-ide/git-recovery/` (under `VR_IDE_STATE_DIR` when set), and the notice names
+  the copy. A file with unsaved changes in a tab is not discarded; saving a file waits while its
+  discard runs.
+- `c` goes to the message box; `ctrl+s` there commits. Amend loads the last commit's message into
+  an empty box (turning it off gives your draft back); Sign off adds the `Signed-off-by` line.
+  A commit takes exactly what the popup shows: when HEAD or the staged files changed from
+  outside since (a commit or a stage in the terminal), it is refused with "changed, rescan".
+  Amending a commit that is already on the upstream asks first (Cancel is the default).
+  `ctrl+s` while a commit's hooks run asks before stopping it; the Cancel commit button stops
+  it at once.
+- The popup stays on its repository: `p` and the buttons act on it even when the active file is
+  in another root. A message draft is kept per repository when `/git <root>` or `/git push`
+  moves the popup to another one.
+- `p` (or `/git push`) shows where the branch goes (`origin/main`) and pushes after you confirm,
+  in the background; `/git pull` pulls. The line under the buttons shows git's progress and the
+  queue of writes; pressing `p` again (or the Cancel push button) offers to cancel. git's own
+  error text is shown as is, with control characters made visible and passwords in URLs hidden.
+- `r` scans again (changes from outside are picked up by themselves); `esc` closes the popup and
+  keeps your message. History and Blame tabs come later.
+- A merge or rebase in progress (for example after a pull with conflicts) shows a banner;
+  conflicted files and commit are then left to the terminal.
+- Writes run git as you would in the terminal, so the repository's hooks, filters (Git LFS) and
+  signing run. When the repository's own config sets such programs, the popup names them in a
+  banner first.
+- If vr-ide was killed in the middle of a discard, the next `/git` offers the hidden
+  `.vr-ide-discard-*` file it left: restore an `.old` one under a name, delete an unused `.new` one.
+
 ### Clipboard
 
 Copy and paste use the system clipboard when a display is reachable (`DISPLAY` or
@@ -478,7 +535,7 @@ Roadmap:
 - M4: syntax highlighting (tree-sitter)
 - M5: integrated terminal (in progress: the terminal panel works, see [Terminal](#terminal))
 - M6: AI agent console
-- M7: git (gutter signs, git panel, diff view, hunk staging)
+- M7: git (gutter signs and status bar done; Git popup Changes tab done, see [Git](#git); History and Blame tabs next)
 - M8: LSP (completion, hover, definition, references, diagnostics, rename, format, code actions)
 
 ## Benchmark

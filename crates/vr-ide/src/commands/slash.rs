@@ -332,6 +332,27 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         "Show or hide the cursor line's blame, for this session",
         git_blame_line,
     ),
+    cmd(
+        "git",
+        "[root]",
+        ArgKind::Root,
+        "Git popup: changes, stage, discard, commit, push (default: the active file's repo)",
+        git_open,
+    ),
+    cmd(
+        "git push",
+        "",
+        NO_ARG,
+        "Push the current branch in the background (the target is shown first)",
+        git_push,
+    ),
+    cmd(
+        "git pull",
+        "",
+        NO_ARG,
+        "Pull in the background (conflicts are resolved in the terminal)",
+        git_pull,
+    ),
     cmd("help", "", NO_ARG, "List the slash commands", help),
     cmd("q", "", NO_ARG, "Quit (asks about unsaved files)", quit),
     cmd(
@@ -1014,6 +1035,19 @@ fn git_blame_line(app: &mut App, _: &str) -> Result<(), String> {
     ));
     app.dirty = true;
     Ok(())
+}
+
+/// `/git [root]` (M7-3): a root by name only, never a path (SEC-17).
+fn git_open(app: &mut App, arg: &str) -> Result<(), String> {
+    crate::git_popup::open(app, arg)
+}
+
+fn git_push(app: &mut App, _: &str) -> Result<(), String> {
+    crate::git_popup::push(app)
+}
+
+fn git_pull(app: &mut App, _: &str) -> Result<(), String> {
+    crate::git_popup::pull(app)
 }
 
 fn help(app: &mut App, _: &str) -> Result<(), String> {
