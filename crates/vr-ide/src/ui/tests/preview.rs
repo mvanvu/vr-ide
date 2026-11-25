@@ -539,19 +539,20 @@ fn prompt_dialog_body_keeps_the_popup_background() {
     }
 }
 
+/// The find box's scope label is drawn like a selected button while the box has the keys.
 #[test]
-fn search_panel_separator_marks_the_focus() {
+fn find_box_scope_label_marks_the_focus() {
     let theme = Theme::dracula_with(ColorDepth::TrueColor);
     let (_d, mut app) = scene("Search panel with results");
-    for (focus, want) in [
-        (Focus::Search, theme.focus.fg),
-        (Focus::Editor, theme.dim.fg),
-    ] {
+    let mut label_bg = |focus| {
         app.focus = focus;
         let t = draw_with(&mut app, &theme, 80, 24);
-        let x = app.layout.search.x + app.layout.search.width - 1;
-        assert_eq!(t.backend().buffer()[(x, 3)].fg, want.unwrap(), "{focus:?}");
-    }
+        let b = app.layout.find_bar;
+        t.backend().buffer()[(b.x + 1, b.y)].bg
+    };
+    let focused = label_bg(Focus::Search);
+    assert_eq!(focused, theme.button_selected.bg.unwrap());
+    assert_ne!(focused, label_bg(Focus::Editor));
 }
 
 #[test]

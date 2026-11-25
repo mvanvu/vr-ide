@@ -30,21 +30,26 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     // Paint the theme background everywhere first; widgets then only patch their own cells.
     frame.buffer_mut().set_style(area, theme.text);
     let notice_rows = status_bar::notice_rows(app, area.width);
-    let side = if app.search.visible {
-        layout::Side::Search
-    } else if app.explorer.visible {
+    let side = if app.explorer.visible {
         crate::commands::explorer::ensure_loaded(app);
         layout::Side::Explorer
     } else {
         layout::Side::None
     };
-    let mut layout = layout::compute(area, notice_rows, side, find_bar::rows(app));
+    let mut layout = layout::compute(area, notice_rows, side);
+    // D275: the fields first, then the terminal panel, then the list from what is left.
+    layout::place_find_box(&mut layout, find_bar::field_rows(app));
     if app.terminal.visible {
         layout::place_terminal(&mut layout, area.height, app.terminal.height_percent);
     }
+    let list_rows = find_bar::list_rows(
+        app,
+        layout.find_bar.height + layout.editor.height,
+        layout.editor.width,
+    );
+    layout::grow_find_box(&mut layout, list_rows);
     app.layout = layout;
     explorer::render(frame.buffer_mut(), layout.explorer, app, theme);
-    search_panel::render(frame, layout.search, app, theme);
     tabs::render(frame.buffer_mut(), layout.tabs, app, theme);
     find_bar::render(frame, layout.find_bar, app, theme);
     editor_view::render(frame, layout.editor, app, theme);
@@ -87,6 +92,16 @@ mod tests {
 
     fn snap(name: &str, app: &mut App) {
         for (w, h) in SIZES {
+            let t = draw(app, w, h);
+            insta::assert_snapshot!(format!("{name}_{w}x{h}"), t.backend());
+        }
+    }
+
+    /// The find box at the three sizes of AC-22e.
+    const FIND_SIZES: [(u16, u16); 3] = [(80, 24), (120, 40), (40, 12)];
+
+    fn snap3(name: &str, app: &mut App) {
+        for (w, h) in FIND_SIZES {
             let t = draw(app, w, h);
             insta::assert_snapshot!(format!("{name}_{w}x{h}"), t.backend());
         }
@@ -191,6 +206,8 @@ mod tests {
         assert!(pos.x < 40 && pos.y == 2, "{pos:?}");
     }
 
+    /// File scope with the replace row: the scope, the query and count, the replacement
+    /// and its keys, every match with its line number, the current one selected.
     #[test]
     fn render_find_bar() {
         let (_d, _p, mut app, _) =
@@ -199,13 +216,20 @@ mod tests {
         for c in "alpha".chars() {
             key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        crate::app_tests::run(&mut app, "find.toggle_word");
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         for c in "omega".chars() {
             key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
-        snap("render_find_bar", &mut app);
+        snap3("render_find_bar", &mut app);
+    }
+
+    /// File scope, empty query: the hint names the scope key and the syntax.
+    #[test]
+    fn render_find_box_empty() {
+        let (_d, _p, mut app, _) = app_with_file("fn alpha() {}\n");
+        crate::app_tests::press(&mut app, "ctrl+f");
+        snap3("render_find_box_empty", &mut app);
     }
 
     /// A project with matches in two files, searched through the panel.
@@ -258,7 +282,7 @@ mod tests {
         let (_d, mut app) = searched_app(false);
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        snap("render_search_panel", &mut app);
+        snap3("render_search_panel", &mut app);
     }
 
     #[test]
@@ -266,7 +290,20 @@ mod tests {
         let (_d, mut app) = searched_app(true);
         assert!(app.search.preview.is_some());
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        snap("render_replace_preview", &mut app);
+        snap3("render_replace_preview", &mut app);
+        // 40x12: the status note does not crowd out the checkbox row Space toggles.
+        let t = draw(&mut app, 40, 12);
+        let l = app.search.list_area;
+        let buf = t.backend().buffer();
+        let list: Vec<String> = (l.y..l.y + l.height)
+            .map(|y| (l.x..l.x + l.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        assert!(list.iter().any(|r| r.contains("[x]")), "{list:?}");
+        let screen: String = (0..12)
+            .flat_map(|y| (0..40).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert!(screen.contains("Space toggles"), "{screen}");
     }
 
     #[test]

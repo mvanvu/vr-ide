@@ -108,7 +108,7 @@ fn quit_unblocked_for(app: &mut App, action: DialogAction) -> bool {
     match super::search::quit_block(app) {
         None => true,
         Some(QuitBlock::Replacing) => {
-            app.warn("Quit: a replace is running; Esc in the search panel cancels it");
+            app.warn("Quit: a replace is running; Esc in the find box cancels it");
             false
         }
         Some(QuitBlock::Stuck(file)) => {

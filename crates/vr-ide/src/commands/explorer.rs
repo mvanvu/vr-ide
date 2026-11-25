@@ -320,17 +320,8 @@ pub fn ensure_loaded(app: &mut App) {
     report_leftovers(app, &root);
 }
 
-/// Shows or hides the panel; hiding it while focused gives the editor the keys. While the
-/// search panel holds the side column, the toggle closes that first (VS Code's ctrl+b
-/// hides the whole side bar).
+/// Shows or hides the panel; hiding it while focused gives the editor the keys.
 fn toggle(app: &mut App, _: CmdArgs) -> CmdResult {
-    if app.search.visible {
-        app.search.visible = false;
-        if app.focus == Focus::Search {
-            app.focus = Focus::Editor;
-        }
-        return Ok(());
-    }
     app.explorer.visible = !app.explorer.visible;
     if app.explorer.visible {
         ensure_loaded(app);
@@ -340,10 +331,10 @@ fn toggle(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
-/// Shown explorer: hides it and the editor gets the keys. Hidden (or the search panel holds
-/// the side column): shows it and gives it the keys, so the arrows move in the tree at once.
+/// Shown explorer: hides it and the editor gets the keys. Hidden: shows it and gives it the
+/// keys, so the arrows move in the tree at once.
 fn toggle_focus(app: &mut App, _: CmdArgs) -> CmdResult {
-    if app.explorer.visible && !app.search.visible {
+    if app.explorer.visible {
         app.explorer.visible = false;
         app.focus = Focus::Editor;
     } else {
@@ -359,8 +350,6 @@ fn focus(app: &mut App, _: CmdArgs) -> CmdResult {
 }
 
 fn show_and_focus(app: &mut App) {
-    // The explorer and the search panel share the side column.
-    app.search.visible = false;
     app.explorer.visible = true;
     ensure_loaded(app);
     app.focus = Focus::Explorer;
@@ -1480,14 +1469,13 @@ fn toggle_hidden(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
-/// Editor → side panel (search or explorer, when shown) → terminal (when shown with a
-/// terminal in it) → editor (D266). The find bar is not in the cycle: it keeps Tab for its own
-/// fields and is reached with ctrl+f. A focused terminal keeps Tab for its program; ctrl+`
-/// gives the keys back.
+/// Editor → explorer (when shown) → terminal (when shown with a terminal in it) → editor
+/// (D266). The find box (either scope) is not in the cycle: it keeps Tab for its own fields
+/// and is reached with ctrl+f. A focused terminal keeps Tab for its program; ctrl+` gives
+/// the keys back.
 fn focus_cycle(app: &mut App, _: CmdArgs) -> CmdResult {
     let terminal = app.terminal.visible && !app.terminal.tabs.is_empty();
     app.focus = match app.focus {
-        Focus::Editor | Focus::FindBar if app.search.visible => Focus::Search,
         Focus::Editor | Focus::FindBar if app.explorer.visible => {
             ensure_loaded(app);
             Focus::Explorer

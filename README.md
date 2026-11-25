@@ -138,11 +138,11 @@ changes in the [recovery folder](#recovery).
 Files open in read mode, so a stray key never changes them. `space` then `i` switches the tab to
 edit mode and `esc` back to read mode (it also clears the selection). In read mode `space` `space`
 opens the command palette, `space` followed by any other key only shows a short hint, and `tab`
-moves the focus (editor, side panel, terminal; the find bar is reached with `ctrl+f` and keeps
+moves the focus (editor, explorer, terminal; the find box is reached with `ctrl+f` and keeps
 `tab` for its fields); in edit mode `tab` / `shift+tab` indent
 and outdent. The tab returns to read mode whenever
-the editor gets the keys on it again: switching tabs, coming back from the explorer, the search
-panel or a dialog, or closing the palette without running a command. In read mode, typing and the
+the editor gets the keys on it again: switching tabs, coming back from the explorer, the find box
+or a dialog, or closing the palette without running a command. In read mode, typing and the
 editing keys below show the hint "Read mode: space i to edit"; moving, selecting, copying, find,
 Go to Line and save work as usual. The status bar shows `READ` or `EDIT`, and where the terminal
 supports it the cursor is a block in read mode and a bar in edit mode. Project replace and reloads
@@ -168,37 +168,48 @@ Go to Line asks for `line` or `line:column` (1-based, for example `42` or `42:7`
 
 Terminals send `ctrl+[` as `Esc`, so outdent is `shift+tab`.
 
-### Find and replace in the file
+### Find and replace (file and project)
+
+`ctrl+f` opens one find box under the tab bar with every result listed under it, like
+PhpStorm. Its scope is shown on its left: **File** (the default) or **Project**; `ctrl+f` again
+in the box switches between them (with no file open it opens on the project). The editor stays
+visible under the box and highlights the matches while the box is open.
 
 | Task | Keys |
 |---|---|
-| Find | `ctrl+f` |
-| Replace (switches the tab to edit mode; find works in read mode) | `ctrl+r` |
-| Next / previous match | `enter` / `shift+enter` in the find bar, or `f3` / `shift+f3` |
-| Replace one / replace all (in the replace field; the bar shows "enter one · ctrl+a all") | `enter` / `ctrl+a` |
-| Match case / whole word / regex (while the bar is open) | palette: Find: Toggle ... |
+| Find in the file / switch the scope to the project and back | `ctrl+f` / `ctrl+f` in the box |
+| Move in the result list (the editor shows the match) | `up` / `down` / `pageup` / `pagedown` |
+| Go to the selected match (read mode; the box stays open) | `enter` |
+| Previous match, staying in the box (kitty keyboard protocol terminals) | `shift+enter` |
+| Next / previous match or project result | `f3` / `shift+f3` |
+| Replace in the box's scope (File: switches the tab to edit mode; find works in read mode) | `ctrl+r` |
+| Replace one / replace all in the file (the box shows "enter one · ctrl+a all") | `enter` / `ctrl+a` in the replace field |
 | Switch between the find and replace fields | `tab` / `shift+tab` |
-| Close the bar | `esc` |
+| Close the box (back to read mode) | `esc` |
 
-### Project search and replace
+The query says how to search; there are no option buttons:
 
-| Task | Keys |
+| Query | Searches for |
 |---|---|
-| Search in Project | palette: Search in Project |
-| Replace in Project | `ctrl+r` outside the editor (for example in the search panel, or with no file open) |
-| Next / previous result | palette: Search: Next Result / Search: Previous Result |
-| Match case / whole word / regex (while the panel is shown and no find bar is open) | palette: Find: Toggle ... |
+| `foo` | the text `foo`, case-sensitive |
+| `foo/i` | the text `foo`, ignoring case |
+| `/fo+/` | the regular expression `fo+` |
+| `/fo+/i` | the regular expression `fo+`, ignoring case |
+| `a\/b` | the text `a/b` (`\/` is a literal slash) |
 
-In the panel, type in the search field and press `enter` to search; results stream in as the files
-are scanned. The palette's Find: Toggle commands switch case, whole word and regex. `down` moves into the
-results; `enter` on a result opens it. Files matched by `.gitignore` are not searched; hidden
-files are. `esc` leaves the panel.
+A bad regular expression is shown in the box and nothing is searched.
+
+In File scope the list shows every match as `line  text` (at most 20 000) and follows your
+typing. In Project scope press `enter` to search; results stream in as the files are scanned,
+grouped by file (and by root when the workspace has several folders), with the count on the box's
+first row. `down` moves into the results; `enter` on a result opens the file at the match. Files
+matched by `.gitignore` are not searched; hidden files are.
 
 Replacing across files is always previewed first:
 
-1. Run Replace in Project (`ctrl+r` from the search panel, or the palette), fill in the search and
-   the replace field.
-2. Press `enter` in the replace field: the panel shows a preview per file. Nothing is written yet.
+1. Press `ctrl+r` in the box on the project (or with no file open, or run Replace in Project from
+   the palette), fill in the search and the replace field.
+2. Press `enter` in the replace field: the box lists a preview per file. Nothing is written yet.
 3. Move through the preview; `space` checks or unchecks a file (unchecked files are left alone).
 4. Press `enter` to confirm. A dialog asks Replace or Cancel; Cancel is the default button.
 5. `esc` closes the preview without changing anything. While a preview is being prepared or a

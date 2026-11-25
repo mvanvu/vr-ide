@@ -1736,8 +1736,9 @@ fn ctrl_e_works_wherever_ctrl_b_does() {
         };
         assert!(ok, "{place}");
     }
-    fn side(app: &App) -> (bool, bool) {
-        (app.explorer.visible, app.search.visible)
+    // The find box (either scope) sits above the editor: only the explorer is in the column.
+    fn side(app: &App) -> bool {
+        app.explorer.visible
     }
     for place in ["editor", "explorer", "find bar", "search panel", "palette"] {
         for shown in [false, true] {
@@ -1758,7 +1759,7 @@ fn ctrl_e_works_wherever_ctrl_b_does() {
             }
             // Hiding gives the editor the keys; showing gives them to the tree.
             if e_acts {
-                let want = if app.explorer.visible && !app.search.visible {
+                let want = if app.explorer.visible {
                     Focus::Explorer
                 } else {
                     Focus::Editor

@@ -87,15 +87,14 @@ fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
     t
 }
 
-/// Text of the search panel in the last frame, rows joined by spaces, runs of spaces
-/// collapsed (wrapped messages read as one line).
+/// Text of the find box (Project scope) in the last frame, rows joined by spaces, runs of
+/// spaces collapsed (wrapped messages read as one line).
 fn panel_text(app: &App, t: &Terminal<TestBackend>) -> String {
-    let a = app.layout.search;
+    let a = app.layout.find_bar;
     let buf = t.backend().buffer();
     let mut s = String::new();
     for y in a.y..a.y + a.height {
-        // The last column is the separator line.
-        for x in a.x..(a.x + a.width).saturating_sub(1) {
+        for x in a.x..a.x + a.width {
             s.push_str(buf[(x, y)].symbol());
         }
         s.push(' ');
@@ -195,7 +194,7 @@ fn enter_on_result_opens_file_at_line_col() {
     // Down leaves the query field for the results; walk to the match in a.rs.
     let want = |app: &App, r: Row| match r {
         Row::Match(g, _) => app.search.groups[g].path.ends_with("a.rs"),
-        Row::File(_) => false,
+        Row::File(_) | Row::Root(_) => false,
     };
     for _ in 0..6 {
         let rows = app.search.rows();
@@ -404,7 +403,7 @@ fn project_replace_preview_and_confirm() {
     assert!(matches!(c.target, Target::Buffer { .. }), "open file");
     // Nothing is written by the preview.
     assert_eq!(read(&d, "a.txt"), "foo 1\nfoo 2\n");
-    let t = draw(&mut app, 80, 24);
+    let t = draw(&mut app, 120, 40);
     let text = panel_text(&app, &t);
     assert!(text.contains("bar 1"), "{text}");
 
@@ -610,30 +609,33 @@ fn project_replace_never_loses_a_concurrent_write() {
     }
 }
 
+/// T22: the project search is the find box above the editor; the explorer keeps its column.
 #[test]
-fn search_panel_takes_the_side_column() {
+fn project_box_sits_above_the_editor_next_to_the_explorer() {
     let (_d, mut app) = project(&[("a.txt", "x\n")]);
     app.explorer.visible = true;
     crate::app_tests::run(&mut app, "search.project");
     draw(&mut app, 80, 24);
-    assert!(app.layout.search.width > 0);
-    assert_eq!(app.layout.explorer.width, 0);
-    assert_eq!(app.layout.editor.x, app.layout.search.width);
-    // Esc gives the keys back to the editor; the panel stays.
+    assert!(app.layout.explorer.width > 0);
+    let b = app.layout.find_bar;
+    assert_eq!(b.x, app.layout.explorer.width);
+    assert_eq!(b.y, 1);
+    assert!(b.height > 1);
+    assert_eq!(app.layout.editor.y, b.y + b.height);
+    // Esc closes the box; the editor gets the keys.
     app.handle_key(key(KeyCode::Esc));
     assert_eq!(app.focus, Focus::Editor);
-    assert!(app.search.visible);
-    // Explorer: Focus brings the explorer back in the column.
-    press(&mut app, "ctrl+b");
-    assert!(!app.search.visible);
-    assert_eq!(app.focus, Focus::Explorer);
-    draw(&mut app, 80, 24);
-    assert!(app.layout.explorer.width > 0);
-    // focus.cycle (tab in read mode) goes editor -> side panel -> editor with the search panel too.
+    assert!(!app.search.visible && !app.find.open);
+    // Explorer keys leave the box open.
     crate::app_tests::run(&mut app, "search.project");
-    app.handle_key(key(KeyCode::Esc));
+    press(&mut app, "ctrl+b");
+    assert!(app.search.visible);
+    assert_eq!(app.focus, Focus::Explorer);
+    // focus.cycle (tab in read mode) never goes to the box (D266): editor -> explorer.
     crate::app_tests::run(&mut app, "focus.cycle");
-    assert_eq!(app.focus, Focus::Search);
+    assert_eq!(app.focus, Focus::Editor);
+    crate::app_tests::run(&mut app, "focus.cycle");
+    assert_eq!(app.focus, Focus::Explorer);
 }
 
 /// D123: a preview is for the query, replacement and options it was built with; changing
@@ -654,8 +656,9 @@ fn project_replace_preview_dropped_when_fields_change() {
             app.search.field = Field::Replace;
             app.handle_paste("zz");
         }),
-        ("option", |app| {
-            crate::app_tests::run(app, "find.toggle_case");
+        ("ignore case", |app| {
+            app.search.field = Field::Query;
+            typ(app, "/i");
         }),
     ];
     for (what, edit) in edits {
@@ -687,15 +690,16 @@ fn project_replace_confirm_refuses_a_stale_preview() {
     assert_eq!(read(&d, "a.txt"), "foo\n");
 }
 
-/// Below 40 columns the panel takes the whole width; clicking a result opens it, hides
-/// the panel and gives the editor the keys (never a hidden panel).
+/// T22: on a narrow screen the find box sits above a visible editor (no full-width panel);
+/// clicking a result opens it with the box kept; Esc then gives the editor the keys.
 #[test]
 fn narrow_click_on_result_gives_keys_to_the_editor() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let (_d, mut app) = project(&[("a.txt", "needle\n")]);
     search_for(&mut app, "needle");
     draw(&mut app, 36, 12);
-    assert_eq!(app.layout.editor.width, 0, "panel takes the whole width");
+    assert_eq!(app.layout.editor.width, 36, "the editor keeps the width");
+    assert!(app.layout.editor.height >= 5, "{:?}", app.layout.editor);
     let list = app.search.list_area;
     let match_row = app
         .search
@@ -709,7 +713,10 @@ fn narrow_click_on_result_gives_keys_to_the_editor() {
         row: list.y + match_row as u16,
         modifiers: KeyModifiers::NONE,
     });
-    assert!(!app.search.visible);
+    assert!(app.search.visible);
+    assert!(app.active_doc().is_some(), "the result opened");
+    assert_eq!(app.focus, Focus::Search, "the box keeps the keys");
+    app.handle_key(key(KeyCode::Esc));
     assert_eq!(app.focus, Focus::Editor);
     app.handle_key(key(KeyCode::End));
     crate::app_tests::space_i(&mut app);
@@ -1056,28 +1063,15 @@ fn partial_apply_cancel_reports_every_file_once() {
     assert!(warn.len() < 400, "{} chars", warn.len());
 }
 
-/// While a replace runs: option toggles, a new search and a new preview are refused, so
-/// the toggles always match the results and the running replace keeps its preview.
+/// While a replace runs: a new search, a new preview and a switch of the find box to File
+/// scope are refused, so the running replace keeps its preview and its progress in view.
 #[test]
 fn requests_are_refused_while_replacing() {
     let (_d, mut app, hold, _) = held_apply(40, 0);
-    let before = (
-        app.search.case_sensitive,
-        app.search.regex,
-        app.search.whole_word,
-    );
-    for k in ["find.toggle_case", "find.toggle_regex", "find.toggle_word"] {
-        crate::app_tests::run(&mut app, k);
-    }
-    assert_eq!(
-        (
-            app.search.case_sensitive,
-            app.search.regex,
-            app.search.whole_word
-        ),
-        before,
-        "toggles changed during a replace"
-    );
+    assert!(app.find.project());
+    app.focus = Focus::Search;
+    press(&mut app, "ctrl+f");
+    assert!(app.find.project(), "scope switched during a replace");
     app.search.field = Field::Query;
     app.handle_key(key(KeyCode::Enter));
     app.search.field = Field::Replace;
@@ -1092,6 +1086,55 @@ fn requests_are_refused_while_replacing() {
     hold.store(usize::MAX, Ordering::SeqCst);
     wait_search(&mut app);
     assert!(app.search.preview.as_ref().unwrap().applied);
+}
+
+/// ctrl+f from the editor while a project replace runs brings the project box back: the
+/// progress and the Esc that cancels stay in view (review T22 minor).
+#[test]
+fn ctrl_f_from_the_editor_during_a_replace_keeps_the_progress() {
+    let (_d, mut app, hold, names) = held_apply(40, 0);
+    app.open_path(std::path::Path::new(&names[0])).unwrap();
+    app.focus = Focus::Editor;
+    press(&mut app, "ctrl+f");
+    assert!(app.find.project(), "File scope hid the running replace");
+    assert!(app.search.visible);
+    assert_eq!(app.focus, Focus::Search);
+    assert!(app.search.preview.as_ref().unwrap().applying());
+    hold.store(usize::MAX, Ordering::SeqCst);
+    wait_search(&mut app);
+}
+
+/// A File → Project switch that changes the text drops the preview the fields no longer
+/// describe; an emptied query drops the old results (review T22 minor).
+#[test]
+fn scope_switch_with_changed_fields_drops_the_stale_preview() {
+    let (_d, mut app) = project(&[("a.txt", "foo\n"), ("b.txt", "foo\n")]);
+    app.open_path(std::path::Path::new("a.txt")).unwrap();
+    preview(&mut app, "foo", "bar");
+    app.focus = Focus::Search;
+    press(&mut app, "ctrl+f");
+    assert_eq!(app.find.scope, crate::commands::find::Scope::File);
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.find.field, crate::commands::find::Field::Replace);
+    typ(&mut app, "X");
+    press(&mut app, "ctrl+f");
+    assert!(app.find.project());
+    assert_eq!(app.search.replace.text(), "barX");
+    assert!(app.search.preview.is_none(), "stale preview kept");
+
+    // An emptied query: the old results go too.
+    wait_search(&mut app);
+    assert_eq!(app.search.total, 2);
+    press(&mut app, "ctrl+f");
+    app.handle_key(key(KeyCode::Tab));
+    for _ in 0..8 {
+        app.handle_key(key(KeyCode::Backspace));
+    }
+    assert_eq!(app.find.input.text(), "");
+    press(&mut app, "ctrl+f");
+    assert!(app.find.project());
+    assert_eq!(app.search.total, 0, "old results under an empty query");
+    assert!(app.search.groups.is_empty());
 }
 
 /// A file that fails in the middle of the run (read-only) is reported with its reason and
@@ -1229,8 +1272,8 @@ fn replace_preview_dropped_after_an_explorer_rename() {
     assert_eq!(read(&d, "b.txt"), "foo\n");
 }
 
-/// FR-5: below 40 columns the panel takes the whole width; Esc or focus.cycle from it give
-/// the editor the keys only with the panel out of the way, never to an editor of width 0.
+/// FR-5 (D137) with the T22 box: on a narrow screen Esc or focus.cycle from the box give
+/// the editor the keys only while the editor is drawn, never to an editor of width 0.
 #[test]
 fn narrow_esc_and_focus_cycle_never_type_into_a_hidden_editor() {
     for how in ["esc", "cycle"] {
@@ -1238,7 +1281,7 @@ fn narrow_esc_and_focus_cycle_never_type_into_a_hidden_editor() {
         app.open_path(Path::new("a.txt")).unwrap();
         search_for(&mut app, "needle");
         draw(&mut app, 36, 12);
-        assert_eq!(app.layout.editor.width, 0, "panel takes the whole width");
+        assert!(app.layout.editor.width > 0, "the editor stays drawn");
         assert_eq!(app.focus, Focus::Search);
         match how {
             "esc" => app.handle_key(key(KeyCode::Esc)),
@@ -1246,21 +1289,19 @@ fn narrow_esc_and_focus_cycle_never_type_into_a_hidden_editor() {
                 app.run_command("focus.cycle", crate::commands::CmdArgs::None);
             }
         }
+        // The editor has the keys and is drawn; typing in read mode only shows the hint.
+        assert_eq!(app.focus, Focus::Editor, "{how}");
+        draw(&mut app, 36, 12);
+        assert!(app.layout.editor.width > 0, "{how}");
         typ(&mut app, "X");
-        let typed_into_editor = app
-            .active_doc()
-            .unwrap()
-            .buffer
-            .text()
-            .to_string()
-            .contains('X');
-        if app.search.visible {
-            assert!(!typed_into_editor, "{how}: typed into an editor of width 0");
-            assert_eq!(app.focus, Focus::Search, "{how}");
-        } else {
-            draw(&mut app, 36, 12);
-            assert!(app.layout.editor.width > 0, "{how}");
-        }
+        assert!(
+            !app.active_doc()
+                .unwrap()
+                .buffer
+                .text()
+                .to_string()
+                .contains('X')
+        );
     }
 }
 
@@ -1325,6 +1366,6 @@ fn ctrl_r_in_the_search_panel_is_the_project_replace() {
         press(&mut app, "ctrl+r");
         assert!(app.search.replace_mode, "enhanced={enhanced}");
         assert_eq!(app.focus, Focus::Search);
-        assert!(!app.find.open, "not the in-file replace");
+        assert!(app.find.project(), "not the in-file replace");
     }
 }

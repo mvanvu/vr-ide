@@ -1,8 +1,11 @@
-//! `search.*` commands and the project search / replace panel (AC-11, AC-12). Rendering:
-//! `ui::search_panel`.
+//! `search.*` commands and the Project scope of the find box (AC-11, AC-12, T22; the box
+//! itself is `commands::find`). Rendering: `ui::find_bar` and `ui::search_panel` (the list).
+//! `visible` means the box is open on the project.
 //!
-//! The search runs on vr-search's background threads and streams batches into the panel
-//! ([`drain`], called by the event loop); a new search cancels the running one.
+//! The search runs on vr-search's background threads and streams batches into the box
+//! ([`drain`], called by the event loop); a new search cancels the running one. The query is
+//! the box's text in the find box syntax (`vr_search::Query::parse`); an invalid regex is
+//! shown and nothing is searched.
 //!
 //! Project replace: Enter in the replace field shows a per-file preview (nothing written).
 //! Space unchecks a file, Enter asks Replace / Cancel (Cancel is the default). A file open in
@@ -10,13 +13,13 @@
 //! behind the tab; the other files are written by `vr_search::apply_replace`, which refuses a
 //! file changed on disk since the preview. Each file's result is shown in the preview.
 //!
-//! Built-in keys while the panel has focus (not in the keymap, like the palette's): typing
-//! and line editing in the fields, Tab / shift+Tab move between the fields and the list,
-//! Up/Down/PageUp/PageDown/Home/End move in the list (Down leaves a field for the list),
-//! Enter searches / previews / opens the result, Space checks a preview file, Esc returns to
-//! the editor (closes a preview first). Case, whole word and regex are the `find.toggle_*`
-//! commands (palette only since T21). A key the keymap binds globally (ctrl+r: project replace,
-//! ctrl+h, f1) runs its command first.
+//! Built-in keys while the box has the keys in Project scope (not in the keymap, like the
+//! palette's): typing and line editing in the fields, Tab / shift+Tab move between the fields
+//! and the list, Up/Down/PageUp/PageDown/Home/End move in the list (Down leaves a field for
+//! the list), Enter searches / previews / opens the result, Space checks a preview file, Esc
+//! closes a preview first, then the box (read mode). A key the keymap binds globally (ctrl+r:
+//! project replace, ctrl+h, f1) runs its command first; so do the box's editor keys (ctrl+f
+//! switches the scope, f3 / shift+f3 step through the results).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -89,11 +92,15 @@ pub enum Status {
 pub struct FileGroup {
     pub path: PathBuf,
     pub matches: Vec<ProjectMatch>,
+    /// The workspace root's name, when the workspace has several roots.
+    pub root: Option<String>,
 }
 
 /// One row of the results list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
+    /// The root of group `.0` (its name heads that root's files).
+    Root(usize),
     File(usize),
     Match(usize, usize),
 }
@@ -390,9 +397,6 @@ pub struct SearchPanel {
     pub field: Field,
     pub input: LineInput,
     pub replace: LineInput,
-    pub case_sensitive: bool,
-    pub regex: bool,
-    pub whole_word: bool,
     /// The query the results are for.
     pub query: Option<Query>,
     pub groups: Vec<FileGroup>,
@@ -411,19 +415,18 @@ pub struct SearchPanel {
     /// Selected row of the results list, and the first visible one.
     pub selected: usize,
     pub top: usize,
+    /// The file and char range of the result last opened from the list: that selection
+    /// does not seed the query (the user did not choose it).
+    pub opened: Option<(PathBuf, usize, usize)>,
     /// Panel and list areas in the last frame.
     pub area: Rect,
     pub list_area: Rect,
 }
 
 impl SearchPanel {
+    /// The query of the box's text (the find box syntax, `vr_search::Query::parse`).
     pub fn query(&self) -> Query {
-        Query {
-            pattern: self.input.text().to_string(),
-            regex: self.regex,
-            case_sensitive: self.case_sensitive,
-            whole_word: self.whole_word,
-        }
+        Query::parse(self.input.text())
     }
 
     /// A preview is being built or a replace runs.
@@ -435,10 +438,27 @@ impl SearchPanel {
         self.run.is_some()
     }
 
-    /// Results rows: each file followed by its matches.
+    /// `rows().len()` without building the rows.
+    pub fn row_count(&self) -> usize {
+        let roots = self
+            .groups
+            .iter()
+            .enumerate()
+            .filter(|(i, g)| g.root.is_some() && (*i == 0 || self.groups[i - 1].root != g.root))
+            .count();
+        roots + self.groups.len() + self.total
+    }
+
+    /// Results rows: each file followed by its matches; with several workspace roots, a root
+    /// row before the first file of each root (results come root by root).
     pub fn rows(&self) -> Vec<Row> {
         let mut rows = Vec::with_capacity(self.groups.len() + self.total);
+        let mut root = None;
         for (gi, g) in self.groups.iter().enumerate() {
+            if g.root.is_some() && g.root != root {
+                root.clone_from(&g.root);
+                rows.push(Row::Root(gi));
+            }
             rows.push(Row::File(gi));
             rows.extend((0..g.matches.len()).map(|mi| Row::Match(gi, mi)));
         }
@@ -508,6 +528,20 @@ pub fn start(app: &mut App) {
         s.query = None;
         return;
     }
+    // An invalid regex is shown in the box; nothing is searched.
+    if let Err(e) = q.check() {
+        cancel_running(app);
+        drop_preview(app);
+        let s = &mut app.search;
+        s.groups.clear();
+        s.index.clear();
+        s.total = 0;
+        s.errors = vec![e.to_string()];
+        s.status = Status::Idle;
+        s.query = Some(q);
+        app.dirty = true;
+        return;
+    }
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     // Detached: the walk ends when it is done, cancelled or its receiver is dropped.
@@ -560,6 +594,7 @@ pub fn drain(app: &mut App) {
     }
     let mut done = false;
     let mut warnings = Vec::new();
+    let ws = &app.workspace;
     let s = &mut app.search;
     for m in msgs {
         match m {
@@ -568,9 +603,14 @@ pub fn drain(app: &mut App) {
                     let gi = match s.index.get(&pm.path) {
                         Some(&gi) => gi,
                         None => {
+                            let root = ws
+                                .is_multi()
+                                .then(|| ws.root_of(&pm.path).map(|r| r.name.clone()))
+                                .flatten();
                             s.groups.push(FileGroup {
                                 path: pm.path.clone(),
                                 matches: Vec::new(),
+                                root,
                             });
                             s.index.insert(pm.path.clone(), s.groups.len() - 1);
                             s.groups.len() - 1
@@ -620,12 +660,28 @@ fn selection_seed(app: &App) -> Option<String> {
     if r.is_empty() || r.to() - r.from() > 1000 {
         return None;
     }
+    // The result the box opened is selected: the box's query found it, so it stays.
+    if let (Some((path, from, to)), Some(p)) = (&app.search.opened, &doc.path)
+        && path == p
+        && (*from, *to) == (r.from(), r.to())
+    {
+        return None;
+    }
     let s = doc.buffer.text().slice(r.from()..r.to()).to_string();
     (!s.contains(['\n', '\r'])).then_some(s)
 }
 
-fn show(app: &mut App, replace: bool) {
-    if let Some(seed) = selection_seed(app) {
+/// Shows the project scope of the find box (`find::open_project`) and gives it the keys. A
+/// selection in the editor becomes the query, typed so that it searches literally.
+pub(crate) fn show(app: &mut App, replace: bool) {
+    // A running replace is shown as it is: its fields stay what it was confirmed with.
+    if replacing(app) {
+        app.search.visible = true;
+        app.focus = Focus::Search;
+        app.dirty = true;
+        return;
+    }
+    if let Some(seed) = selection_seed(app).and_then(|s| vr_search::literal_syntax(&s)) {
         app.search.input.set(&seed);
     }
     let s = &mut app.search;
@@ -643,12 +699,12 @@ fn show(app: &mut App, replace: bool) {
 }
 
 fn search_project(app: &mut App, _: CmdArgs) -> CmdResult {
-    show(app, false);
+    super::find::open_project(app, false);
     Ok(())
 }
 
 fn replace_project(app: &mut App, _: CmdArgs) -> CmdResult {
-    show(app, true);
+    super::find::open_project(app, true);
     Ok(())
 }
 
@@ -678,13 +734,14 @@ fn open_match(app: &mut App, gi: usize, mi: usize) -> bool {
         let from = (rope.line_to_char(line) + m.col.saturating_sub(1)).min(end);
         let to = (from + m.match_range.1.saturating_sub(m.match_range.0)).min(end);
         doc.buffer.set_selection(Selection::single(from, to));
+        app.search.opened = doc.path.clone().map(|p| (p, from, to));
     }
     app.cursor_moved();
     true
 }
 
-/// Enter on a result row: opens it (a file row opens its first match) and gives the editor
-/// the keys. On a screen too narrow for both, the panel steps aside.
+/// Enter on a result row: opens it (a file or root row opens its first match) and gives the
+/// editor the keys in read mode; the find box stays open on the project.
 fn open_selected(app: &mut App) {
     let rows = app.search.rows();
     let Some(&row) = rows.get(app.search.selected) else {
@@ -692,26 +749,22 @@ fn open_selected(app: &mut App) {
     };
     let (gi, mi) = match row {
         Row::Match(g, m) => (g, m),
-        Row::File(g) => (g, 0),
+        Row::File(g) | Row::Root(g) => (g, 0),
     };
     if open_match(app, gi, mi) {
         focus_editor(app);
     }
 }
 
-/// Gives the editor the keys. When the panel takes the whole width (a narrow screen, the
-/// editor has no columns) the panel steps aside first: keys never edit a buffer that is
-/// not drawn.
+/// Gives the editor the keys (the find box stays open above it).
 pub fn focus_editor(app: &mut App) {
     app.focus = Focus::Editor;
-    if app.search.visible && app.layout.search.width > 0 && app.layout.editor.width == 0 {
-        app.search.visible = false;
-    }
     app.dirty = true;
 }
 
-/// search.next_result / search.prev_result (palette): the next (previous) result after the selected row, wrapping; opens it.
-fn step_result(app: &mut App, forward: bool) {
+/// search.next_result / search.prev_result (palette), and f3 / shift+f3 while the find box
+/// is on the project: the next (previous) result after the selected row, wrapping; opens it.
+pub(crate) fn step_result(app: &mut App, forward: bool) {
     let rows = app.search.rows();
     let matches: Vec<usize> = (0..rows.len())
         .filter(|&i| matches!(rows[i], Row::Match(..)))
@@ -802,6 +855,11 @@ fn request_preview(app: &mut App) {
     let q = app.search.query();
     if q.pattern.is_empty() {
         app.info("Replace in Project: type what to search for first");
+        return;
+    }
+    if let Err(e) = q.check() {
+        app.search.errors = vec![e.to_string()];
+        app.dirty = true;
         return;
     }
     if app.search.preview.as_ref().is_some_and(Preview::applying) {
@@ -1381,7 +1439,7 @@ fn apply_summary(app: &App) -> (Option<String>, Option<String>) {
         );
         if failed > named.len() {
             msg.push_str(&format!(
-                " and {} more (see the panel)",
+                " and {} more (see the find box)",
                 failed - named.len()
             ));
         }
@@ -1566,25 +1624,6 @@ fn toggle_checked(app: &mut App) {
     }
 }
 
-/// The option toggles (`find.toggle_*`). Refused while a replace runs, so the toggles always
-/// show what the results were searched with (a new search would be refused too).
-pub(crate) fn toggle_option(app: &mut App, c: char) {
-    if replacing(app) {
-        app.info("Replace in Project: the replace is running; Esc cancels it");
-        return;
-    }
-    let s = &mut app.search;
-    match c {
-        'c' => s.case_sensitive = !s.case_sensitive,
-        'r' => s.regex = !s.regex,
-        _ => s.whole_word = !s.whole_word,
-    }
-    fields_changed(app);
-    if !app.search.input.text().is_empty() {
-        start(app);
-    }
-}
-
 fn next_field(app: &mut App, forward: bool) {
     let s = &mut app.search;
     let mut order = vec![Field::Query];
@@ -1603,8 +1642,8 @@ fn next_field(app: &mut App, forward: bool) {
 
 /// Esc: cancels a running replace (the files it has not reached are reported), closes the
 /// preview (stopping it while it is built; after a replace the search runs again so the
-/// results are current), otherwise gives the editor the keys; the panel stays unless it
-/// takes the whole width ([`focus_editor`]).
+/// results are current), otherwise closes the find box: the editor gets the keys in read
+/// mode.
 fn escape(app: &mut App) {
     app.search.preview_pending = false;
     let now = app.now();
@@ -1624,14 +1663,27 @@ fn escape(app: &mut App) {
             }
             app.search.field = Field::Results;
         }
-        None => focus_editor(app),
+        None => super::find::close_box(app),
     }
 }
 
-/// Keys while the panel has focus; true when used.
+/// The find box commands whose keys the editor table holds (ctrl+f switches the scope, f3 /
+/// shift+f3 step through the results): they work in the box on the project too.
+const BOX_COMMANDS: &[&str] = &["find.open", "find.next", "find.prev"];
+
+/// Keys while the box has the keys in Project scope; true when used.
 pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
-    let bound = chord_from_key(key, app.keyboard_enhanced)
-        .is_some_and(|c| app.keymap.command_for_in(Context::Global, &c).is_some());
+    let chord = chord_from_key(key, app.keyboard_enhanced);
+    let box_cmd = chord
+        .as_ref()
+        .and_then(|c| app.keymap.command_for_in(Context::Editor, c))
+        .filter(|c| BOX_COMMANDS.contains(c))
+        .map(str::to_owned);
+    if let Some(cmd) = box_cmd {
+        app.run_command(&cmd, CmdArgs::None);
+        return true;
+    }
+    let bound = chord.is_some_and(|c| app.keymap.command_for_in(Context::Global, &c).is_some());
     if bound {
         return false;
     }
@@ -1684,16 +1736,18 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
 /// The query, the replacement or an option changed: a preview built for the old ones is
 /// dropped, so it can never be confirmed (it would write a replacement the fields no longer
 /// show). A replace that already runs keeps its preview: it shows that replace's results.
-fn fields_changed(app: &mut App) {
+/// The open file's highlights follow the query.
+pub(crate) fn fields_changed(app: &mut App) {
     let s = &mut app.search;
     s.preview_pending = false;
     if s.preview.as_ref().is_some_and(|p| !p.applying()) {
         drop_preview(app);
     }
+    super::find::mirror_project_fields(app);
 }
 
 /// Clicks: a field takes the focus, a list row is selected (a result row also opens, the
-/// panel keeps the keys), the wheel moves the selection.
+/// box keeps the keys), the wheel moves the selection.
 pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
     let list = app.search.list_area;
     let inside = |r: Rect| {
@@ -1724,7 +1778,7 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
             } else {
                 let a = app.search.area;
                 app.search.field = match ev.row.saturating_sub(a.y) {
-                    2 if app.search.replace_mode => Field::Replace,
+                    1 if app.search.replace_mode => Field::Replace,
                     _ => Field::Query,
                 };
             }
@@ -2075,7 +2129,7 @@ mod refused_open_tests {
     use super::*;
 
     /// Opening a result whose file the replace is writing right now is refused as a
-    /// warning; the panel keeps the keys and stays shown (below 40 columns too).
+    /// warning; the box keeps the keys and stays shown.
     #[test]
     fn refused_open_keeps_the_panel_and_its_keys() {
         let dir = tempfile::tempdir().unwrap();
@@ -2104,12 +2158,11 @@ mod refused_open_tests {
                 line_text: "foo".into(),
                 match_range: (0, 3),
             }],
+            root: None,
         });
         app.search.visible = true;
         app.search.selected = 1;
         app.focus = Focus::Search;
-        app.layout.search = Rect::new(0, 0, 36, 12);
-        app.layout.editor = Rect::new(36, 1, 0, 10);
         assert!(gate.begin(&std::fs::canonicalize(&f).unwrap()));
         open_selected(&mut app);
         assert!(app.docs.is_empty());

@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/mod.rs
+expression: t.backend()
+---
+" a.txt                                                                          "
+" File                                                                           "
+"ctrl+f: search the project · /re/ regex · …/i ignore case · \/ a slash          "
+"                                                                                "
+"                                                                                "
+"  1 fn alpha() {}                                                               "
+"  2                                                                             "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" EDIT a.txt · Ln 1, Col 1 · LF · UTF-8                                          "

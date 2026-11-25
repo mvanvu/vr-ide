@@ -1138,30 +1138,30 @@ fn a_zero_row_editor_hides_the_panel_on_nul_even_with_pass_nul() {
     assert_eq!(app.focus, Focus::Terminal);
 }
 
-/// A side column that takes the whole width (search below 40 columns) must not leave a
-/// terminal with the keys that nobody can see; showing the panel makes room for it.
+/// T22: the find box on the project sits above the editor, never in a full-width side
+/// column, so it cannot cover the terminal panel: the terminal keeps its cells and its keys
+/// on a narrow screen, and showing the panel leaves the box open.
 #[test]
-fn a_covered_terminal_gets_no_keys_and_showing_it_uncovers_it() {
+fn the_find_box_never_covers_the_terminal() {
     let (_d, mut app, _) = term_app();
     app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
-    app.search.visible = true;
+    crate::commands::find::open_project(&mut app, false);
     app.terminal.visible = true;
     app.focus = Focus::Terminal;
-    let t = draw(&mut app, 30, 12);
-    assert_eq!(app.layout.terminal.width, 0, "{:?}", app.layout);
-    drop(t);
+    draw(&mut app, 30, 12);
+    assert_eq!(app.layout.terminal.width, 30, "{:?}", app.layout);
     key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
-    assert_ne!(app.focus, Focus::Terminal);
-    assert!(!app.search.visible, "the covering column gives way");
+    assert_eq!(app.focus, Focus::Terminal);
+    assert!(app.search.visible, "the box stays open");
 
-    // Hidden panel, covering search: showing the panel hides the column.
+    // Hidden panel, open box: showing the panel gives it the keys and the box stays.
     let (_d, mut app, _) = term_app();
     app.terminal.tabs.push(fake_tab("sh", TermStatus::Running));
-    app.search.visible = true;
+    crate::commands::find::open_project(&mut app, false);
     draw(&mut app, 30, 12);
     app.keyboard_enhanced = true;
     ctrl_backtick(&mut app);
-    assert!(app.terminal.visible && !app.search.visible);
+    assert!(app.terminal.visible && app.search.visible);
     assert_eq!(app.focus, Focus::Terminal);
     draw(&mut app, 30, 12);
     assert!(app.layout.terminal.width > 0, "{:?}", app.layout);

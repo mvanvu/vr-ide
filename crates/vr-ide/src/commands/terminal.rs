@@ -369,13 +369,8 @@ fn reveal(app: &mut App) {
         }
     }
     // A side column that took the whole width would leave the panel no cells.
-    if app.layout.editor.width == 0 {
-        if app.layout.search.width > 0 {
-            app.search.visible = false;
-        }
-        if app.layout.explorer.width > 0 {
-            app.explorer.visible = false;
-        }
+    if app.layout.editor.width == 0 && app.layout.explorer.width > 0 {
+        app.explorer.visible = false;
     }
     app.terminal.visible = true;
     app.focus = Focus::Terminal;

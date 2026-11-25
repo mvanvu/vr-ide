@@ -7,10 +7,12 @@
 mod find;
 mod project;
 mod replace;
+mod syntax;
 
 pub use find::{find_all, replace_all_tx};
 pub use project::{ProjectMatch, SearchMsg, search_project, search_roots};
 pub use replace::{FilePreview, Hunk, apply_replace, plan_replace, plan_replace_roots};
+pub use syntax::literal_syntax;
 
 /// What to look for. In literal mode the pattern and the replacement are taken verbatim;
 /// in regex mode the replacement expands `$1`, `${name}` and `$0`.

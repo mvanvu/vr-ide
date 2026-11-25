@@ -29,18 +29,18 @@ pub enum Focus {
     Editor,
     Explorer,
     Palette,
-    /// The in-file find / replace bar.
+    /// The find box in File scope (find / replace in the active file).
     FindBar,
-    /// The project search panel.
+    /// The find box in Project scope (project search / replace).
     Search,
     /// The integrated terminal panel (M5): every key but the `[terminal]` ones goes to it (D8).
     Terminal,
 }
 
 impl Focus {
-    /// Keymap context. The find bar sits on the editor, so the editor's keys (f3, ctrl+r)
-    /// work in it; the search panel has no table of its own and gets the global keys (ctrl+r
-    /// there is the project replace, T21).
+    /// Keymap context. The find box in File scope sits on the editor, so the editor's keys
+    /// (f3, ctrl+r) work in it; in Project scope it gets the global keys (ctrl+r there is the
+    /// project replace, T21) plus the box's own editor keys (`search::handle_key`).
     pub fn context(self) -> Context {
         match self {
             Focus::Editor | Focus::FindBar => Context::Editor,
@@ -744,9 +744,9 @@ impl App {
     }
 
     /// Applies the mode rule after focus or the active tab changed: when the editor gains
-    /// the keys on a tab (open, tab switch, back from the explorer, palette, search panel or
+    /// the keys on a tab (open, tab switch, back from the explorer, palette, find box or
     /// a dialog), file tabs are in read mode and an untitled buffer in edit mode. The find
-    /// bar sits on the editor and keeps the mode; so does the palette opened over it while
+    /// box sits on the editor and keeps the mode; so does the palette opened over it while
     /// it is open, so a command picked there acts in the mode the tab had. Closing the
     /// palette without a command (Esc, a click outside) returns in read mode, see
     /// [`App::palette_dismissed`]. Called at the end of every input and
@@ -1120,8 +1120,8 @@ impl App {
         {
             return;
         }
-        // The find bar and the search panel use Esc themselves (close / back to the editor).
-        // Keys never go to a search panel that is not shown.
+        // The find box uses Esc itself in either scope (close / back to the editor).
+        // Keys never go to a Project-scope box that is not shown.
         if self.focus == Focus::Search && !self.search.visible {
             self.focus = Focus::Editor;
         }
@@ -1257,14 +1257,8 @@ impl App {
             commands::explorer::handle_mouse(self, &ev);
             return;
         }
-        if inside(l.search) {
-            commands::search::handle_mouse(self, &ev);
-            return;
-        }
         if inside(l.find_bar) {
-            if matches!(ev.kind, MouseEventKind::Down(_)) {
-                self.focus = Focus::FindBar;
-            }
+            commands::find::handle_mouse(self, &ev);
             return;
         }
         if matches!(ev.kind, MouseEventKind::Down(_))

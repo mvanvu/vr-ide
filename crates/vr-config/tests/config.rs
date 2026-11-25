@@ -140,9 +140,6 @@ const KNOWN: &[&str] = &[
     "terminal.prev",
     "terminal.grow",
     "terminal.hide",
-    "find.toggle_case",
-    "find.toggle_word",
-    "find.toggle_regex",
     "terminal.shrink",
 ];
 
@@ -296,9 +293,6 @@ fn defaults_load_without_user_file() {
         "search.prev_result",
         "find.replace_one",
         "find.replace_all",
-        "find.toggle_case",
-        "find.toggle_word",
-        "find.toggle_regex",
         "explorer.new_folder",
         "edit.indent",
         "focus.cycle",

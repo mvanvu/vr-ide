@@ -1,128 +1,32 @@
-//! The project search / replace panel in the side column (AC-11, AC-12): title and
-//! toggles, the query (and replacement) fields, a status line, the search errors (files too
-//! large, the match limit, an invalid regex) and the list: results grouped by file, or the
-//! replace preview with each file's checkbox, changed lines and result.
+//! The result list of the find box in Project scope (AC-11, AC-12, T22): results grouped by
+//! root (several workspace roots) and file, or the replace preview with each file's
+//! checkbox, changed lines and result. The box's fields, status and errors are drawn by
+//! `ui::find_bar`.
 
-use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use crate::app::{App, Focus};
+use crate::app::App;
 use crate::commands::search::{Field, Preview, PreviewRow, Row, SearchPanel, Target};
 use crate::theme::Theme;
-use crate::ui::dialog::{LineInput, wrap};
 
-pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
-    app.search.area = area;
-    if area.width < 4 || area.height < 3 {
-        app.search.list_area = Rect::default();
-        return;
-    }
-    let focused = app.focus == Focus::Search && app.dialog.is_none();
+/// Draws the results (or the preview) in `list`; the selected row is highlighted while the
+/// list has the keys (Down or Tab from the fields).
+pub fn render_list(buf: &mut Buffer, list: Rect, app: &mut App, focused: bool, theme: &Theme) {
     let root = app.workspace.clone();
     let s = &mut app.search;
-    let buf = frame.buffer_mut();
-    let inner = area.width - 1;
-    let x0 = area.x;
-    let bottom = area.y + area.height;
-    buf.set_style(Rect::new(x0, area.y, inner, area.height), theme.text);
-    let sep = if focused { theme.focus } else { theme.dim };
-    for y in area.y..bottom {
-        buf.set_string(x0 + inner, y, "│", sep);
-    }
-    let mut y = area.y;
-    let mut cursor = None;
-
-    // Title and toggles.
-    let title = if s.replace_mode { "REPLACE" } else { "SEARCH" };
-    buf.set_stringn(
-        x0,
-        y,
-        title,
-        usize::from(inner),
-        theme.text.add_modifier(Modifier::BOLD),
-    );
-    let toggles = [
-        ("Aa", s.case_sensitive, false),
-        (".*", s.regex, false),
-        ("ab", s.whole_word, true),
-    ];
-    if inner >= title.len() as u16 + 10 {
-        let mut x = x0 + inner - 9;
-        for (text, on, underline) in toggles {
-            let mut style = if on { theme.button_selected } else { theme.dim };
-            if underline {
-                style = style.add_modifier(Modifier::UNDERLINED);
-            }
-            buf.set_string(x, y, text, style);
-            x += 3;
-        }
-    }
-    y += 1;
-
-    // Fields.
-    let field_row = |buf: &mut Buffer, y: u16, label: &str, input: &LineInput| {
-        buf.set_string(x0, y, label, theme.dim);
-        let w = inner.saturating_sub(label.len() as u16).max(1);
-        let x = x0 + label.len() as u16;
-        buf.set_style(Rect::new(x, y, w, 1), theme.input);
-        let (shown, cx) = input.view(w);
-        buf.set_stringn(x, y, shown, usize::from(w), theme.input);
-        (x + cx.min(w - 1), y)
+    let show_sel = s.field == Field::Results;
+    let sel_style = if focused {
+        theme.list_selected
+    } else {
+        theme.selection
     };
-    let pos = field_row(buf, y, "> ", &s.input);
-    if focused && s.field == Field::Query {
-        cursor = Some(pos);
-    }
-    y += 1;
-    if s.replace_mode && y < bottom {
-        let pos = field_row(buf, y, "R ", &s.replace);
-        if focused && s.field == Field::Replace {
-            cursor = Some(pos);
-        }
-        y += 1;
-    }
-
-    // Status, then the errors (wrapped: they must be read).
-    let status = match &s.preview {
-        Some(p) if p.job.is_some() => p.progress_text().unwrap_or_default(),
-        Some(p) if p.applied => "Replaced; Esc searches again".to_string(),
-        Some(_) => "Space toggles, Enter replaces".to_string(),
-        None => s.status_text(),
-    };
-    if y < bottom && !status.is_empty() {
-        buf.set_stringn(x0, y, &status, usize::from(inner), theme.dim);
-        y += 1;
-    }
-    for e in &s.errors {
-        for line in wrap(e, inner) {
-            if y >= bottom {
-                break;
-            }
-            buf.set_stringn(x0, y, &line, usize::from(inner), theme.warning);
-            y += 1;
-        }
-    }
-
-    // The list.
-    let list = Rect::new(x0, y, inner, bottom.saturating_sub(y));
-    s.list_area = list;
-    if list.height > 0 {
-        let show_sel = s.field == Field::Results;
-        let sel_style = if focused {
-            theme.list_selected
-        } else {
-            theme.selection
-        };
-        if let Some(p) = &mut s.preview {
-            render_preview(buf, list, p, &root, show_sel.then_some(sel_style), theme);
-        } else {
-            render_results(buf, list, s, &root, show_sel.then_some(sel_style), theme);
-        }
-    }
-    if let Some(pos) = cursor {
-        frame.set_cursor_position(pos);
+    let sel = show_sel.then_some(sel_style);
+    if let Some(p) = &mut s.preview {
+        render_preview(buf, list, p, &root, sel, theme);
+    } else {
+        render_results(buf, list, s, &root, sel, theme);
     }
 }
 
@@ -174,10 +78,15 @@ fn render_results(
         let y = list.y + n as u16;
         let base = match sel {
             Some(st) if i == s.selected => st,
-            _ => theme.text,
+            _ => theme.popup,
         };
         buf.set_style(Rect::new(list.x, y, list.width, 1), base);
         match *row {
+            Row::Root(gi) => {
+                let name = s.groups[gi].root.as_deref().unwrap_or_default();
+                let style = base.patch(theme.info).add_modifier(Modifier::BOLD);
+                put(buf, list.x, y, end, name, style);
+            }
             Row::File(gi) => {
                 let g = &s.groups[gi];
                 let (name, dir) = file_label(&g.path, root);
@@ -250,7 +159,7 @@ fn render_preview(
         let y = list.y + n as u16;
         let base = match sel {
             Some(st) if i == p.selected => st,
-            _ => theme.text,
+            _ => theme.popup,
         };
         buf.set_style(Rect::new(list.x, y, list.width, 1), base);
         match *row {
@@ -289,7 +198,7 @@ fn render_preview(
                     (Some(Ok(n)), _) => (format!("    replaced {n}"), theme.info),
                     (Some(Err(e)), _) => (format!("    skipped: {e}"), theme.warning),
                     (None, Some(e)) => (format!("    {e}"), theme.warning),
-                    (None, None) => (String::new(), theme.text),
+                    (None, None) => (String::new(), theme.popup),
                 };
                 put(buf, list.x, y, end, &text, base.patch(style));
             }

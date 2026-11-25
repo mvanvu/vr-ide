@@ -319,7 +319,8 @@ fn tab_cycle_skips_the_open_find_bar() {
     }
 }
 
-/// ctrl+r with no file open (the welcome screen) is the project replace.
+/// ctrl+r with no file open (the welcome screen) is the project replace: the find box on
+/// the project with its replace row.
 #[test]
 fn ctrl_r_with_no_file_open_is_the_project_replace() {
     let dir = tempfile::tempdir().unwrap();
@@ -328,7 +329,7 @@ fn ctrl_r_with_no_file_open_is_the_project_replace() {
     crate::app_tests::press(&mut app, "ctrl+r");
     assert!(app.search.visible && app.search.replace_mode);
     assert_eq!(app.focus, Focus::Search);
-    assert!(!app.find.open);
+    assert!(app.find.project());
 }
 
 #[test]
@@ -538,10 +539,14 @@ fn find_works_in_read_mode_and_replace_is_refused() {
     let (_d, _p, mut app, _) = one("foo bar foo\n");
     app.handle_key(ctrl('f'));
     typ(&mut app, "bar");
+    // Enter goes to the match: the editor has the keys in read mode, the box stays open.
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(selection(&app), (4, 7), "find selects the match");
+    assert_eq!(app.focus, Focus::Editor);
+    assert!(!app.edit_mode());
+    app.handle_key(ctrl('f'));
     app.handle_key(key(KeyCode::Esc));
-    assert_eq!(app.focus, Focus::Editor, "Esc closes the bar");
+    assert_eq!(app.focus, Focus::Editor, "Esc closes the box");
     assert!(!app.find.open);
     // Replace one / all from the palette in read mode are refused with the hint.
     app.notices.clear();
@@ -576,20 +581,25 @@ fn ctrl_r_opens_the_in_file_replace_in_edit_mode() {
         assert_eq!(text(&app), "X bar X\n", "ctrl+a replaces all");
         app.handle_key(key(KeyCode::Esc));
         assert_eq!(app.focus, Focus::Editor);
-        assert!(app.edit_mode(), "closing the bar keeps edit mode");
+        assert!(
+            !app.edit_mode(),
+            "Esc closes the box and returns to read mode (T22)"
+        );
     }
 }
 
+/// T22: Esc in the find box closes it and returns to read mode, also from edit mode.
 #[test]
-fn esc_in_the_find_bar_keeps_edit_mode() {
+fn esc_in_the_find_box_returns_to_read_mode() {
     let (_d, _p, mut app, _) = one("ab\n");
     space_i(&mut app);
     app.handle_key(ctrl('f'));
     app.handle_key(key(KeyCode::Esc));
-    assert!(!app.find.open, "Esc closes the bar");
+    assert!(!app.find.open, "Esc closes the box");
     assert_eq!(app.focus, Focus::Editor);
+    assert!(!app.edit_mode());
     typ(&mut app, "x");
-    assert_eq!(text(&app), "xab\n");
+    assert_eq!(text(&app), "ab\n", "read mode: typing does not edit");
 }
 
 // ---- allowed in read mode ----------------------------------------------------------------

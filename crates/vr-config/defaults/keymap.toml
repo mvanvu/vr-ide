@@ -23,7 +23,7 @@
 #     ctrl+left/right, backspace/delete/enter in the editor);
 #   - read (normal) mode in the editor: space then i enters edit mode, space then space opens
 #     the command palette (like f1), space then another key only shows a hint; tab moves the
-#     focus to the next part (editor, side panel, terminal; ctrl+f reaches the find bar);
+#     focus to the next part (editor, explorer, terminal; ctrl+f reaches the find box);
 #   - edit mode: tab indents (shift+tab outdents, below), escape goes back to read mode.
 # Unknown command names are reported in a startup notice; the rest of the file still applies.
 #
@@ -31,8 +31,8 @@
 # GNOME Terminal or the GNOME desktop: ctrl+letter or an F key (alone, with ctrl or with shift);
 # no alt, no ctrl+shift+letter, no ctrl+PageUp/PageDown, no F10/F11 (USER-5). The user approved
 # one exception: ctrl+h (byte 0x08; GNOME Terminal's Backspace sends 0x7f, so they differ).
-# Commands without a key run from the command palette (f1): project search and its result
-# stepping, the find options, replace one / all, new folder, save as, reload from disk, indent,
+# Commands without a key run from the command palette (f1): project search (also ctrl+f twice)
+# and its result stepping, replace one / all, new folder, save as, reload from disk, indent,
 # focus cycle, and others.
 
 # ---- global ----------------------------------------------------------------
@@ -53,8 +53,8 @@
 "ctrl+k" = "explorer.reveal"
 "ctrl+h" = "explorer.toggle_hidden"
 "ctrl+f6" = "explorer.toggle_ignored"
-# Replace is contextual: in the editor (and its find bar) it opens the in-file replace, see
-# [editor]; with the project search panel focused (and elsewhere) the project replace.
+# Replace is contextual: in the editor (and the find box on the file) it opens the in-file
+# replace, see [editor]; in the find box on the project (and elsewhere) the project replace.
 "ctrl+r" = "search.replace_project"
 # Integrated terminal (M5). Hidden: show and focus it (a terminal starts if there is none);
 # shown elsewhere: focus it; focused: the editor gets the keys and the panel stays shown.
@@ -88,10 +88,13 @@
 # ctrl+[ is Escape for most terminals, so outdent is shift+tab (tab indents, built in).
 "shift+tab" = "edit.outdent"
 "ctrl+g" = "nav.goto_line"
+# One find box for the file and the project, with a result list; ctrl+f in the box switches
+# the scope. Query syntax: /re/ regex, a trailing /i ignores case, \/ is a slash.
 "ctrl+f" = "find.open"
 "f3" = "find.next"
 "shift+f3" = "find.prev"
-# Opens the replace field in edit mode: Enter replaces one, ctrl+a replaces all.
+# The replace row of the find box in its scope; in the file it switches to edit mode: Enter
+# replaces one, ctrl+a replaces all.
 "ctrl+r" = "find.replace_open"
 
 [explorer]

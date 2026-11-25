@@ -13,7 +13,7 @@ use crate::theme::Theme;
 const MAX_NOTICE_ROWS: u16 = 3;
 
 /// Esc dismisses the oldest notice only when nothing else takes the key first: a dialog,
-/// the palette, the find bar and the search panel use it themselves, and in edit mode the
+/// the palette and the find box (either scope) use it themselves, and in edit mode the
 /// first Esc leaves for read mode (D151). The on-screen hint must hold in every state.
 fn esc_dismisses(app: &App) -> bool {
     app.dialog.is_none()

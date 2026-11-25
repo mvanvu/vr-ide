@@ -376,14 +376,18 @@ fn bracketed_paste_is_one_undo_step() {
     assert_eq!(text(&app), "\n");
 }
 
+/// T22: with no file open there is nothing to find in: ctrl+f opens the find box on the
+/// project; Esc closes it and then dismisses the oldest notice.
 #[test]
-fn find_without_a_file_shows_a_notice() {
+fn find_without_a_file_searches_the_project() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = test_app(dir.path());
     app.handle_key(ctrl('f'));
+    assert!(app.find.project());
+    assert_eq!(app.focus, crate::app::Focus::Search);
+    app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert!(!app.find.open);
-    assert!(notices(&app).iter().any(|n| n.contains("no file is open")));
-    // Escape dismisses the oldest notice.
+    app.info("a notice");
     let n = app.notices.len();
     app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.notices.len(), n - 1);

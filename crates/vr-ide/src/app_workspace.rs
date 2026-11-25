@@ -206,7 +206,7 @@ impl App {
         if commands::search::quit_block(self).is_none() {
             return true;
         }
-        self.warn("Open Workspace: a replace is running; Esc in the search panel cancels it");
+        self.warn("Open Workspace: a replace is running; Esc in the find box cancels it");
         false
     }
 }

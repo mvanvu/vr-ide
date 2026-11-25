@@ -1,16 +1,14 @@
-//! Screen split: a side panel on the left (the explorer or the search panel, when shown),
-//! tab bar, find bar (while open) and editor on the right, notice lines (only while a notice
-//! is shown) and the status bar across the whole width.
+//! Screen split: the explorer on the left (when shown), tab bar, find box (while open:
+//! its fields and its result list, [`place_find_box`]) and editor on the right, notice
+//! lines (only while a notice is shown) and the status bar across the whole width.
 
 use ratatui::layout::Rect;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AppLayout {
     pub explorer: Rect,
-    /// The project search panel; it takes the side column instead of the explorer.
-    pub search: Rect,
     pub tabs: Rect,
-    /// The find / replace bar, between the tab bar and the editor.
+    /// The find box (fields and result list), between the tab bar and the editor.
     pub find_bar: Rect,
     pub editor: Rect,
     /// The terminal panel (M5) under the editor: its tab bar row, then the terminal grid.
@@ -25,7 +23,6 @@ pub struct AppLayout {
 pub enum Side {
     None,
     Explorer,
-    Search,
 }
 
 /// Narrowest screen that still gets an explorer next to the editor.
@@ -39,21 +36,9 @@ pub fn explorer_width(width: u16) -> u16 {
     (width / 4).clamp(16, 40).min(width / 2)
 }
 
-/// Below this screen width the search panel takes the whole width (results need room).
-pub const SEARCH_MIN_SCREEN: u16 = 40;
-
-/// Search panel width: wider than the explorer because result lines need room.
-pub fn search_width(width: u16) -> u16 {
-    if width < SEARCH_MIN_SCREEN {
-        return width;
-    }
-    (width * 2 / 5).clamp(24, 60).min(width * 3 / 5)
-}
-
 /// `notice_rows` is capped so the editor keeps at least a third of the screen; the side
-/// column ([`explorer_width`] / [`search_width`]) is taken from the left of the tab bar and
-/// editor; `find_rows` (0 when the bar is closed) from the top of the editor.
-pub fn compute(area: Rect, notice_rows: u16, side: Side, find_rows: u16) -> AppLayout {
+/// column ([`explorer_width`]) is taken from the left of the tab bar and editor.
+pub fn compute(area: Rect, notice_rows: u16, side: Side) -> AppLayout {
     let row = |y: u16, h: u16| Rect::new(area.x, y, area.width, h);
     if area.height < 3 {
         return AppLayout {
@@ -67,23 +52,15 @@ pub fn compute(area: Rect, notice_rows: u16, side: Side, find_rows: u16) -> AppL
     let sw = match side {
         Side::None => 0,
         Side::Explorer => explorer_width(area.width).min(area.width / 2),
-        Side::Search => search_width(area.width),
     };
-    let column = Rect::new(area.x, area.y, sw, notice.y - area.y);
-    let (explorer, search) = match side {
-        Side::Search => (Rect::default(), column),
-        _ => (column, Rect::default()),
-    };
+    let explorer = Rect::new(area.x, area.y, sw, notice.y - area.y);
     let right = |y: u16, h: u16| Rect::new(area.x + sw, y, area.width - sw, h);
     let tabs = right(area.y, 1);
     let body = notice.y - (area.y + 1);
-    // The bar never takes the last editor row.
-    let find_rows = find_rows.min(body.saturating_sub(1));
-    let find_bar = right(area.y + 1, find_rows);
-    let editor = right(area.y + 1 + find_rows, body - find_rows);
+    let find_bar = right(area.y + 1, 0);
+    let editor = right(area.y + 1, body);
     AppLayout {
         explorer,
-        search,
         tabs,
         find_bar,
         editor,
@@ -91,6 +68,26 @@ pub fn compute(area: Rect, notice_rows: u16, side: Side, find_rows: u16) -> AppL
         notice,
         status,
     }
+}
+
+/// Takes the find box's field rows from the top of the editor, before the terminal panel
+/// takes its rows (D275: the panel shrinks rather than the fields, as with the old find
+/// bar). The fields never take the last row of the editor column.
+pub fn place_find_box(layout: &mut AppLayout, rows: u16) {
+    let ed = layout.editor;
+    let rows = rows.min(ed.height.saturating_sub(1));
+    layout.find_bar = Rect::new(ed.x, ed.y, ed.width, rows);
+    layout.editor.y += rows;
+    layout.editor.height -= rows;
+}
+
+/// After the terminal panel took its rows: the box grows by its list's `rows` from the top
+/// of the editor, which keeps at least one row.
+pub fn grow_find_box(layout: &mut AppLayout, rows: u16) {
+    let rows = rows.min(layout.editor.height.saturating_sub(1));
+    layout.find_bar.height += rows;
+    layout.editor.y += rows;
+    layout.editor.height -= rows;
 }
 
 /// Fewest rows the terminal panel gets (tab bar included) when the screen has them.
