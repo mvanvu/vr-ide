@@ -334,3 +334,4 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - flaky under load (FR-15 candidate): workspace_ui_tests::add_folder_checks_run_off_the_ui_thread, dialog_tests::replace_never_loses_a_concurrent_write (pass alone).
 - FR-15 candidate: git_tests::each_root_shows_its_own_repo waits for root a's branch not its marks (add wait_marks after open_path(&pa)); plus the earlier flaky list.
 - Sign-off 2 (2026-11-26): SIGNOFF_PASS (1171 tests, AC-1 23–41 ms / 7–20 MB, walks 46/46, 44/46 script-only misses, git 21/21). Final review 2: 1 major + 4 minor → FR-16, fixed and merged. Docs: focus.editor row added to docs/keymap.md by the leader (one-line fix).
+- 2026-11-26 user: removed the stopped worktree .worktrees/M7-1 and its unmerged branch m7-1-vr-git (never pushed).
