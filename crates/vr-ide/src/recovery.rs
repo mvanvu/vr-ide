@@ -270,7 +270,7 @@ fn write_rope(f: &mut std::fs::File, text: &Rope) -> std::io::Result<()> {
     f.sync_all()
 }
 
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     let mut b = std::fs::DirBuilder::new();
     b.recursive(true);
     #[cfg(unix)]
@@ -278,7 +278,7 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     b.create(dir)
 }
 
-fn create_private_file(p: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn create_private_file(p: &Path) -> std::io::Result<std::fs::File> {
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create_new(true);
     #[cfg(unix)]

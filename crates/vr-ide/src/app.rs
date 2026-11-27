@@ -209,6 +209,8 @@ pub struct App {
     pub config_dir: Option<PathBuf>,
     /// The integrated terminal panel (M5); no terminal runs until the user opens one (AC-1).
     pub terminal: commands::terminal::TerminalPanel,
+    /// SSH sessions (FR-25): the recent targets and the session being started.
+    pub ssh: commands::ssh::SshState,
     /// Branch and missing mark of each root for the welcome screen (W-2), read with the
     /// monitor's samples and when the roots change, never while drawing.
     pub root_info: Vec<RootInfo>,
@@ -321,6 +323,7 @@ impl App {
             recent_writer: None,
             config_dir: None,
             terminal,
+            ssh: Default::default(),
             root_info: Vec::new(),
             root_files: Default::default(),
             welcome_hits: Vec::new(),
@@ -371,6 +374,7 @@ impl App {
         warnings.extend(w);
         app.recent_files = list;
         app.recent_files_file = Some(files);
+        app.ssh = commands::ssh::SshState::load(&state);
         app.config_dir = Some(dir);
         (app, warnings)
     }

@@ -16,8 +16,8 @@ use crossterm::event::{
 use ratatui::layout::Rect;
 use vr_config::{Context, KeyChord, TerminalPosition};
 use vr_term::{
-    CursorShape, Grid, KeyCode as T, Modifiers, MouseButton, MouseKind, SpawnOptions, TermError,
-    TermStatus, Terminal, encode_key, encode_mouse, encode_paste,
+    CursorShape, Grid, KeyCode as T, Modifiers, MouseButton, MouseKind, SpawnExtras, SpawnOptions,
+    TermError, TermStatus, Terminal, encode_key, encode_mouse, encode_paste,
 };
 
 use super::dialog::DialogAction;
@@ -94,6 +94,8 @@ pub struct TermTab {
     output: Arc<AtomicBool>,
     fake_status: TermStatus,
     fake_title: String,
+    /// The SSH session this tab runs instead of a shell (FR-25).
+    pub ssh: Option<super::ssh::Session>,
 }
 
 impl TermTab {
@@ -107,6 +109,7 @@ impl TermTab {
             output: Arc::default(),
             fake_status: status,
             fake_title: title.to_string(),
+            ssh: None,
         }
     }
 
@@ -124,11 +127,14 @@ impl TermTab {
         self.term.as_ref().and_then(Terminal::pid)
     }
 
-    /// See [`Terminal::shell_in_foreground`]; false for a fake tab.
+    /// See [`Terminal::shell_in_foreground`]; false for a fake tab and for an SSH session:
+    /// what is typed there goes to the remote side, so it never counts as an idle local shell.
     pub fn shell_in_foreground(&self) -> bool {
-        self.term
-            .as_ref()
-            .is_some_and(Terminal::shell_in_foreground)
+        self.ssh.is_none()
+            && self
+                .term
+                .as_ref()
+                .is_some_and(Terminal::shell_in_foreground)
     }
 
     /// Name of the program holding the terminal's foreground (`/proc/<pgid>/comm`).
@@ -216,13 +222,18 @@ impl TermTab {
             .join("\n")
     }
 
-    /// The program's title (OSC 0/2), else the shell's name.
+    /// The tab's label text: `ssh <target>` for an SSH session (built from the validated target,
+    /// never from what the remote side sends, SEC-S12); else the program's title (OSC 0/2)
+    /// with control and direction-changing characters made visible, else the shell's name.
     pub fn title(&self) -> String {
+        if let Some(session) = &self.ssh {
+            return format!("ssh {}", session.target);
+        }
         if self.term.is_none() {
             return self.fake_title.clone();
         }
         match self.grid.title.as_deref().map(str::trim) {
-            Some(t) if !t.is_empty() => t.to_string(),
+            Some(t) if !t.is_empty() => crate::ui::safe_text::sanitize(t),
             _ => self
                 .shell
                 .file_name()
@@ -235,6 +246,22 @@ impl TermTab {
             Some(t) if !bytes.is_empty() => t.write(bytes),
             _ => Ok(()),
         }
+    }
+
+    /// Bytes queued for the program and not yet read by it.
+    pub fn pending_input(&self) -> usize {
+        self.term.as_ref().map_or(0, Terminal::pending_input)
+    }
+
+    /// Writes to this tab whether or not it is the active one (tests).
+    #[cfg(test)]
+    pub(crate) fn type_bytes(&self, bytes: &[u8]) -> Result<(), TermError> {
+        self.write(bytes)
+    }
+
+    /// See [`Terminal::marker_seen`]; false for a fake tab.
+    pub(crate) fn marker_seen(&self) -> bool {
+        self.term.as_ref().is_some_and(Terminal::marker_seen)
     }
 }
 
@@ -281,6 +308,9 @@ pub struct TerminalPanel {
     /// Extra environment for new terminals (tests).
     pub env: Vec<(OsString, OsString)>,
     pub scrollback: usize,
+    /// The active tab, a logged-in SSH session, takes the whole window (FR-25); see
+    /// [`full_screen`] for when that is drawn.
+    pub full: bool,
     pub selection: Option<Selection>,
     selecting: bool,
     /// The program got a mouse press; drags and the release go to it until that release.
@@ -309,6 +339,7 @@ impl TerminalPanel {
             shell: None,
             env: Vec::new(),
             scrollback,
+            full: false,
             selection: None,
             selecting: false,
             captured: false,
@@ -322,6 +353,11 @@ impl TerminalPanel {
     /// A terminal had something new since the last call.
     pub fn take_wake(&self) -> bool {
         self.wake.swap(false, Ordering::AcqRel)
+    }
+
+    /// The flag a background job sets to have the event loop look at the panel again.
+    pub(crate) fn wake_handle(&self) -> Arc<AtomicBool> {
+        self.wake.clone()
     }
 
     pub fn active_tab(&self) -> Option<&TermTab> {
@@ -423,6 +459,7 @@ pub fn close_tab(app: &mut App, i: usize) {
     }
     let tab = p.tabs.remove(i);
     drop_later(tab.term);
+    p.full = false;
     p.selection = None;
     p.captured = false;
     p.tab_drag = None;
@@ -628,6 +665,7 @@ fn covered(app: &App) -> bool {
 fn hide(app: &mut App) {
     let p = &mut app.terminal;
     p.visible = false;
+    p.full = false;
     p.selection = None;
     p.selecting = false;
     p.captured = false;
@@ -650,6 +688,7 @@ fn step(app: &mut App, forward: bool) {
     } else {
         (p.active + n - 1) % n
     };
+    p.full = false;
     p.selection = None;
     // A release now would reach another program.
     p.captured = false;
@@ -668,18 +707,7 @@ fn add_tab_in(app: &mut App, cwd: &Path) -> bool {
     let output = Arc::new(AtomicBool::new(false));
     match spawn(app, &output, cwd) {
         Ok((term, shell)) => {
-            app.terminal.tabs.push(TermTab {
-                term: Some(term),
-                shell,
-                scroll: 0,
-                grid: Grid::default(),
-                output,
-                fake_status: TermStatus::Running,
-                fake_title: String::new(),
-            });
-            app.terminal.active = app.terminal.tabs.len() - 1;
-            app.terminal.selection = None;
-            app.terminal.captured = false;
+            push_tab(app, term, shell, output, None);
             true
         }
         Err(e) => {
@@ -689,21 +717,55 @@ fn add_tab_in(app: &mut App, cwd: &Path) -> bool {
     }
 }
 
+/// Adds a tab for a started program and makes it active.
+pub(crate) fn push_tab(
+    app: &mut App,
+    term: Terminal,
+    shell: PathBuf,
+    output: Arc<AtomicBool>,
+    ssh: Option<super::ssh::Session>,
+) {
+    let p = &mut app.terminal;
+    p.tabs.push(TermTab {
+        term: Some(term),
+        shell,
+        scroll: 0,
+        grid: Grid::default(),
+        output,
+        fake_status: TermStatus::Running,
+        fake_title: String::new(),
+        ssh,
+    });
+    p.active = p.tabs.len() - 1;
+    p.full = false;
+    p.selection = None;
+    p.captured = false;
+}
+
+/// Puts a newly started program in tab `i` in place of the exited one.
+pub(crate) fn replace_term(
+    app: &mut App,
+    i: usize,
+    term: Terminal,
+    shell: PathBuf,
+    output: Arc<AtomicBool>,
+) {
+    let tab = &mut app.terminal.tabs[i];
+    let old = tab.term.replace(term);
+    tab.shell = shell;
+    tab.output = output;
+    tab.scroll = 0;
+    tab.grid = Grid::default();
+    drop_later(old);
+}
+
 /// Enter on an exited terminal: a new shell in the same tab.
 fn restart(app: &mut App) {
     let i = app.terminal.active;
     let output = Arc::new(AtomicBool::new(false));
     let cwd = app.active_root().path.clone();
     match spawn(app, &output, &cwd) {
-        Ok((term, shell)) => {
-            let tab = &mut app.terminal.tabs[i];
-            let old = tab.term.replace(term);
-            tab.shell = shell;
-            tab.output = output;
-            tab.scroll = 0;
-            tab.grid = Grid::default();
-            drop_later(old);
-        }
+        Ok((term, shell)) => replace_term(app, i, term, shell, output),
         Err(e) => app.error(format!("Terminal: {e}")),
     }
 }
@@ -738,26 +800,9 @@ fn spawn(
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
     });
-    let (cols, rows) = spawn_size(app);
     let start = |shell: &Path| {
-        let (o, w) = (output.clone(), p.wake.clone());
-        let notify: vr_term::Notify = Arc::new(move || {
-            o.store(true, Ordering::Release);
-            w.store(true, Ordering::Release);
-        });
-        Terminal::spawn(
-            SpawnOptions {
-                shell: shell.to_path_buf(),
-                args: Vec::new(),
-                cwd: cwd.to_path_buf(),
-                env: child_env(&p.env, crate::theme::ColorDepth::detect()),
-                cols,
-                rows,
-                scrollback: p.scrollback,
-            },
-            notify,
-        )
-        .map(|t| (t, shell.to_path_buf()))
+        spawn_program(app, output, shell, Vec::new(), cwd, SpawnExtras::default())
+            .map(|t| (t, shell.to_path_buf()))
     };
     let fallback = Path::new(FALLBACK_SHELL);
     match preferred {
@@ -767,6 +812,38 @@ fn spawn(
         },
         _ => start(fallback),
     }
+}
+
+/// Starts `program` in a PTY of the panel's size with the terminal environment; its `Notify`
+/// sets `output` and the panel's wake flag.
+pub(crate) fn spawn_program(
+    app: &App,
+    output: &Arc<AtomicBool>,
+    program: &Path,
+    args: Vec<OsString>,
+    cwd: &Path,
+    extras: SpawnExtras,
+) -> Result<Terminal, TermError> {
+    let p = &app.terminal;
+    let (cols, rows) = spawn_size(app);
+    let (o, w) = (output.clone(), p.wake.clone());
+    let notify: vr_term::Notify = Arc::new(move || {
+        o.store(true, Ordering::Release);
+        w.store(true, Ordering::Release);
+    });
+    Terminal::spawn_with(
+        SpawnOptions {
+            shell: program.to_path_buf(),
+            args,
+            cwd: cwd.to_path_buf(),
+            env: child_env(&p.env, crate::theme::ColorDepth::detect()),
+            cols,
+            rows,
+            scrollback: p.scrollback,
+        },
+        extras,
+        notify,
+    )
 }
 
 /// Environment of a new terminal: `COLORTERM=truecolor` only when vr-ide itself can show true
@@ -815,8 +892,8 @@ fn spawn_size(app: &App) -> (u16, u16) {
 /// scrolled-back view where it is (AC-F2): only a key, a paste or a scroll to the bottom returns
 /// to it. True when the panel must be redrawn.
 pub fn refresh(app: &mut App) -> bool {
+    let mut changed = super::ssh::poll(app);
     let p = &mut app.terminal;
-    let mut changed = false;
     for (i, tab) in p.tabs.iter_mut().enumerate() {
         if !tab.output.swap(false, Ordering::AcqRel) {
             continue;
@@ -856,6 +933,63 @@ pub fn snapshot_active(app: &mut App) {
     if let Some(tab) = app.terminal.active_mut() {
         tab.refresh();
     }
+}
+
+/// The active tab is an SSH session that logged in and still runs.
+fn active_session_live(app: &App) -> bool {
+    app.terminal
+        .active_tab()
+        .is_some_and(|t| t.ssh.as_ref().is_some_and(|s| s.logged_in) && t.running())
+}
+
+/// The active tab is drawn full screen (FR-25, AC-S3): it was chosen for it, it is a logged-in
+/// SSH session that still runs, the terminal is where keys go, and no dialog needs the screen
+/// (a quit or close question must be seen, SEC-S17).
+pub fn full_screen(app: &App) -> bool {
+    app.terminal.full && app.dialog.is_none() && has_focus(app) && active_session_live(app)
+}
+
+/// Ends full screen for good once its session ended or something else took the keys (a dialog
+/// only suspends it). Called before keys are routed and before each frame.
+pub fn sync_full(app: &mut App) {
+    if app.terminal.full && !(has_focus(app) && active_session_live(app)) {
+        app.terminal.full = false;
+    }
+}
+
+/// Gives the active tab the whole window when it is a logged-in SSH session; a no-op for
+/// every other tab.
+pub(crate) fn enter_full(app: &mut App) {
+    if !active_session_live(app) {
+        return;
+    }
+    let p = &mut app.terminal;
+    p.full = true;
+    // The grid changes shape and the tab bar goes: nothing of the old view applies.
+    p.selection = None;
+    p.selecting = false;
+    p.captured = false;
+    p.resizing = false;
+    p.tab_drag = None;
+    app.dirty = true;
+}
+
+/// Shows the panel with the keys on terminal `i` (an SSH session chosen from the list).
+pub(crate) fn select_tab(app: &mut App, i: usize) {
+    if i >= app.terminal.tabs.len() {
+        return;
+    }
+    let p = &mut app.terminal;
+    p.active = i;
+    p.full = false;
+    p.selection = None;
+    p.captured = false;
+    reveal(app);
+}
+
+/// Shows the panel with the keys on its active terminal.
+pub(crate) fn reveal_panel(app: &mut App) {
+    reveal(app);
 }
 
 /// The terminal has the keys: focused, shown, no dialog or palette over it.
@@ -901,6 +1035,7 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         super::search::focus_editor(app);
         return false;
     }
+    sync_full(app);
     if covered(app) {
         super::search::focus_editor(app);
         return false;
@@ -936,7 +1071,11 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             .as_ref()
             .is_some_and(|c| app.keymap.keys_for("file.close").contains(c));
         if key.code == K::Enter && key.modifiers.is_empty() {
-            restart(app);
+            if tab.ssh.is_some() {
+                super::ssh::reconnect(app, app.terminal.active);
+            } else {
+                restart(app);
+            }
         } else if closes {
             close_active(app);
         }
@@ -1162,11 +1301,14 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
             _ => {}
         }
     }
+    // A full-screen session has no tab bar row: the grid starts at the top.
+    let full = full_screen(app);
+    let bar = u16::from(!full);
     let grid_area = Rect::new(
         area.x,
-        area.y + 1,
+        area.y + bar,
         area.width,
-        area.height.saturating_sub(1),
+        area.height.saturating_sub(bar),
     );
     // A press the program got owns the mouse until its release, wherever that happens: drags
     // and the release reach the program clamped to its grid, as in any terminal emulator. A
@@ -1206,7 +1348,7 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
     if !app.terminal.visible || !inside(area) {
         return false;
     }
-    if ev.row == area.y {
+    if !full && ev.row == area.y {
         if ev.kind == MK::Down(MB::Left) {
             match bar_hit(app, ev.column - area.x) {
                 Some(BarHit::New) => new_terminal(app),
@@ -1217,6 +1359,8 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
                     app.terminal.captured = false;
                     app.terminal.tab_drag = Some(i);
                     app.focus = Focus::Terminal;
+                    // Choosing a logged-in session's tab gives it the whole window again.
+                    enter_full(app);
                 }
                 // At the bottom the tab bar is the top edge; on the right the separator is.
                 None if app.layout.terminal_sep.width == 0 => app.terminal.resizing = true,

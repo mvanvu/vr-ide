@@ -349,6 +349,48 @@ open one.
   from the editor shows or hides the panel, and `shift+f12` from the editor hides it. The tab bar's
   hint shows the way out that works in your setup.
 
+### SSH sessions
+
+vr-ide opens SSH sessions with your system `ssh` (OpenSSH), so your `~/.ssh/config`, keys, agent
+and known hosts apply as they do in a terminal.
+
+- Open the command window (`F1`) and type `ssh` and a space (or `/ssh `, or pick SSH: Connect to
+  Host). The list shows the open sessions first, then recently used targets, then the `Host` names
+  of `~/.ssh/config` and the files it includes (patterns such as `*` are left out). Type
+  `[user@]host[:port]` for any other host; the first row is what you typed. Enter starts the
+  highlighted row. Anything that is not a plain target (a leading `-`, spaces, `%`, `$`, quotes …)
+  is refused and nothing is run.
+- The session starts in a new tab of the terminal panel, titled `ssh <target>`. Host-key
+  questions, passwords and passphrases are asked by ssh and answered there. vr-ide does not read,
+  store or log what you type into a terminal.
+- When the login succeeded the tab takes the whole window: only the last row stays vr-ide's
+  (`SSH <target>` and the key back). Every key goes to the session except the keys a focused
+  terminal keeps: ``ctrl+` `` (back to the editor; the session keeps running), `F1`, `ctrl+f7`,
+  `ctrl+f8`, `ctrl+f9`. `shift+pageup` / `shift+pagedown` scroll back as in any terminal tab.
+- To return to a session: click its tab in the terminal panel, or choose it in the ssh list.
+  Several sessions can be open, one tab each (at most 16).
+- When ssh ends (logout, a dropped connection, a failed login) the editor comes back and the tab
+  shows `[process exited N]`; Enter there connects to the same target again. Quitting vr-ide or
+  closing the tab of a live session asks first.
+- Recently used targets (at most 20, recorded after a successful login) are kept in
+  `~/.local/state/vr-ide/ssh-recent`, readable by you only. No password or key is ever stored.
+
+How the login is detected: vr-ide starts ssh as
+`ssh [-l user] [-p port] -o ControlMaster=no -o PermitLocalCommand=yes -o LocalCommand=<prints a
+one-time marker> -- host`. ssh runs `LocalCommand` on your machine only after a successful login;
+the marker is random per start and never shown, so nothing the remote side prints can fake it.
+vr-ide passes no other option: host-key checking and everything else stay as you configured them.
+The session stays an ordinary panel tab (a notice says why) when
+
+- your ssh config sets a `LocalCommand` of its own for that host (vr-ide then adds none),
+- ssh reuses a shared connection (`ControlMaster` / `ControlPath`; such a session runs no
+  `LocalCommand`), or
+- `ssh_fullscreen = false` is set in `settings.toml` (ssh is then started without the two
+  `LocalCommand` options).
+
+The remote side can draw anything inside the session, including something that looks like
+vr-ide. The last row (`SSH <target>`) is drawn by vr-ide and cannot be written by the session.
+
 ### Git
 
 In a git repository the gutter marks changed lines and the status bar shows the branch with
@@ -370,7 +412,7 @@ with your terminal's own paste shortcut (bracketed paste is supported).
 
 | File | Purpose |
 |---|---|
-| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit, terminal scrollback (`scrollback`), panel height, position and width (`terminal_height_percent`, `terminal_position`, `terminal_width_percent`) and whether NUL reaches terminal programs in a terminal without the kitty protocol (`terminal_pass_nul`, off), and the inline git blame of the cursor line (`git_inline_blame`, off). Built-in values: `crates/vr-config/defaults/settings.toml` |
+| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` use the terminal's colours), hidden/ignored files in the explorer, highlight size limit, terminal scrollback (`scrollback`), panel height, position and width (`terminal_height_percent`, `terminal_position`, `terminal_width_percent`) and whether NUL reaches terminal programs in a terminal without the kitty protocol (`terminal_pass_nul`, off), whether a logged-in SSH session takes the whole window (`ssh_fullscreen`, on), and the inline git blame of the cursor line (`git_inline_blame`, off). Built-in values: `crates/vr-config/defaults/settings.toml` |
 | `~/.config/vr-ide/keymap.toml` | Key overrides on top of the defaults; see [docs/keymap.md](docs/keymap.md) |
 | `~/.config/vr-ide/languages.toml` | File patterns → language for syntax highlighting; see [Syntax highlighting](#syntax-highlighting). Built-in table: `crates/vr-config/defaults/languages.toml` |
 

@@ -174,3 +174,13 @@ pub enum TermError {
     #[error("pty error: {0}")]
     Io(#[from] std::io::Error),
 }
+
+/// What a session that is more than a plain shell adds to [`SpawnOptions`] (`Terminal::spawn_with`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpawnExtras {
+    /// An exact byte sequence taken out of the program's output before the emulator sees it;
+    /// its first occurrence while the child runs sets `Terminal::marker_seen`.
+    pub marker: Option<Vec<u8>>,
+    /// Inherited variables the child must not get.
+    pub env_remove: Vec<OsString>,
+}

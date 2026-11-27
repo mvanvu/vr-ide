@@ -49,6 +49,8 @@ pub struct Settings {
     /// Without the kitty protocol, NUL (what ctrl+` sends) in a focused terminal goes to the
     /// program instead of giving the keys back to the editor (D214, D230).
     pub terminal_pass_nul: bool,
+    /// A logged-in SSH session takes the whole window (FR-25, D320).
+    pub ssh_fullscreen: bool,
     /// Inline blame of the cursor line (M7-4a).
     pub git_inline_blame: bool,
     pub ai_presets: Vec<AiPreset>,

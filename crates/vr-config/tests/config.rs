@@ -754,3 +754,19 @@ fn documented_keymap_examples_are_valid() {
         assert!(km.validate(KNOWN).is_empty(), "{doc}: {block}");
     }
 }
+
+/// FR-25 (D320): a logged-in SSH session takes the whole window unless the user turns it off;
+/// `/set` and the file both know the setting.
+#[test]
+fn ssh_fullscreen_defaults_to_on_and_is_settable() {
+    assert!(Settings::load(None).0.ssh_fullscreen);
+    let (_d, path) = write_user("ssh_fullscreen = false\n");
+    let (s, w) = Settings::load(Some(&path));
+    assert!(w.is_empty(), "{w:?}");
+    assert!(!s.ssh_fullscreen);
+    assert!(Settings::names().contains(&"ssh_fullscreen".to_string()));
+    let s = Settings::default()
+        .with_value("ssh_fullscreen", "false")
+        .unwrap();
+    assert!(!s.ssh_fullscreen);
+}

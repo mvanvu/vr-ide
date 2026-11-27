@@ -297,7 +297,7 @@ fn render_tab_bar(buf: &mut Buffer, row: Rect, panel: &TerminalPanel, bar: &TabB
 }
 
 /// Draws the active terminal; returns where its cursor is when it should be shown.
-fn render_grid(
+pub(crate) fn render_grid(
     buf: &mut Buffer,
     area: Rect,
     panel: &TerminalPanel,

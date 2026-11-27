@@ -157,6 +157,7 @@ A `ctrl+space` binding you add to `[terminal]` wins over the NUL rule.
 | `focus.cycle` | Focus Next Part (`tab` in read mode) |
 | `editor.edit_mode` | Enter Edit Mode (`space i` in read mode) |
 | `workspace.add_folder` | Workspace: Add Folder… (opens `/ws add `) |
+| `ssh.connect` | SSH: Connect to Host (opens `/ssh `: open sessions, recent targets, `~/.ssh/config` hosts) |
 | `workspace.remove_folder` | Workspace: Remove Folder (the root row under the explorer cursor, else `/ws remove `; also on a root row's right-click menu as "Remove Folder from Workspace"; files on disk are never touched) |
 | `workspace.save_as` | Workspace: Save As… (opens `/ws save `) |
 | `workspace.open` | Workspace: Open… (opens `/ws open `) |

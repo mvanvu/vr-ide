@@ -33,6 +33,9 @@ pub enum ArgKind {
     Language,
     /// A setting name, then its value.
     Setting,
+    /// Optional: an SSH target `[user@]host[:port]`; the list shows open sessions, recently used
+    /// targets and the aliases of the ssh config.
+    Ssh,
 }
 
 impl ArgKind {
@@ -56,6 +59,7 @@ impl ArgKind {
                 | ArgKind::Recent
                 | ArgKind::RecentFile
                 | ArgKind::Language
+                | ArgKind::Ssh
         )
     }
 }
@@ -231,6 +235,13 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         ArgKind::Text,
         "Run an AI tool (e.g. claude) in a new terminal tab",
         ai,
+    ),
+    cmd(
+        "ssh",
+        "[target]",
+        ArgKind::Ssh,
+        "Open an SSH session: [user@]host[:port] (no target: list hosts)",
+        ssh,
     ),
     cmd(
         "ws add",
@@ -479,8 +490,10 @@ pub enum Submit {
 /// Enter: a complete command runs; a partial name takes the highlighted command (run when it
 /// needs no argument); an empty choice takes the highlighted value.
 pub fn submit(input: &str, rows: &[Row], selected: usize) -> Submit {
-    // A listed choice with nothing typed yet ("/ws recent "): the highlighted value.
-    if let Some((c, "")) = in_argument(input)
+    // A listed choice with nothing typed yet ("/ws recent "): the highlighted value. The ssh
+    // list always runs its highlighted row: what was typed is its first row when it is a target.
+    if let Some((c, typed)) = in_argument(input)
+        && (typed.is_empty() || c.arg == ArgKind::Ssh)
         && c.arg.picks_from_list()
         && let Some(row) = rows.get(selected)
         && let Ok((c, arg)) = parse(&row.fill)
@@ -554,6 +567,10 @@ fn candidates(app: &App, kind: ArgKind, arg: &str) -> Vec<(String, String)> {
             .map(|id| (id.clone(), id))
             .collect(),
         ArgKind::Setting => setting_candidates(app, arg),
+        ArgKind::Ssh => {
+            let held = app.palette.as_ref().and_then(|p| p.ssh_hosts.as_deref());
+            super::ssh::rows(app, arg, held.unwrap_or_default())
+        }
     }
 }
 
@@ -685,6 +702,21 @@ pub fn prepare(app: &mut App, input: &str) {
     let Some((c, arg)) = in_argument(input) else {
         return;
     };
+    // The ssh config is read once per window, not per key (and `ssh -G` never, SEC-S4).
+    if c.arg == ArgKind::Ssh {
+        if app.palette.as_ref().is_some_and(|p| p.ssh_hosts.is_none()) {
+            let hosts = app
+                .ssh
+                .home
+                .as_deref()
+                .map(crate::ssh::config::hosts)
+                .unwrap_or_default();
+            if let Some(p) = &mut app.palette {
+                p.ssh_hosts = Some(hosts);
+            }
+        }
+        return;
+    }
     if !matches!(c.arg, ArgKind::Path { .. }) {
         return;
     }
@@ -843,6 +875,16 @@ fn reload(app: &mut App, _: &str) -> Result<(), String> {
     }
     app.run_command("file.reload", CmdArgs::None);
     Ok(())
+}
+
+/// `/ssh [target]`: no target shows the list.
+fn ssh(app: &mut App, arg: &str) -> Result<(), String> {
+    if arg.is_empty() {
+        palette::open(app);
+        set_input(app, super::ssh::SLASH);
+        return Ok(());
+    }
+    super::ssh::connect(app, arg)
 }
 
 fn term_right(app: &mut App, _: &str) -> Result<(), String> {
