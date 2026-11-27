@@ -160,7 +160,20 @@ fn read_index_strict(state: &Path) -> std::io::Result<BTreeMap<String, String>> 
 
 /// Held while the index is read, changed and written: windows adding or removing accounts at
 /// the same time do not lose each other's records.
-struct IndexLock(#[allow(dead_code)] OwnedFd);
+struct IndexLock(OwnedFd);
+
+impl Drop for IndexLock {
+    fn drop(&mut self) {
+        unlock(&self.0);
+    }
+}
+
+/// Lets go of a `flock` before its descriptor closes. The lock belongs to the open file, which a
+/// child forked meanwhile by any thread shares until it execs; closing only our descriptor
+/// would leave the lock held through that copy (a closed session's account then reads "in use").
+fn unlock(fd: &OwnedFd) {
+    let _ = rustix::fs::flock(fd, rustix::fs::FlockOperation::Unlock);
+}
 
 fn lock_index(state: &Path) -> Result<IndexLock, String> {
     use rustix::fs::{FlockOperation, Mode, OFlags};
@@ -234,21 +247,47 @@ fn open_account_lock(dir: &OwnedFd, name: &str) -> Result<OwnedFd, String> {
 /// A session's hold on its account (D17): a shared lock on `accounts/.<name>.lock` for as long as
 /// the session lives, in any vr-ide window; [`remove`] needs it exclusively.
 #[derive(Debug)]
-pub struct AccountLock(#[allow(dead_code)] OwnedFd);
+pub struct AccountLock(OwnedFd);
+
+impl Drop for AccountLock {
+    fn drop(&mut self) {
+        unlock(&self.0);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: runs in [`hold`] between opening the lock file and locking it.
+    static BEFORE_HOLD_LOCK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// Takes the hold on account `name` before its session starts. Refused while a removal has it.
 pub fn hold(state: &Path, name: &str) -> Result<AccountLock, String> {
-    use rustix::fs::FlockOperation;
+    use rustix::fs::{AtFlags, FlockOperation};
     let name = validate(name).map_err(|_| "account name invalid".to_string())?;
     let dir = open_accounts(state)?;
-    let missing = rustix::fs::statat(&dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW).is_err();
+    let missing = rustix::fs::statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW).is_err();
     if missing {
         return Err("account folder missing".into());
     }
     let fd = open_account_lock(&dir, name)?;
+    #[cfg(test)]
+    if let Some(f) = BEFORE_HOLD_LOCK.with(|h| h.borrow_mut().take()) {
+        f();
+    }
     rustix::fs::flock(&fd, FlockOperation::NonBlockingLockShared)
         .map_err(|_| "account is being removed".to_string())?;
-    Ok(AccountLock(fd))
+    let lock = AccountLock(fd);
+    // A removal between the open and the lock deleted the folder and unlinked this lock file:
+    // the hold is on nothing, so the session must not start.
+    let held = rustix::fs::fstat(&lock.0).map_err(|e| format!("cannot lock the account ({e})"))?;
+    let named = rustix::fs::statat(&dir, format!(".{name}.lock"), AtFlags::SYMLINK_NOFOLLOW);
+    let same = named.is_ok_and(|n| n.st_dev == held.st_dev && n.st_ino == held.st_ino);
+    if !same || rustix::fs::statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW).is_err() {
+        return Err("account folder missing".into());
+    }
+    Ok(lock)
 }
 
 /// Deletes the folder `name` under `parent` without following any link: each level is opened
@@ -389,6 +428,7 @@ pub fn remove(state: &Path, name: &str) -> Result<(), String> {
     let lock = open_account_lock(&dir, name)?;
     rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive)
         .map_err(|_| "in use in another window".to_string())?;
+    let lock = AccountLock(lock);
     let removed: std::io::Result<()> =
         match rustix::fs::statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW) {
             Err(rustix::io::Errno::NOENT) => Ok(()),
@@ -717,6 +757,38 @@ mod fix_tests {
         assert!(!work.exists());
         assert!(!state.join("accounts/.work.lock").exists());
         assert!(hold(state, "work").is_err(), "nothing to hold");
+    }
+
+    /// D17: a closed session lets go of its account at once, even while a child forked before
+    /// that (another session's agent, say) has not started its program yet.
+    #[test]
+    fn a_dropped_hold_frees_the_account_despite_a_forked_child() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path();
+        let work = create(state, "claude", "work").unwrap();
+        let held = hold(state, "work").unwrap();
+        let child =
+            crate::session_tests::child_paused_before_exec(std::time::Duration::from_millis(400));
+        drop(held);
+        remove(state, "work").unwrap();
+        assert!(!work.exists());
+        child.join().unwrap();
+    }
+
+    /// D17: a removal that runs between `hold` opening the lock file and locking it wins: the
+    /// hold is refused, so no session starts on the removed account.
+    #[test]
+    fn a_hold_racing_a_removal_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path().to_path_buf();
+        let work = create(&state, "claude", "work").unwrap();
+        let s = state.clone();
+        BEFORE_HOLD_LOCK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || remove(&s, "work").unwrap()));
+        });
+        assert_eq!(hold(&state, "work").unwrap_err(), "account folder missing");
+        assert!(!work.exists());
+        assert!(!state.join("accounts/.work.lock").exists());
     }
 
     /// SEC-17: the delete walks from the `accounts/` descriptor; a symlink swapped in for
