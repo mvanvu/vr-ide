@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/tests/ai_changes_view_tests.rs
+expression: t.backend()
+---
+" ± session_tests.rs x                           │ 1 claude x                  + "
+" A session_tests.rs  new · +88 · claude         │ Changes · claude · 3 files f6 "
+"     @@ -0,0 +1,88 @@ new file                  │ M session.rs            +9 -3 "
+"  1 +// test line 1                             │ A session_tests.rs        +88 "
+"  2 +// test line 2                             │ D old-session.md          -40 "
+"  3 +// test line 3                             │ Counts edits by any program in"
+"  4 +// test line 4                             │ vr-ide while claude runs      "
+"  5 +// test line 5                             │───────────────────────────────"
+"  6 +// ┌ Revert session_tests.rs? ────────────────────────────────────┐        "
+"  7 +// │ claude created this file. Revert moves it to the trash       │        "
+"  8 +// │ (88 lines).                                                  │        "
+"  9 +// │ Other programs' edits there count as claude's.               │        "
+" 10 +// │                                                              │        "
+" 11 +// │ [Revert] [Cancel]                                            │        "
+" 12 +// └──────────────────────────────────────────────────────────────┘        "
+" 13 +// test line 13                            │                               "
+" 14 +// test line 14                            │                               "
+" 15 +// test line 15                            │                               "
+" 16 +// test line 16                            │                               "
+" 17 +// test line 17                            │                               "
+" 18 +// test line 18                            │                               "
+" 19 +// test line 19                            │                               "
+" 20 +// test line 20                            │                               "
+" DIFF  crates/vr-ide/src/session_tests.rs · claude    f5 keep · shift+f5 revert "

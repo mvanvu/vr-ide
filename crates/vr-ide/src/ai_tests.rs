@@ -225,7 +225,7 @@ fn hide_show_step_focus_and_width() {
     assert_eq!(app.terminal.height_percent, h + 5);
 }
 
-/// A focused session keeps only the `[ai]` keys: ctrl+w, ctrl+n and f5 reach the agent.
+/// A focused session keeps only the `[ai]` keys: ctrl+w, ctrl+n, f5 and shift+f5 reach the agent.
 #[test]
 fn a_focused_session_gives_other_keys_to_the_agent() {
     let (_d, mut app) = ai_app();
@@ -238,7 +238,7 @@ fn a_focused_session_gives_other_keys_to_the_agent() {
         (KeyCode::Char('w'), KeyModifiers::CONTROL),
         (KeyCode::Char('n'), KeyModifiers::CONTROL),
         (KeyCode::F(5), KeyModifiers::NONE),
-        (KeyCode::F(6), KeyModifiers::NONE),
+        (KeyCode::F(5), KeyModifiers::SHIFT),
     ] {
         key(&mut app, code, mods);
     }

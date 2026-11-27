@@ -68,6 +68,10 @@ const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("global", "f3", "focus.editor"),
     ("global", "f7", "ai.next"),
     ("global", "shift+f7", "ai.prev"),
+    // AI changes (D8).
+    ("global", "f6", "ai.changes"),
+    ("global", "f5", "ai.keep"),
+    ("global", "shift+f5", "ai.revert"),
     ("ai", "ctrl+f8", "ai.grow"),
     ("ai", "ctrl+f9", "ai.shrink"),
     // Explorer focus. ctrl+n there asks File / Folder first (user change to the spec).
@@ -83,8 +87,8 @@ const KEYSET_V2: &[(&str, &str, &str)] = &[
 /// ctrl+f4 and ctrl+f12 by D279 / D280): bound nowhere. ctrl+f7, kept free for T19, is the
 /// panel position key now.
 const REMOVED_V2: &[&str] = &[
-    "ctrl+i", "ctrl+]", "ctrl+u", "ctrl+t", "shift+f3", "f6", "ctrl+f1", "ctrl+f2", "ctrl+f3",
-    "ctrl+f5", "f5", "ctrl+f4",
+    "ctrl+i", "ctrl+]", "ctrl+u", "ctrl+t", "shift+f3", "ctrl+f1", "ctrl+f2", "ctrl+f3", "ctrl+f5",
+    "ctrl+f4",
 ];
 
 /// Every command name the plan's registry lists, plus the M5 reserved one.
@@ -158,6 +162,9 @@ const KNOWN: &[&str] = &[
     "ai.prev",
     "ai.grow",
     "ai.shrink",
+    "ai.changes",
+    "ai.keep",
+    "ai.revert",
 ];
 
 #[test]
@@ -312,6 +319,7 @@ fn defaults_load_without_user_file() {
             && [
                 ("f1", "app.palette"),
                 ("f3", "focus.editor"),
+                ("f6", "ai.changes"),
                 ("f7", "ai.next"),
                 ("shift+f7", "ai.prev"),
                 ("f12", "ai.toggle"),
@@ -827,6 +835,7 @@ fn ai_context_keeps_only_its_table() {
     for (k, cmd) in [
         ("f1", "app.palette"),
         ("f3", "focus.editor"),
+        ("f6", "ai.changes"),
         ("f7", "ai.next"),
         ("shift+f7", "ai.prev"),
         ("f12", "ai.toggle"),

@@ -235,6 +235,42 @@ impl Syntax {
         }
     }
 
+    /// A highlighter for a text that is no document (a side of an AI diff), in the language
+    /// the name `path` has; `None` for plain text. Its spans come through [`Syntax::spans_of`];
+    /// dropping it stops its worker.
+    pub fn standalone(&self, path: &Path, text: &str, max_bytes: u64) -> Option<Highlighter> {
+        let lang = language_for(&self.registry, path)?;
+        let wake = self.wake.clone();
+        let notify: Notify = Arc::new(move || wake.store(true, Ordering::Release));
+        let defaults = HighlightOptions::default();
+        let options = HighlightOptions {
+            max_bytes,
+            query_timeout: self.query_timeout.unwrap_or(defaults.query_timeout),
+            ..defaults
+        };
+        Some(Highlighter::new(
+            self.registry.clone(),
+            lang,
+            Rope::from_str(text),
+            options,
+            Some(notify),
+        ))
+    }
+
+    /// Spans of a [`Syntax::standalone`] highlighter inside `bytes`; a cut is remembered for
+    /// [`Syntax::frame_drawn`] like one of a document.
+    pub fn spans_of(
+        &self,
+        hl: &Highlighter,
+        bytes: std::ops::Range<usize>,
+    ) -> Vec<(std::ops::Range<usize>, Capture)> {
+        let q = hl.query(bytes);
+        if q.truncated {
+            self.cut.store(true, Ordering::Release);
+        }
+        q.spans
+    }
+
     /// Tab `i` closed: its highlighter is dropped (its worker stops) and later ones move up.
     pub fn remove(&mut self, i: usize) {
         if i < self.docs.len() {

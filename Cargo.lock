@@ -2852,6 +2852,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "crossterm",
+ "ignore",
  "insta",
  "ratatui",
  "ropey",

@@ -26,6 +26,8 @@ pub mod workspace;
 #[cfg(test)]
 mod ai_account_tests;
 #[cfg(test)]
+mod ai_changes_tests;
+#[cfg(test)]
 mod ai_tests;
 #[cfg(test)]
 mod app_tests;

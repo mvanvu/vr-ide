@@ -179,7 +179,7 @@ impl OwnWrites {
     /// one we wrote (content is re-checked for a racy stamp). The first mismatch drops the
     /// entry: a later revert to the same bytes (git checkout, an agent undoing itself) is a
     /// new external change and must be reported.
-    pub(crate) fn is_own(&self, resolved: &Path) -> bool {
+    pub fn is_own(&self, resolved: &Path) -> bool {
         let Some(snap) = self.map().get(resolved).copied() else {
             return false;
         };
@@ -832,7 +832,9 @@ impl Drop for TempGuard {
     }
 }
 
-fn create_temp(dir: &Path, mode: u32) -> io::Result<(PathBuf, File)> {
+/// A new file in `dir`, created exclusively with `mode`, under a name `is_save_temp` knows (the
+/// watcher never reports it): the temp file of an atomic replace next to its target.
+pub fn create_temp(dir: &Path, mode: u32) -> io::Result<(PathBuf, File)> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     for _ in 0..100 {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);

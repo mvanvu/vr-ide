@@ -17,7 +17,7 @@ pub mod watch;
 
 pub use document::{
     BINARY_SNIFF_LEN, DiskStamp, DiskState, DiskVersion, DocError, Document, Encoding, LineEnding,
-    OwnWrites, Saved, is_save_temp,
+    OwnWrites, Saved, create_temp, is_save_temp,
 };
 pub use history::{Clock, EditKind, History, ManualClock, SystemClock};
 pub use ropey;

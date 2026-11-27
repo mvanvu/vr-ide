@@ -154,6 +154,9 @@ fn render_bar(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         return;
     }
     buf.set_style(area, theme.status);
+    if crate::ui::ai_changes::render_status(buf, area, app, theme) {
+        return;
+    }
     if crate::ai::has_focus(app) {
         crate::ui::ai_view::render_status(buf, area, app, theme);
         return;

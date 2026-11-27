@@ -251,7 +251,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let doc = &app.docs[active];
     let rope = doc.buffer.text();
     let tw = doc.buffer.options().tab_width.max(1);
-    let gutter = gutter_width(rope).min(area.width);
+    // The AI diff tab (ui-spec S3): its own gutter (number, sign) and row backgrounds.
+    let decor = crate::ui::ai_changes::decor(&app.ai, app.views[active].title);
+    let gutter = decor
+        .map_or_else(|| gutter_width(rope), crate::ui::ai_changes::diff_gutter)
+        .min(area.width);
     // The blame column (FR-27) sits left of the line numbers when it is on and fits.
     let blame_w = crate::git::blame_width(app, area.width, gutter);
     let text_w = usize::from(area.width - gutter - blame_w);
@@ -310,7 +314,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         let i = matches.partition_point(|&(_, e)| e <= abs);
         matches.get(i).is_some_and(|&(s, _)| s <= abs)
     };
-    let spans = visible_spans(app, active, top, left, rows, text_w);
+    // The diff tab's text is no file of a language: each line takes the colours it has in
+    // the text it is from.
+    let spans = match decor {
+        Some(_) => crate::ui::ai_changes::diff_spans(app, rope, top, rows),
+        None => visible_spans(app, active, top, left, rows, text_w),
+    };
     let marks = doc
         .path
         .as_deref()
@@ -342,7 +351,29 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             // Sanitized when the blame arrived (SEC-15).
             buf.set_stringn(area.x, y, label, usize::from(blame_w), theme.git_blame);
         }
-        buf.set_stringn(gx, y, num, usize::from(gutter), num_style);
+        let diff_line = decor.map(|d| d.get(ln));
+        let (base, row_bg) = diff_line.flatten().map_or((theme.text, None), |l| {
+            crate::ui::ai_changes::line_style(l, theme)
+        });
+        if let Some(bg) = row_bg {
+            buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(bg));
+        }
+        if let Some(l) = diff_line {
+            let (num, sign, sign_style) = crate::ui::ai_changes::gutter_text(l, gutter, theme);
+            let on = |s: Style| row_bg.map_or(s, |bg| s.bg(bg));
+            buf.set_stringn(
+                gx,
+                y,
+                num,
+                usize::from(gutter.saturating_sub(1)),
+                on(theme.gutter),
+            );
+            if gutter > 1 {
+                buf.set_stringn(gx + gutter - 1, y, sign, 1, on(sign_style));
+            }
+        } else {
+            buf.set_stringn(gx, y, num, usize::from(gutter), num_style);
+        }
         if let Some(Some((sym, kind))) = marks.get(row)
             && gutter > 1
         {
@@ -389,9 +420,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             let plain = if sel {
                 theme.selection
             } else if found {
-                theme.text.patch(theme.find_match)
+                base.patch(theme.find_match)
             } else {
-                theme.text
+                base
             };
             while spans.get(k).is_some_and(|(r, _)| r.end <= byte) {
                 k += 1;
@@ -405,7 +436,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             // it; only the background says which one it is.
             let style = match capture {
                 Some(cap) => {
-                    let code = theme.text.patch(theme.syntax(cap));
+                    // On the row's own background (a diff's added / removed lines).
+                    let code = base.patch(theme.syntax(cap));
                     if sel {
                         code.patch(theme.selection)
                     } else if found {

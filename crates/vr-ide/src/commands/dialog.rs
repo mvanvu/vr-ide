@@ -95,6 +95,13 @@ pub enum DialogAction {
     CloseTerminal(Option<u32>),
     /// An AI session's close while its program runs (D7): Close / Cancel; the session's pid.
     CloseAiSession(Option<u32>),
+    /// AI changes: Revert / Cancel, Cancel first. `seen` is the version of the file the user
+    /// was shown; Revert replaces only that one (SEC-12).
+    AiRevert {
+        session: u64,
+        rel: PathBuf,
+        seen: crate::ai::changes::Seen,
+    },
     /// Delete on a named account in the AI picker (D11, SEC-17): Remove / Cancel, Cancel first.
     RemoveAiAccount(String),
     /// Find box, File scope (D279): Replace: One / All / Cancel.
@@ -163,6 +170,9 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
         }
         (DialogAction::CloseAiSession(pid), Outcome::Chosen(0)) => {
             crate::ai::answer_close(app, pid)
+        }
+        (DialogAction::AiRevert { session, rel, seen }, Outcome::Chosen(0)) => {
+            crate::ai::review::answer_revert(app, session, &rel, &seen);
         }
         (DialogAction::RemoveAiAccount(name), Outcome::Chosen(0)) => {
             crate::ai::answer_remove_account(app, &name)

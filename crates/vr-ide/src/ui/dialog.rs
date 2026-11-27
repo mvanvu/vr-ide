@@ -155,6 +155,8 @@ pub struct ConfirmDialog {
     pub message: String,
     pub buttons: Vec<String>,
     pub selected: usize,
+    /// A last line of the message in the secondary colour (what else the answer implies).
+    pub note: Option<String>,
     /// Screen areas of the buttons in the last frame (mouse hit test).
     pub button_areas: Vec<Rect>,
 }
@@ -166,6 +168,7 @@ impl ConfirmDialog {
             message: message.into(),
             buttons: buttons.iter().map(|b| (*b).to_string()).collect(),
             selected: 0,
+            note: None,
             button_areas: Vec::new(),
         }
     }
@@ -239,6 +242,26 @@ pub fn wrap(text: &str, width: u16) -> Vec<String> {
             }
         }
         lines.push(line);
+    }
+    lines
+}
+
+/// [`wrap`] for a dialog's sentences: a last line of a single word takes the word before it
+/// along, so no word is left alone under the text.
+fn wrap_text(text: &str, width: u16) -> Vec<String> {
+    let mut lines = wrap(text, width);
+    let n = lines.len();
+    if n < 2 || lines[n - 1].is_empty() || lines[n - 1].contains(' ') {
+        return lines;
+    }
+    let w = |s: &str| Span::raw(s.to_string()).width();
+    if let Some((head, word)) = lines[n - 2].rsplit_once(' ')
+        && head.contains(' ')
+        && w(word) + 1 + w(&lines[n - 1]) <= usize::from(width)
+    {
+        let (head, moved) = (head.to_string(), format!("{word} {}", lines[n - 1]));
+        lines[n - 2] = head;
+        lines[n - 1] = moved;
     }
     lines
 }
@@ -352,6 +375,9 @@ impl DialogWidget {
                     .split('\n')
                     .map(|l| Span::raw(l.to_string()).width())
                     .max()
+                    .into_iter()
+                    .chain(d.note.iter().map(|n| Span::raw(n.as_str()).width()))
+                    .max()
                     .unwrap_or(0);
                 (d.title.clone(), msg.max(buttons))
             }
@@ -368,8 +394,13 @@ impl DialogWidget {
         let mut rows: Vec<Row> = Vec::new();
         match &*self {
             DialogWidget::Confirm(d) => {
-                for l in wrap(&d.message, inner_w) {
+                for l in wrap_text(&d.message, inner_w) {
                     rows.push(Row::Text(l, ratatui::style::Style::default()));
+                }
+                if let (Some(note), Some(fg)) = (&d.note, theme.note.fg) {
+                    for l in wrap_text(note, inner_w) {
+                        rows.push(Row::Text(l, ratatui::style::Style::default().fg(fg)));
+                    }
                 }
                 rows.push(Row::Text(String::new(), ratatui::style::Style::default()));
                 for r in button_rows(&d.buttons, inner_w) {

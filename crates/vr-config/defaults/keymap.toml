@@ -81,6 +81,12 @@
 "ctrl+f12" = "ai.new"
 "f7" = "ai.next"
 "shift+f7" = "ai.prev"
+# AI changes (D8): f6 opens the list of files changed while the active session ran, at the top
+# of its tab (again, or escape: closes it). f5 keeps the selected change, shift+f5 reverts it
+# (asks first); both act only while that list has the keys or the editor shows a diff tab.
+"f6" = "ai.changes"
+"f5" = "ai.keep"
+"shift+f5" = "ai.revert"
 # The editor gets the keys; the panels stay shown.
 "f3" = "focus.editor"
 
@@ -152,9 +158,11 @@
 # agent's own prompt keys (ctrl+w, ctrl+n, other ctrl letters, f5) reach it. Without the kitty
 # protocol ctrl+` arrives as NUL and does the same, unless terminal_pass_nul = true. Built in,
 # not listed: shift+pageup / shift+pagedown scroll back, ctrl+shift+v pastes; in the session
-# picker up / down / enter / escape.
+# picker up / down / enter / escape; in the changes list (f6) up / down / enter / escape and the
+# global f5 / shift+f5.
 "f1" = "app.palette"
 "f3" = "focus.editor"
+"f6" = "ai.changes"
 "f7" = "ai.next"
 "shift+f7" = "ai.prev"
 "f12" = "ai.toggle"

@@ -232,6 +232,57 @@ impl Watcher {
         }
     }
 
+    /// `watch_dir` for the directories of a tree the caller walks itself (resolved paths, as
+    /// events will name them): one inotify watch each, nothing walked, and the cost of adding
+    /// one does not grow with the number already watched. Returns the ones that could not be
+    /// watched (gone meanwhile, or the inotify watch limit).
+    pub fn watch_dirs(&mut self, dirs: &[PathBuf]) -> Vec<(PathBuf, WatchError)> {
+        let mut failed = Vec::new();
+        for dir in dirs {
+            let covered = {
+                let mut scope = lock(&self.scope);
+                if scope.flat.contains_key(dir) {
+                    continue;
+                }
+                scope.flat.insert(dir.clone(), dir.clone());
+                scope.dir_root(dir).is_some()
+            };
+            if covered || self.active.contains_key(dir) {
+                continue;
+            }
+            match self.debouncer.watch(dir, RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    self.active.insert(dir.clone(), RecursiveMode::NonRecursive);
+                }
+                Err(e) => {
+                    lock(&self.scope).flat.remove(dir);
+                    failed.push((dir.clone(), e.into()));
+                }
+            }
+        }
+        failed
+    }
+
+    /// Ends `watch_dirs` watches (same paths); a directory another watch still needs stays.
+    pub fn unwatch_dirs(&mut self, dirs: &[PathBuf]) {
+        for dir in dirs {
+            let needed = {
+                let mut scope = lock(&self.scope);
+                scope.flat.remove(dir);
+                scope.dir_root(dir).is_some()
+                    || scope
+                        .files
+                        .keys()
+                        .any(|f| f.parent() == Some(dir.as_path()))
+            };
+            if !needed && self.active.get(dir) == Some(&RecursiveMode::NonRecursive) {
+                // Fails when the directory is already gone, which ends the watch anyway.
+                let _ = self.debouncer.unwatch(dir);
+                self.active.remove(dir);
+            }
+        }
+    }
+
     /// Hand this to `Document::set_own_writes` so the document's saves are not reported back.
     pub fn own_writes(&self) -> OwnWrites {
         lock(&self.scope).own.clone()
@@ -856,6 +907,35 @@ mod tests {
         assert_eq!(
             collect(&rx, Duration::from_millis(700)),
             vec![FsEvent::Created(dest)]
+        );
+    }
+
+    /// A tree walked by the caller: every directory is one flat watch, entries of each are
+    /// reported, and a directory taken off again is silent.
+    #[test]
+    fn watch_dirs_reports_entries_of_each_and_unwatch_dirs_ends_it() {
+        let (dir, mut w, rx) = setup();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let (a, b) = (root.join("a"), root.join("a/b"));
+        fs::create_dir_all(&b).unwrap();
+        let gone = root.join("gone");
+        let failed = w.watch_dirs(&[root.clone(), a.clone(), b.clone(), gone.clone()]);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, gone);
+        fs::write(a.join("x"), "1").unwrap();
+        fs::write(b.join("y"), "1").unwrap();
+        let mut got = collect(&rx, Duration::from_millis(700));
+        got.sort_by_key(|e| format!("{e:?}"));
+        assert_eq!(
+            got,
+            vec![FsEvent::Created(b.join("y")), FsEvent::Created(a.join("x"))]
+        );
+        w.unwatch_dirs(std::slice::from_ref(&b));
+        fs::write(b.join("z"), "1").unwrap();
+        fs::write(a.join("w"), "1").unwrap();
+        assert_eq!(
+            collect(&rx, Duration::from_millis(700)),
+            vec![FsEvent::Created(a.join("w"))]
         );
     }
 }

@@ -30,10 +30,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     if area.height == 0 || area.width == 0 || !app.ai.visible {
         return;
     }
-    let grid = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+    let below_bar = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+    // L2-A: the open changes list takes the top of the session's area.
+    let list_rows = if app.ai.picker_active() {
+        0
+    } else {
+        crate::ui::ai_changes::render_list(frame.buffer_mut(), below_bar, app, theme)
+    };
+    app.ai.list_rows = list_rows;
+    let grid = Rect::new(
+        below_bar.x,
+        below_bar.y + list_rows,
+        below_bar.width,
+        below_bar.height - list_rows,
+    );
     ai::fit(app, grid);
     ai::snapshot_active(app);
-    let focused = ai::has_keys(app);
+    let focused = ai::has_keys(app) && !ai::review::list_has_keys(app);
     let bar = tab_bar(app, area.width);
     let buf = frame.buffer_mut();
     render_tab_bar(buf, Rect { height: 1, ..area }, &app.ai, &bar, theme);
@@ -174,6 +187,8 @@ pub struct TabBar {
     pub more: Option<(String, u16)>,
     /// Offset of the '+' (absent while the picker is open).
     pub plus: Option<u16>,
+    /// `±N`, the active session's change count, and its offset (a click opens the list).
+    pub changes: Option<(String, u16)>,
 }
 
 /// A tab's text, its folder (offset, width), its mark's offset and its 'x''s offset.
@@ -245,6 +260,7 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
             }],
             more: None,
             plus: None,
+            changes: None,
         };
     }
     let mut items: Vec<Item> = (0..p.sessions.len())
@@ -286,10 +302,20 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
     };
     let total = |t: &[(usize, TabText)]| t.iter().map(|(_, (s, ..))| width_of(s)).sum::<usize>();
     let all = vec![true; items.len()];
+    // The change count keeps its place only while the labels are whole (fit steps 0 and 1).
+    let badge = changes_badge(app);
+    let badge_w = badge.as_deref().map_or(0, |b| width_of(b) + 1);
+    let mut show_badge = false;
     let mut chosen = None;
     for level in 0..=3u8 {
         let t = texts(level, &all);
-        if total(&t) <= avail {
+        let room = if level < 2 {
+            avail.saturating_sub(badge_w)
+        } else {
+            avail
+        };
+        if total(&t) <= room {
+            show_badge = level < 2;
             chosen = Some((t, None));
             break;
         }
@@ -338,7 +364,22 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
     let plus = (plus_w > 0 && width >= usize::from(x) + plus_w)
         .then(|| (width - plus_w) as u16)
         .filter(|&p| p >= x + more.as_ref().map_or(0, |(m, _)| width_of(m) as u16));
-    TabBar { tabs, more, plus }
+    let changes = badge.filter(|_| show_badge).map(|b| {
+        let end = plus.map_or(width.saturating_sub(1), usize::from);
+        let at = end.saturating_sub(width_of(&b)) as u16;
+        (b, at)
+    });
+    TabBar {
+        tabs,
+        more,
+        plus,
+        changes,
+    }
+}
+
+/// `±N` for the tab bar: the active session's changes, while their list is closed.
+fn changes_badge(app: &App) -> Option<String> {
+    crate::ui::ai_changes::badge(app).filter(|_| app.ai.list.is_none())
 }
 
 fn render_tab_bar(buf: &mut Buffer, row: Rect, p: &AiPanel, bar: &TabBar, theme: &Theme) {
@@ -382,6 +423,13 @@ fn render_tab_bar(buf: &mut Buffer, row: Rect, p: &AiPanel, bar: &TabBar, theme:
         let x = row.x + at;
         if x < right {
             buf.set_stringn(x, row.y, more, usize::from(right - x), theme.dim);
+        }
+    }
+    if let Some((text, at)) = &bar.changes {
+        let x = row.x + at;
+        if x < right {
+            let style = theme.tab_bar.patch(theme.git_modified);
+            buf.set_stringn(x, row.y, text, usize::from(right - x), style);
         }
     }
     if let Some(at) = bar.plus {
@@ -621,6 +669,10 @@ pub fn render_status(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         .active_session()
         .is_some_and(|s| ai::exit_code(s).is_some());
     let pos = (!p.sessions.is_empty()).then(|| format!("{}/{}", p.active + 1, p.tab_count()));
+    // `±N f6 · ` leads the right part while the session has changes.
+    let changes = crate::ui::ai_changes::badge(app)
+        .map(|b| format!("{b} {} · ", app.key_hint("ai.changes")))
+        .unwrap_or_default();
     let tail = |words: bool| {
         let action = if exited {
             if words { "enter restart" } else { "enter" }.to_string()
@@ -630,6 +682,7 @@ pub fn render_status(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
             hide.clone()
         };
         match &pos {
+            Some(n) if words => format!(" {changes}{n} · {action} "),
             Some(n) => format!(" {n} · {action} "),
             None => format!(" {action} "),
         }
