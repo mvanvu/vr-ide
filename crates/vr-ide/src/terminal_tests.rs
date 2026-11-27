@@ -629,6 +629,100 @@ fn wheel_scrolled_view_holds_while_output_arrives() {
     assert!(tab(&app).screen_text().contains("tail line"));
 }
 
+/// Opens a terminal with `scrollback` lines of history, runs [`fifo_program`] in it and scrolls
+/// one page back with shift+pageup. Returns the FIFO.
+fn scrolled_fifo_app(app: &mut App, dir: &Path, scrollback: usize) -> PathBuf {
+    app.keyboard_enhanced = true;
+    app.terminal.scrollback = scrollback;
+    draw(app, 80, 24);
+    ctrl_backtick(app);
+    draw(app, 80, 24);
+    let fifo = fifo_program(app, dir, 300);
+    key(app, KeyCode::PageUp, KeyModifiers::SHIFT);
+    crate::commands::terminal::refresh(app);
+    draw(app, 80, 24);
+    assert!(tab(app).scroll > 0);
+    fifo
+}
+
+fn left(kind: fn(MouseButton) -> MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind: kind(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+/// FR-18 QP1: a selection dragged in a scrolled-back view while a program streams stays on its
+/// lines and copies them; it stays through later output, and a paste (back to the bottom)
+/// drops it.
+#[test]
+fn selection_in_a_scrolled_view_survives_streaming_output() {
+    let (d, mut app, clip) = term_app();
+    let fifo = scrolled_fifo_app(&mut app, d.path(), 10_000);
+    let held = tab(&app).grid.clone();
+    // Grid row 0 starts below the panel's tab bar.
+    let (x, y) = (app.layout.terminal.x, app.layout.terminal.y + 1);
+    let want = crate::commands::terminal::selected_text(
+        &held,
+        crate::commands::terminal::Selection {
+            anchor: (2, 0),
+            head: (4, 4),
+        },
+    );
+    assert!(!want.is_empty());
+
+    app.handle_mouse(left(MouseEventKind::Down, x, y + 2));
+    emit(&app, &fifo, &ink_frames(10), 10);
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    app.handle_mouse(left(MouseEventKind::Drag, x + 4, y + 4));
+    emit(&app, &fifo, &ink_frames(10), 10);
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    app.handle_mouse(left(MouseEventKind::Up, x + 4, y + 4));
+    assert_eq!(clip.contents().as_deref(), Some(want.as_str()));
+
+    emit(&app, &fifo, &ink_frames(10), 10);
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    let sel = app
+        .terminal
+        .selection
+        .expect("selection kept through output");
+    assert_eq!(
+        crate::commands::terminal::selected_text(&tab(&app).grid, sel),
+        want
+    );
+
+    crate::commands::terminal::paste(&mut app, "z");
+    assert_eq!(tab(&app).scroll, 0);
+    assert!(app.terminal.selection.is_none());
+}
+
+/// FR-18 QP1: at the scrollback cap the oldest lines drop out under the view, so a selection
+/// there is dropped instead of pointing at other text.
+#[test]
+fn selection_is_dropped_when_its_lines_leave_the_scrollback() {
+    let (d, mut app, _clip) = term_app();
+    let fifo = scrolled_fifo_app(&mut app, d.path(), 400);
+    let (x, y) = (app.layout.terminal.x, app.layout.terminal.y + 1);
+    app.handle_mouse(left(MouseEventKind::Down, x, y + 2));
+    app.handle_mouse(left(MouseEventKind::Up, x + 4, y + 4));
+    assert!(app.terminal.selection.is_some());
+    let flood: String = (0..600).map(|i| format!("flood {i}\n")).collect();
+    emit(&app, &fifo, flood.as_bytes(), 0);
+    let deadline = Instant::now() + WAIT;
+    while tab(&app).grid_now().scroll_offset < 400 {
+        assert!(Instant::now() < deadline, "the view never reached the cap");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    assert!(app.terminal.selection.is_none());
+}
+
 // ---- tabs, exited state ----------------------------------------------------------------------
 
 /// D280 / D291: the tab bar's '+' opens a terminal, each tab's 'x' closes that one (its shell

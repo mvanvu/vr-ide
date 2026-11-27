@@ -163,6 +163,22 @@ impl TermTab {
         }
     }
 
+    /// Takes a fresh snapshot; true when the view was scrolled back, in step with the last
+    /// snapshot, and still shows the same lines in the same rows, so a selection on it still
+    /// covers its text. Below the top of the history the emulator moves the offset by exactly
+    /// the lines pushed, so nothing slides; at the top the scrollback cap may have dropped lines
+    /// under the view, which only a changed screen tells.
+    pub fn refresh_holds_view(&mut self) -> bool {
+        let old = self.grid.clone();
+        let in_step = old.scroll_offset > 0 && old.scroll_offset == self.scroll;
+        self.refresh();
+        let g = &self.grid;
+        in_step
+            && g.scroll_offset >= old.scroll_offset
+            && (g.rows, g.cols) == (old.rows, old.cols)
+            && (g.scroll_offset < g.scrollback_len || g.cells == old.cells)
+    }
+
     /// Moves the view `lines` up into the history (negative: down), clamped. A real
     /// terminal keeps the view on its lines while output arrives (AC-F2).
     pub fn scroll_by(&mut self, lines: isize) {
@@ -791,7 +807,9 @@ pub fn refresh(app: &mut App) -> bool {
         if !tab.output.swap(false, Ordering::AcqRel) {
             continue;
         }
-        if i == p.active {
+        // A selection in a scrolled-back view stays while the view keeps its lines (AC-F2);
+        // following the output, the text moves under it, so it is dropped.
+        if i == p.active && !(p.visible && p.selection.is_some() && tab.refresh_holds_view()) {
             p.selection = None;
         }
         // The active tab is snapshot by the next frame; a hidden panel draws nothing, and not
@@ -1003,6 +1021,8 @@ pub fn paste(app: &mut App, text: &str) {
     }
     tab.scroll_to_bottom();
     let bytes = encode_paste(text, tab.grid.modes);
+    // The view returns to the bottom: a selection made on a scrolled view no longer applies.
+    app.terminal.selection = None;
     send(app, &bytes);
 }
 
