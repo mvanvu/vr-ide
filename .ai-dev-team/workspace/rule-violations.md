@@ -2,3 +2,4 @@
 - T3 (15:00): red-first partial (new tests written with code).
 - T2 (15:45): notes without ## Rule compliance table passed the leader's DONE gate (leader miss).
 - T6 (16:12): red-first not followed for ai/changes.rs; COST-8 incident (bad perl pattern broke 5 files, fixed).
+- guard run as written: 4 developers this session (T11, T6 QP, FR-4, FR-1) reported a per-file rustfmt or crate-only clippy instead of the profile guard — every later developer brief: 'BASE-25 = the profile guard exactly as written (fmt --all --check + clippy --workspace)'.

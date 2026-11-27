@@ -154,8 +154,16 @@ of L2 changes none either (it trades the explorer for a wider, all-sessions list
     512 MiB total reached): same diff-tab treatment with the header `too large, no earlier version kept`
     / `limit reached, no earlier version kept`; Keep only.
 - Incomplete list (SEC-13): after a watcher error or rescan, a banner under the header, orange:
-  `! List may be incomplete (watcher` / `rescan at 14:41) · enter hides` — it is the list's first row,
-  `enter` on it dismisses it (until the next error); it never hides by itself.
+  `! Incomplete: watcher rescan` / `at 14:41 · enter hides` (D22) — it is the list's first row,
+  `enter` on it dismisses it (until the next error); it never hides by itself. Copy per cause, all
+  `! Incomplete: <cause> at HH:MM · enter hides` with cause `watcher error`, `watcher rescan`,
+  `watch limit`, `file limit`, `too many files`; without a time: `! Incomplete: scan stopped early ·
+  enter hides` (the program exited before the scan was everywhere) and `! Incomplete: files deleted
+  during scan · enter hides` (a folder changed, or went away, before the scan reached it). While the
+  scan runs: `! List may be incomplete (still scanning the folder)`, no hint (it ends with the scan).
+  Two lines at most at every size: the first leaves one cell free on both sides, the second starts
+  two cells further in and also leaves the last cell free; `at HH:MM` and `enter hides` are never
+  broken apart.
 - L2-B list (alternative): the explorer column switches to `AI CHANGES` (all sessions, grouped with
   `▾ <session> <folder> · N`); `f6` switches back to the explorer.
 - Keys in the list: `↑`/`↓`, `enter` opens the diff tab (list stays), `f5` keep, `shift+f5` revert.
@@ -168,7 +176,7 @@ of L2 changes none either (it trades the explorer for a wider, all-sessions list
   `i/n · f5 keep · shift+f5 revert`. Find (`ctrl+f`) works in it.
 - Keep: no dialog; the row leaves the list, the diff tab closes, notice `Kept session.rs` (info).
 - Revert: dialog (`ai-revert-confirm-120x40`) `Revert session.rs?` / `Writes back session.rs as it was
-  before claude changed it (14:32). Today's text, +12 -3, is lost.` / `Edits by other programs since 14:32 count
+  before claude changed it (14:32). Today's text, +12 -3, goes to the trash (D18).` / `Edits by other programs since 14:32 count
   as claude's.` (`note`, SEC-12) / `[Revert] [Cancel]`, Cancel default. Created file
   (`ai-revert-created-80x24`): `claude created this file. Revert moves it to the trash (88 lines).` /
   `Other programs' edits there count as claude's.` Deleted file: `Restores old-session.md (40 lines) that claude deleted.`
