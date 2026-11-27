@@ -105,7 +105,8 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
 - It needs an interactive terminal; it cannot run with its input or output redirected.
 
 Press `F1` to open the command palette, which lists every command with its
-key. Press `ctrl+q` to quit. If any file has unsaved changes, vr-ide asks first (see
+key. A row whose description is cut shows it in full (up to 3 lines) under the list.
+Press `ctrl+q` to quit. If any file has unsaved changes, vr-ide asks first (see
 [Quit guard](#quit-guard)).
 
 ### Workspace (several folders)
