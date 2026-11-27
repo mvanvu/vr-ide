@@ -3,7 +3,7 @@
 //! connects anywhere: `ssh -G` only prints a configuration, and the probe tests run shims.
 
 use std::ffi::OsString;
-use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -20,8 +20,7 @@ fn strs(v: &[OsString]) -> Vec<String> {
 /// An executable script in `dir`.
 fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     let p = dir.join(name);
-    std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::ssh_tests::write_executable(&p, &format!("#!/bin/sh\n{body}\n"));
     p
 }
 

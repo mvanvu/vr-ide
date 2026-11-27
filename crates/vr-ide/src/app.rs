@@ -1102,6 +1102,18 @@ impl App {
             }
             self.dirty = true;
         }
+        // SSH full screen draws no notice row (D325). The row shows the front notice, so a timed
+        // notice at place k keeps k+1 whole TTLs: once the IDE layout is back, each one is in
+        // front for at least a TTL before it goes.
+        if commands::terminal::full_screen(self) {
+            let mut floor = now;
+            for n in &mut self.notices {
+                floor += INFO_NOTICE_TTL;
+                if let Some(t) = &mut n.expires {
+                    *t = (*t).max(floor);
+                }
+            }
+        }
         let before = self.notices.len();
         self.notices.retain(|n| n.expires.is_none_or(|t| t > now));
         if self.notices.len() != before {

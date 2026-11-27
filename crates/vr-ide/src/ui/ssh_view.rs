@@ -68,17 +68,40 @@ fn render_status(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     let hint = format!(" {} editor ", app.key_hint("terminal.toggle"));
     let hint_w = Span::raw(hint.as_str()).width();
     let hint_w = if hint_w + 2 <= room { hint_w } else { 0 };
+    // Notices wait for the IDE layout (D325); the count says there is something to read.
+    let count = match app.notices.len() {
+        0 => String::new(),
+        1 => " 1 notice ".to_string(),
+        n => format!(" {n} notices "),
+    };
+    let count_w = Span::raw(count.as_str()).width();
+    // The way back outranks the count: no count without the hint.
+    let count_w = if hint_w > 0 && hint_w + count_w + 2 <= room {
+        count_w
+    } else {
+        0
+    };
+    let right_w = hint_w + count_w;
     let name = format!(
         " {}",
-        super::status_bar::shorten_left(&target, (room - hint_w).saturating_sub(1))
+        super::status_bar::shorten_left(&target, (room - right_w).saturating_sub(1))
     );
     buf.set_stringn(
         area.x + used as u16,
         area.y,
         &name,
-        room - hint_w,
+        room - right_w,
         theme.status,
     );
+    if count_w > 0 {
+        buf.set_stringn(
+            area.x + (width - right_w) as u16,
+            area.y,
+            &count,
+            count_w,
+            theme.mode_term,
+        );
+    }
     if hint_w > 0 {
         buf.set_stringn(
             area.x + (width - hint_w) as u16,

@@ -7,7 +7,6 @@
 //! "login", runs the `LocalCommand` it was given through a shell as ssh does, and then is a
 //! remote shell with the prompt `remote$ `. `mode` picks failures.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -91,13 +90,31 @@ impl Fx {
     }
 }
 
+/// Writes an executable script that can be started at once. Written in this process, its
+/// write descriptor is inherited by every child another test thread forks until that child
+/// execs, and starting the script in that window fails with ETXTBSY. `install` copies it from a
+/// plain file in its own process instead, so this process never holds the script open for
+/// writing.
+pub(crate) fn write_executable(path: &Path, contents: &str) {
+    let src = path.with_extension("src");
+    std::fs::write(&src, contents).unwrap();
+    let st = std::process::Command::new("install")
+        .arg("-m")
+        .arg("0755")
+        .arg(&src)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(st.success(), "install {}", path.display());
+    std::fs::remove_file(&src).unwrap();
+}
+
 /// An app whose `ssh` is the shim, with a home (and its ssh config `config`) and a state dir
 /// in a temp folder, drawn once at 80x24.
 fn fx_with(mode: &str, config: &str) -> Fx {
     let dir = tempfile::tempdir().unwrap();
     let shim = dir.path().join("ssh");
-    std::fs::write(&shim, SHIM).unwrap();
-    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(&shim, SHIM);
     std::fs::write(dir.path().join("mode"), mode).unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".ssh")).unwrap();
@@ -922,6 +939,13 @@ fn ac_s6_sec_s16_sixteen_sessions_at_most() {
     );
     key(&mut f.app, KeyCode::Esc);
     assert_eq!(f.app.terminal.tabs.len(), MAX_SESSIONS);
+    // A running shim has not necessarily logged its start yet: wait for the log, then make
+    // sure the refused one never adds a line.
+    let log = f.path("log");
+    wait(&mut f.app, "every session logged", move |_, _| {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        text.lines().filter(|l| l.starts_with("S ")).count() >= MAX_SESSIONS
+    });
     assert_eq!(f.sessions().len(), MAX_SESSIONS);
     // One tab each, labelled by its target.
     assert_eq!(f.app.terminal.tabs[15].title(), "ssh host15");
@@ -1052,4 +1076,228 @@ fn full_screen_render_snapshot() {
         std::thread::sleep(Duration::from_millis(10));
     };
     insta::assert_snapshot!("ssh_full_screen_60x8", t.backend());
+}
+
+// ---- FR-29: full screen and the rest of the IDE (F4-1..F4-4) ------------------------------------
+
+fn mouse(app: &mut App, kind: crossterm::event::MouseEventKind, column: u16, row: u16) {
+    app.handle_mouse(crossterm::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+/// D325: a notice raised in full screen is counted on the status row, does not age while it
+/// cannot be seen, and is drawn once the IDE layout is back for a whole TTL.
+#[test]
+fn f4_1_a_notice_raised_in_full_screen_waits_for_the_ide_layout() {
+    let mut f = fx("");
+    login(&mut f, "web1");
+    f.app.notices.clear();
+    f.app.info("held-note");
+    let screen = pump(&mut f.app);
+    let last = screen.lines().last().unwrap().to_string();
+    assert!(last.contains("1 notice"), "{last}");
+    assert!(!screen.contains("held-note"));
+    let t0 = Instant::now();
+    f.app.tick(t0 + Duration::from_secs(30));
+    assert!(notices(&f.app).contains("held-note"), "expired unseen");
+    ctrl_backtick(&mut f.app);
+    f.app
+        .tick(t0 + Duration::from_secs(30) + Duration::from_millis(10));
+    let screen = pump(&mut f.app);
+    assert!(screen.contains("held-note"), "{screen}");
+    f.app.tick(t0 + Duration::from_secs(34));
+    assert!(notices(&f.app).contains("held-note"));
+    f.app.tick(t0 + Duration::from_secs(36));
+    assert!(!notices(&f.app).contains("held-note"));
+}
+
+/// FR-19 drag on a logged-in SSH tab: the tab moves, full screen does not start and the remote
+/// program (mouse reporting on) gets no byte of the drag; a click still gives full screen.
+#[test]
+fn f4_2_dragging_a_logged_in_ssh_tab_moves_it_and_sends_nothing() {
+    use crossterm::event::{MouseButton as B, MouseEventKind as K};
+    let mut f = fx("");
+    // Press/release and button-motion reporting, SGR encoding.
+    f.set("post", b"\x1b[?1002h\x1b[?1006h");
+    login(&mut f, "web1");
+    wait(&mut f.app, "the modes", |a, _| {
+        a.terminal.tabs[0].grid.modes.mouse_reporting
+    });
+    typ(
+        &mut f.app,
+        "stty raw -echo; echo rea-dy; dd bs=1 count=1 of=keys 2>/dev/null; stty sane\n",
+    );
+    wait(&mut f.app, "the reader", |_, s| s.contains("rea-dy"));
+    f.set("post", b"");
+    connect(&mut f.app, "web2");
+    wait(&mut f.app, "web2 full screen", |a, _| {
+        a.terminal.tabs.len() == 2 && a.terminal.active == 1 && term::full_screen(a)
+    });
+    ctrl_backtick(&mut f.app);
+    ctrl_backtick(&mut f.app);
+    pump(&mut f.app);
+    assert!(f.app.terminal.visible && !term::full_screen(&f.app));
+    let area = f.app.layout.terminal;
+    let bar = crate::ui::terminal_view::tab_bar(&f.app, area.width);
+    let from = area.x + bar.tabs[0].x + 2;
+    let to = area.x + area.width - 2;
+    mouse(&mut f.app, K::Down(B::Left), from, area.y);
+    pump(&mut f.app);
+    assert!(!term::full_screen(&f.app), "the press alone keeps the bar");
+    for x in from + 1..=to {
+        mouse(&mut f.app, K::Drag(B::Left), x, area.y);
+        pump(&mut f.app);
+    }
+    mouse(&mut f.app, K::Up(B::Left), to, area.y);
+    let screen = pump(&mut f.app);
+    assert!(!term::full_screen(&f.app), "{screen}");
+    assert_eq!(f.app.terminal.active, 1);
+    assert_eq!(f.app.terminal.tabs[1].title(), "ssh web1");
+    // The next byte web1's reader gets is the one typed now, not a mouse report.
+    typ(&mut f.app, "q");
+    let keys = f.path("home/keys");
+    let deadline = Instant::now() + WAIT;
+    while std::fs::metadata(&keys).map_or(0, |m| m.len()) < 1 {
+        assert!(Instant::now() < deadline, "the key did not arrive");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(std::fs::read(&keys).unwrap(), b"q");
+    // A click (press and release in place) on the tab gives it the window.
+    let bar = crate::ui::terminal_view::tab_bar(&f.app, area.width);
+    let at = area.x + bar.tabs.iter().find(|t| t.index == 1).unwrap().x + 2;
+    mouse(&mut f.app, K::Down(B::Left), at, area.y);
+    assert!(!term::full_screen(&f.app));
+    mouse(&mut f.app, K::Up(B::Left), at, area.y);
+    assert!(term::full_screen(&f.app));
+}
+
+/// F1 > Focus Editor leaves full screen to the editor, as ctrl+` does.
+#[test]
+fn f4_3_focus_editor_from_full_screen_gives_the_editor_back() {
+    let mut f = fx("");
+    login(&mut f, "web1");
+    f.app.run_command("focus.editor", CmdArgs::None);
+    let screen = pump(&mut f.app);
+    assert!(!term::full_screen(&f.app), "{screen}");
+    assert_eq!(f.app.focus, Focus::Editor);
+    assert!(f.app.layout.editor.height > 0 && !screen.contains(" SSH  web1"));
+    assert!(f.app.terminal.tabs[0].running());
+}
+
+/// ctrl+f8 / ctrl+f9 / ctrl+f7 in full screen leave the panel's size and place alone and say so
+/// (the notice waits for the IDE layout).
+#[test]
+fn f4_4_panel_size_and_place_keys_do_nothing_in_full_screen() {
+    let mut f = fx("");
+    login(&mut f, "web1");
+    f.app.notices.clear();
+    let (h, w, pos) = (
+        f.app.terminal.height_percent,
+        f.app.terminal.width_percent,
+        f.app.terminal.position,
+    );
+    for cmd in [
+        "terminal.grow",
+        "terminal.shrink",
+        "terminal.toggle_position",
+    ] {
+        f.app.run_command(cmd, CmdArgs::None);
+    }
+    assert_eq!(f.app.terminal.height_percent, h);
+    assert_eq!(f.app.terminal.width_percent, w);
+    assert_eq!(f.app.terminal.position, pos);
+    assert!(term::full_screen(&f.app));
+    // Three presses, one notice: copies would wait in the queue for the IDE layout.
+    let held = f
+        .app
+        .notices
+        .iter()
+        .filter(|n| n.text.contains("IDE layout"))
+        .count();
+    assert_eq!(held, 1, "{}", notices(&f.app));
+}
+
+/// Several notices wait in full screen: once the IDE layout is back each one is in front (the
+/// row draws the front one) for a whole TTL, not all gone after the first one's.
+#[test]
+fn f4_1_each_waiting_notice_gets_its_own_ttl_after_full_screen() {
+    let mut f = fx("");
+    login(&mut f, "web1");
+    f.app.notices.clear();
+    f.app.info("first-note");
+    f.app.info("second-note");
+    let screen = pump(&mut f.app);
+    assert!(screen.lines().last().unwrap().contains("2 notices"));
+    let t0 = Instant::now();
+    f.app.tick(t0);
+    f.app.tick(t0 + Duration::from_secs(30));
+    ctrl_backtick(&mut f.app);
+    f.app
+        .tick(t0 + Duration::from_secs(30) + Duration::from_millis(10));
+    assert!(pump(&mut f.app).contains("first-note"));
+    f.app.tick(t0 + Duration::from_secs(36));
+    let screen = pump(&mut f.app);
+    assert!(!notices(&f.app).contains("first-note"));
+    assert!(screen.contains("second-note"), "{screen}");
+    f.app.tick(t0 + Duration::from_secs(41));
+    assert!(f.app.notices.is_empty(), "{}", notices(&f.app));
+}
+
+/// The key back outranks the notice count on a narrow status row (AC-S3).
+#[test]
+fn f4_1_the_notice_count_never_takes_the_key_back_s_place() {
+    let mut f = fx("");
+    login(&mut f, "web1");
+    f.app.info("a-note");
+    for w in 17..=21 {
+        let row = frame_text(&draw(&mut f.app, w, 8))
+            .lines()
+            .last()
+            .unwrap()
+            .to_string();
+        assert!(!row.contains("notice"), "{w}: {row:?}");
+    }
+    let row = frame_text(&draw(&mut f.app, 40, 8))
+        .lines()
+        .last()
+        .unwrap()
+        .to_string();
+    assert!(
+        row.contains("1 notice") && row.contains("editor"),
+        "{row:?}"
+    );
+}
+
+/// A press on a logged-in SSH tab that moves off its cell before the release is a drag, not a
+/// click, even in the same column: no full screen.
+#[test]
+fn f4_2_a_press_that_moved_off_its_cell_is_no_click() {
+    use crossterm::event::{MouseButton as B, MouseEventKind as K};
+    let mut f = fx("");
+    login(&mut f, "web1");
+    ctrl_backtick(&mut f.app);
+    ctrl_backtick(&mut f.app);
+    pump(&mut f.app);
+    let area = f.app.layout.terminal;
+    let x = area.x + 4;
+    mouse(&mut f.app, K::Down(B::Left), x, area.y);
+    mouse(&mut f.app, K::Drag(B::Left), x, area.y + 1);
+    mouse(&mut f.app, K::Drag(B::Left), x, area.y + 3);
+    mouse(&mut f.app, K::Up(B::Left), x, area.y + 3);
+    pump(&mut f.app);
+    assert!(!term::full_screen(&f.app));
+    // Back on the press cell before the release still counts as moved.
+    mouse(&mut f.app, K::Down(B::Left), x, area.y);
+    mouse(&mut f.app, K::Drag(B::Left), x, area.y + 1);
+    mouse(&mut f.app, K::Drag(B::Left), x, area.y);
+    mouse(&mut f.app, K::Up(B::Left), x, area.y);
+    assert!(!term::full_screen(&f.app));
+    // A plain click still gives the window.
+    mouse(&mut f.app, K::Down(B::Left), x, area.y);
+    mouse(&mut f.app, K::Up(B::Left), x, area.y);
+    assert!(term::full_screen(&f.app));
 }
