@@ -2,6 +2,7 @@
 //! key / paste / mouse encodings. The UI only sees this crate's own types.
 
 mod input;
+mod marker;
 mod snapshot;
 mod terminal;
 mod types;
@@ -12,6 +13,6 @@ pub use input::{
 };
 pub use terminal::{KILL_GRACE, MAX_PENDING_INPUT, Terminal};
 pub use types::{
-    Cell, CellFlags, Color, Cursor, CursorShape, Grid, Modes, Notify, SpawnOptions, TermError,
-    TermStatus,
+    Cell, CellFlags, Color, Cursor, CursorShape, Grid, Modes, Notify, SpawnExtras, SpawnOptions,
+    TermError, TermStatus,
 };

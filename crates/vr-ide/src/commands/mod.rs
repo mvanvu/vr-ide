@@ -12,6 +12,7 @@ pub mod palette;
 pub mod registry;
 pub mod search;
 pub mod slash;
+pub mod ssh;
 pub mod tab;
 pub mod terminal;
 pub mod workspace;

@@ -31,6 +31,12 @@ terminal_width_percent = 40
 # ctrl+@ in shells and editors); a click on the editor then leaves the terminal. With the kitty
 # protocol ctrl+` and ctrl+space always differ.
 terminal_pass_nul = false
+# SSH sessions (the ssh entry of the command window, /ssh): true gives a session the whole window
+# once the login succeeded. vr-ide detects the login by starting ssh with
+# "-o PermitLocalCommand=yes -o LocalCommand=<prints a one-time marker>"; it does so only when your
+# ssh config sets no LocalCommand of its own. false: ssh is started without these two options and
+# every session stays a tab of the terminal panel.
+ssh_fullscreen = true
 # Git (M7): a dim "author, 3 days ago • subject" after the cursor line once the cursor rests
 # (uncommitted lines: "You, uncommitted").
 git_inline_blame = false

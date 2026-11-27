@@ -62,6 +62,8 @@ pub struct Palette {
     /// Slash commands: the folder path completion read last (read again only for another
     /// folder; dropped with the window).
     pub dir_cache: Option<super::slash::DirListing>,
+    /// The `ssh` list: the aliases of the ssh config, read once per window (FR-25).
+    pub ssh_hosts: Option<Vec<String>>,
 }
 
 /// Commands the palette offers: every registered one except itself and the placeholders of
@@ -91,6 +93,7 @@ pub fn open(app: &mut App) {
         prev_focus,
         error: None,
         dir_cache: None,
+        ssh_hosts: None,
     });
     app.modal_since = Some(app.now());
     app.focus = Focus::Palette;
@@ -248,6 +251,10 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             }
             if p.input.text() != before {
                 p.error = None;
+                // `ssh` and a space is the ssh list (AC-S1): the same window as `/ssh `.
+                if p.mode == PaletteMode::Commands && p.input.text() == "ssh " {
+                    p.input.set(super::ssh::SLASH);
+                }
                 refilter(app);
             }
         }

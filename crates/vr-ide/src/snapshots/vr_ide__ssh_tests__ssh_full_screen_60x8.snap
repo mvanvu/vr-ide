@@ -1,0 +1,12 @@
+---
+source: crates/vr-ide/src/ssh_tests.rs
+expression: t.backend()
+---
+"green plain                                                 "
+"remote$                                                     "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+" SSH  bob@web1:2222                           ctrl+` editor "
