@@ -107,6 +107,7 @@ mod tests {
     use super::*;
     use crate::app_tests::{app_with_file, test_app};
 
+    mod palette_detail;
     mod preview;
     mod welcome_tests;
 

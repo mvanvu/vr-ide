@@ -7,7 +7,7 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, Clear, Widget};
 
 use crate::app::App;
-use crate::commands::palette::PaletteMode;
+use crate::commands::palette::{PaletteItem, PaletteMode};
 use crate::theme::Theme;
 
 /// Widest the palette gets.
@@ -18,6 +18,8 @@ const MAX_ROWS: u16 = 12;
 const MAX_ERROR_ROWS: u16 = 3;
 /// Cells of a slash command's description kept beside a title too wide for the row.
 const SLASH_DESC_MIN: usize = 10;
+/// Most rows the selected row's description takes under the list.
+const MAX_DETAIL_ROWS: usize = 3;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let Some(p) = &mut app.palette else {
@@ -42,10 +44,42 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         l
     });
     let err_rows = err_lines.len() as u16;
+    // The selected row's full description under the list, behind a thin separator, when
+    // its row cannot show it all (AC-P1). It never costs the input or the selected row.
+    let text_w = w.saturating_sub(4);
+    // The rows are reserved while any listed row is cut, so arrowing never resizes the
+    // box (D323); the text is the selected row's, blank while that row fits.
+    let row_w = usize::from(w.saturating_sub(4));
+    // Lines the most demanding cut row needs (at most [`MAX_DETAIL_ROWS`]); 0 = none cut.
+    let need = p
+        .items
+        .iter()
+        .filter(|it| RowFit::of(it, row_w).is_cut(it, row_w))
+        .map(|it| {
+            crate::ui::dialog::wrap(&row_text(it), text_w)
+                .len()
+                .min(MAX_DETAIL_ROWS)
+        })
+        .max()
+        .unwrap_or(0);
+    let mut detail_lines: Vec<String> = match p.items.get(p.selected) {
+        Some(it) if RowFit::of(it, row_w).is_cut(it, row_w) => {
+            wrap_cut(&row_text(it), text_w, MAX_DETAIL_ROWS)
+        }
+        _ => Vec::new(),
+    };
+    let spare = room.saturating_sub(3 + err_rows + 1);
+    let reserved = need.min(usize::from(spare.saturating_sub(1)));
+    detail_lines.truncate(reserved);
+    let detail_rows = if reserved == 0 {
+        0
+    } else {
+        reserved as u16 + 1
+    };
     let list_rows = (p.items.len().max(1) as u16)
         .min(MAX_ROWS)
-        .min(room.saturating_sub(3 + err_rows).max(1));
-    let h = (list_rows + 3 + err_rows).min(room);
+        .min(room.saturating_sub(3 + err_rows + detail_rows).max(1));
+    let h = (list_rows + 3 + err_rows + detail_rows).min(room);
     let rect = Rect::new(area.x + (area.width - w) / 2, area.y + 1, w, h);
     let buf = frame.buffer_mut();
     Clear.render(rect, buf);
@@ -121,13 +155,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             theme.popup
         };
         buf.set_style(Rect::new(x0, y, inner_w, 1), base);
-        let title_w = Span::raw(item.title.as_str()).width();
-        let keys_w = Span::raw(item.keys.as_str()).width();
-        let name_w = Span::raw(item.detail.as_str()).width();
         // Title first, then the keys (AC-6), then the command name when there is room.
-        let show_keys = !item.keys.is_empty() && title_w + 2 + keys_w <= width;
-        let used = title_w + if show_keys { keys_w + 2 } else { 0 };
-        let show_name = used + 2 + name_w <= width;
+        let RowFit {
+            keys_w,
+            name_w,
+            show_keys,
+            show_name,
+            ..
+        } = RowFit::of(item, width);
         let end = x0 + 1 + width as u16;
         // A slash row too wide ends its title in "…" and keeps a short tail of the
         // description when there is room for both (D270).
@@ -169,7 +204,88 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             buf.set_string(kx, y, &item.keys, base.patch(theme.dim));
         }
     }
+    if detail_rows > 0 {
+        let dim = theme.popup.patch(theme.dim);
+        let sy = list.y + list_rows;
+        buf.set_stringn(x0 + 1, sy, "─".repeat(width), width, dim);
+        for (i, l) in detail_lines.iter().enumerate() {
+            buf.set_stringn(x0 + 1, sy + 1 + i as u16, l, width, dim);
+        }
+    }
     frame.set_cursor_position(cursor);
+}
+
+/// How a row's parts share the row's width; the render and the cut check read the same.
+struct RowFit {
+    title_w: usize,
+    keys_w: usize,
+    name_w: usize,
+    show_keys: bool,
+    show_name: bool,
+}
+
+impl RowFit {
+    fn of(item: &PaletteItem, width: usize) -> Self {
+        let title_w = Span::raw(item.title.as_str()).width();
+        let keys_w = Span::raw(item.keys.as_str()).width();
+        let name_w = Span::raw(item.detail.as_str()).width();
+        let show_keys = !item.keys.is_empty() && title_w + 2 + keys_w <= width;
+        let used = title_w + if show_keys { keys_w + 2 } else { 0 };
+        Self {
+            title_w,
+            keys_w,
+            name_w,
+            show_keys,
+            show_name: used + 2 + name_w <= width,
+        }
+    }
+
+    /// Whether any part of the row is cut. A command's id is secondary, not a description.
+    fn is_cut(&self, item: &PaletteItem, width: usize) -> bool {
+        let has_detail = !item.detail.is_empty() && item.name.is_empty();
+        self.title_w > width
+            || (!item.keys.is_empty() && !self.show_keys)
+            || (has_detail && !self.show_name)
+    }
+}
+
+/// The whole text of a row: title, description (not a command id) and keys.
+fn row_text(item: &PaletteItem) -> String {
+    let detail = if item.name.is_empty() {
+        item.detail.as_str()
+    } else {
+        ""
+    };
+    [item.title.as_str(), detail, item.keys.as_str()]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+/// `text` wrapped on word boundaries to `width` cells, at most `rows` lines; a longer text
+/// ends its last line in "…".
+fn wrap_cut(text: &str, width: u16, rows: usize) -> Vec<String> {
+    let mut lines = crate::ui::dialog::wrap(text, width);
+    if lines.len() > rows {
+        lines.truncate(rows);
+        if let Some(last) = lines.last_mut() {
+            let mut cut = String::new();
+            let mut used = 0;
+            for ch in last.chars() {
+                let cw = Span::raw(ch.to_string()).width();
+                if used + cw + 1 > usize::from(width) {
+                    break;
+                }
+                cut.push(ch);
+                used += cw;
+            }
+            cut.push('…');
+            *last = cut;
+        }
+    }
+    lines
 }
 
 /// `text` cut to `cells` display cells, ending in "…" when cut.

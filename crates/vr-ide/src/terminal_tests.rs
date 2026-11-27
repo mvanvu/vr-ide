@@ -1779,3 +1779,39 @@ fn the_close_x_is_styled_apart_from_the_title() {
     // Same background as the rest of the label.
     assert_eq!(buf[(close, y)].bg, buf[(x0 + 1, y)].bg);
 }
+
+/// FR-26 (AC-T1): cells a program leaves at the default colour, the unused rows and the right
+/// margin all take the theme's terminal background, which differs from the editor's.
+#[test]
+fn panel_default_background_is_the_terminal_token_in_every_theme() {
+    use crate::theme::Theme;
+    use ratatui::style::Color;
+    for name in ["synthwave", "dracula", "dark", "light"] {
+        let (_d, mut app) = snapshot_app();
+        app.settings.theme = name.to_string();
+        let mut g = fake_grid(20, 3);
+        g.cells[0] = Cell {
+            ch: "$".into(),
+            ..Cell::default()
+        };
+        app.terminal.tabs[0] = TermTab::fake(g, "sh", TermStatus::Running);
+        let t = draw(&mut app, 80, 24);
+        let theme = Theme::from_name(name);
+        let editor_bg = theme.text.bg.unwrap_or(Color::Reset);
+        let area = app.layout.terminal;
+        let buf = t.backend().buffer();
+        let (x0, y0) = (area.x, area.y + 1);
+        let cell = |x: u16, y: u16| &buf[(x, y)];
+        assert_eq!(cell(x0, y0).bg, theme.terminal_bg, "{name}: text cell");
+        assert_eq!(cell(x0, y0).fg, theme.terminal_fg, "{name}: text colour");
+        let (far_x, far_y) = (area.x + area.width - 1, area.y + area.height - 1);
+        for (x, y, what) in [
+            (x0 + 30, y0, "right margin"),
+            (x0, y0 + 5, "rows below the last line"),
+            (far_x, far_y, "far corner"),
+        ] {
+            assert_eq!(cell(x, y).bg, theme.terminal_bg, "{name}: {what}");
+        }
+        assert_ne!(theme.terminal_bg, editor_bg, "{name}");
+    }
+}
