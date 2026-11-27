@@ -24,6 +24,8 @@ pub mod ui;
 pub mod workspace;
 
 #[cfg(test)]
+mod ai_account_tests;
+#[cfg(test)]
 mod ai_changes_tests;
 #[cfg(test)]
 mod ai_tests;
@@ -31,6 +33,8 @@ mod ai_tests;
 mod app_tests;
 #[cfg(test)]
 mod blame_column_tests;
+#[cfg(test)]
+mod completion_tests;
 #[cfg(test)]
 mod config_reload_tests;
 #[cfg(test)]

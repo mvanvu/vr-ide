@@ -4,6 +4,7 @@
 //! picker in its own tab starts new ones; a focused session gets every key but the `[ai]`
 //! table's.
 
+pub mod accounts;
 pub mod attention;
 pub mod changes;
 #[cfg(test)]
@@ -87,6 +88,7 @@ pub const WIDTH_MAX: u16 = 90;
 pub const NAME_MAX: usize = 32;
 
 const CLOSE: &str = "Close";
+const REMOVE: &str = "Remove";
 
 /// One agent session: its program in a terminal tab and what started it.
 pub struct AiSession {
@@ -95,6 +97,8 @@ pub struct AiSession {
     pub tool: String,
     /// The account it runs on (D11, T8); `None`: the tool's own config (`default`).
     pub account: Option<String>,
+    /// The hold on that account (D17): no window removes it while this session is open.
+    pub account_lock: Option<accounts::AccountLock>,
     /// The canonical workspace folder it started in.
     pub root: PathBuf,
     /// Set by AI: Rename Session; replaces the tool name in the label.
@@ -128,6 +132,7 @@ impl AiSession {
             tab,
             tool: tool.to_string(),
             account,
+            account_lock: None,
             root,
             name: None,
             mode,
@@ -181,6 +186,9 @@ pub struct AiPanel {
     pub diff: Option<review::DiffTab>,
     /// Rows the list took at the top of the session in the last frame.
     pub list_rows: u16,
+    /// The state folder holding `accounts/` (D11); `None`: no account can be used (tests that
+    /// do not set one never touch the real state folder).
+    pub state_dir: Option<PathBuf>,
 }
 
 impl AiPanel {
@@ -204,6 +212,7 @@ impl AiPanel {
             list: None,
             diff: None,
             list_rows: 0,
+            state_dir: None,
         }
     }
 
@@ -557,19 +566,35 @@ pub fn open_tool(app: &mut App, arg: &str) -> Result<(), String> {
     if words.next().is_some() {
         return Err("/ai takes <tool> [@account]".into());
     }
-    match account {
-        None | Some("@default") => {}
-        Some(a) if a.starts_with('@') => {
-            return Err(format!(
-                "/ai: account {} not found; only default is available",
-                crate::ui::safe_text::sanitize(&a[1..])
-            ));
+    let account = match account {
+        None => None,
+        Some(a) => {
+            let a = a.strip_prefix('@').ok_or("/ai takes <tool> [@account]")?;
+            if a == accounts::DEFAULT {
+                None
+            } else {
+                let a = accounts::validate(a)
+                    .map_err(|e| format!("/ai: account name: {}", e.message()))?;
+                Some(a.to_string())
+            }
         }
-        Some(_) => return Err("/ai takes <tool> [@account]".into()),
-    }
+    };
     let tool = find_tool(app, name)?;
+    if let Some(a) = &account {
+        if !picker::supports_accounts(&tool.name) {
+            return Err(format!("/ai: {} cannot use accounts", tool.name));
+        }
+        let known = app
+            .ai
+            .state_dir
+            .as_deref()
+            .is_some_and(|s| accounts::for_tool(s, &tool.name).contains(a));
+        if !known {
+            return Err(format!("/ai: account {a} not found for {}", tool.name));
+        }
+    }
     let folder = start_folder(app);
-    spawn_session(app, &tool, None, StartMode::New, &folder, None)?;
+    spawn_session(app, &tool, account, StartMode::New, &folder, None)?;
     app.ai.picker = None;
     app.ai.active = app.ai.sessions.len() - 1;
     reveal(app);
@@ -638,6 +663,14 @@ pub(crate) fn spawn_session(
     root: &Path,
     name: Option<String>,
 ) -> Result<(), String> {
+    // The hold comes first: the folder checks in `start_program` then see what a removal left.
+    let account_lock = match (&account, app.ai.state_dir.as_deref()) {
+        (None, _) => None,
+        (Some(a), Some(state)) => {
+            Some(accounts::hold(state, a).map_err(|e| format!("account {a}: {e}"))?)
+        }
+        (Some(a), None) => return Err(format!("account {a}: account folder missing")),
+    };
     // The tracker's start time must precede the program's first write (SEC-9).
     let tracker = review::start(app, root);
     let (tab_term, program, output) = start_program(app, tool, account.as_deref(), mode, root)?;
@@ -648,6 +681,7 @@ pub(crate) fn spawn_session(
         root.to_path_buf(),
         mode,
     );
+    session.account_lock = account_lock;
     session.name = name;
     session.changes = tracker;
     app.ai.sessions.push(session);
@@ -673,7 +707,11 @@ fn start_program(
     if let Some(p) = &path {
         env.push((OsString::from("PATH"), spawn::absolute_path(p)));
     }
-    env.extend(spawn::account_env(tool, account));
+    env.extend(spawn::account_env(
+        app.ai.state_dir.as_deref(),
+        tool,
+        account,
+    )?);
     let extras = SpawnExtras {
         marker: None,
         env_remove: spawn::internal_vars(std::env::vars_os()),
@@ -704,9 +742,22 @@ fn grid_size(app: &App) -> (u16, u16) {
 
 /// Starts the picker's choice: the second step when the tool resumes, else a new session.
 fn picker_enter(app: &mut App) {
-    let Some(p) = &app.ai.picker else {
+    let Some(p) = &mut app.ai.picker else {
         return;
     };
+    if p.adding.is_some() {
+        add_account(app);
+        return;
+    }
+    if let Some(tool) = p.add_tool() {
+        p.adding = Some(picker::AddField {
+            tool: tool.to_string(),
+            text: String::new(),
+            error: None,
+        });
+        app.dirty = true;
+        return;
+    }
     let folder = p.folder.clone();
     let (tool, account, mode) = if let Some(s) = &p.second {
         (s.tool.clone(), s.account.clone(), s.modes[s.selected])
@@ -828,6 +879,153 @@ pub fn close(app: &mut App, i: usize) {
     } else if i < p.active || p.active >= p.tab_count() {
         p.active = p.active.saturating_sub(1);
     }
+    app.dirty = true;
+}
+
+// ---- accounts (D11) ---------------------------------------------------------------------------
+
+/// Enter in the name field: the account folder is made (SEC-15, SEC-16) and a session starts on
+/// it (New); a refused name stays in the field with the reason under it.
+fn add_account(app: &mut App) {
+    let Some(p) = &app.ai.picker else {
+        return;
+    };
+    let Some(field) = &p.adding else {
+        return;
+    };
+    let (tool, name, folder) = (field.tool.clone(), field.text.clone(), p.folder.clone());
+    let made = match app.ai.state_dir.as_deref() {
+        Some(state) => accounts::create(state, &tool, &name),
+        None => Err("account folders are not available".to_string()),
+    };
+    if let Err(e) = made {
+        if let Some(f) = app.ai.picker.as_mut().and_then(|p| p.adding.as_mut()) {
+            f.error = Some(e);
+        }
+        app.dirty = true;
+        return;
+    }
+    let started = find_tool(app, &tool)
+        .and_then(|t| spawn_session(app, &t, Some(name.clone()), StartMode::New, &folder, None));
+    match started {
+        Ok(()) => {
+            app.ai.picker = None;
+            app.ai.active = app.ai.sessions.len() - 1;
+            reveal(app);
+            app.info(format!(
+                "Account {name} created; sign in with /login in its tab"
+            ));
+        }
+        Err(e) => {
+            rebuild_picker(app);
+            app.error(format!("AI: {e}"));
+        }
+    }
+}
+
+/// Why account `name` cannot be removed now: sessions are open on it (running or not; names are
+/// unique across tools).
+fn account_busy(app: &App, name: &str) -> Option<String> {
+    let tabs: Vec<String> = app
+        .ai
+        .sessions
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.account.as_deref() == Some(name))
+        .map(|(i, _)| (i + 1).to_string())
+        .collect();
+    match tabs.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "Not removed: close the session on {name} first, tab {one}"
+        )),
+        _ => Some(format!(
+            "Not removed: close the {} sessions on {name} first, tabs {}",
+            tabs.len(),
+            tabs.join(", ")
+        )),
+    }
+}
+
+/// Delete on a picker row: a named account asks first (Cancel selected, SEC-17) unless a
+/// session is open on it; `default` is the tool's own config and stays.
+fn ask_remove_account(app: &mut App) {
+    let Some(p) = &app.ai.picker else {
+        return;
+    };
+    if p.second.is_some() {
+        return;
+    }
+    let Some((tool, account)) = p.choice() else {
+        return;
+    };
+    let tool = tool.to_string();
+    let Some(name) = account.map(str::to_string) else {
+        if picker::supports_accounts(&tool) {
+            app.info(format!("default is {tool}'s own config"));
+        }
+        return;
+    };
+    if let Some(why) = account_busy(app, &name) {
+        app.warn(why);
+        return;
+    }
+    let Some(path) = app
+        .ai
+        .state_dir
+        .as_deref()
+        .and_then(|s| accounts::path_of(s, &name).ok())
+    else {
+        return;
+    };
+    let shown = crate::git::home_relative(&path);
+    let message = format!(
+        "Deletes {shown}/ for good: its {tool} login, settings and history.\n\
+         The sign-in stays valid at the provider; to end it, run /logout in a session on \
+         {name} first.\n\
+         Other accounts and {tool}'s own config stay."
+    );
+    let mut dialog = ConfirmDialog::new(
+        format!("Remove account {name}?"),
+        message,
+        &[REMOVE, CANCEL],
+    );
+    dialog.selected = 1;
+    app.open_dialog(
+        DialogWidget::Confirm(dialog),
+        DialogAction::RemoveAiAccount(name),
+    );
+}
+
+/// Remove was chosen: checked again (a session may have started on it meanwhile), then the
+/// folder is deleted for good (SEC-17) and the picker lists what is left.
+pub fn answer_remove_account(app: &mut App, name: &str) {
+    if let Some(why) = account_busy(app, name) {
+        app.warn(why);
+        return;
+    }
+    let Some(state) = app.ai.state_dir.clone() else {
+        return;
+    };
+    match accounts::remove(&state, name) {
+        Ok(()) => app.info(format!("Account {name} removed")),
+        Err(e) => app.error(format!("Not removed: {name}, {e}")),
+    }
+    rebuild_picker(app);
+}
+
+/// The open picker listed again (accounts changed), on the same tool's `default`.
+fn rebuild_picker(app: &mut App) {
+    let Some(old) = app.ai.picker.take() else {
+        return;
+    };
+    let tool = old.rows.get(old.selected).and_then(|r| match r {
+        picker::Row::Choice { tool, .. } | picker::Row::Add { tool } => Some(tool.clone()),
+        picker::Row::Header { .. } => None,
+    });
+    let prefer = tool.as_deref().map(|t| (t, None));
+    let picker = Picker::build(app, old.folder, prefer, old.back);
+    app.ai.picker = Some(picker);
     app.dirty = true;
 }
 
@@ -989,7 +1187,29 @@ fn picker_key(app: &mut App, key: &KeyEvent) {
     if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
         return;
     }
+    if let Some(field) = app.ai.picker.as_mut().and_then(|p| p.adding.as_mut()) {
+        match key.code {
+            K::Char(c) if field.text.chars().count() < picker::FIELD_MAX => {
+                field.text.push(c);
+                field.error = None;
+            }
+            K::Backspace => {
+                field.text.pop();
+                field.error = None;
+            }
+            K::Enter => add_account(app),
+            K::Esc => {
+                if let Some(p) = &mut app.ai.picker {
+                    p.adding = None;
+                }
+            }
+            _ => {}
+        }
+        app.dirty = true;
+        return;
+    }
     match key.code {
+        K::Delete => ask_remove_account(app),
         K::Up | K::Down => {
             if let Some(p) = &mut app.ai.picker {
                 p.step(key.code == K::Down);
@@ -1009,6 +1229,17 @@ fn picker_key(app: &mut App, key: &KeyEvent) {
 
 /// Pasted text for the focused session, bracketed when the program enabled it.
 pub fn paste(app: &mut App, text: &str) {
+    if app.ai.picker_active()
+        && let Some(field) = app.ai.picker.as_mut().and_then(|p| p.adding.as_mut())
+    {
+        // One line, as typed; the validator judges the rest.
+        let line = text.lines().next().unwrap_or("");
+        let room = picker::FIELD_MAX.saturating_sub(field.text.chars().count());
+        field.text.extend(line.chars().take(room));
+        field.error = None;
+        app.dirty = true;
+        return;
+    }
     let Some(s) = app.ai.active_session_mut() else {
         return;
     };
@@ -1227,6 +1458,10 @@ fn picker_click(app: &mut App, line: u16) {
     let Some(p) = &mut app.ai.picker else {
         return;
     };
+    // The name field shifts the rows under it; clicks wait until it is closed.
+    if p.adding.is_some() {
+        return;
+    }
     let Some(i) = usize::from(line).checked_sub(crate::ui::ai_view::PICKER_ROWS_AT) else {
         return;
     };
@@ -1237,7 +1472,10 @@ fn picker_click(app: &mut App, line: u16) {
         };
         s.selected = m;
     } else {
-        if !matches!(p.rows.get(i), Some(picker::Row::Choice { .. })) {
+        if !matches!(
+            p.rows.get(i),
+            Some(picker::Row::Choice { .. } | picker::Row::Add { .. })
+        ) {
             return;
         }
         p.selected = i;

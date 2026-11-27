@@ -116,11 +116,15 @@ pub fn internal_vars(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<Os
         .collect()
 }
 
-/// Variables an account adds to its session's environment. Accounts come later (D11, T8):
-/// `None` (the tool's own config) adds nothing, so every session runs on it for now.
-pub fn account_env(_tool: &AiTool, account: Option<&str>) -> Vec<(OsString, OsString)> {
-    debug_assert!(account.is_none(), "accounts are not wired yet");
-    Vec::new()
+/// Variables an account adds to its session's environment (D11, SEC-18): the tool's own variable
+/// pointing at the account folder, checked now; nothing for `None` (the tool's own config). Only
+/// the spawn of that session gets them.
+pub fn account_env(
+    state: Option<&Path>,
+    tool: &AiTool,
+    account: Option<&str>,
+) -> Result<Vec<(OsString, OsString)>, String> {
+    super::accounts::env(state, &tool.name, account)
 }
 
 #[cfg(test)]

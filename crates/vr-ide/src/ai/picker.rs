@@ -12,6 +12,8 @@ use crate::app::App;
 pub enum Row {
     /// A tool's name above its account rows (not selectable).
     Header { tool: String },
+    /// `+ Add account…` under a tool with accounts.
+    Add { tool: String },
     /// A start: `tool` on `account` (`None`: the tool's own config, shown `default`). `single`:
     /// a tool without accounts, drawn as one row with its name. `open`: its sessions now.
     Choice {
@@ -42,14 +44,27 @@ pub struct Picker {
     pub configured: Vec<String>,
     pub selected: usize,
     pub second: Option<Second>,
+    /// The name field of `+ Add account…` while it is open.
+    pub adding: Option<AddField>,
     /// The tab to go back to on Esc; `None`: the picker is the empty state (Esc hides).
     pub back: Option<usize>,
 }
 
+/// The name field of `+ Add account…`: what is typed and why Enter refused it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddField {
+    pub tool: String,
+    pub text: String,
+    pub error: Option<String>,
+}
+
+/// Longest text the name field takes; the validator refuses past 32 anyway.
+pub const FIELD_MAX: usize = 64;
+
 /// Tools whose config folder can be swapped per session (D11: `CLAUDE_CONFIG_DIR`,
-/// `CODEX_HOME`); they list their accounts under a header. Only `default` exists until T8.
+/// `CODEX_HOME`); they list their accounts under a header.
 pub fn supports_accounts(tool: &str) -> bool {
-    matches!(tool, "claude" | "codex")
+    super::accounts::var_for(tool).is_some()
 }
 
 impl Picker {
@@ -69,12 +84,13 @@ impl Picker {
                 missing.push(tool.name.clone());
                 continue;
             }
-            let open = app
-                .ai
-                .sessions
-                .iter()
-                .filter(|s| s.tool == tool.name && s.account.is_none())
-                .count();
+            let open = |account: Option<&str>| {
+                app.ai
+                    .sessions
+                    .iter()
+                    .filter(|s| s.tool == tool.name && s.account.as_deref() == account)
+                    .count()
+            };
             let single = !supports_accounts(&tool.name);
             if !single {
                 rows.push(Row::Header {
@@ -84,8 +100,28 @@ impl Picker {
             rows.push(Row::Choice {
                 tool: tool.name.clone(),
                 account: None,
-                open,
+                open: open(None),
                 single,
+            });
+            if single {
+                continue;
+            }
+            let named = app
+                .ai
+                .state_dir
+                .as_deref()
+                .map(|s| super::accounts::for_tool(s, &tool.name))
+                .unwrap_or_default();
+            for name in named {
+                rows.push(Row::Choice {
+                    tool: tool.name.clone(),
+                    open: open(Some(&name)),
+                    account: Some(name),
+                    single: false,
+                });
+            }
+            rows.push(Row::Add {
+                tool: tool.name.clone(),
             });
         }
         let first = rows
@@ -112,6 +148,7 @@ impl Picker {
                 .collect(),
             selected,
             second: None,
+            adding: None,
             back,
         }
     }
@@ -120,7 +157,15 @@ impl Picker {
     pub fn choice(&self) -> Option<(&str, Option<&str>)> {
         match self.rows.get(self.selected)? {
             Row::Choice { tool, account, .. } => Some((tool, account.as_deref())),
-            Row::Header { .. } => None,
+            Row::Header { .. } | Row::Add { .. } => None,
+        }
+    }
+
+    /// The tool of the selected `+ Add account…` row.
+    pub fn add_tool(&self) -> Option<&str> {
+        match self.rows.get(self.selected)? {
+            Row::Add { tool } => Some(tool),
+            _ => None,
         }
     }
 
@@ -145,7 +190,7 @@ impl Picker {
                 return;
             };
             i = n;
-            if matches!(self.rows[i], Row::Choice { .. }) {
+            if !matches!(self.rows[i], Row::Header { .. }) {
                 self.selected = i;
                 return;
             }

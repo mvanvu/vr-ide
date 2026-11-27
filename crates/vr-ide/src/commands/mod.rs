@@ -1,6 +1,7 @@
 //! Named commands, one file per group; the registry joins them.
 
 pub mod app;
+pub mod completion;
 pub mod dialog;
 pub mod edit;
 pub mod explorer;

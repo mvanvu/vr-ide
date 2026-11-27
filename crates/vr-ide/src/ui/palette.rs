@@ -7,6 +7,7 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, Clear, Widget};
 
 use crate::app::App;
+use crate::commands::completion;
 use crate::commands::palette::{PaletteItem, PaletteMode};
 use crate::theme::Theme;
 
@@ -23,8 +24,28 @@ const MAX_DETAIL_ROWS: usize = 3;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     // `/ssh`: the command the highlighted line runs, or its local-command hint (UI spec S5).
-    let ssh_detail = crate::commands::ssh::palette_detail(app);
-    let ssh_details = crate::commands::ssh::palette_details(app);
+    // While Tab completion lists `/ssh` destinations the list holds candidates, so the detail
+    // is that of the input; other completions own the area themselves.
+    let completing = app
+        .palette
+        .as_ref()
+        .and_then(|p| p.completion.as_ref())
+        .map(|c| {
+            matches!(c.note, completion::Note::SshRuns) && c.phase != completion::Phase::Common
+        });
+    let (ssh_detail, ssh_details) = match completing {
+        None => (
+            crate::commands::ssh::palette_detail(app),
+            crate::commands::ssh::palette_details(app),
+        ),
+        Some(true) => (
+            crate::commands::ssh::typed_detail(app),
+            crate::commands::ssh::typed_detail(app)
+                .into_iter()
+                .collect(),
+        ),
+        Some(false) => (None, Vec::new()),
+    };
     let Some(p) = &mut app.palette else {
         return;
     };
@@ -71,6 +92,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         }
         _ => Vec::new(),
     };
+    // Tab completion (D6) owns the area under the list while it is open.
+    let comp = p.completion.clone();
+    if let Some(c) = &comp {
+        detail_lines = completion_detail(c, text_w);
+        need = detail_lines.len();
+    }
     // `/ssh`: as many rows as the longest row's detail needs (D323).
     if let Some(most) = ssh_details
         .iter()
@@ -112,7 +139,41 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let pw = prompt.len() as u16;
     buf.set_style(Rect::new(x0, rect.y + 1, inner_w, 1), theme.input);
     buf.set_string(x0, rect.y + 1, prompt, theme.input);
-    let field_w = inner_w.saturating_sub(pw);
+    // Right of the input while completing: `tab: list (N)` or `i/N`. The typed text and the
+    // cursor after it keep their room: a narrow box takes the short tag or none; the list
+    // counter always stays.
+    let typed_w = Span::raw(p.input.text()).width() as u16 + 1;
+    let avail = inner_w.saturating_sub(pw);
+    let fits = |t: &str| {
+        let w = Span::raw(t).width() as u16;
+        !t.is_empty() && w + 1 + typed_w <= avail
+    };
+    let tag = match &comp {
+        None => String::new(),
+        Some(c) => {
+            let full = c.tag();
+            if fits(&full) {
+                full
+            } else if let Some(s) = c.short_tag().filter(|s| fits(s)) {
+                s
+            } else if matches!(c.phase, completion::Phase::List(_)) {
+                full
+            } else {
+                String::new()
+            }
+        }
+    };
+    let tag_w = Span::raw(tag.as_str()).width() as u16;
+    let tag_room = if tag.is_empty() || tag_w + 2 > avail {
+        0
+    } else {
+        tag_w + 1
+    };
+    let field_w = inner_w.saturating_sub(pw + tag_room);
+    if tag_room > 0 {
+        let tx = x0 + inner_w - tag_w - 1;
+        buf.set_string(tx, rect.y + 1, &tag, theme.input.patch(theme.dim));
+    }
     let (shown, cx) = p.input.view(field_w);
     buf.set_stringn(
         x0 + pw,
@@ -145,6 +206,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let width = usize::from(inner_w.saturating_sub(2));
     let slash =
         p.mode == PaletteMode::Commands && crate::commands::palette::is_slash(p.input.text());
+    // Candidate folders in the folder colour (S5).
+    let folders = comp
+        .as_ref()
+        .is_some_and(|c| matches!(c.phase, completion::Phase::List(_)));
+    let folder = ratatui::style::Style::default().fg(theme.popup_border.fg.unwrap_or_default());
     let ssh_line = slash && p.input.text().starts_with(crate::commands::ssh::SLASH);
     if p.items.is_empty() {
         buf.set_stringn(
@@ -206,6 +272,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             }
             let style = if item.hits.contains(&ci) {
                 base.patch(theme.matched)
+            } else if folders && item.title.ends_with('/') {
+                base.patch(folder)
             } else {
                 base
             };
@@ -466,4 +534,15 @@ fn ellipsize(text: &str, cells: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// The lines under the list while a completion is open: the common part's candidates on one
+/// line, the folder paths come from, or the key hint. `/ssh` destinations show the window's
+/// own `runs:` detail instead (none here).
+fn completion_detail(c: &completion::Completion, width: u16) -> Vec<String> {
+    match (c.phase, &c.note) {
+        (completion::Phase::Common, _) => vec![ellipsize(&c.detail(), usize::from(width))],
+        (completion::Phase::List(_), completion::Note::SshRuns) => Vec::new(),
+        _ => wrap_cut(&c.detail(), width, MAX_DETAIL_ROWS),
+    }
 }

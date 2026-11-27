@@ -44,16 +44,89 @@ fn project(files: &[(&str, &str)]) -> (tempfile::TempDir, App) {
     (d, app)
 }
 
+/// How long the search / replace may go without any visible progress before a test gives up.
+const STALL_LIMIT: Duration = Duration::from_secs(20);
+
+/// What the panel shows of the work done so far: grows while the search or replace advances.
+fn progress(app: &App) -> usize {
+    let found: usize = app.search.groups.iter().map(|g| 1 + g.matches.len()).sum();
+    let preview = app.search.preview.as_ref().map_or(0, |p| {
+        p.files.len() + p.files.iter().filter(|f| f.result.is_some()).count()
+    });
+    found + preview
+}
+
 /// Takes search results until the search and the preview / replace worker are done (test
-/// helper; the app never blocks).
+/// helper; the app never blocks). The replace worker fsyncs every file, so on a loaded
+/// disk its wall time is unbounded; the wait fails only when nothing advanced for
+/// `STALL_LIMIT`, which is a hang.
 fn wait_search(app: &mut App) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut watch = StallWatch::new(STALL_LIMIT, ABSOLUTE_LIMIT, progress(app));
     loop {
         app.drain_search();
         if !app.search.running() && !app.search.busy() {
             return;
         }
-        assert!(Instant::now() < deadline, "search did not finish");
+        watch.check(progress(app));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Absolute ceiling of one wait, for work that keeps growing without end.
+const ABSOLUTE_LIMIT: Duration = Duration::from_secs(600);
+
+/// Fails a wait that stops advancing. Only a new high-water mark of the progress counts, so a
+/// search that clears and refills its results over and over (a restart loop) stalls too.
+struct StallWatch {
+    best: usize,
+    since: Instant,
+    started: Instant,
+    stall: Duration,
+    ceiling: Duration,
+}
+
+impl StallWatch {
+    fn new(stall: Duration, ceiling: Duration, start: usize) -> StallWatch {
+        let now = Instant::now();
+        StallWatch {
+            best: start,
+            since: now,
+            started: now,
+            stall,
+            ceiling,
+        }
+    }
+
+    fn check(&mut self, progress: usize) {
+        if progress > self.best {
+            self.best = progress;
+            self.since = Instant::now();
+        }
+        assert!(self.since.elapsed() < self.stall, "search did not finish");
+        assert!(
+            self.started.elapsed() < self.ceiling,
+            "search still growing after {:?}",
+            self.ceiling
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "search did not finish")]
+fn stall_watch_fails_a_refill_loop() {
+    let mut watch = StallWatch::new(Duration::from_millis(100), Duration::from_secs(60), 0);
+    // Results cleared and refilled: the counter oscillates 0..=5 forever.
+    for round in 0..10_000usize {
+        watch.check(round % 6);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn stall_watch_accepts_steady_growth() {
+    let mut watch = StallWatch::new(Duration::from_millis(100), Duration::from_secs(60), 0);
+    for n in 1..=150 {
+        watch.check(n);
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -566,7 +639,25 @@ fn project_replace_never_loses_a_concurrent_write() {
     const OURS: &[u8] = b"bar\n";
     for mode in [WriterMode::InPlace, WriterMode::TempRename] {
         let (mut ok_count, mut refused) = (0, 0);
-        for offset in sweep_offsets(40, Duration::from_micros(300)) {
+        // The replace fsyncs, so its duration depends on the disk. Time one run without a
+        // writer and sweep over twice that, so the writer meets the replace both before and
+        // after its freshness check however slow the disk is.
+        // The slowest of three samples, as one sample may hit a quiet moment of the disk.
+        let unraced = (0..3)
+            .map(|_| {
+                let (_d, mut app) = project(&[("a.txt", "foo\n")]);
+                preview(&mut app, "foo", "bar");
+                app.handle_key(key(KeyCode::Enter));
+                app.handle_key(key(KeyCode::Left));
+                let begun = Instant::now();
+                app.handle_key(key(KeyCode::Enter));
+                wait_search(&mut app);
+                begun.elapsed()
+            })
+            .max()
+            .unwrap();
+        let step = (unraced / 20).max(Duration::from_micros(300));
+        for offset in sweep_offsets(40, step) {
             let (d, mut app) = project(&[("a.txt", "foo\n")]);
             let path = d.path().join("a.txt");
             preview(&mut app, "foo", "bar");

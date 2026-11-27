@@ -3,12 +3,24 @@
 Open the command window with `F1` (anywhere) or `space` `space` (read mode), then type `/`.
 The list shows the matching slash commands with their arguments and a short description.
 
-- `Tab` completes the command name, then the argument: paths for `/save-as`, `/ws add`,
-  `/ws save` and `/ws open` (relative to the project folder; `~` is your home folder), the theme
-  names, the workspace folders of `/ws remove`, the numbers of `/ws recent` and `/recent`, the
-  values of `/indent` and `/eol`, the language ids of `/lang`, and for `/set` the setting names
-  (with their value now), then `true` / `false` or the theme names. With several
-  matches `Tab` first fills in what they share, then takes the highlighted one (`up`/`down`).
+- `Tab` completes the command name, then the argument: paths for `/save-as`, `/ws add`
+  (folders), `/ws save` and `/ws open` (folders and `.vr-workspace` files), relative to the
+  project folder (`~` is your home folder); the file arguments of `/run` (after the program);
+  for `/ssh` the files of `-i`, `-F`, `-E`, `-S` and `-o IdentityFile=` (relative to the
+  workspace folder of the active file, as ssh resolves them) and, in the destination position,
+  the recent targets and the hosts of `~/.ssh/config`; the tool names of `/ai` (setting
+  `ai_tools`); the theme names, the workspace folders of
+  `/ws remove`, the numbers of `/ws recent` and `/recent`, the values of `/indent` and `/eol`,
+  the language ids of `/lang`, and for `/set` the setting names (with their value now), then
+  `true` / `false` or the theme names. Hidden files are offered only when what you typed starts
+  with `.`; a folder is read up to 1000 entries and at most 100 are offered.
+- One match is completed (a folder ends with `/`; a finished `/ssh`, `/run` or `/ai` word gets a
+  space). Several: `Tab` fills in what they share and the input shows `tab: list (N)`; the next
+  `Tab` (or the first, when nothing is shared) turns the list into the candidates with `i/N` beside
+  the input. There `Tab` / `shift+tab` (or `up` / `down`) step through them, `Enter` takes the
+  candidate without running it, `Esc` goes back to the text from before the list (a second `Esc`
+  closes the window) and typing closes the list and edits. A row highlighted with `up` / `down`
+  before `Tab` is taken as it is (not in `/ssh`, where `Tab` completes the word being typed).
 - `Enter` runs the command. On a partial name it takes the highlighted command (a command that
   needs an argument is completed instead).
 - A command that does not exist, or a missing or wrong argument, shows an error under the input
@@ -117,9 +129,9 @@ protocol does not send are marked).
 | `/term right` | Terminal panel on the right, for this session |
 | `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
-| `/ai <tool>` | Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name> |
+| `/ai <tool> [@account]` | Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name> |
 | `/ssh [ssh args]` | Open an SSH session, args as after ssh (none: list hosts) |
-| `/ws add <dir>` | Add a folder to the workspace |
+| `/ws add <folder>` | Add a folder to the workspace |
 | `/ws remove [root]` | Remove a workspace folder (default: the active file's) |
 | `/ws save [file]` | Save the workspace folders to a .vr-workspace file |
 | `/ws open <file>` | Open a .vr-workspace file |

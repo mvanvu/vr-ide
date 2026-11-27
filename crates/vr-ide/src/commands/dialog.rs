@@ -102,6 +102,8 @@ pub enum DialogAction {
         rel: PathBuf,
         seen: crate::ai::changes::Seen,
     },
+    /// Delete on a named account in the AI picker (D11, SEC-17): Remove / Cancel, Cancel first.
+    RemoveAiAccount(String),
     /// Find box, File scope (D279): Replace: One / All / Cancel.
     ReplaceInFile,
     /// Unsaved files before the roots are replaced (W-1): Save all / Discard / Cancel.
@@ -171,6 +173,9 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
         }
         (DialogAction::AiRevert { session, rel, seen }, Outcome::Chosen(0)) => {
             crate::ai::review::answer_revert(app, session, &rel, &seen);
+        }
+        (DialogAction::RemoveAiAccount(name), Outcome::Chosen(0)) => {
+            crate::ai::answer_remove_account(app, &name)
         }
         (DialogAction::QuitStuckReplaceDiscard, Outcome::Chosen(0)) => {
             super::search::allow_quit(app);

@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::spawn;
+use super::{accounts, spawn};
 use crate::app::App;
 use crate::session::{self, AiSection, AiSession};
 
@@ -60,7 +60,7 @@ pub fn report(app: &mut App) {
 
 /// Reopens the saved sessions, each with its tool's continue arguments (D7) and without sending
 /// it any input. A session whose tool is no longer in `ai_tools` (by name) or not on `PATH`,
-/// whose folder is not an existing workspace folder, or which names an account is not
+/// whose folder is not an existing workspace folder, or whose account cannot be used now is not
 /// reopened — never on another account (SEC-8, SEC-18) — and gets one error notice. The keys
 /// stay where they are.
 pub fn restore(app: &mut App, state: &AiSection) {
@@ -72,7 +72,7 @@ pub fn restore(app: &mut App, state: &AiSection) {
     for s in state.sessions.iter().take(session::MAX_AI_SESSIONS) {
         match check(app, s, path.as_deref()) {
             Err(why) => app.error(format!("Not reopened: {why}")),
-            Ok(root) => {
+            Ok((root, account)) => {
                 let tool = app
                     .settings
                     .ai_tools
@@ -84,7 +84,7 @@ pub fn restore(app: &mut App, state: &AiSection) {
                     .filter(|l| !l.is_empty())
                     .and_then(|n| super::clean_name(n).ok());
                 if let Err(e) =
-                    super::spawn_session(app, &tool, None, spawn::again_mode(&tool), &root, name)
+                    super::spawn_session(app, &tool, account, spawn::again_mode(&tool), &root, name)
                 {
                     app.error(format!("Not reopened: {} ({e})", s.tool));
                 }
@@ -98,8 +98,14 @@ pub fn restore(app: &mut App, state: &AiSection) {
     app.dirty = true;
 }
 
-/// The folder a saved session may reopen in, or why it may not (the notice's text).
-fn check(app: &App, s: &AiSession, path: Option<&std::ffi::OsStr>) -> Result<PathBuf, String> {
+/// The folder and account a saved session may reopen on, or why it may not (the notice's text).
+/// The account must pass SEC-15 and its folder SEC-16 now; there is no fallback to `default` or
+/// another account (SEC-18).
+fn check(
+    app: &App,
+    s: &AiSession,
+    path: Option<&std::ffi::OsStr>,
+) -> Result<(PathBuf, Option<String>), String> {
     let shown = crate::git::home_relative(&s.folder);
     let tool_name = if vr_config::valid_tool_name(&s.tool) {
         s.tool.clone()
@@ -111,19 +117,22 @@ fn check(app: &App, s: &AiSession, path: Option<&std::ffi::OsStr>) -> Result<Pat
             "{tool_name} in {shown}, {tool_name} is not in ai_tools"
         ));
     };
-    // Accounts come with T8; until then a session on one is never moved to the default.
-    if !s.account.is_empty() {
-        let account = crate::ui::safe_text::sanitize(&s.account);
-        return Err(format!(
-            "{tool_name}@{account}, account folder missing (no fallback)"
-        ));
-    }
+    // An empty name is the tool's own config; any other must be usable now.
+    let account = match s.account.as_str() {
+        "" => None,
+        a => {
+            let shown = crate::ui::safe_text::sanitize(a);
+            accounts::ready(app.ai.state_dir.as_deref(), &tool.name, a)
+                .map_err(|why| format!("{tool_name}@{shown}, {why} (no fallback)"))?;
+            Some(a.to_string())
+        }
+    };
     if spawn::resolve(&tool.command, path).is_none() {
         return Err(format!("{tool_name} in {shown}, {tool_name} not on PATH"));
     }
     let root = workspace_root(app, &s.folder)
         .ok_or_else(|| format!("{tool_name} in {shown} (folder missing)"))?;
-    Ok(root)
+    Ok((root, account))
 }
 
 /// `root` when it is one of the workspace's folders and exists, canonical.
