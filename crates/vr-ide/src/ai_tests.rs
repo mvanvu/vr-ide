@@ -271,8 +271,11 @@ fn close_asks_while_running_and_the_last_leaves_the_empty_state() {
 fn enter_restarts_an_exited_session_with_continue_args() {
     let (d, mut app) = ai_app();
     let quick = script(d.path(), "quick", QUICK_AGENT);
-    app.settings.ai_tools.push(tool("codex", &quick, true));
-    crate::ai::open_tool(&mut app, "codex").unwrap();
+    // Not codex: codex without an id starts new (FR-1 C1, ai_switch_tests).
+    app.settings
+        .ai_tools
+        .push(tool("cursor-agent", &quick, true));
+    crate::ai::open_tool(&mut app, "cursor-agent").unwrap();
     wait_exit(&app, 0);
     wait_for(&app, 0, |s| s.contains("RAN:--base|"));
     press(&mut app, KeyCode::Enter);
@@ -1251,6 +1254,7 @@ while read cmd; do
   case $cmd in
     limit) printf "  \342\216\277  You've hit your 5-hour limit \302\267 resets 3pm\n";;
     reply) printf '\342\227\217 Done.\n';;
+    bare) printf "  \342\216\277  Usage limit reached\n";;
     login) printf ' Select login method:\n';;
   esac
 done
@@ -1337,6 +1341,35 @@ fn ai_limit_counts_after_a_quiet_second_with_one_notice_per_event() {
     assert_eq!(limit_notices(&app).len(), 2);
 }
 
+/// FR-1 M3: a limit with no reset on screen and none in a report is recorded for an hour, marked
+/// as a guess (not sticky), so a switch does not hop back onto it; a real reset replaces it.
+#[test]
+fn ai_limit_without_a_reset_is_recorded_for_an_hour() {
+    let (_d, mut app, state) = limit_app();
+    let t0 = Instant::now();
+    agent_says(&mut app, "bare", "Usage limit reached", t0);
+    pass(&mut app, t0 + Duration::from_millis(1000));
+    assert_eq!(limit_notices(&app), ["claude hit its usage limit"]);
+    let got = crate::ai::limits::load_state(&state)["claude/default"];
+    let now = crate::ai::usage::now_secs();
+    let until = got.limited_until.expect("a provisional limit");
+    assert!(
+        (now + 3600 - 5..=now + 3600).contains(&until),
+        "{until} vs {now}"
+    );
+    assert!(got.guessed && !got.sticky, "{got:?}");
+    // The next event shows its reset (3pm): it replaces the guess, even when it is earlier.
+    app.ai.sessions[0].limit_watch.typed = true;
+    agent_says(&mut app, "reply", "Done.", t0 + Duration::from_secs(5));
+    pass(&mut app, t0 + Duration::from_secs(6));
+    assert!(!app.ai.sessions[0].limit_seen);
+    agent_says(&mut app, "limit", "hit your", t0 + Duration::from_secs(10));
+    pass(&mut app, t0 + Duration::from_secs(11));
+    let got = crate::ai::limits::load_state(&state)["claude/default"];
+    assert!(!got.guessed, "{got:?}");
+    assert_ne!(got.limited_until, Some(until));
+}
+
 /// SEC-26: output after the limit line within the second means the tool went on.
 #[test]
 fn ai_limit_line_followed_by_output_is_no_event() {
@@ -1379,6 +1412,7 @@ fn ai_limit_state_follows_usage_reports() {
                 works: false,
                 limited_until: Some(now + 3600),
                 sticky,
+                guessed: false,
             },
         );
         crate::ai::limits::save_state(&state, &seeded).unwrap();
@@ -1452,6 +1486,7 @@ fn ai_limit_login_screen_marks_the_account_not_working() {
             works: true,
             limited_until: None,
             sticky: false,
+            guessed: false,
         },
     );
     crate::ai::limits::save_state(&state, &seeded).unwrap();
@@ -1621,6 +1656,15 @@ fn ai_usage_without_data() {
         Some("/ai usage takes no argument")
     );
     assert_eq!(app.ai.sessions.len(), 1);
+    // FR-1 M4: a tool without a usage reporter says so rather than "not yet".
+    crate::slash_tests::key(&mut app, KeyCode::Esc);
+    crate::ai::open_tool(&mut app, "gemini").unwrap();
+    crate::slash_tests::slash(&mut app, "/ai usage");
+    crate::slash_tests::key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        crate::slash_tests::error(&app).as_deref(),
+        Some("/ai usage: gemini does not report usage")
+    );
 }
 
 // ---- login window (AC-9, SEC-33, SEC-38) ------------------------------------------------------

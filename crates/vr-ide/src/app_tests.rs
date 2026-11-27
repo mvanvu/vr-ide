@@ -997,3 +997,46 @@ fn display_key_is_the_one_key_of_a_command() {
     assert_eq!(app.display_key("no.such"), None);
     assert_eq!(app.key_hint("no.such"), "run no.such");
 }
+
+/// FR-1 F1: a reply (info notice) to a command typed while a warning stays on the row is shown at
+/// once, ahead of that warning, and each info notice is in front for a whole TTL before it goes;
+/// the warning is back after them.
+#[test]
+fn an_info_notice_is_shown_at_once_and_for_its_whole_ttl_behind_a_warning() {
+    use crate::app::INFO_NOTICE_TTL;
+    use crate::ui::status_bar::notice_text;
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = test_app(dir.path());
+    let t0 = Instant::now();
+    app.warn("claude@work used 91% of its 5-hour limit");
+    app.info("reply one");
+    app.info("reply two");
+    let shown = |app: &App| notice_text(app).unwrap_or_default();
+    assert!(shown(&app).starts_with("reply one"), "{}", shown(&app));
+    app.tick(t0 + INFO_NOTICE_TTL - Duration::from_millis(500));
+    assert!(shown(&app).starts_with("reply one"), "{}", shown(&app));
+    // The first one goes; the second has been waiting and now gets its own whole TTL.
+    let second = t0 + INFO_NOTICE_TTL + Duration::from_millis(500);
+    app.tick(second);
+    assert!(shown(&app).starts_with("reply two"), "{}", shown(&app));
+    app.tick(second + INFO_NOTICE_TTL - Duration::from_millis(100));
+    assert!(shown(&app).starts_with("reply two"), "{}", shown(&app));
+    app.tick(second + INFO_NOTICE_TTL + Duration::from_millis(100));
+    assert!(
+        shown(&app).starts_with("claude@work used 91%"),
+        "{}",
+        shown(&app)
+    );
+    assert_eq!(notices(&app).len(), 1);
+    // Dismissing the front notice gives the next timed one a whole TTL from then.
+    app.info("reply three");
+    app.info("reply four");
+    let t1 = Instant::now();
+    app.dismiss_notice();
+    app.tick(t1 + INFO_NOTICE_TTL - Duration::from_millis(100));
+    assert!(shown(&app).starts_with("reply four"), "{}", shown(&app));
+    // A warning arriving later stays behind the timed one shown now.
+    app.warn("later warning");
+    assert!(shown(&app).starts_with("reply four"), "{}", shown(&app));
+}

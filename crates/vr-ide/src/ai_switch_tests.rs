@@ -286,7 +286,7 @@ fn switches_to_next_working_account_and_resumes() {
     assert_eq!(e.app.ai.sessions[i].root, canonical(&e.d));
     let until = e.known()["claude/work"].limited_until.unwrap();
     let want = format!(
-        "switched claude from work to personal (work limited until {})",
+        "switched from claude@work to claude@personal (claude@work limited until {})",
         clock(until)
     );
     assert!(e.notices().contains(&want), "{:?}", e.notices());
@@ -495,8 +495,9 @@ fn a_limit_while_the_new_run_starts_is_acted_on() {
     assert!(!e.app.ai.sessions[i].switch.busy());
 }
 
-/// Review focus 4 (AC-7): the other accounts are limited or were never used: one notice with the
-/// earliest reset, the session stays as it is.
+/// Review focus 4 (AC-7): the other accounts are limited or were never used: one notice naming
+/// each with its reason (FR-1 F2: not "all limited", one was never used), the session stays as
+/// it is.
 #[test]
 fn all_limited_notifies_and_keeps_session() {
     let mut e = setup(&["work", "personal", "fresh"]);
@@ -515,7 +516,12 @@ fn all_limited_notifies_and_keeps_session() {
     for _ in 0..3 {
         e.step(1100);
     }
-    let want = format!("all claude accounts are limited until {}", clock(now + 600));
+    let want = format!(
+        "no other claude account can be used now (claude: limited until {}; claude@fresh: not \
+         used in vr-ide yet; claude@personal: limited until {})",
+        clock(now + 7200),
+        clock(now + 600)
+    );
     assert_eq!(
         count(&e.notices().join("\n"), &want),
         1,
@@ -530,6 +536,60 @@ fn all_limited_notifies_and_keeps_session() {
         accounts::hold_exclusive(&e.state, "personal").is_ok(),
         "no hold left"
     );
+}
+
+/// FR-1 F2: "all … limited until" names the earliest reset of the other accounts, not the one
+/// that just hit its limit (work: 3pm, within a day; personal: two days away).
+#[test]
+fn all_limited_names_the_other_accounts_reset() {
+    let mut e = setup(&["work", "personal"]);
+    let now = usage::now_secs();
+    let later = now + 2 * 86_400;
+    limits::update_state(&e.state, |m| {
+        m.get_mut("claude/personal").unwrap().limited_until = Some(later);
+        let d = m.entry("claude/default".into()).or_default();
+        d.works = true;
+        d.limited_until = Some(later + 60);
+    })
+    .unwrap();
+    let i = e.open(Some("work"), Some(ID));
+    e.limit(i);
+    e.step(1100);
+    let want = format!("all claude accounts are limited until {}", clock(later));
+    assert!(e.notices().contains(&want), "{:?}", e.notices());
+    assert_eq!(e.account(i), Some("work"));
+}
+
+/// FR-1 F2: when the other accounts are skipped for other reasons than a limit, the notice
+/// names each one with its reason instead of "all … limited".
+#[test]
+fn no_usable_account_names_each_reason() {
+    let mut e = setup(&["work", "personal", "third", "fourth"]);
+    let now = usage::now_secs();
+    limits::update_state(&e.state, |m| {
+        m.remove("claude/personal");
+        m.get_mut("claude/fourth").unwrap().limited_until = Some(now + 600);
+    })
+    .unwrap();
+    let other_window = accounts::hold_exclusive(&e.state, "third").unwrap();
+    let i = e.open(Some("work"), Some(ID));
+    e.limit(i);
+    e.step(1100);
+    let want = format!(
+        "no other claude account can be used now (claude: not used in vr-ide yet; \
+         claude@fourth: limited until {}; claude@personal: not used in vr-ide yet; \
+         claude@third: busy (being removed or set up))",
+        clock(now + 600)
+    );
+    assert!(e.notices().contains(&want), "{:?}", e.notices());
+    assert!(
+        !e.notices().iter().any(|n| n.starts_with("all claude")),
+        "{:?}",
+        e.notices()
+    );
+    assert_eq!(e.account(i), Some("work"));
+    assert_eq!(e.log(), ["start work", "got work limit"]);
+    drop(other_window);
 }
 
 /// AC-7, SEC-24: without an id, or with one that is not a canonical UUID, the limit is only
@@ -553,11 +613,18 @@ fn no_session_id_notifies_only() {
         }
         assert_eq!(e.app.ai.sessions[i].tab.pid(), pid, "{id:?}");
         assert_eq!(e.account(i), Some("work"));
+        // FR-1 QP1: a warning after the limit warning it follows from, not an info notice put
+        // in front of it.
         let notices = e.notices();
-        assert!(notices.iter().any(|n| n.contains("hit its usage limit")));
-        assert!(
-            notices.contains(&"claude@work: session id not known; not switching accounts".into()),
-            "{notices:?}"
+        let limit = notices
+            .iter()
+            .position(|n| n.contains("hit its usage limit"));
+        let unknown = "claude@work: session id not known; not switching accounts";
+        let at = notices.iter().position(|n| n == unknown);
+        assert!(limit.is_some() && at.is_some() && limit < at, "{notices:?}");
+        assert_eq!(
+            e.app.notices[at.unwrap()].level,
+            crate::app::NoticeLevel::Warning
         );
         assert_eq!(e.log(), ["start work", "got work limit"]);
     }
@@ -648,7 +715,7 @@ fn login_screen_target_is_skipped() {
         "{notices:?}"
     );
     assert!(
-        notices.contains(&"switched claude from personal to third".into()),
+        notices.contains(&"switched from claude@personal to claude@third".into()),
         "{notices:?}"
     );
     assert!(accounts::hold_exclusive(&e.state, "personal").is_ok());
@@ -846,7 +913,7 @@ fn three_switches_in_thirty_minutes_then_notice_only() {
     assert!(e.app.ai.sessions[i].running());
     assert!(!e.app.ai.sessions[i].auto_switch);
     assert_eq!(switch::off_mark(&e.app.ai.sessions[i]), " ⊘");
-    let off = "claude@c: 3 account switches in 30 minutes; auto-switch is off for this session";
+    let off = "claude@c: 3 account switches in 30 minutes; auto-switch is off for this session (/ai autoswitch on turns it back on)";
     assert_eq!(count(&e.notices().join("\n"), off), 1, "{:?}", e.notices());
     assert_eq!(e.log().iter().filter(|l| l.starts_with("start")).count(), 4);
 }
@@ -1154,7 +1221,7 @@ fn codex_switch_resumes_by_id() {
     assert!(
         notices
             .iter()
-            .any(|n| n.starts_with("switched codex from work to personal")),
+            .any(|n| n.starts_with("switched from codex@work to codex@personal")),
         "{notices:?}"
     );
     assert_eq!(e.app.ai.sessions[i].session_id(), Some(ID));
@@ -1314,6 +1381,66 @@ fn codex_keeps_its_id_when_only_the_conversation_mentions_not_found() {
     assert!(text.contains(&format!("|--base|resume|{ID}|")), "{text}");
 }
 
+/// FR-1 C1 (b): a codex tab that never reported an id (quit before its first turn) is never
+/// started again with `resume --last`, which could open another tab's conversation: Enter and a
+/// restored tab start a new conversation, with an info notice.
+#[test]
+fn codex_without_an_id_starts_new_never_resume_last() {
+    let mut e = setup_codex(&["work"]);
+    let i = e.open(Some("work"), None);
+    say(&e.app, i, "quit");
+    wait_exit(&e.app, i);
+    e.enter(i);
+    let notice = "codex@work: conversation id not known; started a new conversation";
+    assert!(e.notices().contains(&notice.into()), "{:?}", e.notices());
+    let text = wait_for(&e.app, i, |s| s.contains("ACCT:")).replace('\n', "");
+    assert!(!text.contains("resume"), "{text}");
+    assert_eq!(e.app.ai.sessions[i].mode, StartMode::New);
+
+    let root = canonical(&e.d);
+    let entry = AiSession {
+        tool: "codex".into(),
+        account: "work".into(),
+        folder: root,
+        ..Default::default()
+    };
+    let state = AiSection {
+        shown: true,
+        width: None,
+        sessions: vec![entry],
+    };
+    e.app.notices.clear();
+    crate::ai::restore::restore(&mut e.app, &state);
+    let j = e.app.ai.sessions.len() - 1;
+    let text = wait_for(&e.app, j, |s| s.contains("ACCT:")).replace('\n', "");
+    assert!(!text.contains("resume"), "{text}");
+    assert!(e.notices().contains(&notice.into()), "{:?}", e.notices());
+}
+
+/// FR-1 C2: a codex run started by id (here by a switch) whose first report carries that same id
+/// still counts as this run's first report: it marks the run and the account working.
+#[test]
+fn codex_first_report_of_a_run_started_by_id_marks_it_working() {
+    let mut e = setup_codex(&["work", "personal"]);
+    let i = e.open(Some("work"), None);
+    e.codex_turn(i, ID);
+    e.limit(i);
+    e.switched(i, Some("personal"));
+    // What was known of `personal` is gone meanwhile (another window removed and re-added it).
+    limits::update_state(&e.state, |m| {
+        m.remove("codex/personal");
+    })
+    .unwrap();
+    assert!(!e.app.ai.sessions[i].limit_watch.works_marked);
+    e.codex_turn(i, ID);
+    assert!(e.app.ai.sessions[i].limit_watch.works_marked);
+    assert!(
+        e.known().get("codex/personal").is_some_and(|a| a.works),
+        "{:?}",
+        e.known()
+    );
+}
+
 /// `text` with every blank removed.
 fn squeeze(text: &str) -> String {
     text.split_whitespace().collect()
@@ -1324,33 +1451,75 @@ fn squeeze(text: &str) -> String {
 const QUICK: &str = "#!/bin/sh\nprintf RAN:; printf '%s|' \"$@\"; echo\n";
 
 /// Enter on an exited session whose id is known resumes that conversation, not the folder's
-/// latest; a run started by id that ended without reporting is not tried by id again.
+/// latest; a run started by id that ended without reporting (it had a report channel) is not
+/// tried by id again.
 #[test]
 fn restart_resumes_by_the_known_id_and_falls_back_after_a_failed_resume() {
     let (d, mut app) = ai_app();
     let quick = script(d.path(), "quick", QUICK);
     app.settings.ai_tools[0] = tool("claude", &quick, true);
+    let state = d.path().join(".state");
+    std::fs::create_dir(&state).unwrap();
+    app.ai.state_dir = Some(state);
+    app.ai.usage_exe = Some(script(d.path(), "helper", "#!/bin/sh\nexit 0\n"));
     crate::ai::open_tool(&mut app, "claude").unwrap();
     wait_exit(&app, 0);
-    wait_for(&app, 0, |s| s.contains("RAN:--base|"));
+    wait_for(&app, 0, |s| s.contains("|--base|"));
+    assert!(app.ai.sessions[0].usage_file.is_some(), "a report channel");
     app.ai.sessions[0].usage = Some(usage::Usage {
         session_id: Some(ID.into()),
         ..Default::default()
     });
     press(&mut app, KeyCode::Enter);
-    let text = wait_for(&app, 0, |s| s.contains("RAN:--base|--"));
-    assert!(
-        text.contains(&format!("RAN:--base|--resume|{ID}|")),
-        "{text}"
-    );
+    let text = wait_for(&app, 0, |s| s.contains("|--base|--"));
+    assert!(text.contains(&format!("|--base|--resume|{ID}|")), "{text}");
     assert!(!text.contains("--continue"), "{text}");
     assert_eq!(app.ai.sessions[0].mode, StartMode::Continue);
-    // That run ended without a report (claude: "No conversation found"): the id is given up.
+    // That run ended without a report (claude: "No conversation found"): the id is given up,
+    // and the next start is a new conversation: `--continue` could open another tab's (FR-1
+    // QP2, D88).
     wait_exit(&app, 0);
-    assert_eq!(crate::ai::restore::capture(&app).sessions[0].session_id, "");
+    // The session file keeps it (D89): reopened, it is tried and refused again, never
+    // `--continue`.
+    assert_eq!(crate::ai::restore::capture(&app).sessions[0].session_id, ID);
     press(&mut app, KeyCode::Enter);
-    wait_for(&app, 0, |s| s.contains("RAN:--base|--continue|"));
+    let text = wait_for(&app, 0, |s| s.contains("|--base|"));
+    assert!(
+        !text.contains("--continue") && !text.contains("--resume"),
+        "{text}"
+    );
+    assert_eq!(app.ai.sessions[0].mode, StartMode::New);
     assert_eq!(app.ai.sessions[0].usage.as_ref().unwrap().session_id, None);
+    let notice = "claude: conversation id not known; started a new conversation";
+    assert!(
+        app.notices.iter().any(|n| n.text == notice),
+        "{:?}",
+        app.notices
+    );
+
+    // FR-1 C1 (a): a run with no report channel (no state folder here) never reports, so its
+    // exit is no sign the id was refused: the id stays for Enter and the session file.
+    let (d, mut app) = ai_app();
+    let quick = script(d.path(), "quick", QUICK);
+    app.settings.ai_tools[0] = tool("claude", &quick, true);
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    wait_exit(&app, 0);
+    assert!(app.ai.sessions[0].usage_file.is_none());
+    app.ai.sessions[0].usage = Some(usage::Usage {
+        session_id: Some(ID.into()),
+        ..Default::default()
+    });
+    press(&mut app, KeyCode::Enter);
+    wait_for(&app, 0, |s| {
+        s.contains(&format!("RAN:--base|--resume|{ID}|"))
+    });
+    wait_exit(&app, 0);
+    assert_eq!(crate::ai::restore::capture(&app).sessions[0].session_id, ID);
+    press(&mut app, KeyCode::Enter);
+    let text = wait_for(&app, 0, |s| {
+        s.contains(&format!("RAN:--base|--resume|{ID}|"))
+    });
+    assert!(!text.contains("--continue"), "{text}");
 
     // An id that is no canonical UUID never reaches the arguments.
     let (d, mut app) = ai_app();
@@ -1366,6 +1535,170 @@ fn restart_resumes_by_the_known_id_and_falls_back_after_a_failed_resume() {
     let text = wait_for(&app, 0, |s| s.contains("RAN:--base|--"));
     assert!(text.contains("RAN:--base|--continue|"), "{text}");
     assert!(!text.contains("dangerously"), "{text}");
+}
+
+/// Prints its arguments; resumed by id, it then ends with claude's own not-found message
+/// (the sentence as claude's binary holds it).
+const MISSING: &str = "#!/bin/sh\nprintf RAN:; printf '%s|' \"$@\"; echo\n\
+    if [ \"$2\" = --resume ]; then echo \"No conversation found with session ID: $3\"; fi\n";
+
+/// FR-1 QP1 (D85): a claude run with no report channel, started by id, that exited on claude's
+/// own not-found message for that id gives the id up: Enter and the session file no longer use
+/// it. (An exit without that message keeps the id: the test above.)
+#[test]
+fn claude_without_a_report_channel_drops_an_id_it_did_not_find() {
+    let (d, mut app) = ai_app();
+    let missing = script(d.path(), "missing", MISSING);
+    app.settings.ai_tools[0] = tool("claude", &missing, true);
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    wait_exit(&app, 0);
+    assert!(app.ai.sessions[0].usage_file.is_none(), "no report channel");
+    app.ai.sessions[0].usage = Some(usage::Usage {
+        session_id: Some(ID.into()),
+        ..Default::default()
+    });
+    press(&mut app, KeyCode::Enter);
+    wait_for(&app, 0, |s| {
+        squeeze(s).contains(&squeeze(&format!(
+            "No conversation found with session ID: {ID}"
+        )))
+    });
+    wait_exit(&app, 0);
+    // FR-1 R1 (D89): the session file keeps the refused id: an empty one would reopen with
+    // `--continue`, which could be another tab's conversation.
+    let saved = crate::ai::restore::capture(&app);
+    assert_eq!(saved.sessions[0].session_id, ID);
+    press(&mut app, KeyCode::Enter);
+    let text = wait_for(&app, 0, |s| s.contains("RAN:--base|"));
+    assert!(
+        !text.contains("--resume") && !text.contains("--continue"),
+        "{text}"
+    );
+    assert_eq!(app.ai.sessions[0].session_id(), None);
+    assert_eq!(app.ai.sessions[0].mode, StartMode::New);
+    let notice = "claude: conversation id not known; started a new conversation";
+    assert!(
+        app.notices.iter().any(|n| n.text == notice),
+        "{:?}",
+        app.notices
+    );
+
+    // Reopened from that file: the id is tried (and refused again), never `--continue`; Enter
+    // then starts a new conversation (D88).
+    wait_exit(&app, 0);
+    crate::ai::restore::restore(&mut app, &saved);
+    let j = app.ai.sessions.len() - 1;
+    let text = wait_for(&app, j, |s| {
+        squeeze(s).contains(&squeeze(&format!(
+            "No conversation found with session ID: {ID}"
+        )))
+    });
+    assert!(
+        text.contains(&format!("RAN:--base|--resume|{ID}|")),
+        "{text}"
+    );
+    assert!(!text.contains("--continue"), "{text}");
+    wait_exit(&app, j);
+    app.ai.active = j;
+    press(&mut app, KeyCode::Enter);
+    let text = wait_for(&app, j, |s| s.contains("RAN:--base|"));
+    assert!(
+        !text.contains("--resume") && !text.contains("--continue"),
+        "{text}"
+    );
+    assert_eq!(app.ai.sessions[j].mode, StartMode::New);
+}
+
+/// FR-1 QP1 (D86): while another program holds the account-state lock, the first report waits
+/// for it (at most 150 ms) and the next ones within the back-off do not wait at all; the run's
+/// unsaved `works` is written by the first report after it.
+#[test]
+fn a_busy_state_lock_is_waited_for_once() {
+    use rustix::fs::{FlockOperation, Mode, OFlags};
+    let mut e = setup(&["work"]);
+    let i = e.open(Some("work"), Some(ID));
+    limits::update_state(&e.state, |m| {
+        m.get_mut("claude/work").unwrap().works = false;
+    })
+    .unwrap();
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC;
+    let other = rustix::fs::open(
+        e.state.join(limits::STATE_LOCK),
+        flags,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .unwrap();
+    rustix::fs::flock(&other, FlockOperation::LockExclusive).unwrap();
+    let t0 = Instant::now();
+    limits::on_report(&mut e.app, i);
+    assert!(
+        t0.elapsed() >= Duration::from_millis(150),
+        "{:?}",
+        t0.elapsed()
+    );
+    let t1 = Instant::now();
+    limits::on_report(&mut e.app, i);
+    limits::on_report(&mut e.app, i);
+    assert!(
+        t1.elapsed() < Duration::from_millis(50),
+        "{:?}",
+        t1.elapsed()
+    );
+    drop(other);
+    limits::on_report(&mut e.app, i);
+    let works = |e: &Env| e.known().get("claude/work").is_some_and(|a| a.works);
+    assert!(!works(&e), "within the back-off");
+    // The back-off is over: the run's `works` was kept unsaved and is written now.
+    e.app.ai.state_writes.busy_until = Some(Instant::now());
+    limits::on_report(&mut e.app, i);
+    assert!(works(&e));
+    assert_eq!(e.app.ai.state_writes.busy_until, None);
+}
+
+/// FR-1 R1 (D90): a limit seen while state writes are backed off (another program held the
+/// lock) is kept pending: another session's switch skips that account meanwhile, and the record
+/// is written by the first state update after the back-off.
+#[test]
+fn a_limit_during_the_back_off_is_kept_and_written_after() {
+    use rustix::fs::{FlockOperation, Mode, OFlags};
+    let mut e = setup(&["work", "personal"]);
+    let a = e.open(Some("work"), Some(ID));
+    e.app.ai.sessions[a].auto_switch = false;
+    let b = e.open(Some("personal"), Some(ID2));
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC;
+    let other = rustix::fs::open(
+        e.state.join(limits::STATE_LOCK),
+        flags,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .unwrap();
+    rustix::fs::flock(&other, FlockOperation::LockExclusive).unwrap();
+    e.limit(a);
+    drop(other);
+    assert!(e.app.ai.state_writes.busy_until.is_some());
+    let limited = |e: &Env, key: &str| {
+        e.known()
+            .get(key)
+            .is_some_and(|s| s.limited_until.is_some())
+    };
+    assert!(!limited(&e, "claude/work"), "not written yet");
+    // The back-off is still on: `personal`'s limit is kept too, and `work` is not chosen.
+    e.limit(b);
+    e.step(1100);
+    e.step(1100);
+    assert_eq!(e.account(b), Some("personal"), "{:?}", e.notices());
+    assert!(
+        !e.notices().iter().any(|n| n.contains("switched")),
+        "{:?}",
+        e.notices()
+    );
+    assert!(!limited(&e, "claude/work") && !limited(&e, "claude/personal"));
+    // The back-off is over: both records land at the next pass.
+    e.app.ai.state_writes.busy_until = Some(Instant::now());
+    e.step(0);
+    assert!(limited(&e, "claude/work"), "{:?}", e.known());
+    assert!(limited(&e, "claude/personal"), "{:?}", e.known());
+    assert_eq!(e.app.ai.state_writes.busy_until, None);
 }
 
 /// SEC-31 verify: two tabs in one folder with ids X and Y come back each on its own

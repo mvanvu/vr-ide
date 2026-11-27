@@ -130,6 +130,9 @@ pub struct AiSession {
     pub usage_file: Option<PathBuf>,
     /// What its last valid report said.
     pub usage: Option<usage::Usage>,
+    /// The current run sent a valid report: its first one is acted on even when it says what
+    /// `usage` already holds (a run started by id is seeded with that id).
+    pub(crate) run_reported: bool,
     /// When the report was last looked at (SEC-25, SEC-39).
     pub(crate) usage_poll: usage::Poll,
     /// The settings and report files of the current run; dropping them removes both.
@@ -176,6 +179,7 @@ impl AiSession {
             shared: false,
             usage_file: None,
             usage: None,
+            run_reported: false,
             usage_poll: Default::default(),
             usage_files: None,
             limit_seen: false,
@@ -206,11 +210,18 @@ impl AiSession {
         if !self.switch.unconfirmed || self.running() {
             return false;
         }
-        if self.tool != "codex" {
-            return true;
+        let said = |not_found: fn(&str, &str) -> bool| {
+            self.session_id()
+                .is_some_and(|id| not_found(&self.tab.screen_text(), id))
+        };
+        match self.tool.as_str() {
+            "codex" => said(spawn::codex_not_found),
+            _ if self.usage_file.is_some() => true,
+            // A run with no report channel (its files could not be set up) never reports: its
+            // silence says nothing about the id, only claude's own exit message does (D85).
+            "claude" => said(spawn::claude_not_found),
+            _ => false,
         }
-        self.session_id()
-            .is_some_and(|id| spawn::codex_not_found(&self.tab.screen_text(), id))
     }
 
     /// A run was put in the tab with `start`: a start by id keeps that id until the run reports
@@ -221,6 +232,7 @@ impl AiSession {
             self.usage.get_or_insert_with(Default::default).session_id = Some(id.to_string());
         }
         self.switch.unconfirmed = matches!(start, spawn::Start::Id(_));
+        self.run_reported = false;
         self.limit_watch.resumed = start.mode() != StartMode::New;
         self.limit_watch.picking = start.mode() == StartMode::Resume;
     }
@@ -278,6 +290,12 @@ pub struct AiPanel {
     pub login_display: Option<bool>,
     /// The "login window not available" notice was shown (once per run).
     pub(crate) login_warned: bool,
+    /// `tool@account` whose "history not shared" warning was shown (once per account per run:
+    /// every start and switch attempt on it would repeat it).
+    pub(crate) history_warned: std::collections::BTreeSet<String>,
+    /// Account-state writes from the UI thread: backed off after a busy lock (D86), with what
+    /// could not be written kept (D90).
+    pub(crate) state_writes: limits::Writes,
     /// Report reads so far (SEC-39 test seam).
     pub usage_reads: u64,
 }
@@ -310,6 +328,8 @@ impl AiPanel {
             usage_warned: false,
             login_display: None,
             login_warned: false,
+            history_warned: Default::default(),
+            state_writes: Default::default(),
             usage_reads: 0,
         }
     }
@@ -832,7 +852,9 @@ fn share_history(app: &mut App, tool: &str, account: Option<&str>) -> bool {
     match history::ensure(&dir, tool, &shared) {
         history::Shared::Linked => true,
         history::Shared::NotShared(why) => {
-            app.warn(format!("{tool}@{name}: history not shared ({why})"));
+            if app.ai.history_warned.insert(format!("{tool}@{name}")) {
+                app.warn(format!("{tool}@{name}: history not shared ({why})"));
+            }
             false
         }
     }
@@ -1004,7 +1026,8 @@ pub(crate) fn read_usage(app: &mut App, now: std::time::Instant) -> bool {
         if let Some(u) = read {
             // The run reports: a conversation resumed by id was found.
             s.switch.unconfirmed = false;
-            if s.usage.as_ref() != Some(&u) {
+            if s.usage.as_ref() != Some(&u) || !s.run_reported {
+                s.run_reported = true;
                 s.usage = Some(u);
                 reported.push(i);
             }
@@ -1107,8 +1130,10 @@ fn restart(app: &mut App) {
     if refused && let Some(u) = &mut s.usage {
         u.session_id = None;
     }
-    // codex then starts a new conversation: its `resume --last` could pick another tab's (D62).
-    let fresh = refused && s.tool == "codex";
+    // It then starts a new conversation: codex's `resume --last` and, with shared history,
+    // claude's `--continue` could pick another tab's (D62, D88). codex without any id does too
+    // ([`spawn::new_without_id`]).
+    let fresh = refused;
     let (name, account, root) = (s.tool.clone(), s.account.clone(), s.root.clone());
     let id = s.session_id().map(str::to_string);
     let unheld = account.is_some() && s.account_lock.is_none();
@@ -1134,11 +1159,21 @@ fn restart(app: &mut App) {
         } else {
             spawn::again(&tool, id.as_deref())
         };
-        start_program(app, &tool, account.as_deref(), start, &root)
-            .map(|r| (r, start.mode(), matches!(start, spawn::Start::Id(_))))
+        let unknown =
+            start == spawn::Start::Mode(StartMode::New) && (fresh || spawn::new_without_id(&tool));
+        start_program(app, &tool, account.as_deref(), start, &root).map(|r| {
+            let by_id = matches!(start, spawn::Start::Id(_));
+            (r, start.mode(), by_id, unknown)
+        })
     });
     match result {
-        Ok(((t, program, output, usage_files), mode, by_id)) => {
+        Ok(((t, program, output, usage_files), mode, by_id, unknown)) => {
+            if unknown {
+                app.info(format!(
+                    "{}: conversation id not known; started a new conversation",
+                    usage::account_name(&name, account.as_deref())
+                ));
+            }
             if let Some(s) = app.ai.active_session_mut() {
                 // The run before has exited: nothing overlaps (SEC-28).
                 s.tab.replace(t, program, output);
@@ -1368,8 +1403,14 @@ pub fn answer_remove_account(app: &mut App, name: &str) {
     let Some(state) = app.ai.state_dir.clone() else {
         return;
     };
-    match accounts::remove(&state, name) {
-        Ok(()) => app.info(format!("Account {name} removed")),
+    let removed = accounts::remove(&state, name);
+    if removed.is_ok() {
+        // Not written later either: the removed account's limit must not come back (D91).
+        app.ai.state_writes.forget(name);
+    }
+    match removed {
+        Ok(None) => app.info(format!("Account {name} removed")),
+        Ok(Some(why)) => app.warn(format!("Account {name} removed; {why}")),
         Err(e) => app.error(format!("Not removed: {name}, {e}")),
     }
     rebuild_picker(app);

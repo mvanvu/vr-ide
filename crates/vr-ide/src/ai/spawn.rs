@@ -108,6 +108,22 @@ const NOT_FOUND_REST_MAX: usize = 120;
 /// alone; a caller may add `Error: `) does not matter. A conversation shown again that merely
 /// quotes the line is not that message.
 pub fn codex_not_found(screen: &str, id: &str) -> bool {
+    exit_message(screen, CODEX_NOT_FOUND, id, NOT_FOUND_REST_MAX)
+}
+
+/// What claude prints (and then exits) when `--resume <id>` names no conversation; the id ends
+/// the message.
+pub const CLAUDE_NOT_FOUND: &str = "No conversation found with session ID:";
+
+/// `screen` ends with claude's exit message saying it found no conversation `id`, read as
+/// [`codex_not_found`] reads codex's, with nothing after the id.
+pub fn claude_not_found(screen: &str, id: &str) -> bool {
+    exit_message(screen, CLAUDE_NOT_FOUND, id, 0)
+}
+
+/// The rows after the last blank one, every blank removed, hold `message` + `id` followed by at
+/// most `rest_max` characters.
+fn exit_message(screen: &str, message: &str, id: &str, rest_max: usize) -> bool {
     let squeeze = |s: &str| s.split_whitespace().collect::<String>();
     let rows: Vec<&str> = screen.lines().collect();
     let Some(end) = rows.iter().rposition(|r| !r.trim().is_empty()) else {
@@ -118,10 +134,10 @@ pub fn codex_not_found(screen: &str, id: &str) -> bool {
         .rposition(|r| r.trim().is_empty())
         .map_or(0, |r| r + 1);
     let block = squeeze(&rows[start..=end].concat());
-    let want = format!("{}{id}", squeeze(CODEX_NOT_FOUND));
+    let want = format!("{}{id}", squeeze(message));
     block
         .rfind(&want)
-        .is_some_and(|at| block[at + want.len()..].chars().count() <= NOT_FOUND_REST_MAX)
+        .is_some_and(|at| block[at + want.len()..].chars().count() <= rest_max)
 }
 
 /// The arguments resuming conversation `id` (SEC-24, SEC-31): the tool's `args`, its resume
@@ -149,8 +165,17 @@ pub fn again<'a>(tool: &AiTool, id: Option<&'a str>) -> Start<'a> {
     let mode = again_mode(tool);
     match id {
         Some(id) if mode == StartMode::Continue && args_by_id(tool, id).is_some() => Start::Id(id),
+        _ if new_without_id(tool) => Start::Mode(StartMode::New),
         _ => Start::Mode(mode),
     }
+}
+
+/// A restart or restore of `tool` with no usable id starts a new conversation instead of the
+/// continue arguments: codex's `resume --last` takes the newest conversation of the shared
+/// sessions folder, which may be another tab's (FR-1). claude keeps `--continue` for a session
+/// from before ids were kept (D5).
+pub fn new_without_id(tool: &AiTool) -> bool {
+    tool.name == "codex" && again_mode(tool) == StartMode::Continue
 }
 
 /// The start as a line for the screen (`claude --continue`); a word with a space or a quote is
@@ -390,5 +415,25 @@ mod tests {
         let long = format!("{line} {}", "more ".repeat(40));
         assert!(!codex_not_found(&long, ID));
         assert!(!codex_not_found("", ID));
+    }
+
+    /// FR-1 QP1 (D85): claude's not-found message (as its binary holds it, the id last) at every
+    /// width, and only as the exit message.
+    #[test]
+    fn claude_not_found_line_at_every_width_and_only_as_the_exit_message() {
+        const ID: &str = "0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b";
+        let line = format!("No conversation found with session ID: {ID}");
+        for width in 2..=120 {
+            let screen = format!("RAN:--resume|{ID}|\n{}\n\n", wrapped(&line, width));
+            assert!(claude_not_found(&screen, ID), "width {width}:\n{screen}");
+        }
+        let other = line.replace(ID, "11111111-2222-4333-8444-555555555555");
+        assert!(!claude_not_found(&other, ID));
+        // A conversation's tail quoting it, then more output.
+        assert!(!claude_not_found(&format!("{line}\n\n> quit\n"), ID));
+        assert!(!claude_not_found(&format!("{line} and more"), ID));
+        // codex's message is not claude's.
+        assert!(!claude_not_found(&format!("{CODEX_NOT_FOUND} {ID}."), ID));
+        assert!(!claude_not_found("", ID));
     }
 }

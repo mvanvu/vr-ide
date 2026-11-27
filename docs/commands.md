@@ -9,7 +9,8 @@ The list shows the matching slash commands with their arguments and a short desc
   for `/ssh` the files of `-i`, `-F`, `-E`, `-S` and `-o IdentityFile=` (relative to the
   workspace folder of the active file, as ssh resolves them) and, in the destination position,
   the recent targets and the hosts of `~/.ssh/config`; the tool names of `/ai` (setting
-  `ai_tools`) and `on` / `off` after `/ai autoswitch`; the theme names, the workspace folders of
+  `ai_tools`) followed by its words `usage`, `autoswitch` and `rename`, and `on` / `off` after
+  `/ai autoswitch`; the theme names, the workspace folders of
   `/ws remove`, the numbers of `/ws recent` and `/recent`, the values of `/indent` and `/eol`,
   the language ids of `/lang`, and for `/set` the setting names (with their value now), then
   `true` / `false` or the theme names. Hidden files are offered only when what you typed starts
@@ -36,7 +37,8 @@ it holds the terminal (an AI tool, an editor, a password prompt), it opens a new
 runs the command there, with a notice. `/ai <tool>` always starts a new session in the AI panel,
 never in a terminal; `/ai` alone opens the tool picker there, as `ctrl+f12` does. `/ai usage`
 shows the active session's account with its 5-hour and weekly usage and their reset times (claude
-only; see the README's AI panel usage section). `/ai autoswitch off` (or `on`) turns the automatic
+only: another tool's session gets `codex does not report usage`; see the README's AI panel usage
+section). `/ai autoswitch off` (or `on`) turns the automatic
 account switch at a usage limit off for the active session; its tab shows `⊘` while it is off.
 
 `/ws open <folder>` switches the window to that folder alone, `/ws open <file>.vr-workspace` to the

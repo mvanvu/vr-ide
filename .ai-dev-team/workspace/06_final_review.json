@@ -1,0 +1,15 @@
+{
+  "mode": "unattended (Agent tool, no Workflow)",
+  "scope": "6b2b580..0e92834",
+  "dimensions": ["correctness", "security", "ui"],
+  "confirmed": [
+    {"id": "F1", "dimension": "ui", "title": "info replies expire unseen behind sticky warnings", "fixed_in": "FR-1"},
+    {"id": "F2", "dimension": "ui", "title": "'all accounts limited' when others are only unverified/held/unshared", "fixed_in": "FR-1"},
+    {"id": "C1", "dimension": "correctness", "title": "codex resume --last / id dropped without a report channel", "fixed_in": "FR-1"},
+    {"id": "C2", "dimension": "correctness", "title": "codex by-id first report never reached on_report", "fixed_in": "FR-1"}
+  ],
+  "refuted": [{"id": "F3", "dimension": "ui", "title": "next-day reset shown as HH:MM (D26 intended)"}],
+  "uncertain": [],
+  "minor_fixed": ["state entry removed with the account", "non-blocking state lock + 30 s back-off + pending records", "guessed 1 h limit", "UI polish (completion, wording, names, floor)", "claude refused id handling", "notice order", "busy wording"],
+  "minor_open": ["notice stacking beyond F1", "stray-variable warning format", "login-busy message only on stderr", "'tomorrow' in reset times (polish)", "gtk3-rs 0.18 / glib 0.18.5 advisories via wry (accepted)", "url 2.5.8 RUSTSEC-2026-0592 not reachable (move to 2.5.9 when two weeks old)"]
+}

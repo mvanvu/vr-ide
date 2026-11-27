@@ -1112,9 +1112,30 @@ impl App {
         });
     }
 
+    /// Adds a notice. The row shows the front one: a timed notice goes before those that stay
+    /// until dismissed, so the reply to what the user just did is seen at once instead of
+    /// expiring unseen behind a warning (timed ones keep their order among themselves).
     pub fn push_notice(&mut self, n: Notice) {
         self.notices.retain(|old| !old.until_next);
-        self.notices.push_back(n);
+        let at = if n.expires.is_some() {
+            self.notices
+                .iter()
+                .position(|old| old.expires.is_none())
+                .unwrap_or(self.notices.len())
+        } else {
+            self.notices.len()
+        };
+        self.notices.insert(at, n);
+        self.dirty = true;
+    }
+
+    /// Esc or a click dismisses the front notice; the next timed one gets a whole TTL from now.
+    pub fn dismiss_notice(&mut self) {
+        self.notices.pop_front();
+        let floor = Instant::now() + INFO_NOTICE_TTL;
+        if let Some(t) = self.notices.front_mut().and_then(|n| n.expires.as_mut()) {
+            *t = (*t).max(floor);
+        }
         self.dirty = true;
     }
 
@@ -1155,6 +1176,14 @@ impl App {
                 floor += INFO_NOTICE_TTL;
                 if let Some(t) = &mut n.expires {
                     *t = (*t).max(floor);
+                }
+            }
+        } else {
+            // A timed notice does not age while another one is in front: once it reaches the
+            // front it still has a whole TTL.
+            for n in self.notices.iter_mut().skip(1) {
+                if let Some(t) = &mut n.expires {
+                    *t = (*t).max(now + INFO_NOTICE_TTL);
                 }
             }
         }
@@ -1346,7 +1375,7 @@ impl App {
             return;
         }
         if key.code == DISMISS_KEY && key.modifiers.is_empty() && !self.notices.is_empty() {
-            self.notices.pop_front();
+            self.dismiss_notice();
             return;
         }
         // The explorer's navigation keys are built in like the editor's cursor keys, but a
@@ -1470,7 +1499,7 @@ impl App {
         // keeps Esc for its program.
         if inside(self.layout.notice) {
             if matches!(ev.kind, MouseEventKind::Down(MouseButton::Left)) {
-                self.notices.pop_front();
+                self.dismiss_notice();
             }
             return;
         }

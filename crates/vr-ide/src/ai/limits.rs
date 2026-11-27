@@ -52,9 +52,11 @@
 //!
 //! Per account, `<state>/ai-account-state` (JSON `{"claude/work": {"works": true,
 //! "limited_until": <unix s>, "sticky": true}}`) keeps whether the account is known to work and until when it is
-//! limited (SEC-27): 0600, written through a temp file and a rename, read without following a
-//! link, at most [`STATE_MAX`] bytes, changed only under an exclusive lock on
-//! `<state>/ai-account-state.lock`.
+//! limited (SEC-27; `"guessed": true` when no reset was known, [`GUESSED_LIMIT`]): 0600, written
+//! through a temp file and a rename, read without following a link, at most [`STATE_MAX`] bytes,
+//! changed only under an exclusive lock on `<state>/ai-account-state.lock`, which is tried for
+//! at most 150 ms (the update is skipped when another program holds it, and the UI thread then
+//! leaves the state alone for [`BUSY_BACKOFF`]).
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
@@ -112,7 +114,14 @@ pub struct AccountState {
     pub limited_until: Option<i64>,
     /// That limit is [`LimitHit::sticky`]: it lasts until `limited_until` whatever a report says.
     pub sticky: bool,
+    /// `limited_until` is not a reset the tool showed or reported but [`GUESSED_LIMIT`] from the
+    /// limit: never sticky, never shown as a time, replaced by any real reset.
+    pub guessed: bool,
 }
+
+/// How long a limit whose reset is unknown (none on screen, none in a report at 100 %) keeps the
+/// account out of auto-switch: a later report under 100 % ends it as it ends any other.
+pub const GUESSED_LIMIT: i64 = 3600;
 
 /// What a line of the tool's limit message says.
 struct Found<'a> {
@@ -772,6 +781,7 @@ fn clean(map: &mut BTreeMap<String, AccountState>, now: i64) {
             .filter(|t| *t > now)
             .map(|t| t.min(now + RESET_MAX));
         v.sticky &= v.limited_until.is_some();
+        v.guessed &= v.limited_until.is_some() && !v.sticky;
         valid_key(k) && *v != AccountState::default()
     });
 }
@@ -790,6 +800,7 @@ fn parse_state(bytes: &[u8], now: i64) -> BTreeMap<String, AccountState> {
                     works: v.get("works").and_then(Value::as_bool).unwrap_or(false),
                     limited_until: v.get("limited_until").and_then(Value::as_i64),
                     sticky: v.get("sticky").and_then(Value::as_bool).unwrap_or(false),
+                    guessed: v.get("guessed").and_then(Value::as_bool).unwrap_or(false),
                 },
             ))
         })
@@ -833,12 +844,27 @@ impl Drop for StateLock {
     }
 }
 
+/// How long the UI thread tries for the state lock before it skips the update.
+const LOCK_WAIT: Duration = Duration::from_millis(150);
+const LOCK_STEP: Duration = Duration::from_millis(10);
+
+/// The state lock, tried without blocking for at most [`LOCK_WAIT`]: this runs on the UI thread,
+/// and any program of the same user may hold the lock file. Busy: an error, the update is
+/// skipped (the next report or event tries again).
 fn lock(state: &Path) -> io::Result<StateLock> {
     use rustix::fs::{FlockOperation, Mode, OFlags};
+    use rustix::io::Errno;
     let flags = OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let fd = rustix::fs::open(state.join(STATE_LOCK), flags, Mode::RUSR | Mode::WUSR)?;
-    rustix::fs::flock(&fd, FlockOperation::LockExclusive)?;
-    Ok(StateLock(fd))
+    let deadline = Instant::now() + LOCK_WAIT;
+    loop {
+        match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => return Ok(StateLock(fd)),
+            Err(Errno::INTR) => {}
+            Err(Errno::WOULDBLOCK) if Instant::now() < deadline => std::thread::sleep(LOCK_STEP),
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 fn write(state: &Path, _lock: &StateLock, map: &BTreeMap<String, AccountState>) -> io::Result<()> {
@@ -853,6 +879,9 @@ fn write(state: &Path, _lock: &StateLock, map: &BTreeMap<String, AccountState>) 
             }
             if v.sticky {
                 o.insert("sticky".into(), Value::Bool(true));
+            }
+            if v.guessed {
+                o.insert("guessed".into(), Value::Bool(true));
             }
             (k.clone(), Value::Object(o))
         })
@@ -894,6 +923,113 @@ pub fn update_state(
     Ok(true)
 }
 
+/// How long the UI thread leaves the state alone after finding its lock held by another
+/// program: each try costs up to [`LOCK_WAIT`] of the UI thread.
+pub(crate) const BUSY_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Most records kept while the state is busy; the oldest goes first (another program holding the
+/// lock for long must not grow this without bound).
+const UNSAVED_MAX: usize = 64;
+
+/// A state record from the UI thread that could not be written yet (D90).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Record {
+    /// A limit until a reset the tool showed or reported ([`record_limit`]).
+    Limit { until: i64, sticky: bool },
+    /// A limit with no known reset ([`record_guess`]).
+    Guess(i64),
+    /// The account showed its login screen: it does not work.
+    NotWorking,
+}
+
+impl Record {
+    fn apply(self, m: &mut BTreeMap<String, AccountState>, key: &str) {
+        match self {
+            Record::Limit { until, sticky } => {
+                record_limit(m.entry(key.to_string()).or_default(), until, sticky)
+            }
+            Record::Guess(t) => record_guess(m.entry(key.to_string()).or_default(), t),
+            Record::NotWorking => {
+                if let Some(e) = m.get_mut(key) {
+                    e.works = false;
+                }
+            }
+        }
+    }
+}
+
+/// The UI thread's state writes: backed off after a busy lock (D86), with the records that
+/// could not be written kept for the next write (D90).
+#[derive(Debug, Default)]
+pub(crate) struct Writes {
+    /// No write is tried before this.
+    pub(crate) busy_until: Option<Instant>,
+    unsaved: Vec<(String, Record)>,
+}
+
+impl Writes {
+    /// What is known of the accounts: the state file with the records not written yet.
+    pub(crate) fn load(&self, state: &Path) -> BTreeMap<String, AccountState> {
+        let mut m = load_state(state);
+        for (key, r) in &self.unsaved {
+            r.apply(&mut m, key);
+        }
+        clean(&mut m, usage::now_secs());
+        m
+    }
+
+    /// Records `r` for account `key`: written now, or kept until a write after the back-off.
+    pub(crate) fn record(&mut self, state: &Path, key: &str, r: Record) {
+        if self.unsaved.len() >= UNSAVED_MAX {
+            self.unsaved.remove(0);
+        }
+        self.unsaved.push((key.to_string(), r));
+        let _ = self.update(state, |_| {});
+    }
+
+    /// Drops the records kept for account `name` under every tool: it was removed, and a new
+    /// account of that name starts with nothing (as [`forget`] does for the file, D91).
+    pub(crate) fn forget(&mut self, name: &str) {
+        self.unsaved
+            .retain(|(k, _)| k.split_once('/').is_none_or(|(_, a)| a != name));
+    }
+
+    /// Writes the records kept, if any (each loop pass: they need no new event).
+    pub(crate) fn flush(&mut self, state: &Path) {
+        if !self.unsaved.is_empty() {
+            let _ = self.update(state, |_| {});
+        }
+    }
+
+    /// [`update_state`] from the UI thread, with the records kept applied first: not tried (a
+    /// `WouldBlock` error) until `busy_until`, which a busy lock sets [`BUSY_BACKOFF`] ahead
+    /// (D86). Callers keep what was not written and try again later.
+    pub(crate) fn update(
+        &mut self,
+        state: &Path,
+        f: impl FnOnce(&mut BTreeMap<String, AccountState>),
+    ) -> io::Result<bool> {
+        if self.busy_until.is_some_and(|t| Instant::now() < t) {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        let unsaved = &self.unsaved;
+        let r = update_state(state, |m| {
+            for (key, rec) in unsaved {
+                rec.apply(m, key);
+            }
+            f(m);
+        });
+        let busy = matches!(&r, Err(e) if e.kind() == io::ErrorKind::WouldBlock);
+        self.busy_until = busy.then(|| Instant::now() + BUSY_BACKOFF);
+        // Kept only while the lock is busy: any other failure (an unreadable file) would fail
+        // the same way again.
+        if !busy {
+            self.unsaved.clear();
+        }
+        r
+    }
+}
+
 // ---- sessions -----------------------------------------------------------------------------------
 
 /// What a session's limit watch remembers between loop passes.
@@ -911,6 +1047,9 @@ pub struct Watch {
     /// This run's first report with an id set `works`: the run works, and a login line on its
     /// screen no longer says otherwise.
     pub(crate) works_marked: bool,
+    /// That `works` reached the state file (an update skipped for a busy lock is tried again at
+    /// the next report after [`BUSY_BACKOFF`]).
+    works_saved: bool,
     /// This run already cleared (or found no) `limited_until` from a report under 100 %.
     clear_checked: bool,
     /// This run's login screen was recorded.
@@ -936,6 +1075,7 @@ impl std::fmt::Debug for Watch {
             .field("typed", &self.typed)
             .field("notice_at", &self.notice_at)
             .field("works_marked", &self.works_marked)
+            .field("works_saved", &self.works_saved)
             .field("clear_checked", &self.clear_checked)
             .field("login_marked", &self.login_marked)
             .field("resumed", &self.resumed)
@@ -1062,6 +1202,10 @@ struct Seen {
 /// (once per quiet spell), and acts on a limit or login screen. Called on every loop pass with
 /// its time. True when a notice was shown.
 pub(crate) fn check(app: &mut App, now: Instant) -> bool {
+    // Records kept while the lock was busy land once the back-off is over (D90).
+    if let Some(state) = app.ai.state_dir.as_deref() {
+        app.ai.state_writes.flush(state);
+    }
     let mut seen = Vec::new();
     for (i, s) in app.ai.sessions.iter_mut().enumerate() {
         let w = &mut s.limit_watch;
@@ -1115,11 +1259,7 @@ fn act(app: &mut App, i: usize, found: Seen, now: Instant) -> bool {
     if found.login && !s.limit_watch.login_marked && !s.limit_watch.works_marked {
         s.limit_watch.login_marked = true;
         if let (Some(state), Some(key)) = (&state, &key) {
-            let _ = update_state(state, |m| {
-                if let Some(e) = m.get_mut(key) {
-                    e.works = false;
-                }
-            });
+            app.ai.state_writes.record(state, key, Record::NotWorking);
         }
     }
     // A resumed conversation's tail, shown again, is not this run's limit.
@@ -1141,10 +1281,16 @@ fn act(app: &mut App, i: usize, found: Seen, now: Instant) -> bool {
     let resets = hit
         .resets_at
         .or_else(|| report_reset(s.usage.as_ref(), secs));
-    if let (Some(state), Some(key), Some(t)) = (&state, &key, resets) {
-        let _ = update_state(state, |m| {
-            record_limit(m.entry(key.clone()).or_default(), t, hit.sticky);
-        });
+    if let (Some(state), Some(key)) = (&state, &key) {
+        let r = match resets {
+            Some(t) => Record::Limit {
+                until: t,
+                sticky: hit.sticky,
+            },
+            // Unknown reset: kept out of auto-switch for a while rather than not at all.
+            None => Record::Guess(secs + GUESSED_LIMIT),
+        };
+        app.ai.state_writes.record(state, key, r);
     }
     let rated = s
         .limit_watch
@@ -1170,13 +1316,33 @@ fn act(app: &mut App, i: usize, found: Seen, now: Instant) -> bool {
 /// window limit never shortens a longer (sticky) one still in force.
 fn record_limit(e: &mut AccountState, t: i64, sticky: bool) {
     match e.limited_until {
-        Some(old) if old > t => {}
-        Some(old) if old == t => e.sticky |= sticky,
+        // A guess gives way to any reset the tool showed or reported.
+        Some(old) if old > t && !e.guessed => {}
+        Some(old) if old == t && !e.guessed => e.sticky |= sticky,
         _ => {
             e.limited_until = Some(t);
             e.sticky = sticky;
+            e.guessed = false;
         }
     }
+}
+
+/// A limit with no known reset (FR-1): limited until `t` (now + [`GUESSED_LIMIT`]) as a guess,
+/// unless a limit is already recorded.
+fn record_guess(e: &mut AccountState, t: i64) {
+    if e.limited_until.is_none() {
+        e.limited_until = Some(t);
+        e.sticky = false;
+        e.guessed = true;
+    }
+}
+
+/// Drops what is known of account `name` under every tool (the account is being removed, so a
+/// new one of that name starts with nothing). True when it wrote.
+pub fn forget(state: &Path, name: &str) -> io::Result<bool> {
+    update_state(state, |m| {
+        m.retain(|k, _| k.split_once('/').is_none_or(|(_, a)| a != name));
+    })
 }
 
 /// A new validated report for session `i` (SEC-27): its first one with a session id marks the
@@ -1191,20 +1357,24 @@ pub(crate) fn on_report(app: &mut App, i: usize) {
     let (Some(key), Some(u)) = (state_key(&s.tool, s.account.as_deref()), &s.usage) else {
         return;
     };
-    let works = u.session_id.is_some() && !s.limit_watch.works_marked;
+    // The run works from its first report with an id, whether or not that reaches the file.
+    s.limit_watch.works_marked |= u.session_id.is_some();
+    let works = u.session_id.is_some() && !s.limit_watch.works_saved;
     let clear = !s.limit_seen && !s.limit_watch.clear_checked && below_full(u);
     if !works && !clear {
         return;
     }
-    s.limit_watch.works_marked |= works;
-    s.limit_watch.clear_checked |= clear;
-    let _ = update_state(&state, |m| {
+    let saved = app.ai.state_writes.update(&state, |m| {
         let e = m.entry(key).or_default();
         e.works |= works;
         if clear && !e.sticky {
             e.limited_until = None;
         }
     });
+    if saved.is_ok() {
+        s.limit_watch.works_saved |= works;
+        s.limit_watch.clear_checked |= clear;
+    }
 }
 
 #[cfg(test)]

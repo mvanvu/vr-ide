@@ -196,6 +196,15 @@ fn status_line_format() {
     };
     assert_eq!(status_line(&no_window), "Opus 5.5");
     assert_eq!(status_line(&Usage::default()), "");
+    // FR-1 M4: floored like the tab (89.6 % is not shown as 90 %).
+    let high = Usage {
+        five_hour: Some(Window {
+            used_percentage: 89.6,
+            resets_at: None,
+        }),
+        ..u.clone()
+    };
+    assert_eq!(status_line(&high), "Opus 5.5 · 5h 89%");
     let wild = Usage {
         model: Some(format!("a\u{1b}b\nc{}", "m".repeat(300))),
         ..u

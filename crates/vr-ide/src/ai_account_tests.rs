@@ -360,8 +360,9 @@ fn remove_account_asks_refuses_while_in_use_and_deletes_only_it() {
     select(&mut e.app, "claude", None);
     press(&mut e.app, KeyCode::Delete);
     assert!(e.app.dialog.is_none());
+    // An info notice is shown at once, ahead of the warnings above (FR-1 F1).
     assert_eq!(
-        notices(&e.app).last().unwrap(),
+        e.app.notices.front().unwrap().text,
         "default is claude's own config"
     );
     // Asks; Cancel is the default.
@@ -415,7 +416,8 @@ fn remove_account_asks_refuses_while_in_use_and_deletes_only_it() {
     assert!(!work.exists(), "{:?}", notices(&e.app));
     assert!(alt.is_dir(), "sibling stays");
     assert!(e.state.join("accounts").is_dir());
-    assert_eq!(notices(&e.app).last().unwrap(), "Account work removed");
+    // Info notices queue ahead of the warnings, in their order (FR-1 F1).
+    assert!(notices(&e.app).contains(&"Account work removed".to_string()));
     assert!(
         shared.path().join("conversation.jsonl").exists(),
         "the shared history stays"
@@ -536,6 +538,33 @@ fn restart_checks_the_account_again() {
     assert!(!e.app.ai.sessions[0].running());
 }
 
+/// FR-1 M1: removing an account drops what vr-ide knew of it (limited, works), so an account
+/// created again under that name starts with nothing; other accounts keep theirs.
+#[test]
+fn removing_an_account_forgets_its_state() {
+    use crate::ai::limits::{self, AccountState};
+    let mut e = setup();
+    accounts::create(&e.state, "claude", "work").unwrap();
+    accounts::create(&e.state, "claude", "alt").unwrap();
+    let until = crate::ai::usage::now_secs() + 3600;
+    let limited = AccountState {
+        works: true,
+        limited_until: Some(until),
+        sticky: true,
+        guessed: false,
+    };
+    let map = [("claude/work", limited), ("claude/alt", limited)]
+        .map(|(k, v)| (k.to_string(), v))
+        .into();
+    limits::save_state(&e.state, &map).unwrap();
+    crate::ai::answer_remove_account(&mut e.app, "work");
+    assert_eq!(notices(&e.app).last().unwrap(), "Account work removed");
+    accounts::create(&e.state, "claude", "work").unwrap();
+    let known = limits::load_state(&e.state);
+    assert!(!known.contains_key("claude/work"), "{known:?}");
+    assert_eq!(known["claude/alt"], limited);
+}
+
 /// D17: an open session holds its account for every window: a removal from elsewhere is
 /// refused until the tab is closed.
 #[test]
@@ -606,8 +635,59 @@ fn named_sessions_share_the_tools_history() {
         warned,
         ["claude@alt: history not shared (history entry is not a folder; left as it is)"]
     );
+    // FR-1 M4: once per account per run, however many sessions start on it.
+    crate::ai::open_tool(&mut e.app, "claude @alt").unwrap();
+    let again = notices(&e.app)
+        .into_iter()
+        .filter(|n| n.contains("history not shared"))
+        .count();
+    assert_eq!(again, 1, "{:?}", notices(&e.app));
+    crate::ai::close(&mut e.app, 4);
     // A second session on the linked account keeps the link.
     crate::ai::open_tool(&mut e.app, "claude @work").unwrap();
     assert!(e.app.ai.sessions[4].shared);
     assert_eq!(ccd(&e.app, 4), format!("{}|", work.display()));
+}
+
+/// FR-1 R2 (D91): a limit on an account, kept unwritten while another program held the state
+/// lock (D90), is dropped when that account is removed: once the back-off is over it does not
+/// come back, so a new account of that name does not start limited.
+#[test]
+fn removing_an_account_drops_its_unwritten_records() {
+    use crate::ai::limits::{self, Record};
+    use rustix::fs::{FlockOperation, Mode, OFlags};
+    let mut e = setup();
+    accounts::create(&e.state, "claude", "x").unwrap();
+    accounts::create(&e.state, "claude", "y").unwrap();
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC;
+    let other = rustix::fs::open(
+        e.state.join(limits::STATE_LOCK),
+        flags,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .unwrap();
+    rustix::fs::flock(&other, FlockOperation::LockExclusive).unwrap();
+    let until = crate::ai::usage::now_secs() + 3600;
+    let limit = Record::Limit {
+        until,
+        sticky: false,
+    };
+    e.app.ai.state_writes.record(&e.state, "claude/x", limit);
+    e.app.ai.state_writes.record(&e.state, "claude/y", limit);
+    assert!(
+        limits::load_state(&e.state).is_empty(),
+        "lock held: nothing written"
+    );
+    drop(other);
+    crate::ai::answer_remove_account(&mut e.app, "x");
+    assert!(!e.state.join("accounts/x").exists());
+    // The back-off is over: the next pass writes what is still kept.
+    e.app.ai.state_writes.busy_until = Some(Instant::now());
+    limits::check(&mut e.app, Instant::now());
+    let known = limits::load_state(&e.state);
+    assert!(!known.keys().any(|k| k.ends_with("/x")), "{known:?}");
+    assert_eq!(
+        known.get("claude/y").and_then(|a| a.limited_until),
+        Some(until)
+    );
 }

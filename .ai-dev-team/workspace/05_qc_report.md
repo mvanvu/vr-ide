@@ -295,3 +295,74 @@ Rebuilt once via run-heavy; same fake opener, no display, `BROWSER=/bin/false` i
 - Q1: launcher with `--help`, `-oProxyCommand=x`, `-https://x/--version`, `-`: exit 1 each, fake opener log empty (never called). `https://github.com/login/device`: exit 0, `ARGC=1 ARG=[https://github.com/login/device] BROWSER=<unset>`. Pass.
 - Q2: `vr-ide --login-window` with 0/1/2/4 args: `usage: vr-ide --login-window <tool> <account> <url>`, exit 2, state tree afterwards = only the launcher link. Pass.
 Project files written: none (qa-artifacts/T8/qc removed).
+
+## Sign-off
+Engine: cargo via run-heavy.sh (tui project, no browser). Logs: `qa-artifacts/signoff/` (t1, t1r, t1b, t2, t3, t3b, t4). No project file touched (git status clean).
+
+| Step | Result |
+|---|---|
+| (1) `cargo test --workspace` | first run aborted at vr-git `tests/security.rs`: `dropping_the_worker_kills_its_running_git` FAILED, `Io("Text file busy (os error 26)")` (ETXTBSY race on a just-written script). cargo stopped there, so later crates did not run in that pass. Rerun of that file once: 27 passed, 0 failed -> flaky, not reproduced (recorded, not hidden). Then `cargo test --workspace --no-fail-fast`: 37 test targets, 1614 passed, 0 failed, 18 ignored, EXIT 0 (includes vr-ide lib 1104+, desktop_cli 3, login_helper 6, statusline_helper 4, vr-git security 27) |
+| (2) `cargo test -p vr-ide --no-default-features` | lib 1104 passed, 0 failed, 7 ignored; desktop_cli 3, login_helper 6, statusline_helper 4; EXIT 0 |
+| (3) `cargo fmt --all --check` + `clippy --workspace --all-targets -D warnings` | EXIT 0, clean |
+| (3b) clippy `-p vr-ide --all-targets --no-default-features -D warnings` | EXIT 0, clean |
+| (4) `cargo build --release -p vr-ide` | Finished release, EXIT 0; `target/release/vr-ide` 24 MB |
+
+AC walk
+| AC | Status | Evidence |
+|---|---|---|
+| AC-1 | verified | QC T1 |
+| AC-2 | verified | QC T2 / T2b |
+| AC-3 | verified (helper side); SEC-22 precedence unverified | QC T3 (+ re-check) |
+| AC-4 | verified | QC T4 (+ re-check) |
+| AC-5 | verified | QC T5 (+ re-check) |
+| AC-6 | verified against fake claude agents; real claude idle-box layout and replayed limit line on `--resume` unverified (needs the user) | QC T6 (+ re-check) |
+| AC-7 | verified | QC T6 C4-C6 (no id by dev unit test) |
+| AC-8 | verified | QC T7 |
+| AC-9 | partial: launcher/CLI/state/data removal verified; the window itself (open, titles, per-account web data live, allowlist redirect/window.open SEC-36, success close) unverified, needs the user | QC T8 (+ re-check) |
+
+Unverified, need the user: AC-9 window, real claude/codex screen layouts, SEC-22 "project settings cannot override ours" (needs a signed-in claude).
+Verdict: SIGNOFF_PASS (one flaky vr-git test noted).
+
+## QC FR-1 (re-verification after Phase 5 fixes, tree on HEAD 0e92834 + uncommitted FR-1)
+Logs: qa-artifacts/FR-1-qc/{1_test,2_nodef,3_lint,4_rel}.log. All via run-heavy.sh, once. No project file touched.
+
+| Command | Result |
+|---|---|
+| cargo test --workspace --no-fail-fast | rc=0, 1625 passed, 0 failed (vr-ide lib 1115, 7 ignored; desktop_cli 3, login_helper 6, statusline_helper 4; vr-git worker 9 incl. dropping_the_worker_kills_its_running_git ok first try; vr-term pty 22; vr-config 17+27+8; vr-core 156; vr-fs 44+2; vr-search 43+2; vr-syntax 24+25+27+6; vr-term lib 21, others 3/1/1/1/6) |
+| cargo test -p vr-ide --no-default-features | rc=0, 1128 passed (lib 1115, 3, 6, 4), 0 failed |
+| fmt --check + clippy workspace --all-targets -D warnings + clippy -p vr-ide --no-default-features -D warnings | rc=0, no warnings |
+| cargo build --release -p vr-ide | rc=0 |
+No failures, so no reruns; no flake seen.
+
+| Item | Proving test(s) | Green (default / no-default) |
+|---|---|---|
+| F1 reply behind sticky warning shown at once, full TTL, dismiss gives next a whole TTL | app_tests::an_info_notice_is_shown_at_once_and_for_its_whole_ttl_behind_a_warning (warn then 2 infos: front is "reply one", then "reply two", then the warning) | yes / yes |
+| F2 reasons notice | ai_switch_tests::all_limited_names_the_other_accounts_reset, ::no_usable_account_names_each_reason, switch::tests::none_left_names_the_reasons | yes / yes |
+| C1 codex no id starts New, never --last | ai_switch_tests::codex_without_an_id_starts_new_never_resume_last (Enter and restore: notice "conversation id not known; started a new conversation", no "resume" in args, mode New); ::restart_resumes_by_the_known_id_and_falls_back_after_a_failed_resume | yes / yes |
+| C2 first by-id report marks working | ai_switch_tests::codex_first_report_of_a_run_started_by_id_marks_it_working (works_marked and state works=true) | yes / yes |
+| M1 state removed with account | limits::tests::forget_drops_only_that_accounts_entries, ai_account_tests::removing_an_account_forgets_its_state | yes / yes |
+| M2 non-blocking state lock | limits::tests::a_held_state_lock_is_given_up_quickly | yes / yes |
+| M3 guessed 1 h limit | ai_tests::ai_limit_without_a_reset_is_recorded_for_an_hour, limits::tests::a_guessed_limit_gives_way_to_a_real_one | yes / yes |
+| M4 UI polish | usage_tests::status_line_format, completion_tests::ai_completes_tool_names, ai_tests::ai_usage_without_data, ai_account_tests::named_sessions_share_the_tools_history | yes / yes |
+
+Verdict: QC_PASS FR-1. Not checked: real claude/codex binaries and any window (not allowed); behaviour is proven by the test harness only.
+
+## QC FR-1 re-check (after Quick pass 1/2 and Fix round 1)
+Logs: qa-artifacts/FR-1-qc/r1..r4.log. Via run-heavy.sh, no project file touched.
+- `cargo test -p vr-ide --lib -- ai_ limits:: app_tests spawn:: restore usage switch`: 247 passed, 0 failed.
+- `cargo test -p vr-ide --no-default-features --lib -- ai_ limits:: restore`: 175 passed, 0 failed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: rc=0.
+- `state_two_writers_keep_both` alone 5x: 5/5 ok.
+Behaviours (test name + body read, green in both feature runs where in scope):
+- busy wording: no_usable_account_names_each_reason expects "claude@third: busy (being removed or set up)".
+- 30 s back-off: limits::BUSY_BACKOFF = 30 s; a_busy_state_lock_is_waited_for_once: first on_report waits >=150 ms, next two <50 ms, nothing written within the back-off, `works` written after back-off ends, busy_until cleared.
+- claude_without_a_report_channel_drops_an_id_it_did_not_find: refused id kept in capture(); Enter starts New (no --resume/--continue) with the "conversation id not known" notice; restore tries `--resume ID` (never --continue), then Enter starts New.
+- "session id not known" is a Warning positioned after the "hit its usage limit" warning (no_session_id_notifies_only).
+- a_limit_during_the_back_off_is_kept_and_written_after: limit not written during back-off, other session's account not switched to it, both records land at the next pass after back-off.
+Verdict: QC_PASS FR-1.
+
+## QC FR-1 round 2 (Writes::forget on account removal)
+- `cargo test -p vr-ide --lib -- ai_account limits:: ai_ restore` (run-heavy): rc=0, 176 passed, 0 failed.
+- `removing_an_account_drops_its_unwritten_records` alone 3x: 3/3 ok (logs qa-artifacts/FR-1-qc/s1.log, s2.log).
+- Body (ai_account_tests.rs:656): lock held, Limit recorded for claude/x and claude/y, state file empty; lock released, answer_remove_account("x"), accounts/x gone; back-off forced over, limits::check; asserts no key ending "/x" and claude/y limited_until == until. Proves the requirement.
+Verdict: QC_PASS FR-1.

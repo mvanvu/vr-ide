@@ -441,11 +441,15 @@ fn find(app: &mut App, input: &str) -> Option<Found> {
                     .collect();
                 return Some(found(cands, word, Note::Keys));
             }
+            // The tool names, then `/ai`'s own words (`usage` takes nothing after it).
+            let subcommands = [("usage", ""), ("autoswitch", " "), ("rename", " ")];
             let cands = ai_tool_names(app)
                 .into_iter()
-                .filter(|t| t.starts_with(arg))
-                .map(|t| Cand {
-                    fill: format!("{head}{t} "),
+                .map(|t| (t, " "))
+                .chain(subcommands.map(|(w, gap)| (w.to_string(), gap)))
+                .filter(|(t, _)| t.starts_with(arg))
+                .map(|(t, gap)| Cand {
+                    fill: format!("{head}{t}{gap}"),
                     label: t,
                     kind: CandKind::Other,
                     source: "",

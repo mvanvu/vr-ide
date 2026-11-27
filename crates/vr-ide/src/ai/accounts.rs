@@ -515,8 +515,10 @@ fn remove_login_data(data: LoginData, name: &str) -> std::io::Result<()> {
 /// `accounts/<name>` (and its lock file) is touched: the account's history entry is a link that
 /// is unlinked, the shared history it points at stays. Refused, before anything is deleted,
 /// while a session holds the account in any window (D17) or its login window is open; the
-/// caller has asked and checked its own sessions.
-pub fn remove(state: &Path, name: &str) -> Result<(), String> {
+/// caller has asked and checked its own sessions. What vr-ide knew of the account (works,
+/// limited) goes too, under the same holds, so a new account of that name starts with nothing;
+/// `Ok(Some(why))` when only that could not be done.
+pub fn remove(state: &Path, name: &str) -> Result<Option<String>, String> {
     use rustix::fs::{AtFlags, FileType, FlockOperation};
     let name = validate(name).map_err(|e| e.message().to_string())?;
     let index_lock = lock_index(state)?;
@@ -549,13 +551,17 @@ pub fn remove(state: &Path, name: &str) -> Result<(), String> {
             },
         };
     removed.map_err(|e| format!("cannot remove the folder ({e})"))?;
+    // While the account and the index are still held: nobody re-creates the name meanwhile.
+    let forgot = super::limits::forget(state, name)
+        .err()
+        .map(|e| format!("its usage state was kept ({})", e.kind()));
     let _ = rustix::fs::unlinkat(&dir, format!(".{name}.lock"), AtFlags::empty());
     drop(lock);
     if index.remove(name).is_some() {
         write_index(state, &index_lock, &index)
             .map_err(|e| format!("cannot update the record ({e})"))?;
     }
-    Ok(())
+    Ok(forgot)
 }
 
 #[cfg(test)]
@@ -905,7 +911,9 @@ mod fix_tests {
         let work = create(&state, "claude", "work").unwrap();
         let s = state.clone();
         BEFORE_HOLD_LOCK.with(|h| {
-            *h.borrow_mut() = Some(Box::new(move || remove(&s, "work").unwrap()));
+            *h.borrow_mut() = Some(Box::new(move || {
+                remove(&s, "work").unwrap();
+            }));
         });
         assert_eq!(hold(&state, "work").unwrap_err(), "account folder missing");
         assert!(!work.exists());

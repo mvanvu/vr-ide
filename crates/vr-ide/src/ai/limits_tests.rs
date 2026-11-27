@@ -708,6 +708,74 @@ fn a_shorter_limit_keeps_the_longer_one() {
     assert_eq!((e.limited_until, e.sticky), (Some(6 * 86_400), true));
 }
 
+/// FR-1 M2: the state lock is never waited for on the UI thread: while another program holds
+/// it, an update gives up within 200 ms and writes nothing; once free it works again.
+#[test]
+fn a_held_state_lock_is_given_up_quickly() {
+    use rustix::fs::{FlockOperation, Mode, OFlags};
+    let d = state_dir();
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC;
+    let other =
+        rustix::fs::open(d.path().join(STATE_LOCK), flags, Mode::RUSR | Mode::WUSR).unwrap();
+    rustix::fs::flock(&other, FlockOperation::LockExclusive).unwrap();
+    let t0 = std::time::Instant::now();
+    let r = update_state(d.path(), |m| {
+        m.insert("claude/default".into(), entry(true, None));
+    });
+    let took = t0.elapsed();
+    assert!(r.is_err(), "{r:?}");
+    assert!(took < std::time::Duration::from_millis(200), "{took:?}");
+    assert!(load_state(d.path()).is_empty());
+    drop(other);
+    assert!(
+        update_state(d.path(), |m| {
+            m.insert("claude/default".into(), entry(true, None));
+        })
+        .unwrap()
+    );
+}
+
+/// FR-1 M3: a guessed limit roundtrips, is never sticky, and a real reset replaces it whether
+/// earlier or later; a guess never replaces a real one.
+#[test]
+fn a_guessed_limit_gives_way_to_a_real_one() {
+    let d = state_dir();
+    let soon = crate::ai::usage::now_secs() + 3600;
+    let mut map = BTreeMap::new();
+    let mut guess = entry(true, Some(soon));
+    guess.guessed = true;
+    map.insert("claude/work".to_string(), guess);
+    save_state(d.path(), &map).unwrap();
+    assert_eq!(load_state(d.path()), map);
+    let mut e = guess;
+    record_limit(&mut e, soon - 600, false);
+    assert_eq!((e.limited_until, e.guessed), (Some(soon - 600), false));
+    let mut e = entry(true, Some(soon));
+    record_guess(&mut e, soon + 600);
+    assert_eq!((e.limited_until, e.guessed), (Some(soon), false));
+    let mut e = entry(true, None);
+    record_guess(&mut e, soon);
+    assert_eq!(
+        (e.limited_until, e.guessed, e.sticky),
+        (Some(soon), true, false)
+    );
+}
+
+/// FR-1 M1: forgetting an account drops its entry for every tool, and only its own.
+#[test]
+fn forget_drops_only_that_accounts_entries() {
+    let d = state_dir();
+    let mut map = BTreeMap::new();
+    map.insert("claude/work".to_string(), entry(true, None));
+    map.insert("codex/work".to_string(), entry(true, None));
+    map.insert("claude/workx".to_string(), entry(true, None));
+    map.insert("claude/default".to_string(), entry(true, None));
+    save_state(d.path(), &map).unwrap();
+    forget(d.path(), "work").unwrap();
+    let keys: Vec<String> = load_state(d.path()).into_keys().collect();
+    assert_eq!(keys, ["claude/default", "claude/workx"]);
+}
+
 #[test]
 fn typed_input_is_kept_as_text() {
     let mut w = Watch::default();
@@ -745,6 +813,7 @@ fn entry(works: bool, limited_until: Option<i64>) -> AccountState {
         works,
         limited_until,
         sticky: false,
+        guessed: false,
     }
 }
 
@@ -762,6 +831,7 @@ fn state_roundtrip_and_mode_0600() {
             works: false,
             limited_until: Some(soon),
             sticky: true,
+            guessed: false,
         },
     );
     save_state(d.path(), &map).unwrap();
@@ -857,10 +927,21 @@ fn state_two_writers_keep_both() {
         let dir = dir.to_path_buf();
         std::thread::spawn(move || {
             for n in 0..40 {
-                update_state(&dir, |m| {
-                    m.insert(key.to_string(), entry(true, Some(base + n)));
-                })
-                .unwrap();
+                // The lock is given up after LOCK_WAIT (the UI thread must not hang): a writer
+                // that found it busy under load writes again, as the next report would. Each
+                // write must still land, both keys with their last value.
+                let mut tries = 0;
+                loop {
+                    match update_state(&dir, |m| {
+                        m.insert(key.to_string(), entry(true, Some(base + n)));
+                    }) {
+                        Ok(_) => break,
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock && tries < 100 => {
+                            tries += 1;
+                        }
+                        Err(e) => panic!("write {n} of {key}: {e}"),
+                    }
+                }
             }
         })
     };

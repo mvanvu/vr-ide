@@ -25,11 +25,13 @@ pub fn capture(app: &App) -> AiSection {
                 account: s.account.clone().unwrap_or_default(),
                 folder: s.root.clone(),
                 label: s.name.clone().unwrap_or_default(),
-                // Not the id of a run that was started by it and showed the tool did not find
-                // that conversation.
+                // A refused id is kept: reopened, it is refused again and Enter then starts a new
+                // conversation (D88), where an empty id would reopen claude with `--continue`,
+                // which may be another tab's conversation (D89). codex with no id already starts
+                // new (D79), so its refused id is dropped.
                 session_id: s
                     .session_id()
-                    .filter(|_| !s.id_refused())
+                    .filter(|_| !(s.tool == "codex" && s.id_refused()))
                     .unwrap_or_default()
                     .to_string(),
             })
@@ -95,8 +97,15 @@ pub fn restore(app: &mut App, state: &AiSection) {
                 // the arguments are built), else the continue arguments as before.
                 let id = Some(s.session_id.as_str()).filter(|id| !id.is_empty());
                 let start = spawn::again(&tool, id);
-                if let Err(e) = super::spawn_started(app, &tool, account, start, &root, name) {
-                    app.error(format!("Not reopened: {} ({e})", s.tool));
+                let who = super::usage::account_name(&tool.name, account.as_deref());
+                let unknown = start == spawn::Start::Mode(spawn::StartMode::New)
+                    && spawn::new_without_id(&tool);
+                match super::spawn_started(app, &tool, account, start, &root, name) {
+                    Err(e) => app.error(format!("Not reopened: {} ({e})", s.tool)),
+                    Ok(()) if unknown => app.info(format!(
+                        "{who}: conversation id not known; started a new conversation"
+                    )),
+                    Ok(()) => {}
                 }
             }
         }

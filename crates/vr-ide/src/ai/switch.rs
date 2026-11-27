@@ -104,7 +104,46 @@ struct Pending {
     id: String,
     /// Accounts already used or refused for this limit event, the first one included.
     tried: Vec<Option<String>>,
+    /// Why each account passed over for this event was not taken, for the notice when none is
+    /// left.
+    skipped: Vec<(Option<String>, Skip)>,
     phase: Phase,
+}
+
+/// Why an account was not switched to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Skip {
+    /// Limited until then (`None`: the reset is not known, [`limits::GUESSED_LIMIT`]).
+    Limited(Option<i64>),
+    /// Not known to work: claude or codex never reported from it in vr-ide.
+    NotUsed,
+    /// Its history entry is not the shared one (a warning said why).
+    NotShared,
+    /// Its hold was refused: being removed or set up in a window.
+    Busy,
+    /// Its folder fails the account checks now.
+    NotReady,
+    /// It showed the tool's login screen during this event.
+    NotLoggedIn,
+}
+
+impl Skip {
+    fn text(self, now: i64) -> String {
+        match self {
+            Skip::Limited(Some(t)) => {
+                format!(
+                    "limited until {}",
+                    usage::reset_clock(t, now, Zone::local())
+                )
+            }
+            Skip::Limited(None) => "limited".into(),
+            Skip::NotUsed => "not used in vr-ide yet".into(),
+            Skip::NotShared => "history not shared".into(),
+            Skip::Busy => "busy (being removed or set up)".into(),
+            Skip::NotReady => "account folder not usable".into(),
+            Skip::NotLoggedIn => "not logged in".into(),
+        }
+    }
 }
 
 enum Phase {
@@ -135,39 +174,81 @@ pub fn next_account(
     now: i64,
     tried: &[Option<String>],
 ) -> Option<Option<String>> {
+    order_after(current, all)
+        .into_iter()
+        .filter(|cand| !tried.contains(cand))
+        .find(|cand| known_usable(state, tool, cand.as_deref(), now).is_ok())
+}
+
+/// Every account but `current`, in the picker's order (the default one, then `all`) starting
+/// after `current` and wrapping.
+fn order_after(current: Option<&str>, all: &[String]) -> Vec<Option<String>> {
     let order: Vec<Option<&str>> = std::iter::once(None)
         .chain(all.iter().map(|a| Some(a.as_str())))
         .collect();
     let at = order.iter().position(|a| *a == current).unwrap_or(0);
     (1..=order.len())
         .map(|k| order[(at + k) % order.len()])
-        .find(|cand| {
-            *cand != current
-                && !tried.iter().any(|t| t.as_deref() == *cand)
-                && limits::state_key(tool, *cand)
-                    .and_then(|key| state.get(&key))
-                    .is_some_and(|a| a.works && a.limited_until.is_none_or(|t| t <= now))
-        })
+        .filter(|cand| *cand != current)
         .map(|cand| cand.map(str::to_string))
+        .collect()
 }
 
-/// The earliest time after `now` an account of `tool` stops being limited.
-fn earliest_reset(
-    all: &[String],
+/// What the shared state says of `account`: known to work and not limited beyond `now`, else why
+/// not (a limit first: it is the reason that ends).
+fn known_usable(
     state: &BTreeMap<String, AccountState>,
     tool: &str,
+    account: Option<&str>,
     now: i64,
-) -> Option<i64> {
-    std::iter::once(None)
-        .chain(all.iter().map(|a| Some(a.as_str())))
-        .filter_map(|a| limits::state_key(tool, a))
-        .filter_map(|key| state.get(&key)?.limited_until)
-        .filter(|t| *t > now)
-        .min()
+) -> Result<(), Skip> {
+    let a = limits::state_key(tool, account)
+        .and_then(|key| state.get(&key))
+        .ok_or(Skip::NotUsed)?;
+    match a.limited_until {
+        Some(t) if t > now => Err(Skip::Limited((!a.guessed).then_some(t))),
+        _ if !a.works => Err(Skip::NotUsed),
+        _ => Ok(()),
+    }
 }
 
-fn account_word(account: Option<&str>) -> &str {
-    account.unwrap_or(accounts::DEFAULT)
+/// The notice when no account is left: "all … limited until" (the earliest reset of the others)
+/// only when every other account was passed over for a limit, else each one with its reason.
+fn none_left_text(tool: &str, skipped: &[(Option<String>, Skip)], now: i64) -> String {
+    if skipped.is_empty() {
+        return format!("no other {tool} account to switch to");
+    }
+    let limits: Vec<Option<i64>> = skipped
+        .iter()
+        .filter_map(|(_, why)| match why {
+            Skip::Limited(t) => Some(*t),
+            _ => None,
+        })
+        .collect();
+    if limits.len() == skipped.len() {
+        // A guessed reset is no time to name: the earliest one could be that one.
+        return match limits.iter().copied().collect::<Option<Vec<i64>>>() {
+            Some(times) => format!(
+                "all {tool} accounts are limited until {}",
+                usage::reset_clock(times.into_iter().min().unwrap_or(now), now, Zone::local())
+            ),
+            None => format!("all {tool} accounts are limited"),
+        };
+    }
+    let reasons: Vec<String> = skipped
+        .iter()
+        .map(|(a, why)| {
+            format!(
+                "{}: {}",
+                usage::account_name(tool, a.as_deref()),
+                why.text(now)
+            )
+        })
+        .collect();
+    format!(
+        "no other {tool} account can be used now ({})",
+        reasons.join("; ")
+    )
 }
 
 /// ` ⊘` for a session that could switch and has auto-switch off, else nothing.
@@ -260,7 +341,8 @@ pub fn on_limit(app: &mut App, i: usize, now: Instant) {
         return;
     }
     let Some(id) = s.session_id().map(str::to_string) else {
-        app.info(format!(
+        // A warning, so it stays after the limit warning it follows from.
+        app.warn(format!(
             "{who}: session id not known; not switching accounts"
         ));
         return;
@@ -269,15 +351,20 @@ pub fn on_limit(app: &mut App, i: usize, now: Instant) {
         turn_off(app, i);
         return;
     }
+    // A guessed reset is not named as the time the account is limited until.
     let until = app
         .ai
         .state_dir
         .as_deref()
         .zip(limits::state_key(&tool, from.as_deref()))
-        .and_then(|(state, key)| limits::load_state(state).get(&key)?.limited_until);
+        .and_then(|(state, key)| {
+            let a = *app.ai.state_writes.load(state).get(&key)?;
+            a.limited_until.filter(|_| !a.guessed)
+        });
     let mut tried = vec![from.clone()];
-    let Some((to, lock)) = choose(app, &tool, from.as_deref(), &mut tried) else {
-        none_left(app, &tool);
+    let mut skipped = Vec::new();
+    let Some((to, lock)) = choose(app, &tool, from.as_deref(), &mut tried, &mut skipped) else {
+        none_left(app, &tool, &skipped);
         return;
     };
     let s = &mut app.ai.sessions[i];
@@ -287,6 +374,7 @@ pub fn on_limit(app: &mut App, i: usize, now: Instant) {
         until,
         id,
         tried,
+        skipped,
         phase: Phase::Ending {
             to,
             lock,
@@ -309,61 +397,66 @@ fn turn_off(app: &mut App, i: usize) {
     s.auto_switch = false;
     let who = usage::account_name(&s.tool, s.account.as_deref());
     app.warn(format!(
-        "{who}: {SWITCH_MAX} account switches in 30 minutes; auto-switch is off for this session"
+        "{who}: {SWITCH_MAX} account switches in 30 minutes; auto-switch is off for this \
+         session (/ai autoswitch on turns it back on)"
     ));
 }
 
-/// The next account that can be used now, with its hold (SEC-28): its history is the shared
-/// one, no window is removing it, its folder passes the account checks. One that fails goes
-/// into `tried` like one that is taken.
+/// The next account that can be used now, with its hold (SEC-28): known to work and not
+/// limited, its history is the shared one, no window is removing it, its folder passes the
+/// account checks. One that fails goes into `tried` like one that is taken, and into `skipped`
+/// with the reason.
 fn choose(
     app: &mut App,
     tool: &str,
     current: Option<&str>,
     tried: &mut Vec<Option<String>>,
+    skipped: &mut Vec<(Option<String>, Skip)>,
 ) -> Option<(Option<String>, Option<AccountLock>)> {
     let state = app.ai.state_dir.clone()?;
     let all = accounts::for_tool(&state, tool);
-    let known = limits::load_state(&state);
+    // With the records not written yet (D90): a limit seen while the lock was busy counts.
+    let known = app.ai.state_writes.load(&state);
     let now = usage::now_secs();
-    loop {
-        let cand = next_account(current, &all, &known, tool, now, tried)?;
+    for cand in order_after(current, &all) {
+        if tried.contains(&cand) {
+            continue;
+        }
         tried.push(cand.clone());
+        if let Err(why) = known_usable(&known, tool, cand.as_deref(), now) {
+            skipped.push((cand, why));
+            continue;
+        }
         // The link first: making it needs the account to itself (as a session start does).
         if !super::share_history(app, tool, cand.as_deref()) {
+            skipped.push((cand, Skip::NotShared));
             continue;
         }
         let Some(name) = cand.as_deref() else {
             return Some((None, None));
         };
         let Ok(lock) = accounts::hold(&state, name) else {
+            skipped.push((cand, Skip::Busy));
             continue;
         };
         if accounts::ready(Some(&state), tool, name).is_ok() {
             return Some((cand, Some(lock)));
         }
+        skipped.push((cand, Skip::NotReady));
     }
+    None
 }
 
-/// No account to switch to: the earliest reset when one is known. A tool with only its default
-/// account says nothing more than its limit notice.
-fn none_left(app: &mut App, tool: &str) {
+/// No account to switch to: why, per account (see [`none_left_text`]). A tool with only its
+/// default account says nothing more than its limit notice.
+fn none_left(app: &mut App, tool: &str, skipped: &[(Option<String>, Skip)]) {
     let Some(state) = app.ai.state_dir.clone() else {
         return;
     };
-    let all = accounts::for_tool(&state, tool);
-    if all.is_empty() {
+    if accounts::for_tool(&state, tool).is_empty() {
         return;
     }
-    let now = usage::now_secs();
-    let text = match earliest_reset(&all, &limits::load_state(&state), tool, now) {
-        Some(t) => format!(
-            "all {tool} accounts are limited until {}",
-            usage::reset_clock(t, now, Zone::local())
-        ),
-        None => format!("no other {tool} account to switch to"),
-    };
-    app.warn(text);
+    app.warn(none_left_text(tool, skipped, usage::now_secs()));
 }
 
 /// Moves the switch of session `i` on; true when something changed on screen.
@@ -441,18 +534,14 @@ fn start(app: &mut App, i: usize, now: Instant) {
             s.switch.handled = false;
             s.switch.times.push(now);
             let pid = s.tab.pid();
+            // The account names every other notice uses (`claude`, `claude@work`).
+            let from = usage::account_name(&tool_name, p.from.as_deref());
             let text = match p.until {
                 Some(t) => format!(
-                    "switched {tool_name} from {from} to {} ({from} limited until {})",
-                    account_word(to.as_deref()),
+                    "switched from {from} to {target} ({from} limited until {})",
                     usage::reset_clock(t, usage::now_secs(), Zone::local()),
-                    from = account_word(p.from.as_deref()),
                 ),
-                None => format!(
-                    "switched {tool_name} from {} to {}",
-                    account_word(p.from.as_deref()),
-                    account_word(to.as_deref())
-                ),
+                None => format!("switched from {from} to {target}"),
             };
             p.phase = Phase::Starting {
                 pid,
@@ -558,11 +647,9 @@ fn next_after_login(app: &mut App, i: usize, now: Instant) {
     if let Some(state) = app.ai.state_dir.clone()
         && let Some(key) = limits::state_key(&tool, at.as_deref())
     {
-        let _ = limits::update_state(&state, |m| {
-            if let Some(a) = m.get_mut(&key) {
-                a.works = false;
-            }
-        });
+        app.ai
+            .state_writes
+            .record(&state, &key, limits::Record::NotWorking);
     }
     let s = &mut app.ai.sessions[i];
     let Some(mut p) = s.switch.pending.take() else {
@@ -573,8 +660,9 @@ fn next_after_login(app: &mut App, i: usize, now: Instant) {
         return;
     }
     app.warn(format!("{who} is not logged in; trying the next account"));
-    let Some((to, lock)) = choose(app, &tool, at.as_deref(), &mut p.tried) else {
-        none_left(app, &tool);
+    p.skipped.push((at.clone(), Skip::NotLoggedIn));
+    let Some((to, lock)) = choose(app, &tool, at.as_deref(), &mut p.tried, &mut p.skipped) else {
+        none_left(app, &tool, &p.skipped);
         return;
     };
     let s = &mut app.ai.sessions[i];
@@ -716,6 +804,7 @@ mod tests {
                         works: *works,
                         limited_until: *until,
                         sticky: false,
+                        guessed: false,
                     },
                 )
             })
@@ -768,8 +857,56 @@ mod tests {
         assert_eq!(next_account(None, &[], &state, "claude", now, &[]), None);
         // A tool without accounts has no state.
         assert_eq!(next_account(None, &all, &state, "gemini", now, &[]), None);
-        assert_eq!(earliest_reset(&all, &state, "claude", now), Some(now + 1));
-        assert_eq!(earliest_reset(&all, &state, "claude", now + 1), None);
+        assert_eq!(
+            known_usable(&state, "claude", Some("a"), now),
+            Err(Skip::Limited(Some(now + 1)))
+        );
+        assert_eq!(
+            known_usable(&state, "claude", None, now),
+            Err(Skip::NotUsed)
+        );
+        assert_eq!(
+            known_usable(&state, "claude", Some("c"), now),
+            Err(Skip::NotUsed)
+        );
+        assert_eq!(known_usable(&state, "claude", Some("b"), now), Ok(()));
+    }
+
+    /// FR-1 F2: "all … limited until" only when every other account is limited, with the
+    /// earliest of their resets (a guessed one is no time to name); else each reason.
+    #[test]
+    fn none_left_names_the_reasons() {
+        let now = 1_000_000;
+        let clock = |t| usage::reset_clock(t, now, Zone::local());
+        let w = |a: &str| Some(a.to_string());
+        assert_eq!(
+            none_left_text("claude", &[], now),
+            "no other claude account to switch to"
+        );
+        let limited = [
+            (w("a"), Skip::Limited(Some(now + 900))),
+            (None, Skip::Limited(Some(now + 600))),
+        ];
+        assert_eq!(
+            none_left_text("claude", &limited, now),
+            format!("all claude accounts are limited until {}", clock(now + 600))
+        );
+        let guessed = [(w("a"), Skip::Limited(None)), limited[1].clone()];
+        assert_eq!(
+            none_left_text("codex", &guessed, now),
+            "all codex accounts are limited"
+        );
+        let mixed = [
+            (w("a"), Skip::NotShared),
+            (w("b"), Skip::NotLoggedIn),
+            (w("c"), Skip::NotReady),
+            (None, Skip::Limited(None)),
+        ];
+        assert_eq!(
+            none_left_text("claude", &mixed, now),
+            "no other claude account can be used now (claude@a: history not shared; claude@b: \
+             not logged in; claude@c: account folder not usable; claude: limited)"
+        );
     }
 
     fn shown(screen: &str) -> Shown {

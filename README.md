@@ -369,7 +369,9 @@ asking (see [Workspace](#workspace-several-folders)).
 - When the program exits the panel says "[process exited N] — Enter to restart, ctrl+w to close"
   (shorter on narrow screens: "exited N · Enter · ctrl+w").
 - Notices above the status bar: `Esc` goes to the program while a terminal has the keys, so click
-  a notice to dismiss it there.
+  a notice to dismiss it there. The row shows one notice at a time: a short-lived one (a reply to
+  a command) comes before the warnings that stay until dismissed, and each is shown for its
+  whole 5 seconds before it goes.
 - `shift+pageup` / `shift+pagedown` and the mouse wheel scroll back (10 000 lines, setting
   `scrollback`); a key sent to the program or a paste returns to the bottom, while new output
   leaves a scrolled view where it is (the `↑` indicator shows you are scrolled back). Programs that
@@ -512,8 +514,11 @@ into `+N`; a tab at 90 % or more then shows `!` after its number (`2!`), in the 
 - `/ai usage` lists the active session's account with both windows and their reset times, in
   local time (`Dec 3 15:00` when a day or more away).
 - When the tool shows its limit message, one notice says so, with the reset time when shown.
+  When no reset time is known (none on screen, none in a report at 100 %), the account counts as
+  limited for an hour, unless claude reports it under 100 % before then.
 
-Other tools (codex, gemini, ...) show no usage.
+Other tools (codex, gemini, ...) show no usage; `/ai usage` there says `codex does not report
+usage`.
 
 #### Switching accounts at a limit
 
@@ -521,7 +526,8 @@ When a claude session shows its limit message, vr-ide moves it to another accoun
 claude, waits until it is gone, starts it again in the same tab on the next account with
 `--resume <conversation id>`, and types one line (`ai_auto_switch_prompt`, default `Continue where
 you left off.`) and Enter once claude's input box is back. A notice says so and stays until
-dismissed: `switched claude from work to personal (work limited until 15:00)`. Reaching 100 %
+dismissed: `switched from claude@work to claude@personal (claude@work limited until 15:00)`
+(`claude` alone is the default account). Reaching 100 %
 alone switches nothing; only the limit message does.
 
 - The next account is the one after the current in the picker's order (`default`, then the
@@ -530,13 +536,18 @@ alone switches nothing; only the limit message does.
   claude has run on it in vr-ide and reported its usage, so sign in and use each account once.
   An account that shows the login screen is taken as not working and the next one is tried.
 - Nothing is switched, and a notice says why, when the conversation id is not known yet (claude
-  reports it with its usage), or no account is left: `all claude accounts are limited until
-  15:00` (the earliest reset). The session stays as it is.
+  reports it with its usage), or no account is left. When every other account is limited:
+  `all claude accounts are limited until 15:00` (the earliest reset of the others); otherwise
+  each one with its reason, e.g. `no other claude account can be used now (claude: not used in
+  vr-ide yet; claude@home: busy (being removed or set up); claude@team: limited until 15:00)`. The reasons: limited,
+  not used in vr-ide yet, history not shared (its warning comes once per account per run),
+  busy (being removed or set up), account folder not usable, not logged in. The session stays
+  as it is.
 - The line is typed only into claude's idle input box: not into a trust, login or permission
   question, and not when you typed, pasted or clicked in the session after the limit. If the
   box does not appear within 30 seconds: `claude@personal is waiting: type to continue`.
 - At most three switches per session in 30 minutes; then auto-switch turns itself off for that
-  session, with a notice. A limit in the first minute on the new account counts only once
+  session, with a notice naming `/ai autoswitch on` to turn it back on. A limit in the first minute on the new account counts only once
   claude has reported from it.
 - Off: `ai_auto_switch = false` in `settings.toml` for new sessions, or `/ai autoswitch off`
   (`on`) for the active one; its tab then shows `⊘` after the label (`2 claude@work ⊘ 63%`).
@@ -548,7 +559,8 @@ Enter on an exited claude session, and reopening a `--session` window, also resu
 conversation by its id when claude reported one (the id is kept in the session file); without
 an id they use the continue arguments, which with a shared history pick the folder's most
 recent conversation of any account and tab. If claude does not find the conversation, the next
-Enter falls back to the continue arguments.
+Enter falls back to the continue arguments. A run that cannot report (its report files could not
+be set up) keeps its id when it ends.
 
 Codex sessions switch the same way, with `codex resume <conversation id>` (never `resume --last`),
 and Enter on an exited codex session or a restored tab resumes by that id too. Codex has no status
@@ -565,6 +577,10 @@ sessions vr-ide starts. What follows from it:
 - Enter on an exited codex tab resumes its conversation by id even when you quit before codex
   answered; only codex's own `No saved session found with ID …` drops the id, and the next start
   is then a new conversation (never `resume --last`).
+- A codex tab with no id at all (quit before codex's first answer) also starts a new conversation
+  on Enter or when its `--session` window reopens, never `resume --last` (which could open another
+  tab's conversation), with the notice `codex@work: conversation id not known; started a new
+  conversation`.
 - Codex does not report usage this way, so a codex tab shows no percent and `/ai usage` has
   nothing for it; limits are seen from codex's limit message only. A codex account counts as
   working once it finished an answer in vr-ide.

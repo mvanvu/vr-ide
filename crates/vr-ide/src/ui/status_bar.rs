@@ -1,6 +1,6 @@
 //! Status bar (`READ/EDIT file · Ln x, Col y · LF/CRLF · UTF-8`) and the notice lines above it.
 //! Notices get their own rows (up to three, wrapped) so a long startup notice stays readable
-//! even at 40 columns; Escape dismisses the oldest.
+//! even at 40 columns; Escape dismisses the one shown.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -22,7 +22,8 @@ fn esc_dismisses(app: &App) -> bool {
         && !(app.focus == Focus::Editor && app.edit_mode())
 }
 
-/// Text of the oldest notice with a hint about the rest; its detail (if any) comes last.
+/// Text of the notice shown (the front one) with a hint about the rest; its detail (if any) comes
+/// last.
 pub fn notice_text(app: &App) -> Option<String> {
     let n = app.notices.front()?;
     let more = app.notices.len() - 1;

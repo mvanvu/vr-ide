@@ -374,8 +374,24 @@ fn ai_completes_tool_names() {
         .map(|t| t.name.clone())
         .collect();
     assert!(names.len() > 1, "{names:?}");
-    assert_eq!(titles(app), names, "the ai_tools setting, in order");
+    let mut want = names.clone();
+    // FR-1 M4: the subcommands follow the tool names.
+    want.extend(["usage", "autoswitch", "rename"].map(String::from));
+    assert_eq!(
+        titles(app),
+        want,
+        "the ai_tools setting, in order, then the subcommands"
+    );
     assert_eq!(completion::ai_tool_names(app), names);
+    for (typed, done) in [
+        ("/ai us", "/ai usage"),
+        ("/ai au", "/ai autoswitch "),
+        ("/ai re", "/ai rename "),
+    ] {
+        crate::slash_tests::set(app, typed);
+        key(app, KeyCode::Tab);
+        assert_eq!(input(app), done, "{typed}");
+    }
 }
 
 #[test]

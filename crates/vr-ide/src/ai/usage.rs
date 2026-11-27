@@ -359,6 +359,10 @@ pub fn show(app: &mut crate::app::App, rest: &str) -> Result<(), String> {
         .active_session()
         .ok_or("/ai usage: no AI session is active")?;
     let who = account_name(&s.tool, s.account.as_deref());
+    // Only claude reports usage windows (its statusLine); codex reports its id alone.
+    if s.tool != "claude" {
+        return Err(format!("/ai usage: {} does not report usage", s.tool));
+    }
     let u = s
         .usage
         .as_ref()
@@ -440,7 +444,8 @@ pub fn status_line(u: &Usage) -> String {
         parts.push(m.clone());
     }
     if let Some(w) = &u.five_hour {
-        parts.push(format!("5h {:.0}%", w.used_percentage));
+        // Floored like the tab and the notices: 89.6 % is not 90 % yet.
+        parts.push(format!("5h {}%", shown(w.used_percentage)));
     }
     parts
         .join(" · ")
