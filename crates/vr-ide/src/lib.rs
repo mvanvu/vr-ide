@@ -9,6 +9,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod commands;
 mod config_reload;
+pub mod desktop;
 pub mod event_loop;
 pub mod git;
 pub mod monitor;
@@ -26,6 +27,8 @@ mod app_tests;
 mod blame_column_tests;
 #[cfg(test)]
 mod config_reload_tests;
+#[cfg(test)]
+mod desktop_tests;
 #[cfg(test)]
 mod dialog_tests;
 #[cfg(test)]
