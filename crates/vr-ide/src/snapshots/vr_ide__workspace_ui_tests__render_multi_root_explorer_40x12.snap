@@ -2,7 +2,7 @@
 source: crates/vr-ide/src/workspace_ui_tests.rs
 expression: t.backend()
 ---
-"▾ api          │ app.ts                 "
+"▾ api          │ app.ts x               "
 "  ▸ src        │  1 export const app = 1"
 "    Cargo.toml │  2                     "
 "▾ web          │                        "

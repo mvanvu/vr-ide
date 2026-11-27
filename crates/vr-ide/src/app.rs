@@ -1436,8 +1436,11 @@ impl App {
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if inside(l.tabs) {
-                    if let Some(i) = crate::ui::tabs::hit(self, ev.column - l.tabs.x, l.tabs.width)
-                    {
+                    use crate::ui::tabs::Part;
+                    let part = crate::ui::tabs::hit_part(self, ev.column - l.tabs.x, l.tabs.width);
+                    if let Some(Part::Close(i)) = part {
+                        commands::file::request_close(self, i);
+                    } else if let Some(Part::Label(i)) = part {
                         self.set_active(i);
                         let now = self.now();
                         // By tab, not by column: when the first press scrolled an overflowing

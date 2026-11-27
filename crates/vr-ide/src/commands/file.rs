@@ -475,26 +475,34 @@ pub fn save_as_doc(
 
 /// Closing a tab with unsaved changes asks: Save / Discard / Cancel ([`answer_close`]).
 fn close(app: &mut App, _: CmdArgs) -> CmdResult {
-    let Some(doc) = app.active_doc() else {
-        return Ok(());
+    request_close(app, app.active);
+    Ok(())
+}
+
+/// ctrl+w on tab `i` and the tab's x button: closes it or asks first; the active tab stays.
+pub fn request_close(app: &mut App, i: usize) {
+    let Some(doc) = app.docs.get(i) else {
+        return;
     };
     if !doc.is_modified() {
-        app.close_doc(app.active);
-        return Ok(());
+        app.close_doc(i);
+        return;
     }
-    let message = format!(
-        "{} has unsaved changes. Discard keeps a copy in the recovery folder.",
-        app.active_name()
-    );
+    let name = doc
+        .path
+        .as_deref()
+        .map(|p| app.display_path(p))
+        .unwrap_or_default();
+    let message =
+        format!("{name} has unsaved changes. Discard keeps a copy in the recovery folder.");
     app.open_dialog(
         DialogWidget::Confirm(ConfirmDialog::new(
             "Close File",
             message,
             &[SAVE, crate::commands::app::DISCARD, CANCEL],
         )),
-        DialogAction::CloseTab(DocRef::of(app, app.active)),
+        DialogAction::CloseTab(DocRef::of(app, i)),
     );
-    Ok(())
 }
 
 pub const SAVE: &str = "Save";
