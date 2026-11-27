@@ -469,6 +469,83 @@ fn a_second_session_window_runs_without_saving() {
     close(third);
 }
 
+/// A child forked by another thread right now, kept between fork and exec for `pause`: until
+/// it execs it holds a copy of every descriptor this process has open (close-on-exec ones
+/// included), as a terminal or agent started meanwhile by another window or thread does.
+/// Returns once the child exists; join the handle to wait for it.
+pub(crate) fn child_paused_before_exec(pause: Duration) -> std::thread::JoinHandle<()> {
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, BorrowedFd};
+    use std::os::unix::process::CommandExt;
+    let (mut forked, tell) = std::io::pipe().unwrap();
+    let child = std::thread::spawn(move || {
+        let fd = tell.as_raw_fd();
+        let mut cmd = std::process::Command::new("/bin/true");
+        // SAFETY: only async-signal-safe calls (write, nanosleep) run in the forked child.
+        unsafe {
+            cmd.pre_exec(move || {
+                let _ = rustix::io::write(BorrowedFd::borrow_raw(fd), b"x");
+                std::thread::sleep(pause);
+                Ok(())
+            });
+        }
+        cmd.status().unwrap();
+        drop(tell);
+    });
+    let mut b = [0u8; 1];
+    forked.read_exact(&mut b).unwrap();
+    child
+}
+
+/// The lock is free as soon as its window quits, even while a child forked before that (by
+/// another window's terminal, say) has not started its program yet.
+#[test]
+fn the_lock_is_free_once_its_window_quits_despite_a_forked_child() {
+    let t = tree();
+    let first = launch(&t.state, &t.home);
+    assert!(first.notices.is_empty(), "{:?}", texts(&first));
+    let child = child_paused_before_exec(Duration::from_millis(400));
+    close(first);
+    let second = launch(&t.state, &t.home);
+    assert!(second.notices.is_empty(), "{:?}", texts(&second));
+    close(second);
+    child.join().unwrap();
+}
+
+/// A window that quits with a save still queued (its state folder hangs) keeps the lock until
+/// that write is done: a window started meanwhile does not save, and the late write never
+/// lands after another window took over.
+#[test]
+fn a_quit_window_keeps_the_lock_while_its_last_write_is_pending() {
+    let t = tree();
+    let mut first = launch(&t.state, &t.home);
+    assert!(first.notices.is_empty(), "{:?}", texts(&first));
+    let go = session::pause_writer_for_tests(&first);
+    first.add_root(&t.api).unwrap();
+    session::queue_save_for_tests(&mut first);
+    close(first);
+    let second = launch(&t.state, &t.home);
+    assert_eq!(
+        texts(&second),
+        ["Another vr-ide --session window keeps the session; this one is not saved"]
+    );
+    close(second);
+    // The folder answers again: the write lands, then the lock is free.
+    drop(go);
+    let lock = std::fs::File::open(t.state.join(session::LOCK_FILE)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while lock.try_lock().is_err() {
+        assert!(Instant::now() < deadline, "the lock was never freed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    lock.unlock().unwrap();
+    let body = std::fs::read_to_string(t.state.join(SESSION_FILE)).unwrap();
+    assert!(body.contains(&*t.api.to_string_lossy()), "{body}");
+    let third = launch(&t.state, &t.home);
+    assert!(third.notices.is_empty(), "{:?}", texts(&third));
+    close(third);
+}
+
 #[test]
 fn the_file_holds_no_buffer_text_and_no_commands() {
     let t = tree();

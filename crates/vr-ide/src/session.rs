@@ -66,6 +66,10 @@ pub const SAVE_DELAY: Duration = Duration::from_millis(750);
 /// How long the quit waits for the last write: only a stuck state folder takes this long.
 const QUIT_WAIT: Duration = Duration::from_secs(5);
 
+/// How long a dropped keeper waits for its writer to finish the queue and unlock: nothing is
+/// queued after a quit save that finished, so this is only reached on a hung state folder.
+const DROP_WAIT: Duration = Duration::from_secs(1);
+
 const ANOTHER_WINDOW: &str =
     "Another vr-ide --session window keeps the session; this one is not saved";
 
@@ -437,7 +441,8 @@ fn skipped_notice(names: &[String]) -> String {
 /// changes off the UI thread. Without the lock it never writes.
 pub struct Keeper {
     file: PathBuf,
-    /// Held for the window's life; the lock goes with the file handle.
+    /// Held for the window's life by the keeper itself only when no writer thread could be
+    /// started; otherwise the writer holds it (see [`Writer`]).
     lock: Option<File>,
     writer: Option<Writer>,
     saved: Option<Session>,
@@ -455,12 +460,37 @@ pub struct Keeper {
     reported: Option<String>,
 }
 
+impl Drop for Keeper {
+    /// The writer ends once its queue is done and unlocks then; a short wait makes that the
+    /// usual case before the next window looks. A hung state folder keeps the lock with the
+    /// writer until the write ends or the process does.
+    fn drop(&mut self) {
+        if let Some(w) = self.writer.take() {
+            drop(w.tx);
+            let _ = w.ended.recv_timeout(DROP_WAIT);
+        }
+        if let Some(f) = &self.lock {
+            unlock(f);
+        }
+    }
+}
+
+/// The lock belongs to the open file, which a child forked meanwhile by any thread shares until
+/// it execs: unlocking (not just closing) frees it for the next window at once.
+fn unlock(f: &File) {
+    let _ = f.unlock();
+}
+
 impl Keeper {
     fn new(file: PathBuf, lock: Option<File>) -> Keeper {
         let error = Arc::new(Mutex::new(None));
-        let writer = lock
-            .as_ref()
-            .and_then(|_| Writer::start(file.clone(), error.clone()));
+        let (writer, lock) = match lock {
+            Some(f) => match Writer::start(file.clone(), error.clone(), f) {
+                Ok(w) => (Some(w), None),
+                Err(f) => (None, Some(f)),
+            },
+            None => (None, None),
+        };
         Keeper {
             file,
             lock,
@@ -478,7 +508,7 @@ impl Keeper {
 
     /// This window holds the lock and saves.
     pub fn saves(&self) -> bool {
-        self.lock.is_some()
+        self.writer.is_some() || self.lock.is_some()
     }
 
     fn send(&mut self, s: Session) {
@@ -866,9 +896,11 @@ fn take_lock(dir: &Path) -> io::Result<Option<File>> {
     if !m.file_type().is_file() || m.uid() != rustix::process::getuid().as_raw() {
         return Err(io::Error::other("not your own regular file"));
     }
-    // A child forked by another thread holds a copy of a just-released lock until it execs
-    // (the descriptor is close-on-exec): a few short retries keep that from looking like
-    // another window.
+    // A window that ended without dropping its keeper (killed, or exiting) leaves the lock to
+    // the kernel's close, and a child it forked just then keeps it until it execs (the
+    // descriptor is close-on-exec): a few short retries keep that from looking like another
+    // window. A keeper that is dropped unlocks as soon as its queued writes are done (see
+    // `Writer`).
     for _ in 0..10 {
         match f.try_lock() {
             Ok(()) => return Ok(Some(f)),
@@ -962,21 +994,34 @@ fn remove_stale_temps(dir: &Path) {
 enum Msg {
     Save(String),
     Flush(Sender<()>),
+    /// The session lock, sent first: the writer keeps it until its queue ends.
+    Hold(File),
+    /// Tests: the writer waits here, as on a hung state folder, until the sender goes.
+    #[cfg(test)]
+    Pause(mpsc::Receiver<()>),
 }
 
-/// Writes off the UI thread, so a slow or hung state folder never holds a frame.
+/// Writes off the UI thread, so a slow or hung state folder never holds a frame. It holds the
+/// session lock and lets go only when its queue has ended (the keeper is gone), so no write of
+/// this window lands after another window took the session.
 struct Writer {
     tx: Sender<Msg>,
+    /// Closed when the thread has unlocked and ends.
+    ended: mpsc::Receiver<()>,
 }
 
 impl Writer {
-    fn start(file: PathBuf, error: Arc<Mutex<Option<String>>>) -> Option<Writer> {
+    /// `Err` gives the lock back when no thread could be started.
+    fn start(file: PathBuf, error: Arc<Mutex<Option<String>>>, lock: File) -> Result<Writer, File> {
         let (tx, rx) = mpsc::channel::<Msg>();
-        std::thread::Builder::new()
+        let (end, ended) = mpsc::channel::<()>();
+        let started = std::thread::Builder::new()
             .name("vr-session".into())
             .spawn(move || {
+                let mut held = None;
                 for msg in rx {
                     match msg {
+                        Msg::Hold(f) => held = Some(f),
                         Msg::Save(body) => {
                             if let Err(e) = write_file(&file, body.as_bytes()) {
                                 set(&error, write_error(&file, &e));
@@ -985,11 +1030,25 @@ impl Writer {
                         Msg::Flush(done) => {
                             let _ = done.send(());
                         }
+                        #[cfg(test)]
+                        Msg::Pause(wait) => {
+                            let _ = wait.recv();
+                        }
                     }
                 }
-            })
-            .ok()?;
-        Some(Writer { tx })
+                if let Some(f) = &held {
+                    unlock(f);
+                }
+                drop(end);
+            });
+        if started.is_err() {
+            return Err(lock);
+        }
+        match tx.send(Msg::Hold(lock)) {
+            Ok(()) => Ok(Writer { tx, ended }),
+            Err(mpsc::SendError(Msg::Hold(f))) => Err(f),
+            Err(_) => unreachable!("the message sent is a hold"),
+        }
     }
 }
 
@@ -1009,6 +1068,26 @@ fn clamp_usize(n: u64, max: usize) -> usize {
 #[cfg(test)]
 pub(crate) fn create_private_dir_for_tests(dir: &Path) {
     create_private_dir(dir).unwrap();
+}
+
+/// Sends what is open now to the writer without waiting for it.
+#[cfg(test)]
+pub(crate) fn queue_save_for_tests(app: &mut App) {
+    let s = snapshot(app);
+    app.session.as_mut().expect("a --session window").send(s);
+}
+
+/// The writer stops before its next message, as on a hung state folder, until the returned
+/// sender is dropped.
+#[cfg(test)]
+pub(crate) fn pause_writer_for_tests(app: &App) -> Sender<()> {
+    let (go, wait) = mpsc::channel();
+    let w = app.session.as_ref().and_then(|k| k.writer.as_ref());
+    w.expect("a saving window")
+        .tx
+        .send(Msg::Pause(wait))
+        .unwrap();
+    go
 }
 
 #[cfg(test)]
