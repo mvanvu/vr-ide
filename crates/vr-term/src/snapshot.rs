@@ -25,12 +25,12 @@ impl Capture {
     }
 }
 
-pub(crate) fn capture<T: EventListener>(term: &Term<T>, scroll_offset: usize) -> Capture {
+pub(crate) fn capture<T: EventListener>(term: &Term<T>) -> Capture {
     let g = term.grid();
     let rows = g.screen_lines();
     let cols = g.columns();
     let history = g.history_size();
-    let offset = scroll_offset.min(history);
+    let offset = g.display_offset();
 
     let mut raw = Vec::with_capacity(rows * cols);
     for r in 0..rows {

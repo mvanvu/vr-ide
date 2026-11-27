@@ -18,7 +18,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::term::{Config, Osc52, Term};
 use alacritty_terminal::vte::ansi::Processor;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -455,14 +455,38 @@ impl Terminal {
         true
     }
 
-    /// The screen `scroll_offset` lines up into the history (clamped), with cursor, title and modes.
-    /// Also re-arms `Notify`.
-    pub fn snapshot(&self, scroll_offset: usize) -> Grid {
+    /// The emulator, taken ahead of the reader so a flood cannot hold the UI thread up.
+    fn term(&self) -> MutexGuard<'_, Term<Listener>> {
         self.shared.snapshot_waiting.fetch_add(1, Ordering::SeqCst);
         let term = lock(&self.shared.term);
         self.shared.snapshot_waiting.fetch_sub(1, Ordering::SeqCst);
+        term
+    }
+
+    /// Moves the view `lines` up into the history (negative: down), clamped to the history;
+    /// returns the new offset. The emulator keeps a scrolled-back view on the same lines while
+    /// output arrives: the offset grows with every line pushed into the history (up to the
+    /// scrollback cap, where the oldest lines drop out), so new output never pulls it down.
+    /// At offset 0 the view follows the output.
+    pub fn scroll(&self, lines: isize) -> usize {
+        // Far beyond any history, and safe from overflow inside the emulator's i32 maths.
+        const FAR: isize = 1 << 30;
+        let mut term = self.term();
+        term.scroll_display(Scroll::Delta(lines.clamp(-FAR, FAR) as i32));
+        term.grid().display_offset()
+    }
+
+    /// Back to the bottom: the view follows the output again.
+    pub fn scroll_to_bottom(&self) {
+        self.term().scroll_display(Scroll::Bottom);
+    }
+
+    /// The screen at the view's offset into the history (see [`Terminal::scroll`]), with
+    /// cursor, title and modes. Also re-arms `Notify`.
+    pub fn snapshot(&self) -> Grid {
+        let term = self.term();
         self.shared.dirty.store(false, Ordering::SeqCst);
-        let captured = snapshot::capture(&term, scroll_offset);
+        let captured = snapshot::capture(&term);
         // The title lives beside the emulator but is written under its lock (by the listener).
         let title = lock(&self.shared.title).clone();
         drop(term);
