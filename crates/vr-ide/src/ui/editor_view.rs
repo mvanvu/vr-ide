@@ -314,7 +314,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         let i = matches.partition_point(|&(_, e)| e <= abs);
         matches.get(i).is_some_and(|&(s, _)| s <= abs)
     };
-    let spans = visible_spans(app, active, top, left, rows, text_w);
+    // The diff tab's text is no file of a language: each line takes the colours it has in
+    // the text it is from.
+    let spans = match decor {
+        Some(_) => crate::ui::ai_changes::diff_spans(app, rope, top, rows),
+        None => visible_spans(app, active, top, left, rows, text_w),
+    };
     let marks = doc
         .path
         .as_deref()
@@ -431,7 +436,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             // it; only the background says which one it is.
             let style = match capture {
                 Some(cap) => {
-                    let code = theme.text.patch(theme.syntax(cap));
+                    // On the row's own background (a diff's added / removed lines).
+                    let code = base.patch(theme.syntax(cap));
                     if sel {
                         code.patch(theme.selection)
                     } else if found {

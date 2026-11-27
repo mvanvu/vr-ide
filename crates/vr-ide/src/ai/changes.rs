@@ -13,8 +13,11 @@
 //! is at that moment and serve changes that come after it.
 //!
 //! The store is `state_dir()/ai/<generated>/` (0700, files 0600, SEC-10): blobs under generated
-//! names, an index of root-relative paths that is validated on load, a lock file held while the
-//! session lives so another vr-ide's start-up sweep leaves it alone.
+//! names, a lock file held while the session lives so another vr-ide's start-up sweep leaves it
+//! alone, the bytes in use for the other running vr-ides' total, and an index of the records
+//! (root-relative paths). Nothing reads the index back today: a store is deleted when its
+//! session closes and swept after a crash, so a restored session starts with an empty list;
+//! [`load_index`] is the reader a later restore must use, and it trusts no line of it.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -28,7 +31,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rustix::fs::OFlags;
 use vr_core::safe_replace::{self, Checks, Outcome, Step};
@@ -59,6 +62,12 @@ const DIFF_TIMEOUT: Duration = Duration::from_millis(300);
 const INDEX_NAME: &str = "index";
 const INDEX_HEAD: &str = "vr-ide-ai-changes 1";
 const LOCK_NAME: &str = "lock";
+/// A store's bytes in use, for the total of the vr-ides running side by side.
+const USED_NAME: &str = "used";
+/// How old the sum of the other vr-ides' stores may be, and how far a store's own figure may
+/// lag: the total can be passed by that much, never without bound.
+const OTHERS_TTL: Duration = Duration::from_secs(1);
+const USED_LAG: u64 = 1 << 20;
 
 #[derive(Debug, Clone)]
 pub struct Limits {
@@ -193,6 +202,10 @@ pub enum Incomplete {
     Rescan,
     WatchLimit,
     RecordLimit,
+    /// The walk's memory is full: folders past that point are not watched.
+    WalkLimit,
+    /// The start-up walk has not been everywhere yet.
+    Scanning,
 }
 
 impl Incomplete {
@@ -202,6 +215,8 @@ impl Incomplete {
             Incomplete::Rescan => "watcher rescan",
             Incomplete::WatchLimit => "watch limit",
             Incomplete::RecordLimit => "file limit",
+            Incomplete::WalkLimit => "too many files",
+            Incomplete::Scanning => "still scanning the folder",
         }
     }
 }
@@ -333,6 +348,19 @@ struct FileState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Seen(Option<FileState>);
 
+impl Seen {
+    fn is_folder(&self) -> bool {
+        self.0.is_some_and(|s| s.stamp.mode & 0o170000 == 0o040000)
+    }
+
+    /// The diff showed a file (or a link whose target is) exactly `bytes`.
+    #[cfg(test)]
+    pub fn shows(&self, bytes: &[u8]) -> bool {
+        self.0
+            .is_some_and(|s| s.stamp.len == bytes.len() as u64 && s.hash == content_hash(bytes))
+    }
+}
+
 fn hash_stream(mut file: &File) -> io::Result<u64> {
     let mut h = DefaultHasher::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -356,13 +384,22 @@ fn state_of(path: &Path) -> io::Result<Option<FileState>> {
         };
         let stamp = Stamp::of(&meta);
         let racy = stamp.racy();
+        // Replaced or removed between the look and the read: looked at again.
+        let gone = |e: &io::Error| e.kind() == io::ErrorKind::NotFound;
         let hash = if meta.is_file() {
-            match open_regular(path)? {
-                Some((file, _)) => hash_stream(&file)?,
-                None => continue,
+            match open_regular(path) {
+                Ok(Some((file, _))) => hash_stream(&file)?,
+                Ok(None) => continue,
+                Err(e) if gone(&e) => continue,
+                Err(e) => return Err(e),
             }
         } else if meta.file_type().is_symlink() {
-            content_hash(fs::read_link(path)?.as_os_str().as_bytes())
+            match fs::read_link(path) {
+                Ok(to) => content_hash(to.as_os_str().as_bytes()),
+                // EINVAL: no longer a link.
+                Err(e) if gone(&e) || e.kind() == io::ErrorKind::InvalidInput => continue,
+                Err(e) => return Err(e),
+            }
         } else {
             0
         };
@@ -435,8 +472,14 @@ struct State {
     dir: PathBuf,
     _lock: File,
     limits: Limits,
+    /// `state_dir()/ai`: the stores of every vr-ide of this user.
+    base: PathBuf,
     total: Arc<AtomicU64>,
     used: u64,
+    /// `used` as last written to the store for the other vr-ides.
+    flushed: Option<u64>,
+    /// Bytes the other vr-ides' stores hold, and when that was read.
+    others: Option<(Instant, u64)>,
     next_blob: u64,
     excluded: Vec<PathBuf>,
     own: Option<OwnWrites>,
@@ -488,19 +531,75 @@ impl State {
         if self.used + len > self.limits.agent {
             return Err(NoEarlier::Limit);
         }
-        let cap = self.limits.total;
+        // This vr-ide's sessions are counted exactly, the other running ones by what their
+        // stores say.
+        let (cap, others) = (self.limits.total, self.others_used());
         self.total
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |t| {
-                (t + len <= cap).then_some(t + len)
+                (t.saturating_add(len).saturating_add(others) <= cap).then_some(t + len)
             })
             .map_err(|_| NoEarlier::Limit)?;
         self.used += len;
         self.next_blob += 1;
+        if self
+            .flushed
+            .is_none_or(|f| self.used.abs_diff(f) >= USED_LAG)
+        {
+            self.flush_used();
+        }
         Ok(self.next_blob)
+    }
+
+    /// Bytes in the stores of the other vr-ide processes of this user (SEC-10: the total is
+    /// one for all of them). A store names its figure itself; one that cannot be read as a
+    /// plain small file counts as nothing.
+    fn others_used(&mut self) -> u64 {
+        if let Some((at, sum)) = self.others
+            && at.elapsed() < OTHERS_TTL
+        {
+            return sum;
+        }
+        let ours = format!("{}-", std::process::id());
+        let mut sum = 0u64;
+        for e in fs::read_dir(&self.base).into_iter().flatten().flatten() {
+            if e.file_name().to_string_lossy().starts_with(&ours) {
+                continue;
+            }
+            if let Ok(ReadOut::Bytes(_, b)) = read_regular(&e.path().join(USED_NAME), 32)
+                && let Some(n) = std::str::from_utf8(&b)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+            {
+                sum = sum.saturating_add(n);
+            }
+        }
+        self.others = Some((Instant::now(), sum));
+        sum
+    }
+
+    /// Writes this store's bytes in use where the other vr-ides read them.
+    fn flush_used(&mut self) {
+        if self.closed || self.flushed == Some(self.used) {
+            return;
+        }
+        let tmp = self.dir.join(format!("{USED_NAME}.tmp"));
+        let _ = fs::remove_file(&tmp);
+        let done = crate::recovery::create_private_file(&tmp)
+            .and_then(|mut f| f.write_all(format!("{}\n", self.used).as_bytes()))
+            .and_then(|()| fs::rename(&tmp, self.dir.join(USED_NAME)));
+        if done.is_ok() {
+            self.flushed = Some(self.used);
+        }
     }
 
     fn release(&mut self, len: u64) {
         self.used = self.used.saturating_sub(len);
+        if self
+            .flushed
+            .is_some_and(|f| self.used.abs_diff(f) >= USED_LAG)
+        {
+            self.flush_used();
+        }
         let _ = self
             .total
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |t| {
@@ -686,7 +785,7 @@ fn valid_rel(rel: &Path) -> bool {
     !rel.as_os_str().is_empty() && rel.components().all(|c| matches!(c, Component::Normal(_)))
 }
 
-/// Records of a store folder's index (a session restored later adopts them). Every line is
+/// Records of a store folder's index (no caller yet, see the module doc). Every line is
 /// checked: a path that is not plainly below the root, a damaged line or a repeated path is
 /// dropped; a pre-image whose blob is missing or has another size is dropped with it.
 pub fn load_index(dir: &Path) -> Vec<Record> {
@@ -849,6 +948,14 @@ pub fn sweep(base: &Path) {
 }
 
 // ---- the engine: walk and events --------------------------------------------------------------
+
+/// The version a file must still be when it is read again as a baseline.
+enum Expect<'a> {
+    /// The most recent save of vr-ide's own editor.
+    Own(&'a OwnWrites),
+    /// What a diff showed (Keep).
+    Shown(&'a Seen),
+}
 
 /// The start-up walk: breadth first from the root, a watch on each directory before it is
 /// listed, so nothing changes unseen between the two.
@@ -1013,7 +1120,9 @@ impl Engine {
             let clean = scan.clean.contains(dir.as_path());
             if !self.baseline_file(&rel, clean) {
                 // The walk's memory is full: directories from here on are not walked, so a
-                // file in them is never taken for a new one.
+                // file in them is never taken for a new one. They are not watched either:
+                // the list says that changes may be missing (SEC-13).
+                self.shared.lock().note(Incomplete::WalkLimit);
                 self.finish_scan();
                 return true;
             }
@@ -1024,7 +1133,10 @@ impl Engine {
 
     fn finish_scan(&mut self) {
         self.scan = None;
-        self.shared.lock().scanning = false;
+        let mut st = self.shared.lock();
+        st.scanning = false;
+        st.flush_used();
+        drop(st);
         self.shared.bump();
     }
 
@@ -1095,9 +1207,12 @@ impl Engine {
         true
     }
 
-    /// The content at `rel` as it is now becomes what a later change is compared with (after
-    /// Keep, after a save of vr-ide's own editor).
-    fn rebase(shared: &Shared, rel: &Path) {
+    /// The content at `rel` becomes what a later change is compared with (after Keep, after a
+    /// save of vr-ide's own editor) - but only content proven to be the version `expect`
+    /// names. The file is read some time after the Keep or the save was noticed, and the
+    /// agent may have written in between: bytes that are not proven are the agent's, and
+    /// they are listed as a change without an earlier version, never stored as one (SEC-9).
+    fn rebase(shared: &Shared, rel: &Path, expect: Expect<'_>) {
         let (abs, cap) = {
             let mut st = shared.lock();
             if let Some(old) = st.known.remove(rel).and_then(|b| b.blob) {
@@ -1105,6 +1220,8 @@ impl Engine {
             }
             (st.root.join(rel), st.limits.file)
         };
+        #[cfg(test)]
+        seam::run();
         let Ok(meta) = fs::symlink_metadata(&abs) else {
             return;
         };
@@ -1116,8 +1233,29 @@ impl Engine {
             why: Some(NoEarlier::NotSeen),
         };
         let read = read_regular(&abs, cap);
+        // Asked after the read, about the bytes that were read.
+        let proven = match (&expect, &read) {
+            (_, Ok(ReadOut::Bytes(s, _))) if *s != stamp => false,
+            // Still our save, untouched since: the stamp of the read is the save's.
+            (Expect::Own(own), _) => own.is_own(&abs),
+            (Expect::Shown(Seen(Some(shown))), Ok(ReadOut::Bytes(_, bytes))) => {
+                shown.stamp.len == bytes.len() as u64 && shown.hash == content_hash(bytes)
+            }
+            // Nothing is stored for what was not read; the look alone decides.
+            (Expect::Shown(seen), _) => still(&abs, seen).unwrap_or(false),
+        };
         let mut st = shared.lock();
         if st.record_at(rel).is_some() || !st.running {
+            return;
+        }
+        if !proven {
+            // A file where the kept deletion was is a new file.
+            let kind = match expect {
+                Expect::Shown(Seen(None)) => Kind::Created,
+                _ => Kind::Modified,
+            };
+            st.add(rel, kind, None);
+            st.save_index();
             return;
         }
         match read {
@@ -1163,7 +1301,10 @@ impl Engine {
     /// Counts and the index follow what the walk and the events recorded.
     fn settle(&mut self) {
         self.recount();
-        self.shared.lock().save_index();
+        let mut st = self.shared.lock();
+        st.save_index();
+        st.flush_used();
+        drop(st);
         self.shared.bump();
     }
 
@@ -1193,7 +1334,15 @@ impl Engine {
         };
         match fs::symlink_metadata(p) {
             Err(_) => self.gone(p, gone_dirs),
-            Ok(m) if m.is_dir() => self.new_dir(&rel),
+            Ok(m) if m.is_dir() => {
+                // A folder where a file was: that file is gone.
+                let mut st = self.shared.lock();
+                if !st.dirs.contains(&rel) {
+                    Engine::file_gone(&mut st, &rel);
+                }
+                drop(st);
+                self.new_dir(&rel)
+            }
             Ok(m) => self.changed(&rel, &m, false),
         }
     }
@@ -1273,8 +1422,8 @@ impl Engine {
             st.records[i].recount = true;
             return;
         }
-        if own.as_ref().is_some_and(|o| o.is_own(&abs)) {
-            Engine::rebase(&self.shared, rel);
+        if let Some(own) = own.as_ref().filter(|o| o.is_own(&abs)) {
+            Engine::rebase(&self.shared, rel, Expect::Own(own));
             return;
         }
         let base = self.shared.lock().known.get(rel).cloned();
@@ -1481,6 +1630,9 @@ pub struct DiffLine {
     /// Line number in the file now (context, added) or in the earlier version (removed).
     pub num: Option<u32>,
     pub text: String,
+    /// Where the line starts in the text it is from (bytes): [`Diff::old_text`] for a removed
+    /// line, [`Diff::new_text`] for the others. The syntax colours are looked up there.
+    pub at: Option<usize>,
 }
 
 /// A record's diff as shown in the editor, with the version of the file it shows.
@@ -1495,6 +1647,28 @@ pub struct Diff {
     pub removed: u32,
     pub can_revert: bool,
     pub seen: Seen,
+    /// The two texts as the lines were cut from them; `None` for a side that is absent,
+    /// binary or was not read. Kept in memory only, like the lines.
+    pub old_text: Option<Arc<str>>,
+    pub new_text: Option<Arc<str>>,
+}
+
+/// A side of a diff as text, when it is text.
+fn side_text(bytes: Option<&[u8]>) -> Option<Arc<str>> {
+    let bytes = bytes.filter(|b| !is_binary(b))?;
+    Some(Arc::from(String::from_utf8_lossy(bytes).as_ref()))
+}
+
+/// Byte offset at which each of `slices` starts in the text they were cut from.
+fn starts<'a>(slices: impl Iterator<Item = &'a str>) -> Vec<usize> {
+    let mut at = 0;
+    slices
+        .map(|s| {
+            let here = at;
+            at += s.len();
+            here
+        })
+        .collect()
 }
 
 fn is_binary(bytes: &[u8]) -> bool {
@@ -1556,6 +1730,7 @@ fn diff_lines(old: &[u8], new: &[u8], kind: Kind) -> (Vec<DiffLine>, u32, u32) {
         kind: LineKind::Note,
         num: None,
         text,
+        at: None,
     };
     if is_binary(old) || is_binary(new) {
         let text = format!(
@@ -1570,6 +1745,10 @@ fn diff_lines(old: &[u8], new: &[u8], kind: Kind) -> (Vec<DiffLine>, u32, u32) {
         .timeout(DIFF_TIMEOUT)
         .diff_lines(old_s.as_ref(), new_s.as_ref());
     let old_lines: Vec<&str> = diff.iter_old_slices().collect();
+    let (old_at, new_at) = (
+        starts(diff.iter_old_slices()),
+        starts(diff.iter_new_slices()),
+    );
     let mut out = Vec::new();
     let (mut added, mut removed) = (0u32, 0u32);
     'groups: for group in diff.grouped_ops(3) {
@@ -1598,6 +1777,7 @@ fn diff_lines(old: &[u8], new: &[u8], kind: Kind) -> (Vec<DiffLine>, u32, u32) {
             )
             .trim_end()
             .to_string(),
+            at: None,
         });
         for op in &group {
             for change in diff.iter_changes(op) {
@@ -1605,21 +1785,22 @@ fn diff_lines(old: &[u8], new: &[u8], kind: Kind) -> (Vec<DiffLine>, u32, u32) {
                     out.push(note(format!("Diff cut at {DIFF_LINES_MAX} lines.")));
                     break 'groups;
                 }
-                let (kind, num) = match change.tag() {
-                    similar::ChangeTag::Equal => (LineKind::Context, change.new_index()),
+                let (kind, num, side) = match change.tag() {
+                    similar::ChangeTag::Equal => (LineKind::Context, change.new_index(), &new_at),
                     similar::ChangeTag::Insert => {
                         added += 1;
-                        (LineKind::Added, change.new_index())
+                        (LineKind::Added, change.new_index(), &new_at)
                     }
                     similar::ChangeTag::Delete => {
                         removed += 1;
-                        (LineKind::Removed, change.old_index())
+                        (LineKind::Removed, change.old_index(), &old_at)
                     }
                 };
                 out.push(DiffLine {
                     kind,
                     num: num.map(|i| i as u32 + 1),
                     text: line_text(change.value()),
+                    at: num.and_then(|i| side.get(i).copied()),
                 });
             }
         }
@@ -1632,14 +1813,18 @@ fn plain_lines(new: Option<&[u8]>) -> Vec<DiffLine> {
     let Some(new) = new.filter(|b| !is_binary(b)) else {
         return Vec::new();
     };
-    String::from_utf8_lossy(new)
-        .lines()
-        .take(DIFF_LINES_MAX)
+    let text = String::from_utf8_lossy(new);
+    let lines: Vec<&str> = text.split_inclusive('\n').take(DIFF_LINES_MAX).collect();
+    let at = starts(lines.iter().copied());
+    lines
+        .iter()
+        .zip(at)
         .enumerate()
-        .map(|(i, l)| DiffLine {
+        .map(|(i, (l, at))| DiffLine {
             kind: LineKind::Context,
             num: Some(i as u32 + 1),
-            text: l.to_string(),
+            text: line_text(l),
+            at: Some(at),
         })
         .collect()
 }
@@ -1656,6 +1841,8 @@ pub enum RevertError {
     Gone,
     /// The file's folder is no longer inside the session's folder; nothing was written.
     Outside,
+    /// A folder is at the path now; it is never moved, replaced or trashed.
+    Folder,
     Failed(String),
 }
 
@@ -1707,6 +1894,87 @@ impl Anchor {
     fn path(&self, name: &std::ffi::OsStr) -> PathBuf {
         self.base().join(name)
     }
+
+    /// Where the open folder is now (it may have been moved since it was opened).
+    fn real_now(&self) -> PathBuf {
+        if self.via_fd {
+            fs::read_link(self.base()).unwrap_or_else(|_| self.real.clone())
+        } else {
+            self.real.clone()
+        }
+    }
+}
+
+/// The file a Revert sends to the trash, held open from its last check until after the move.
+struct Pin {
+    /// Readable when it is a regular file; a path-only handle otherwise.
+    file: File,
+    regular: bool,
+    id: (u64, u64),
+}
+
+/// What became of the pinned file.
+enum Moved {
+    /// It is still at the path.
+    No,
+    /// It left the path with the content that was shown.
+    Same,
+    /// It left the path, written to since the check.
+    Written,
+    /// It is linked nowhere any more: something else was at the path when the trash came
+    /// (a replacement by rename), or the trash copied it to another file system.
+    Unknown,
+}
+
+impl Pin {
+    /// `None` when the path does not hold the version `seen` (the same file, by identity).
+    fn open(path: &Path, seen: &Seen) -> io::Result<Option<Pin>> {
+        let Some(shown) = &seen.0 else {
+            return Ok(None);
+        };
+        let regular = shown.stamp.mode & 0o170000 == 0o100000;
+        let opened = if regular {
+            open_regular(path).map(|o| o.map(|(f, _)| f))
+        } else {
+            // A link (or FIFO, socket, device) is held by a handle that cannot read it.
+            let flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(flags.bits() as i32)
+                .open(path)
+                .map(Some)
+        };
+        let file = match opened {
+            Ok(Some(f)) => f,
+            Ok(None) => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let meta = file.metadata()?;
+        let id = (meta.dev(), meta.ino());
+        // The handle is on the file the check below is about, and that check passes.
+        if id != (shown.stamp.dev, shown.stamp.ino) || !still(path, seen)? {
+            return Ok(None);
+        }
+        Ok(Some(Pin { file, regular, id }))
+    }
+
+    fn after(&self, path: &Path, seen: &Seen) -> Moved {
+        if fs::symlink_metadata(path).is_ok_and(|m| (m.dev(), m.ino()) == self.id) {
+            return Moved::No;
+        }
+        let Ok(meta) = self.file.metadata() else {
+            return Moved::Unknown;
+        };
+        if meta.nlink() == 0 {
+            return Moved::Unknown;
+        }
+        let same = !self.regular
+            || seen.0.is_some_and(|s| {
+                meta.len() == s.stamp.len && hash_stream(&self.file).is_ok_and(|h| h == s.hash)
+            });
+        if same { Moved::Same } else { Moved::Written }
+    }
 }
 
 /// What a Revert did, for the notice.
@@ -1714,6 +1982,21 @@ impl Anchor {
 pub enum Reverted {
     Restored,
     Trashed,
+    /// In the trash, but written to while it was moved there: the trash holds a version
+    /// the diff did not show.
+    TrashedChanged,
+    /// Something went to the trash, but the file that was checked was replaced or copied on
+    /// the way: what the trash holds could not be compared with what the diff showed.
+    TrashedUnchecked,
+}
+
+#[derive(Debug)]
+pub enum KeepError {
+    /// The file is not what the diff showed any more; the record stays.
+    Changed,
+    /// The record is gone (kept or reverted meanwhile).
+    Gone,
+    Failed(String),
 }
 
 /// Puts `tmp` at `path` in exchange for the link (or other non-file) `seen` describes; when
@@ -1722,20 +2005,14 @@ fn swap_out(
     tmp: &Path,
     path: &Path,
     seen: &Seen,
-    anchor: &Anchor,
-    root: &Path,
     ours: (u64, u64),
-    outside: &mut bool,
+    seam: &mut dyn FnMut(Step),
 ) -> io::Result<Outcome> {
-    if !anchor.inside(root) {
-        *outside = true;
-        fs::remove_file(tmp)?;
-        return Ok(Outcome::Changed);
-    }
     if !still(path, seen)? {
         fs::remove_file(tmp)?;
         return Ok(Outcome::Changed);
     }
+    seam(Step::BeforeSwap);
     match safe_replace::exchange_files(tmp, path) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -1745,7 +2022,9 @@ fn swap_out(
         Err(e) => return Err(e),
     }
     // From here `tmp` names what was at the path.
+    seam(Step::AfterSwap);
     if holds(tmp, seen).unwrap_or(false) {
+        seam(Step::BeforeDeleteOld);
         return match fs::remove_file(tmp) {
             Ok(()) => Ok(Outcome::Replaced),
             Err(cause) => Ok(Outcome::Kept {
@@ -1755,10 +2034,12 @@ fn swap_out(
             }),
         };
     }
+    seam(Step::BeforeSwapBack);
     match safe_replace::exchange_files(tmp, path) {
         // Ours is back under the temp name, unless someone replaced it meanwhile: only a
         // file proven to be ours is deleted.
         Ok(()) => {
+            seam(Step::AfterSwapBack);
             let is_ours = fs::symlink_metadata(tmp).is_ok_and(|m| m.is_file() && m.len() == ours.0)
                 && state_of(tmp).is_ok_and(|s| s.is_some_and(|s| s.hash == ours.1));
             if is_ours {
@@ -1806,8 +2087,11 @@ impl Changes {
                 dir,
                 _lock: lock,
                 limits: cfg.limits,
+                base: cfg.store_base,
                 total: cfg.total,
                 used: 0,
+                flushed: None,
+                others: None,
                 next_blob: 0,
                 excluded,
                 own: cfg.own,
@@ -1872,6 +2156,14 @@ impl Changes {
         e.handle(vec![ev]);
     }
 
+    /// Several events as one batch of the watcher.
+    #[cfg(test)]
+    pub fn feed_all(&self, events: Vec<FsEvent>) {
+        let mut e = self.engine.as_ref().expect("manual").borrow_mut();
+        e.sync_epoch();
+        e.handle(events);
+    }
+
     #[cfg(test)]
     pub fn store_dir(&self) -> PathBuf {
         self.shared.lock().dir.clone()
@@ -1932,8 +2224,17 @@ impl Changes {
         self.shared.lock().records.len()
     }
 
+    /// Why the list may miss changes: a cause noted by the watcher or a cap, else the
+    /// start-up walk while it runs (a folder it has not reached is not watched yet, and what
+    /// was deleted there is never seen). The walk's notice ends with the walk, not by hand.
     pub fn banner(&self) -> Option<Banner> {
-        self.shared.lock().banner
+        let st = self.shared.lock();
+        st.banner.or_else(|| {
+            (st.scanning && st.running).then_some(Banner {
+                why: Incomplete::Scanning,
+                at: st.t0,
+            })
+        })
     }
 
     /// Hides the "may be incomplete" banner until the next cause.
@@ -1958,6 +2259,8 @@ impl Changes {
         if st.running {
             st.running = false;
             st.epoch += 1;
+            drop(st);
+            self.shared.bump();
         }
     }
 
@@ -1968,6 +2271,8 @@ impl Changes {
         st.t0 = SystemTime::now();
         st.epoch += 1;
         st.scanning = true;
+        drop(st);
+        self.shared.bump();
     }
 
     /// The diff of `rel` (earlier version against the file now) and the version of the file it
@@ -1994,6 +2299,7 @@ impl Changes {
             kind: LineKind::Note,
             num: None,
             text: text.to_string(),
+            at: None,
         };
         let (mut lines, mut added, mut removed) = (Vec::new(), 0, 0);
         match (record.kind, &old, &new) {
@@ -2009,7 +2315,11 @@ impl Changes {
             (Kind::Modified | Kind::Deleted, None, _) => lines = plain_lines(new.as_deref()),
             _ => {}
         }
-        if new.is_none() && record.kind != Kind::Deleted {
+        if seen.is_folder() {
+            let text = "Now a folder is at this path; it is not read, and revert is off while \
+                        it is there.";
+            lines.insert(0, note(text));
+        } else if new.is_none() && record.kind != Kind::Deleted {
             let what = match seen.0 {
                 None => "The file is gone.",
                 Some(s) if s.stamp.mode & 0o170000 == 0o120000 => {
@@ -2030,16 +2340,34 @@ impl Changes {
             removed,
             can_revert: record.can_revert(),
             seen,
+            // The sides the lines above were cut from (an absent side has no lines).
+            old_text: match record.kind {
+                Kind::Created => None,
+                _ => side_text(old.as_deref()),
+            },
+            new_text: match record.kind {
+                Kind::Deleted => None,
+                _ => side_text(new.as_deref()),
+            },
         })
     }
 
-    /// Keep: the record and its pre-image go; the file as it is now is what later changes are
-    /// compared with. False when there was no such record.
-    pub fn keep(&self, rel: &Path) -> bool {
+    /// Keep: the record and its pre-image go, while the file is still the version `seen` (what
+    /// the diff showed); that version is what later changes are compared with.
+    pub fn keep(&self, rel: &Path, seen: &Seen) -> Result<(), KeepError> {
+        let abs = {
+            let st = self.shared.lock();
+            st.record_at(rel).ok_or(KeepError::Gone)?;
+            st.root.join(rel)
+        };
+        // Keep says "this version is fine": only the version that was shown can be meant.
+        if !still(&abs, seen).map_err(|e| KeepError::Failed(e.to_string()))? {
+            return Err(KeepError::Changed);
+        }
         let running = {
             let mut st = self.shared.lock();
             let Some(i) = st.record_at(rel) else {
-                return false;
+                return Err(KeepError::Gone);
             };
             let r = st.remove_record(i);
             if let Some(b) = &r.pre {
@@ -2049,10 +2377,10 @@ impl Changes {
             st.running
         };
         if running {
-            Engine::rebase(&self.shared, rel);
+            Engine::rebase(&self.shared, rel, Expect::Shown(seen));
         }
         self.shared.bump();
-        true
+        Ok(())
     }
 
     /// Revert (SEC-12): writes the pre-image back, or moves a created file to the trash, only
@@ -2079,6 +2407,11 @@ impl Changes {
         };
         if !valid_rel(rel) {
             return Err(RevertError::Outside);
+        }
+        if seen.is_folder() {
+            // A folder cannot be compared with what was shown, and whatever is in it is
+            // work nobody was shown: it is not exchanged, moved aside or trashed.
+            return Err(RevertError::Folder);
         }
         let target = root.join(rel);
         let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
@@ -2107,12 +2440,30 @@ impl Changes {
             if !anchor.inside(&root) {
                 return Err(RevertError::Outside);
             }
-            let real = anchor.real.join(name);
+            // The trash works by path and cannot be told which version to take. The file
+            // that was checked is held open across the move, so a write or a replacement in
+            // between does not pass for the version that was shown.
+            if seen.0.is_none() {
+                return Err(RevertError::Failed("the file is no longer there".into()));
+            }
+            let pin = Pin::open(&path, seen)
+                .map_err(fail)?
+                .ok_or(RevertError::Changed)?;
+            let real = anchor.real_now().join(name);
             match trash.trash(std::slice::from_ref(&real)).pop() {
                 Some((_, Ok(()))) => {}
                 Some((_, Err(e))) => return Err(RevertError::Failed(e.to_string())),
                 None => return Err(RevertError::Failed("the trash did not answer".into())),
             }
+            let done = match pin.after(&path, seen) {
+                Moved::No => {
+                    let text = "the trash reported success but the file is still in place";
+                    return Err(RevertError::Failed(text.into()));
+                }
+                Moved::Same => Reverted::Trashed,
+                Moved::Written => Reverted::TrashedChanged,
+                Moved::Unknown => Reverted::TrashedUnchecked,
+            };
             let mut st = self.shared.lock();
             if let Some(i) = st.record_at(rel) {
                 st.remove_record(i);
@@ -2121,7 +2472,7 @@ impl Changes {
             st.save_index();
             drop(st);
             self.shared.bump();
-            return Ok(Reverted::Trashed);
+            return Ok(done);
         };
         let mode = record.pre.as_ref().map_or(0o600, |b| b.mode) & 0o777;
         // 0600 until the bytes are in; the final mode is set on the handle, whatever the umask.
@@ -2141,9 +2492,16 @@ impl Changes {
         let done = if link_like {
             // A link (or another non-file) is at the path: nothing can be written into it, so
             // it is taken out by the same atomic exchange and checked by what came out.
-            swap_out(&tmp, &path, seen, &anchor, &root, (len, hash), &mut outside)
+            if anchor.inside(&root) {
+                swap_out(&tmp, &path, seen, (len, hash), seam)
+            } else {
+                let _ = fs::remove_file(&tmp);
+                outside = true;
+                Ok(Outcome::Changed)
+            }
         } else if seen.0.is_none() {
             if anchor.inside(&root) {
+                seam(Step::BeforeSwap);
                 safe_replace::create_if_absent(&tmp, &path).map(|made| {
                     if made {
                         Outcome::Replaced
@@ -2190,9 +2548,15 @@ impl Changes {
             } else {
                 RevertError::Changed
             }),
-            Ok(Outcome::Kept { at, what, cause }) => Err(RevertError::Failed(
-                safe_replace::kept_error(&at, what, &cause).to_string(),
-            )),
+            Ok(Outcome::Kept { at, what, cause }) => {
+                // Named by the folder's real path: the handle's path is no use to the user.
+                let at = at
+                    .file_name()
+                    .map_or_else(|| at.clone(), |n| anchor.real_now().join(n));
+                Err(RevertError::Failed(
+                    safe_replace::kept_error(&at, what, &cause).to_string(),
+                ))
+            }
             Ok(Outcome::Replaced) => {
                 let _ = anchor.dir.sync_all();
                 let stamp = file.metadata().ok().map(|m| Stamp::of(&m));
@@ -2253,4 +2617,25 @@ pub fn wait_until(limit: Duration, mut cond: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(10));
     }
     cond()
+}
+
+/// Another writer placed between a decision and the read that follows it (this thread's next
+/// re-read of a file as a new baseline).
+#[cfg(test)]
+pub mod seam {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static BEFORE_READ: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    }
+
+    pub fn before_baseline_read(f: impl FnOnce() + 'static) {
+        BEFORE_READ.with(|s| *s.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(super) fn run() {
+        if let Some(f) = BEFORE_READ.with(|s| s.borrow_mut().take()) {
+            f();
+        }
+    }
 }

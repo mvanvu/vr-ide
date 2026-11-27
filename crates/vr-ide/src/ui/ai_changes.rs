@@ -9,14 +9,14 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use crate::ai::AiPanel;
-use crate::ai::changes::{DiffLine, Kind, Record};
+use crate::ai::changes::{DiffLine, Incomplete, Kind, Record};
 use crate::ai::review;
 use crate::app::App;
 use crate::theme::Theme;
 
 /// Screen lines of the "may be incomplete" banner.
 const BANNER_LINES: u16 = 2;
-/// Under this many cells the folder of a row is left out.
+/// Under this many cells for the folder of any drawn row, the list shows no folders.
 const FOLDER_MIN: usize = 10;
 /// Narrower than this, the diff header leaves the keys to the status bar.
 const HEAD_KEYS_MIN: u16 = 50;
@@ -249,11 +249,15 @@ pub fn render_list(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) -
         })
     };
     if let Some(b) = s.banner.filter(|_| y + BANNER_LINES <= bottom) {
-        let text = format!(
-            "! List may be incomplete ({} at {}) · enter hides",
-            b.why.text(),
-            clock(b.at)
-        );
+        let text = match b.why {
+            // Ends with the walk, not by a key.
+            Incomplete::Scanning => format!("! List may be incomplete ({})", b.why.text()),
+            _ => format!(
+                "! List may be incomplete ({} at {}) · enter hides",
+                b.why.text(),
+                clock(b.at)
+            ),
+        };
         let mut lines = crate::ui::dialog::wrap(&text, area.width.saturating_sub(2));
         lines.truncate(usize::from(BANNER_LINES));
         for (i, text) in lines.iter().enumerate() {
@@ -271,6 +275,21 @@ pub fn render_list(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) -
         buf.set_stringn(area.x + 1, y, "No changes since it started", w - 1, style);
         y += 1;
     }
+    // ` M name [folder] counts `: the name gives way last. The folder is a column of the
+    // list: shown when every drawn row that has one leaves it its minimum, else in no row.
+    let name_room = |r: &Record| w.saturating_sub(3 + width_of(&counts(r)) + 2);
+    let folder_room = |r: &Record| {
+        let name = cut_right(&review::shown_name(&r.rel), name_room(r));
+        w.saturating_sub(3 + width_of(&name) + 1 + width_of(&counts(r)) + 2)
+    };
+    let has_folder = |r: &Record| r.rel.parent().is_some_and(|p| !p.as_os_str().is_empty());
+    let folders = s
+        .records
+        .iter()
+        .skip(l.top)
+        .take(l.files)
+        .filter(|r| has_folder(r))
+        .all(|r| folder_room(r) >= FOLDER_MIN);
     for (i, r) in s.records.iter().enumerate().skip(l.top).take(l.files) {
         if y >= bottom {
             break;
@@ -284,8 +303,7 @@ pub fn render_list(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) -
         };
         let right = counts(r);
         let rw = width_of(&right);
-        // ` M name [folder] counts `: the name gives way last.
-        let name_room = w.saturating_sub(3 + rw + 2);
+        let name_room = name_room(r);
         let name = cut_right(&review::shown_name(&r.rel), name_room);
         buf.set_stringn(
             area.x + 1,
@@ -302,7 +320,7 @@ pub fn render_list(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) -
             .map(review::shown_path)
             .filter(|f| !f.is_empty());
         let room = w.saturating_sub(used + 1 + rw + 2);
-        if let Some(f) = folder.filter(|_| room >= FOLDER_MIN.min(used)) {
+        if let Some(f) = folder.filter(|_| folders) {
             let f = cut_left(&f, room);
             let style = theme.note.fg.map_or(base, |fg| base.fg(fg));
             buf.set_stringn(area.x + used as u16 + 1, y, &f, room, on(style));
@@ -357,6 +375,44 @@ pub fn decor<'a>(ai: &'a AiPanel, title: Option<&str>) -> Option<&'a [DiffLine]>
         .then_some(ai.diff.as_ref())
         .flatten()
         .map(|d| d.diff.lines.as_slice())
+}
+
+/// Bytes of one line the colours are asked for (a minified line is coloured at its start).
+const LINE_SPAN_MAX: usize = 16 * 1024;
+
+/// Syntax spans of the diff tab's rows `top..top + rows`, in bytes of its buffer `rope`
+/// (sorted, disjoint): every code line is looked up in the text it is from, a removed line in
+/// the earlier one. Empty for plain text and while the highlighters still parse.
+pub fn diff_spans(
+    app: &App,
+    rope: &ropey::Rope,
+    top: usize,
+    rows: usize,
+) -> Vec<(std::ops::Range<usize>, vr_syntax::Capture)> {
+    use crate::ai::changes::LineKind as L;
+    let Some(d) = app.ai.diff.as_ref() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let last = (top + rows).min(d.diff.lines.len()).min(rope.len_lines());
+    for (ln, l) in d.diff.lines.iter().enumerate().take(last).skip(top) {
+        let hl = match l.kind {
+            L::Removed => d.syntax.old.as_ref(),
+            L::Context | L::Added => d.syntax.new.as_ref(),
+            L::Hunk | L::Note => None,
+        };
+        let (Some(hl), Some(at)) = (hl, l.at) else {
+            continue;
+        };
+        let (start, len) = (rope.line_to_byte(ln), l.text.len().min(LINE_SPAN_MAX));
+        for (r, cap) in app.syntax.spans_of(hl, at..at + len) {
+            let (from, to) = (r.start.max(at), r.end.min(at + len));
+            if from < to {
+                out.push((start + from - at..start + to - at, cap));
+            }
+        }
+    }
+    out
 }
 
 /// Columns of the diff gutter: line number, a space, the `+` / `-` sign.

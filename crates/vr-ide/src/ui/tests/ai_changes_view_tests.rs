@@ -49,6 +49,12 @@ fn ai_changes_list_and_diff() {
     fx.app.explorer.visible = false;
     let t = draw(&mut fx.app, 80, 24);
     insta::assert_snapshot!("ai_changes_80x24", t.backend());
+    // 31 cells: one row has no room for its folder (10 cells), so no row shows one and the
+    // counts stay one column (mockup ai-changes-A-80x24).
+    let narrow = |y: u16| row(&t, y).chars().skip(49).collect::<String>();
+    assert_eq!(narrow(2), " M session.rs            +9 -3 ");
+    assert_eq!(narrow(3), " A session_tests.rs        +88 ");
+    assert_eq!(narrow(4), " D old-session.md          -40 ");
     fx.app.explorer.visible = true;
     let t = draw(&mut fx.app, 120, 40);
     insta::assert_snapshot!("ai_changes_120x40", t.backend());
@@ -243,6 +249,11 @@ fn ai_revert_dialogs_and_refusal() {
         all.contains("claude created this file. Revert moves it"),
         "{all}"
     );
+    // No line of one word left over by the wrap (mockup ai-revert-created-80x24).
+    assert!(
+        all.contains("│ (88 lines).") && !all.contains("│ lines)."),
+        "{all}"
+    );
     assert!(all.contains("Other programs' edits there count as claude's."));
     assert!(row(&t, 1).starts_with(" A session_tests.rs  new · +88 · claude"));
     let _ = OLD_MD;
@@ -265,4 +276,111 @@ fn ai_changes_empty_on_an_exited_session() {
     let status = row(&t, 23);
     assert!(status.starts_with(" AI  claude [exited 0]"), "{status}");
     assert!(status.trim_end().ends_with("enter restart"), "{status}");
+}
+
+/// SEC-13: while the start-up walk runs the list says it may be incomplete, and Enter does
+/// not hide that.
+#[test]
+fn ai_changes_scanning_notice() {
+    let mut fx = changed();
+    fx.changes().resume();
+    review::refresh(&mut fx.app);
+    fx.app.explorer.visible = false;
+    press(&mut fx.app, "f6");
+    let t = draw(&mut fx.app, 80, 24);
+    let panel = |t: &Terminal<TestBackend>, y: u16, skip: usize| -> String {
+        row(t, y).chars().skip(skip).collect()
+    };
+    assert_eq!(panel(&t, 2, 49), " ! List may be incomplete      ");
+    assert_eq!(panel(&t, 3, 49), "   (still scanning the folder) ");
+    assert_eq!(panel(&t, 4, 49), " M session.rs            +9 -3 ");
+    let theme = Theme::from_name(&fx.app.settings.theme);
+    assert_eq!(t.backend().buffer()[(50, 2)].fg, theme.warning.fg.unwrap());
+    // Enter on it changes nothing: the walk ends it.
+    key(&mut fx.app, KeyCode::Up);
+    key(&mut fx.app, KeyCode::Enter);
+    fx.app.explorer.visible = true;
+    let t = draw(&mut fx.app, 120, 40);
+    assert_eq!(panel(&t, 2, 85), " ! List may be incomplete (still   ");
+    assert_eq!(panel(&t, 3, 85), "   scanning the folder)            ");
+    fx.changes().scan();
+    review::refresh(&mut fx.app);
+    let t = draw(&mut fx.app, 120, 40);
+    assert_eq!(panel(&t, 2, 85), " M session.rs …es/vr-ide/src +9 -3 ");
+}
+
+/// ui-spec S3: the diff's code keeps its syntax colours on the added / removed backgrounds,
+/// each side coloured as part of its own file (old text for `-`, new text for the rest).
+#[test]
+fn ai_diff_lines_have_syntax_colours() {
+    for name in ["dracula", "homebrew"] {
+        let mut fx = changed();
+        fx.app.settings.theme = name.to_string();
+        press(&mut fx.app, "f6");
+        key(&mut fx.app, KeyCode::Enter);
+        fx.app.explorer.visible = true;
+        assert!(review::wait_syntax(&fx.app), "{name}");
+        let t = draw(&mut fx.app, 120, 40);
+        let theme = Theme::from_name(name);
+        let buf = t.backend().buffer();
+        let find = |text: &str| -> (u16, u16) {
+            (0..40)
+                .find_map(|y| {
+                    let r = row(&t, y);
+                    r.find(text).map(|at| (r[..at].chars().count() as u16, y))
+                })
+                .unwrap_or_else(|| panic!("{name}: no {text:?} on screen"))
+        };
+        let fg = |cap| theme.syntax(cap).fg.unwrap();
+        let plain = theme.text.fg.unwrap();
+        assert_ne!(fg(vr_syntax::Capture::Keyword), plain, "{name}");
+        // Added: the keyword and the type in their colours, on the added background.
+        let (x, y) = find("pub ai: Vec<AgentState>");
+        assert_eq!(buf[(x, y)].fg, fg(vr_syntax::Capture::Keyword), "{name}");
+        assert_eq!(buf[(x, y)].bg, theme.diff_added_bg, "{name}");
+        assert_eq!(buf[(x + 8, y)].fg, fg(vr_syntax::Capture::Type), "{name}");
+        // Removed: coloured from the earlier text, on the removed background.
+        let (x, y) = find("/// Drops tabs whose file is gone.");
+        assert_eq!(buf[(x, y)].fg, fg(vr_syntax::Capture::Comment), "{name}");
+        assert_eq!(buf[(x, y)].bg, theme.diff_removed_bg, "{name}");
+        // Context, and the hunk header stays a header.
+        let (x, y) = find("impl Session {");
+        assert_eq!(buf[(x, y)].fg, fg(vr_syntax::Capture::Keyword), "{name}");
+        let (x, y) = find("@@ -9,6 +9,7 @@");
+        assert_eq!(buf[(x, y)].fg, theme.mode_ai.bg.unwrap(), "{name}");
+    }
+    // A file without an earlier version is coloured as the file it is; a deleted file has
+    // one side to colour, a closed tab none.
+    let mut fx = changed();
+    fx.changes().forget_earlier(Path::new(".env"));
+    fx.agent_writes("crates/vr-ide/src/late.rs", "pub fn late() {}\n");
+    fx.changes()
+        .set_missing(Path::new("crates/vr-ide/src/late.rs"), NoEarlier::NotSeen);
+    review::refresh(&mut fx.app);
+    press(&mut fx.app, "f6");
+    assert!(review::select(
+        &mut fx.app,
+        Path::new("crates/vr-ide/src/late.rs")
+    ));
+    key(&mut fx.app, KeyCode::Enter);
+    assert!(review::wait_syntax(&fx.app));
+    let t = draw(&mut fx.app, 120, 40);
+    let theme = Theme::from_name(&fx.app.settings.theme);
+    let y = (0..40)
+        .find(|&y| row(&t, y).contains("pub fn late()"))
+        .unwrap();
+    let x = row(&t, y).find("pub fn").unwrap() as u16;
+    assert_eq!(
+        t.backend().buffer()[(x, y)].fg,
+        theme.syntax(vr_syntax::Capture::Keyword).fg.unwrap()
+    );
+    assert!(review::select(&mut fx.app, Path::new(OLD_MD)));
+    key(&mut fx.app, KeyCode::Enter);
+    assert_eq!(
+        review::diff_highlighters(&fx.app),
+        1,
+        "a deleted file has one side"
+    );
+    review::close_diff(&mut fx.app);
+    assert_eq!(review::diff_highlighters(&fx.app), 0);
 }

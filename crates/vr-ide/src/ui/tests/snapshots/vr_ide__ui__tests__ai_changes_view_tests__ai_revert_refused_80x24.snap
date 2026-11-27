@@ -4,7 +4,7 @@ expression: t.backend()
 ---
 " ± session.rs x                                 │ 1 claude x                  + "
 " M session.rs  +10 -3 · claude                  │ Changes · claude · 3 files f6 "
-"     @@ -9,6 +9,7 @@ pub struct Session         │ M session.rs …r-ide/src +9 -3 "
+"     @@ -9,6 +9,7 @@ pub struct Session         │ M session.rs            +9 -3 "
 "  9      pub tabs: Vec<TabState>,               │ A session_tests.rs        +88 "
 " 10      pub active: usize,                     │ D old-session.md          -40 "
 " 11      pub expanded: Vec<PathBuf>,            │ Counts edits by any program in"

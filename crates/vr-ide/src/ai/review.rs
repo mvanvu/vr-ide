@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode as K, KeyEvent};
 use vr_core::FsEvent;
 
 use super::changes::{
-    Banner, Changes, Config, Diff, Kind, LineKind, Record, RevertError, Reverted, Seen,
+    Banner, Changes, Config, Diff, KeepError, Kind, LineKind, Record, RevertError, Reverted, Seen,
 };
 use crate::app::{App, Focus, View};
 use crate::commands::dialog::DialogAction;
@@ -52,12 +52,56 @@ pub struct ChangeList {
 }
 
 /// What the diff tab shows: one record of one session, as it was when the tab was filled.
-#[derive(Debug, Clone)]
 pub struct DiffTab {
     /// [`super::AiSession::serial`].
     pub session: u64,
     pub rel: PathBuf,
     pub diff: Diff,
+    pub syntax: DiffSyntax,
+}
+
+/// Highlighters of the two texts a diff compares, in the language of the file's name: a
+/// removed line is coloured as part of the earlier text, the others as part of the file now
+/// (ui-spec S3). They parse on their own worker threads, hold the texts in memory only, and
+/// stop when the diff tab goes (closed, reloaded, its session closed, quit).
+#[derive(Default)]
+pub struct DiffSyntax {
+    pub old: Option<vr_syntax::Highlighter>,
+    pub new: Option<vr_syntax::Highlighter>,
+}
+
+impl DiffSyntax {
+    fn of(app: &App, rel: &Path, diff: &Diff) -> DiffSyntax {
+        let max = app.settings.max_highlight_bytes;
+        let side = |text: &Option<Arc<str>>| {
+            text.as_deref()
+                .and_then(|t| app.syntax.standalone(rel, t, max))
+        };
+        DiffSyntax {
+            old: side(&diff.old_text),
+            new: side(&diff.new_text),
+        }
+    }
+}
+
+/// Waits until the diff tab's colours describe its texts (the UI never waits).
+#[cfg(test)]
+pub fn wait_syntax(app: &App) -> bool {
+    let limit = std::time::Duration::from_secs(10);
+    app.ai.diff.as_ref().is_none_or(|d| {
+        [&d.syntax.old, &d.syntax.new]
+            .into_iter()
+            .flatten()
+            .all(|hl| hl.wait(limit))
+    })
+}
+
+/// Highlighters the diff tab holds.
+#[cfg(test)]
+pub fn diff_highlighters(app: &App) -> usize {
+    app.ai.diff.as_ref().map_or(0, |d| {
+        usize::from(d.syntax.old.is_some()) + usize::from(d.syntax.new.is_some())
+    })
 }
 
 /// A selectable row of the list.
@@ -349,6 +393,7 @@ fn diff_text(d: &Diff, label: &str) -> (String, Diff) {
             kind: LineKind::Note,
             num: None,
             text,
+            at: None,
         };
         let head = [
             note(format!("vr-ide saw {name} only after {label} changed it:")),
@@ -384,6 +429,7 @@ pub fn open_diff(app: &mut App, si: usize, rel: &Path) {
     };
     let serial = s.serial;
     let (text, diff) = diff_text(&diff, &app.ai.label(si));
+    let syntax = DiffSyntax::of(app, rel, &diff);
     close_diff(app);
     let mut doc = vr_core::Document::untitled();
     doc.buffer = vr_core::Buffer::from_str(&text);
@@ -398,6 +444,7 @@ pub fn open_diff(app: &mut App, si: usize, rel: &Path) {
         session: serial,
         rel: rel.to_path_buf(),
         diff,
+        syntax,
     });
     app.set_active(app.docs.len() - 1);
     app.dirty = true;
@@ -437,8 +484,34 @@ fn keep_cmd(app: &mut App, _: CmdArgs) -> CmdResult {
         return Ok(());
     };
     let serial = s.serial;
-    if !s.changes.as_ref().is_some_and(|c| c.keep(&rel)) {
+    let Some(c) = &s.changes else {
         return Ok(());
+    };
+    let name = shown_name(&rel);
+    // What the diff tab shows is what is kept; without a tab, the file as it is now.
+    let seen = match &app.ai.diff {
+        Some(d) if d.session == serial && d.rel == rel => d.diff.seen,
+        _ => {
+            c.diff(&rel)
+                .map_err(|e| anyhow::anyhow!("{name}: {e}"))?
+                .seen
+        }
+    };
+    match c.keep(&rel, &seen) {
+        Ok(()) => {}
+        Err(KeepError::Gone) => return Ok(()),
+        Err(KeepError::Changed) => {
+            open_diff(app, si, &rel);
+            app.warn(format!(
+                "Not kept: {name} changed since shown; diff updated"
+            ));
+            refresh(app);
+            return Ok(());
+        }
+        Err(KeepError::Failed(e)) => {
+            app.error(format!("Not kept: {name}: {e}"));
+            return Ok(());
+        }
     }
     if shows(app, serial, &rel) {
         close_diff(app);
@@ -570,14 +643,27 @@ pub fn answer_revert(app: &mut App, serial: u64, rel: &Path, seen: &Seen) {
                 if let Some(p) = app.docs.get(i).and_then(|d| d.path.clone()) {
                     app.handle_fs_event(match done {
                         Reverted::Restored => FsEvent::Modified(p),
-                        Reverted::Trashed => FsEvent::Removed(p),
+                        Reverted::Trashed
+                        | Reverted::TrashedChanged
+                        | Reverted::TrashedUnchecked => FsEvent::Removed(p),
                     });
                 }
             }
-            app.info(match done {
-                Reverted::Restored => format!("Reverted {name}"),
-                Reverted::Trashed => format!("Reverted {name}: moved to the trash"),
-            });
+            match done {
+                Reverted::Restored => app.info(format!("Reverted {name}")),
+                Reverted::Trashed => app.info(format!("Reverted {name}: moved to the trash")),
+                Reverted::TrashedChanged => app.warn(format!(
+                    "Reverted {name}: it was written to while it moved to the trash; the trash \
+                     holds that newer version"
+                )),
+                Reverted::TrashedUnchecked => app.warn(format!(
+                    "Reverted {name}: moved to the trash, but it was replaced or copied on the \
+                     way; the trash may hold a version that was not shown"
+                )),
+            }
+        }
+        Err(RevertError::Folder) => {
+            app.warn(format!("Not reverted: a folder is now at {name}"));
         }
         Err(RevertError::Changed) => {
             open_diff(app, si, rel);

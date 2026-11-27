@@ -293,6 +293,44 @@ fn keep_drops_the_record_without_asking() {
     assert!(fx.app.docs.is_empty());
 }
 
+/// Keep means the version on screen: a file that changed since its diff was shown is not
+/// kept; the diff reloads, like after a refused Revert.
+#[test]
+fn keep_is_refused_when_the_file_changed_since_it_was_shown() {
+    let mut fx = changed();
+    press(&mut fx.app, "f6");
+    key(&mut fx.app, KeyCode::Enter);
+    press(&mut fx.app, "f3");
+    assert_eq!(fx.app.focus, Focus::Editor);
+    let newer = format!("{SESSION_NEW}// one more line\n");
+    fx.write(SESSION_RS, &newer);
+    press(&mut fx.app, "f5");
+    assert_eq!(
+        fx.rels(),
+        [SESSION_RS, TESTS_RS, OLD_MD],
+        "nothing was kept"
+    );
+    assert_eq!(
+        fx.notices(),
+        [(
+            NoticeLevel::Warning,
+            "Not kept: session.rs changed since shown; diff updated".to_string()
+        )]
+    );
+    assert!(diff_text(&fx.app).contains("// one more line"));
+    // Shown again, it is kept; a later change is compared with what was kept.
+    fx.app.notices.clear();
+    press(&mut fx.app, "f5");
+    assert_eq!(fx.rels(), [TESTS_RS, OLD_MD]);
+    fx.agent_writes(SESSION_RS, SESSION_OLD);
+    press(&mut fx.app, "f6");
+    assert!(review::select(&mut fx.app, Path::new(SESSION_RS)));
+    key(&mut fx.app, KeyCode::Enter);
+    press(&mut fx.app, "shift+f5");
+    confirm(&mut fx.app);
+    assert_eq!(std::fs::read_to_string(fx.path(SESSION_RS)).unwrap(), newer);
+}
+
 #[test]
 fn revert_asks_first_and_writes_the_earlier_version_back() {
     let mut fx = changed();
