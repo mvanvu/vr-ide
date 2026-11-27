@@ -1,6 +1,5 @@
 ---
 source: crates/vr-ide/src/slash_tests.rs
-assertion_line: 907
 expression: t.backend()
 ---
 " /home/user/DEV/shop                                                                                                    "
@@ -15,8 +14,8 @@ expression: t.backend()
 "  ctrl+e  Explorer      │ /sort  Sort the selected lines (none: the file)                      │                        "
 "  ctrl+o  Open file     │ /unique  Drop repeated lines (selection or file)                     │                        "
 "  ctrl+`  Terminal      │ /upper  Upper-case the selection (or the file)                       │                        "
-"  ctrl+q  Quit          │ /lower  Lower-case the selection (or the file)                       │                        "
-"                        │ /trim  Drop trailing spaces (selection or file)                      │░░░░░░░░░░░░░░░ —    —  "
+"  f12     AI panel      │ /lower  Lower-case the selection (or the file)                       │                        "
+"  ctrl+q  Quit          │ /trim  Drop trailing spaces (selection or file)                      │░░░░░░░░░░░░░░░ —    —  "
 "                        │ /indent 2|4|tab  Re-indent; set the file's indent unit               │░░░░░░░░░░░░░░░ —    —  "
 "                        │ ──────────────────────────────────────────────────────────────────── │                        "
 "                        │ /save-as [path]  Save under another name (no path: the Save As       │                  UP —  "

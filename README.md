@@ -355,6 +355,31 @@ open one.
   from the editor shows or hides the panel, and `shift+f12` from the editor hides it. The tab bar's
   hint shows the way out that works in your setup.
 
+### AI panel
+
+`f12` shows a column right of the editor, the window's full height, for terminal coding agents
+(claude, codex, gemini, aider, cursor-agent: the `ai_tools` setting; only the ones found on `PATH`
+are offered). Each tab is one agent session, and several sessions of one tool can run at once
+(`1 claude`, `2 claude·2`). A session starts in the active file's workspace folder.
+
+| Task | Keys |
+|---|---|
+| Show the AI panel with the keys / hide it (the agents keep running) | `f12` |
+| Start a session (picker: tool, then New / Continue last / Choose earlier) | `ctrl+f12`, or the `+` of its tab bar, or `/ai <tool>` |
+| Next / previous session | `f7` / `shift+f7` |
+| Back to the editor (panel stays) | `f3` |
+| Panel width while it has the keys | `ctrl+f8` / `ctrl+f9`, or drag its separator |
+| Rename / close a session | palette: AI: Rename Session…, AI: Close Session (or the tab's `x`) |
+
+A focused session takes every key except `f1`, `f3`, `f7`, `shift+f7`, `f12`, `ctrl+f12`,
+`ctrl+f8`, `ctrl+f9` and ``ctrl+` ``; `ctrl+w`, `ctrl+n` and `f5` reach the agent. Continue last and
+Choose earlier use the tool's own resume (claude `--continue` / `--resume`, codex `resume --last` /
+`resume`: `continue_args` and `resume_args` in `ai_tools`); vr-ide never reads the tools' history.
+An agent that exits keeps its screen; `enter` starts it again with its continue arguments. While
+the panel shows, a terminal set to the right sits at the bottom of the editor column. The tools
+are started directly (no shell), found only in the absolute `PATH` entries, and get no `VR_IDE_*`
+variables.
+
 ### SSH sessions
 
 vr-ide opens SSH sessions with your system `ssh` (OpenSSH), so your `~/.ssh/config`, keys, agent

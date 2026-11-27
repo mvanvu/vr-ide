@@ -1,0 +1,16 @@
+---
+source: crates/vr-ide/src/ui/tests/ai_view_tests.rs
+expression: t.backend()
+---
+" 1  2 ◆  3  4 new                       "
+"                                        "
+" New session in /home/user/DEV/vr-ide   "
+"                                        "
+" claude                                 "
+"   New                                  "
+"   Continue last             --continue "
+"   Choose earlier              --resume "
+"                                        "
+"                                        "
+" enter start  esc back                  "
+" A  new session          4/4 · f12 hide "

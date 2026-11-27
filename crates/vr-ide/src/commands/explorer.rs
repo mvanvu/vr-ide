@@ -1813,12 +1813,14 @@ fn toggle_hidden(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
-/// Editor → explorer (when shown) → terminal (when shown with a terminal in it) → editor
+/// Editor → explorer (when shown) → terminal (when shown with a terminal in it) → AI panel
+/// (when shown) → editor
 /// (D266). The find box (either scope) is not in the cycle: it keeps Tab for its own fields
 /// and is reached with ctrl+f. A focused terminal keeps Tab for its program; ctrl+` gives
 /// the keys back.
 fn focus_cycle(app: &mut App, _: CmdArgs) -> CmdResult {
     let terminal = app.terminal.visible && !app.terminal.tabs.is_empty();
+    let ai = app.ai.visible;
     app.focus = match app.focus {
         Focus::Editor | Focus::FindBar if app.explorer.visible => {
             ensure_loaded(app);
@@ -1826,6 +1828,11 @@ fn focus_cycle(app: &mut App, _: CmdArgs) -> CmdResult {
         }
         Focus::Editor | Focus::FindBar | Focus::Search | Focus::Explorer if terminal => {
             Focus::Terminal
+        }
+        Focus::Editor | Focus::FindBar | Focus::Search | Focus::Explorer | Focus::Terminal
+            if ai =>
+        {
+            Focus::Ai
         }
         _ => {
             super::search::focus_editor(app);

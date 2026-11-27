@@ -251,7 +251,7 @@ impl TermTab {
         }
     }
 
-    fn write(&self, bytes: &[u8]) -> Result<(), TermError> {
+    pub(crate) fn write(&self, bytes: &[u8]) -> Result<(), TermError> {
         match &self.term {
             Some(t) if !bytes.is_empty() => t.write(bytes),
             _ => Ok(()),
@@ -267,6 +267,54 @@ impl TermTab {
     #[cfg(test)]
     pub(crate) fn type_bytes(&self, bytes: &[u8]) -> Result<(), TermError> {
         self.write(bytes)
+    }
+
+    /// A tab for a started program (the AI panel's sessions use the same machinery).
+    pub(crate) fn new(term: Terminal, shell: PathBuf, output: Arc<AtomicBool>) -> TermTab {
+        TermTab {
+            term: Some(term),
+            shell,
+            scroll: 0,
+            grid: Grid::default(),
+            output,
+            fake_status: TermStatus::Running,
+            fake_title: String::new(),
+            ssh: None,
+        }
+    }
+
+    /// The program printed, changed its title or exited since the last call.
+    pub(crate) fn take_output(&self) -> bool {
+        self.output.swap(false, Ordering::AcqRel)
+    }
+
+    /// Gives the PTY `cols` x `rows` (a no-op when equal; an exited one keeps its last size).
+    pub(crate) fn resize(&self, cols: u16, rows: u16) {
+        if let Some(t) = &self.term
+            && t.size() != (cols, rows)
+        {
+            let _ = t.resize(cols, rows);
+        }
+    }
+
+    /// Puts a newly started program in this tab in place of the exited one.
+    pub(crate) fn replace(&mut self, term: Terminal, shell: PathBuf, output: Arc<AtomicBool>) {
+        let old = self.term.replace(term);
+        self.shell = shell;
+        self.output = output;
+        self.scroll = 0;
+        self.grid = Grid::default();
+        drop_later(old);
+    }
+
+    /// Ends the program off the UI thread (its process group is hung up).
+    pub(crate) fn close_later(self) {
+        drop_later(self.term);
+    }
+
+    /// Ends the program and waits for it (quit); `None` for a fake tab.
+    pub(crate) fn into_terminal(self) -> Option<Terminal> {
+        self.term
     }
 
     /// See [`Terminal::marker_seen`]; false for a fake tab.
@@ -435,7 +483,7 @@ fn close_cmd(app: &mut App, _: CmdArgs) -> CmdResult {
 /// Where the '+' starts a shell: the active file's root, else the first root whose folder
 /// exists; the active root when none does (the start then fails with a notice). One stat per
 /// click.
-fn new_tab_dir(app: &App) -> PathBuf {
+pub(crate) fn new_tab_dir(app: &App) -> PathBuf {
     let active = app.active_root().path.clone();
     if active.is_dir() {
         return active;
@@ -586,7 +634,7 @@ fn step_size(app: &mut App, up: bool) {
 }
 
 /// `cells` of `total` as a rounded percent.
-fn share(cells: u16, total: u16) -> u16 {
+pub(crate) fn share(cells: u16, total: u16) -> u16 {
     ((u32::from(cells) * 100 + u32::from(total) / 2) / u32::from(total.max(1))) as u16
 }
 
@@ -619,6 +667,8 @@ pub fn set_position(app: &mut App, to: TerminalPosition) {
         app.info(format!("Terminal panel is already {place}"));
         return;
     }
+    // L1-A: the AI panel holds the right column; the choice applies once it hides.
+    let ai_holds = to == TerminalPosition::Right && app.ai.visible;
     let p = &mut app.terminal;
     p.position = to;
     // The grid changes shape: a selection or a drag of the old edge no longer applies.
@@ -627,6 +677,13 @@ pub fn set_position(app: &mut App, to: TerminalPosition) {
     p.resizing = false;
     p.tab_drag = None;
     app.dirty = true;
+    if ai_holds {
+        let key = app.key_hint("ai.toggle");
+        app.info(format!(
+            "Terminal goes to the right when the AI panel hides ({key})"
+        ));
+        return;
+    }
     let mut text = format!("Terminal panel {place}");
     if to == TerminalPosition::Right && !right_now(app) {
         text.push_str(&format!(
@@ -646,7 +703,10 @@ pub fn set_position(app: &mut App, to: TerminalPosition) {
 /// The panel goes on the right in an editor column `width` cells wide (the setting, unless the
 /// column is too narrow).
 pub fn right_in(app: &App, width: u16) -> bool {
-    app.terminal.position == TerminalPosition::Right && crate::ui::layout::right_fits(width)
+    // L1-A (D12): while the AI panel shows, a right terminal is drawn at the bottom.
+    app.terminal.position == TerminalPosition::Right
+        && crate::ui::layout::right_fits(width)
+        && !app.ai.visible
 }
 
 /// The panel is (or, shown, would be) on the right at the last frame's size. The tab bar spans
@@ -668,6 +728,9 @@ fn focus_editor(app: &mut App, _: CmdArgs) -> CmdResult {
     }
     // A panel that covers the whole editor keeps the keys: nothing would show them.
     if editor_covered(app) && has_keys(app) {
+        return Ok(());
+    }
+    if crate::ai::covers_editor(app) && crate::ai::has_keys(app) {
         return Ok(());
     }
     super::search::focus_editor(app);
@@ -882,8 +945,25 @@ pub(crate) fn spawn_program(
     cwd: &Path,
     extras: SpawnExtras,
 ) -> Result<Terminal, TermError> {
+    let size = spawn_size(app);
+    spawn_sized(app, output, program, args, cwd, extras, Vec::new(), size)
+}
+
+/// [`spawn_program`] at `(cols, rows)` with `env` added after the terminal environment.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_sized(
+    app: &App,
+    output: &Arc<AtomicBool>,
+    program: &Path,
+    args: Vec<OsString>,
+    cwd: &Path,
+    extras: SpawnExtras,
+    env: Vec<(OsString, OsString)>,
+    (cols, rows): (u16, u16),
+) -> Result<Terminal, TermError> {
     let p = &app.terminal;
-    let (cols, rows) = spawn_size(app);
+    let mut child = child_env(&p.env, crate::theme::ColorDepth::detect());
+    child.extend(env);
     let (o, w) = (output.clone(), p.wake.clone());
     let notify: vr_term::Notify = Arc::new(move || {
         o.store(true, Ordering::Release);
@@ -894,7 +974,7 @@ pub(crate) fn spawn_program(
             shell: program.to_path_buf(),
             args,
             cwd: cwd.to_path_buf(),
-            env: child_env(&p.env, crate::theme::ColorDepth::detect()),
+            env: child,
             cols,
             rows,
             scrollback: p.scrollback,
@@ -1174,16 +1254,16 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     true
 }
 
-fn paste_chord() -> KeyChord {
+pub(crate) fn paste_chord() -> KeyChord {
     "ctrl+shift+v".parse().expect("valid chord")
 }
 
-fn tick_chord() -> KeyChord {
+pub(crate) fn tick_chord() -> KeyChord {
     "ctrl+`".parse().expect("valid chord")
 }
 
 /// NUL as crossterm reports it (ctrl+space; `Null` on some platforms).
-fn is_nul(key: &KeyEvent) -> bool {
+pub(crate) fn is_nul(key: &KeyEvent) -> bool {
     key.code == K::Null || (key.code == K::Char(' ') && key.modifiers == KeyModifiers::CONTROL)
 }
 
@@ -1302,7 +1382,7 @@ fn send(app: &mut App, bytes: &[u8]) {
 }
 
 /// crossterm → vr-term key; `None` for keys a terminal program has no bytes for.
-fn term_key(key: &KeyEvent) -> Option<vr_term::KeyEvent> {
+pub(crate) fn term_key(key: &KeyEvent) -> Option<vr_term::KeyEvent> {
     let m = key.modifiers;
     let mods = Modifiers {
         shift: m.contains(KeyModifiers::SHIFT),
@@ -1530,7 +1610,7 @@ fn forward_mouse(app: &mut App, ev: &MouseEvent, col: u16, row: u16) {
     send(app, &bytes);
 }
 
-fn mouse_kind(kind: MK) -> Option<MouseKind> {
+pub(crate) fn mouse_kind(kind: MK) -> Option<MouseKind> {
     let b = |b: MB| match b {
         MB::Left => MouseButton::Left,
         MB::Middle => MouseButton::Middle,
@@ -1547,7 +1627,7 @@ fn mouse_kind(kind: MK) -> Option<MouseKind> {
     })
 }
 
-fn clamp_cell(grid: Rect, column: u16, row: u16) -> (usize, usize) {
+pub(crate) fn clamp_cell(grid: Rect, column: u16, row: u16) -> (usize, usize) {
     let r = row.clamp(grid.y, (grid.y + grid.height).max(grid.y + 1) - 1) - grid.y;
     let c = column.clamp(grid.x, (grid.x + grid.width).max(grid.x + 1) - 1) - grid.x;
     (usize::from(r), usize::from(c))
@@ -1724,6 +1804,13 @@ pub fn quit_allowed_for(app: &mut App, action: DialogAction) -> bool {
         0 => {}
         1 => parts.push("1 terminal still running; quitting ends it.".to_string()),
         n => parts.push(format!("{n} terminals still running; quitting ends them.")),
+    }
+    match app.ai.running() {
+        0 => {}
+        1 => parts.push("1 AI session still running; quitting ends it.".to_string()),
+        n => parts.push(format!(
+            "{n} AI sessions still running; quitting ends them."
+        )),
     }
     if parts.is_empty() {
         return true;

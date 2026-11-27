@@ -28,7 +28,7 @@ pub fn notice_text(app: &App) -> Option<String> {
     let more = app.notices.len() - 1;
     let esc = esc_dismisses(app);
     // A focused terminal gives Esc to its program; a click on the notice dismisses it there.
-    let click = crate::commands::terminal::has_keys(app);
+    let click = crate::commands::terminal::has_keys(app) || crate::ai::has_keys(app);
     let key = if esc {
         Some("Esc")
     } else if click {
@@ -138,6 +138,10 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         return;
     }
     buf.set_style(area, theme.status);
+    if crate::ai::has_focus(app) {
+        crate::ui::ai_view::render_status(buf, area, app, theme);
+        return;
+    }
     if crate::commands::terminal::has_focus(app) {
         crate::ui::terminal_view::render_status(buf, area, app, theme);
         return;

@@ -41,14 +41,45 @@ ssh_fullscreen = true
 # (uncommitted lines: "You, uncommitted").
 git_inline_blame = false
 
-# AI agent CLIs opened in a terminal tab in the project root (M6).
-# A user file that sets ai_presets replaces this whole list.
-[[ai_presets]]
+# AI panel width in percent of the screen right of the explorer, 10..=90 (at least 30 columns;
+# the editor keeps 30). ctrl+f8 / ctrl+f9 in the focused panel and dragging its separator change
+# it for the session.
+ai_width_percent = 40
+
+# AI agent CLIs of the AI panel (f12, ctrl+f12, /ai <tool>); only the ones found on PATH are
+# offered. A user file that sets ai_tools replaces this whole list.
+#   command        a bare name looked up in the absolute PATH entries, or an absolute path;
+#                  started directly with its arguments, never through a shell
+#   args           passed on every start
+#   continue_args  added for "Continue last" (and when a restored or exited session starts again)
+#   resume_args    added for "Choose earlier": the tool shows its own list of conversations
+# A tool without continue_args and resume_args offers only "New". vr-ide never reads the
+# tools' own history files.
+[[ai_tools]]
 name = "claude"
 command = "claude"
 args = []
+continue_args = ["--continue"]
+resume_args = ["--resume"]
 
-[[ai_presets]]
+[[ai_tools]]
+name = "codex"
+command = "codex"
+args = []
+continue_args = ["resume", "--last"]
+resume_args = ["resume"]
+
+[[ai_tools]]
+name = "gemini"
+command = "gemini"
+args = []
+
+[[ai_tools]]
+name = "aider"
+command = "aider"
+args = []
+
+[[ai_tools]]
 name = "cursor-agent"
 command = "cursor-agent"
 args = []

@@ -3,6 +3,7 @@
 //! The binary (`main.rs`) only sets up the terminal; everything else lives here so that
 //! commands and rendering can be driven in tests without a terminal.
 
+pub mod ai;
 pub mod app;
 mod app_workspace;
 pub mod cli;
@@ -20,6 +21,8 @@ pub mod theme;
 pub mod ui;
 pub mod workspace;
 
+#[cfg(test)]
+mod ai_tests;
 #[cfg(test)]
 mod app_tests;
 #[cfg(test)]

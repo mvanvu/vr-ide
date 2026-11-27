@@ -315,12 +315,13 @@ struct Hint {
 
 /// The keys that start things, from the keymap (USER-5); a command without a key is left out.
 fn hints(app: &App) -> Vec<Hint> {
-    const ALL: [(&str, &str, u8); 6] = [
+    const ALL: [(&str, &str, u8); 7] = [
         ("file.goto", "Go to file", 0),
         ("app.palette", "Command palette", 1),
         ("explorer.toggle_focus", "Explorer", 2),
         ("file.open", "Open file", 4),
         ("terminal.toggle", "Terminal", 5),
+        ("ai.toggle", "AI panel", 6),
         ("app.quit", "Quit", 3),
     ];
     ALL.iter()

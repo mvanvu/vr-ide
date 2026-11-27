@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/tests/ai_view_tests.rs
+expression: t.backend()
+---
+" /home/user/DEV/vr-ide                          │ AI                            "
+" vr-ide v0.1.0                                  │                               "
+"                                                │ Start in vr-ide               "
+" CPU                                          — │                               "
+" RAM ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    — │ claude                        "
+"                                                │   default                 new "
+" ctrl+p  Go to file                             │ codex                         "
+" f1      Command palette                        │   default                 new "
+" ctrl+e  Explorer                               │ gemini                    new "
+" ctrl+o  Open file                              │                               "
+" ctrl+`  Terminal                               │ Not on PATH: aider,           "
+" f12     AI panel                               │ cursor-agent                  "
+" ctrl+q  Quit                                   │ (ai_tools in settings)        "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │ enter start  esc hide         "
+" AI  no session · /home/user/DEV/vr-ide                                f12 hide "

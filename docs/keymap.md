@@ -25,7 +25,7 @@ Project replace and reloads from disk still update open files in either mode.
 | Read | `space` `i` | enter edit mode |
 | Read | `space` `space` | open the command palette (like `f1`) |
 | Read | `space` + any other key | shows the hint "space i: edit · space space: commands" and nothing else |
-| Read | `tab` | focus the next part: editor → explorer (when shown) → terminal (when shown) → editor; the find box is not in the cycle (`ctrl+f` reaches it, it keeps `tab` for its fields) |
+| Read | `tab` | focus the next part: editor → explorer → terminal → AI panel (each when shown) → editor; the find box is not in the cycle (`ctrl+f` reaches it, it keeps `tab` for its fields) |
 | Edit | characters, `enter`, `backspace`, `delete` | edit the text |
 | Edit | `tab` / `shift+tab` | indent / outdent |
 | Edit | `esc` | back to read mode |
@@ -61,13 +61,19 @@ keys back with the panel shown).
 | `terminal.hide` | Terminal: Hide Terminal | `shift+f12` |
 | `terminal.next` | Terminal: Focus Next Terminal | `f8` |
 | `terminal.prev` | Terminal: Focus Previous Terminal | `shift+f8` |
-| `terminal.grow` | Terminal: Increase Panel Size | `ctrl+f8` (height at the bottom, width on the right) |
-| `terminal.shrink` | Terminal: Decrease Panel Size | `ctrl+f9` (height at the bottom, width on the right) |
+| `terminal.grow` | Terminal: Increase Panel Size | `ctrl+f8` (height at the bottom, width on the right; the AI panel's width while it has the keys) |
+| `terminal.shrink` | Terminal: Decrease Panel Size | `ctrl+f9` (height at the bottom, width on the right; the AI panel's width while it has the keys) |
 | `terminal.toggle_position` | Terminal: Toggle Panel Position | `ctrl+f7` (bottom ↔ right for this session; `terminal_position` in settings keeps it) |
 | `editor.toggle_blame` | Toggle Blame Annotations | `shift+f2` (blame column on / off for this session, every editor tab, read and edit mode; see `docs/commands.md`) |
 | `terminal.new` | Terminal: New Terminal | `ctrl+n` in a focused terminal only (`[terminal]`; not in the palette) |
 | `terminal.close` | Terminal: Close Terminal | `ctrl+w` in a focused terminal only (`[terminal]`; not in the palette; asks first while a program runs) |
-| `focus.editor` | Focus Editor | (palette only) |
+| `focus.editor` | Focus Editor | `f3` (the editor gets the keys; the panels stay shown; not taken from a focused terminal: mc's F3) |
+| `ai.toggle` | AI: Show / Hide Panel | `f12` (hidden: shows the AI panel with the keys, on the session that needs you when one does; shown elsewhere: gives it the keys; focused: hides it, the agents keep running) |
+| `ai.new` | AI: New Session… | `ctrl+f12` (the session picker in a new tab of the panel) |
+| `ai.next` | AI: Next Session | `f7` |
+| `ai.prev` | AI: Previous Session | `shift+f7` |
+| `ai.rename` | AI: Rename Session… | (palette; opens `/ai rename `) |
+| `ai.close` | AI: Close Session | (palette, or the tab's `x`; asks "Close session?" first while the agent runs) |
 
 On the right the panel takes the editor's full height under the tab bar and
 `terminal_width_percent` (40 % by default, at least 20 columns) of the editor column; drag the
@@ -110,14 +116,36 @@ under 60 columns wide the panel is shown at the bottom.
 | `explorer.search_folder` | Explorer: Search in Folder | (unbound; the right-click menu of a folder or root row) the find box in Project scope limited to the folder under the cursor |
 | `explorer.replace_folder` | Explorer: Replace in Folder | (unbound; same menu) as above with the replace row |
 
+### `[ai]`
+
+A focused AI session receives every key except ten: `f1`, `f3` (`focus.editor`), `f7` / `shift+f7`
+(`ai.next` / `ai.prev`), `f12` (`ai.toggle`), `ctrl+f12` (`ai.new`), `ctrl+f8` / `ctrl+f9`
+(`ai.grow` / `ai.shrink`: the panel's width) and ``ctrl+` `` (`terminal.toggle`; NUL follows the
+`terminal_pass_nul` rule of terminals). `f5` / `shift+f5` and every `ctrl` letter reach the agent.
+There is no `ctrl+n` / `ctrl+w` here (unlike `[terminal]`): agents' prompt editors use `ctrl+w`
+(delete word) and other `ctrl` letters, so a session takes only F keys from the program. Add your
+own keys to `[ai]` to take them from agents.
+
+| Command | Title | Key |
+|---|---|---|
+| `ai.grow` | AI: Increase Panel Width | `ctrl+f8` |
+| `ai.shrink` | AI: Decrease Panel Width | `ctrl+f9` |
+
+The AI panel is a column right of the editor from the top row to the notices, one tab per agent
+session (`n tool[@account][·k]`). Its width is `ai_width_percent` (40 % by default, at least 30
+columns; the editor keeps 30) of the screen right of the explorer; drag its separator to resize.
+Under 60 columns the shown panel takes that whole area until it hides. While it shows, a terminal
+set to the right is drawn at the bottom of the editor column (`ctrl+f7` then says it goes to the
+right when the AI panel hides).
+
 ### `[palette]`
 
 No keymap entries; the palette's keys are built in (see below).
 
 ### `[terminal]`
 
-A focused terminal receives every key except seven: ``ctrl+` ``, `f1` (the command window, from
-the terminal too), `ctrl+f7` (panel position, bottom ↔ right), `ctrl+f8` / `ctrl+f9` (grow /
+A focused terminal receives every key except nine: ``ctrl+` ``, `f1` (the command window, from
+the terminal too), `f12` / `ctrl+f12` (the AI panel), `ctrl+f7` (panel position, bottom ↔ right), `ctrl+f8` / `ctrl+f9` (grow /
 shrink the panel), `ctrl+n` (`terminal.new`: a new terminal tab, as the `+` button does) and
 `ctrl+w` (`terminal.close`: closes this terminal, as its `x` does; it asks "Close terminal?" first
 while a program other than the shell runs). Other global keys such as `ctrl+s`, `ctrl+p` or `f8` go to the program.
@@ -219,7 +247,9 @@ Typing and cursor movement are built in and not listed in `keymap.toml`.
 | Palette | `up`/`down`, `pageup`/`pagedown` move; `enter` runs; `esc` closes |
 | Dialogs | `left`/`right`/`tab`/`shift+tab` choose a button; `enter` confirms; `esc` cancels. A held (repeating) `enter` never confirms |
 | Find box, File scope | typing searches as you type; `up`/`down`/`pageup`/`pagedown` move in the list (the editor shows the match); `enter` in the find field goes to the match and gives the editor the keys in read mode (the box stays open: `f4`/`shift+f4` go on); `shift+enter` there selects the previous match and keeps the box (terminals with the kitty keyboard protocol; others send it as `enter`); in the replace field `enter` asks "Replace: One / All / Cancel" (One first; the box shows "enter replace"; each replacement is one undo step); `tab`/`shift+tab` switch field; `esc` closes the box and returns to read mode. A click on a row selects that match |
-| Terminal | Every key goes to the program except ``ctrl+` ``, `f1`, `ctrl+f7`, `ctrl+f8`, `ctrl+f9`, `ctrl+n` (new terminal), `ctrl+w` (close this terminal) and these: `shift+pageup`/`shift+pagedown` scroll back (main screen only; a key sent to the program or a paste returns to the bottom, new output keeps the view); `ctrl+shift+v` pastes the clipboard (bracketed when the program asked for it). After the program exits, `enter` starts a new shell in the tab (an SSH tab connects to the same target again) and `ctrl+w` closes it. Mouse: drag selects and copies, the wheel scrolls back (programs that ask for the mouse get it; hold `shift` to select anyway), a click on a tab switches to it, dragging a tab along the bar moves it there (past the last tab shown, onto `+N`, it moves on one place per cell; at the bar's left edge, past the first tab shown, it moves toward the front the same way), on its `x` closes it (asks "Close terminal?" first while a program other than the shell runs in it; Cancel is the default), on the `+` opens a new terminal, dragging the rest of the tab bar (at the bottom) or the separator (on the right) resizes the panel |
+| Terminal | Every key goes to the program except ``ctrl+` ``, `f1`, `ctrl+f7`, `ctrl+f8`, `ctrl+f9`, `ctrl+n` (new terminal), `ctrl+w` (close this terminal), `f12`, `ctrl+f12` and these: `shift+pageup`/`shift+pagedown` scroll back (main screen only; a key sent to the program or a paste returns to the bottom, new output keeps the view); `ctrl+shift+v` pastes the clipboard (bracketed when the program asked for it). After the program exits, `enter` starts a new shell in the tab (an SSH tab connects to the same target again) and `ctrl+w` closes it. Mouse: drag selects and copies, the wheel scrolls back (programs that ask for the mouse get it; hold `shift` to select anyway), a click on a tab switches to it, dragging a tab along the bar moves it there (past the last tab shown, onto `+N`, it moves on one place per cell; at the bar's left edge, past the first tab shown, it moves toward the front the same way), on its `x` closes it (asks "Close terminal?" first while a program other than the shell runs in it; Cancel is the default), on the `+` opens a new terminal, dragging the rest of the tab bar (at the bottom) or the separator (on the right) resizes the panel |
+| AI session picker | `up`/`down` move over the starts (tool headers are skipped); `enter` starts the selected one, or, for a tool that can pick up an earlier conversation (`continue_args` / `resume_args` in `ai_tools`), shows New / Continue last / Choose earlier first (Choose earlier opens the tool's own list in the tab); `esc` steps back (the empty state: hides the panel). A click on a row starts it |
+| AI session | Like a terminal: every key but the `[ai]` ones goes to the agent; `shift+pageup`/`shift+pagedown` scroll back; `ctrl+shift+v` pastes. After the agent exits, `enter` starts it again in the tab with its continue arguments. Mouse: as in a terminal; a click on a tab switches to it, on its `x` closes it, on the `+` opens the picker; dragging the separator resizes the panel |
 | Find box, Project scope | `tab`/`shift+tab` switch field; `enter` in the search field searches, in the replace field shows the replace preview, on a result opens it (read mode; the box stays open), and on a shown preview confirms the replace; `down` moves into the results; `up`/`down`/`pageup`/`pagedown`/`home`/`end` move in the list; `space` checks or unchecks a replace preview row; `esc` closes a preview (cancels a running replace), otherwise closes the box and returns to read mode |
 
 A user binding for a plain key in a context wins over that context's built-in key.
@@ -237,7 +267,7 @@ change; everything else keeps its default.
 # Remove a built-in binding: an empty command name.
 "ctrl+q" = ""
 
-# Context tables: editor | explorer | palette | terminal.
+# Context tables: editor | explorer | palette | terminal | ai.
 [editor]
 "ctrl+k" = "edit.delete_line"
 
@@ -249,7 +279,8 @@ A line can also name its context inline at the top level:
 `"f2" = { command = "explorer.rename", when = "explorer" }`.
 
 Lookup order: the focused context's table first, then the global keys. The terminal context is the
-exception: a focused terminal gets every key except the ones in `[terminal]`.
+exception: a focused terminal gets every key except the ones in `[terminal]`, and a focused AI
+session every key except the ones in `[ai]`.
 
 Key spelling:
 
