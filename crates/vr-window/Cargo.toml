@@ -1,0 +1,18 @@
+[package]
+name = "vr-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pixel renderer, input translation and window runner for vr-ide (no App knowledge)"
+
+[dependencies]
+ratatui.workspace = true
+cosmic-text.workspace = true
+unicode-width.workspace = true
+thiserror.workspace = true
+unicode-segmentation.workspace = true
+sys-locale.workspace = true
+
+# fontconfig's `monospace` alias, read the way fontconfig orders it (Linux / BSD only).
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))'.dependencies]
+fontconfig-parser.workspace = true

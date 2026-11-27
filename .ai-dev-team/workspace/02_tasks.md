@@ -3,7 +3,7 @@
 | ID | Title | Owner | Depends | Files | Tags | Rules | Verify | Status | Rounds |
 |---|---|---|---|---|---|---|---|---|---|
 | T1 | Frontend seam: event_loop::step + Frontend trait | fe | — | crates/vr-ide/src/{event_loop.rs,main.rs,frontend.rs,lib.rs} + tests | ui | BASE, COST, AC-W1 | cargo test -p vr-ide; guard | done | 0 |
-| T2 | vr-window renderer (PixelBackend, fonts, glyph cache) + bench gate | fe | — | crates/vr-window/** (new), Cargo.toml, Cargo.lock | ui | BASE, COST, AC-W2, AC-W3 | cargo test -p vr-window; bench | fix | 1 |
+| T2 | vr-window renderer (PixelBackend, fonts, glyph cache) + bench gate | fe | — | crates/vr-window/** (new), Cargo.toml, Cargo.lock | ui | BASE, COST, AC-W2, AC-W3 | cargo test -p vr-window; bench | done | 1 |
 | T3 | vr-window input translation + IME state | fe | T2 | crates/vr-window/src/input*.rs, crates/vr-window/src/lib.rs | ui | BASE, COST, AC-W4, AC-W5 | cargo test -p vr-window | todo | 0 |
 | T5 | Desktop entry new form + migration | fe | T1 | crates/vr-ide/src/desktop.rs, desktop_tests.rs | security | BASE, COST, AC-W7 | cargo test -p vr-ide desktop | done | 1 |
 | T4 | Window app: runner, wiring, launch, quit path, font settings, PTY pixels | fe | T1, T2, T3, T5 | crates/vr-window/src/app*.rs, crates/vr-ide/src/{main.rs,cli.rs,window_frontend.rs,…}, crates/vr-ide/Cargo.toml, crates/vr-config/**, crates/vr-term/src/terminal.rs, defaults/settings.toml | ui | BASE, COST, AC-W1..AC-W8 | cargo test --workspace (related); guard both feature sets; release build | todo | 0 |
@@ -43,3 +43,5 @@
 - 06:32 T2 round 1 DONE (31 tests, guard 0; adds fontconfig-parser =0.5.8, already in lock). Re-check sent to the reviewer and QC.
 - 06:32 verdict gate T5 re-check review ✓ APPROVED (T4 brief must switch launches_in_window to cfg!(feature="window")). Waiting for QC re-check.
 - 06:32 verdict gate T5 QC re-check ✓ QC_PASS. T5 done, committed.
+- 06:32 verdict gate T2 QC re-check ✓ QC_PASS (default font DejaVu Sans Mono = fc-match). Waiting for review re-check.
+- 06:33 verdict gate T2 re-check review ✓ APPROVED (1 minor → report). T2 done, committed. T3 starts.
