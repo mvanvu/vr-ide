@@ -96,6 +96,21 @@ pub fn stray_vars(state: &Path, vars: impl Iterator<Item = (OsString, OsString)>
     .collect()
 }
 
+/// One startup warning per [`stray_vars`] entry: the value is ignored for vr-ide's children.
+pub fn stray_warnings(
+    state: &Path,
+    vars: impl Iterator<Item = (OsString, OsString)>,
+) -> Vec<vr_config::ConfigWarning> {
+    stray_vars(state, vars)
+        .into_iter()
+        .map(|k| vr_config::ConfigWarning::InvalidValue {
+            file: state.to_path_buf(),
+            key: k.to_string_lossy().into_owned(),
+            message: "inherited value points into vr-ide's account folders; it is ignored for the terminals, ssh sessions and agents vr-ide starts".into(),
+        })
+        .collect()
+}
+
 /// Startup: the shared folders of the panel, which change recording also skips (SEC-10).
 pub fn configure(
     panel: &mut AiPanel,
@@ -955,6 +970,26 @@ mod tests {
         );
         let vars = vec![(OsString::from("CODEX_HOME"), sneaky.into())];
         assert_eq!(stray_vars(&f.state, vars.into_iter()).len(), 1);
+    }
+
+    /// SEC-38: one startup warning per stray variable, naming it and saying it is ignored.
+    #[test]
+    fn stray_variables_give_one_startup_warning_each() {
+        let f = fx("claude");
+        let inside = f.state.join("accounts/claude/work");
+        let vars = vec![
+            (OsString::from("CLAUDE_CONFIG_DIR"), inside.into()),
+            (
+                OsString::from("CODEX_HOME"),
+                OsString::from("/home/u/.codex"),
+            ),
+        ];
+        let w = stray_warnings(&f.state, vars.into_iter());
+        assert_eq!(w.len(), 1);
+        let text = w[0].to_string();
+        assert!(text.contains("CLAUDE_CONFIG_DIR"), "{text}");
+        assert!(text.contains("ignored"), "{text}");
+        assert!(stray_warnings(&f.state, std::iter::empty()).is_empty());
     }
 
     /// SEC-10: the shared folders are excluded from AI change recording.

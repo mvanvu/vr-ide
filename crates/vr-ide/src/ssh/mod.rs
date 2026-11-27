@@ -271,8 +271,18 @@ pub enum Probe {
 /// Blocks up to `timeout` (call it off the UI thread). The probe has no stdin and no controlling terminal, so nothing
 /// it starts (`Match exec`) can prompt; past the timeout or [`PROBE_OUTPUT_CAP`] its whole
 /// session is killed.
-pub fn probe(ssh: &Path, line: &args::Line, cwd: &Path, path: &OsStr, timeout: Duration) -> Probe {
+pub fn probe(
+    ssh: &Path,
+    line: &args::Line,
+    cwd: &Path,
+    path: &OsStr,
+    env_remove: &[OsString],
+    timeout: Duration,
+) -> Probe {
     let mut cmd = Command::new(ssh);
+    for k in env_remove {
+        cmd.env_remove(k);
+    }
     cmd.args(probe_argv(line))
         .current_dir(cwd)
         .env("PATH", path)

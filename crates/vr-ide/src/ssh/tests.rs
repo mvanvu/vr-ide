@@ -20,7 +20,7 @@ fn l(s: &str) -> args::Line {
 /// The probe of line `s`, run in `/` with the test's own `PATH` cleaned as a session's is.
 fn pr(ssh: &Path, s: &str, timeout: Duration) -> Probe {
     let path = child_path(&std::env::var_os("PATH").unwrap_or_default());
-    probe(ssh, &l(s), Path::new("/"), &path, timeout)
+    probe(ssh, &l(s), Path::new("/"), &path, &[], timeout)
 }
 
 fn strs(v: &[OsString]) -> Vec<String> {
@@ -842,4 +842,23 @@ fn sec_s4_a_helper_outside_the_group_that_keeps_the_output_open_leaves_no_thread
     };
     let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
     assert_eq!(leaked, 0);
+}
+
+/// SEC-38: the `ssh -G` probe runs the user's `Match exec` commands, so it drops the variables
+/// it is told to (a variable of the test run stands in for an inherited account variable).
+#[test]
+fn sec_38_the_probe_drops_the_variables_it_is_told_to() {
+    let d = tempfile::tempdir().unwrap();
+    let ssh = script(
+        d.path(),
+        "ssh",
+        "if [ -n \"$CARGO_MANIFEST_DIR\" ]; then exit 3; fi; echo 'hostname h'",
+    );
+    let path = child_path(&std::env::var_os("PATH").unwrap_or_default());
+    let run = |drop: &[OsString]| probe(&ssh, &l("h"), Path::new("/"), &path, drop, PROBE_WAIT);
+    assert_eq!(run(&[]), Probe::Failed);
+    assert_eq!(
+        run(&[OsString::from("CARGO_MANIFEST_DIR")]),
+        Probe::Clean { shared: false }
+    );
 }

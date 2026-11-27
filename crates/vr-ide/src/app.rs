@@ -410,6 +410,10 @@ impl App {
             std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(),
             std::env::var_os("CODEX_HOME").as_deref(),
         );
+        warnings.extend(crate::ai::history::stray_warnings(
+            &state,
+            std::env::vars_os(),
+        ));
         app.config_dir = Some(dir);
         (app, warnings)
     }

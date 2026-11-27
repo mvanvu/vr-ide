@@ -1894,3 +1894,83 @@ fn ctrl_n_and_ctrl_w_outside_a_terminal_are_unchanged() {
     key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
     assert!(app.terminal.tabs.is_empty());
 }
+
+/// SEC-38 (T-48): a shell, an ssh session or a `/run` terminal never inherits a config variable
+/// that points into one of vr-ide's account folders.
+#[test]
+fn spawned_terminals_drop_inherited_account_variables() {
+    use crate::commands::terminal::without_stray_vars;
+    let state = Path::new("/state/vr-ide");
+    let vars = || {
+        vec![
+            (
+                OsString::from("CLAUDE_CONFIG_DIR"),
+                OsString::from("/state/vr-ide/accounts/claude/work"),
+            ),
+            (
+                OsString::from("CODEX_HOME"),
+                OsString::from("/home/u/.codex"),
+            ),
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+        ]
+    };
+    let extras = without_stray_vars(
+        Some(state),
+        vars().into_iter(),
+        vr_term::SpawnExtras {
+            env_remove: vec![OsString::from("VR_IDE_X")],
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        extras.env_remove,
+        [
+            OsString::from("VR_IDE_X"),
+            OsString::from("CLAUDE_CONFIG_DIR")
+        ]
+    );
+    // Already listed (the AI path): not listed twice.
+    let again = without_stray_vars(Some(state), vars().into_iter(), extras.clone());
+    assert_eq!(again.env_remove, extras.env_remove);
+    // No state folder known: nothing to compare with, nothing dropped.
+    let none = without_stray_vars(None, vars().into_iter(), Default::default());
+    assert!(none.env_remove.is_empty());
+}
+
+/// SEC-38: a real shell tab started while `CLAUDE_CONFIG_DIR` points into the accounts folder
+/// does not get it. The variable can only be inherited by a child process, so the test runs
+/// itself again with it set (tests share one environment and never call `set_var`).
+#[test]
+fn a_shell_tab_does_not_inherit_an_account_variable() {
+    const STATE: &str = "/state/vr-ide";
+    if std::env::var_os("VR_T2B_CHILD").is_none() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "terminal_tests::a_shell_tab_does_not_inherit_an_account_variable",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("VR_T2B_CHILD", "1")
+            .env("CLAUDE_CONFIG_DIR", format!("{STATE}/accounts/claude/w"))
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{text}");
+        assert!(text.contains("1 passed"), "{text}");
+        return;
+    }
+    let (_d, mut app, _) = term_app();
+    app.ai.state_dir = Some(PathBuf::from(STATE));
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    wait_text(&app, "$");
+    typ(&mut app, "echo \"<$CLAUDE_CONFIG_DIR>\"\n");
+    let screen = wait_screen(&app, "the echoed value", |s| {
+        s.lines()
+            .any(|l| l.trim() == "<>" || l.contains("/accounts/"))
+    });
+    assert!(!screen.contains("/accounts/"), "{screen}");
+}
