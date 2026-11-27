@@ -105,6 +105,8 @@ under 60 columns wide the panel is shown at the bottom.
 | `explorer.copy` | Explorer: Copy | `ctrl+c` |
 | `explorer.cut` | Explorer: Cut | `ctrl+x` |
 | `explorer.paste` | Explorer: Paste | `ctrl+v` |
+| `explorer.search_folder` | Explorer: Search in Folder | (unbound; the right-click menu of a folder or root row) the find box in Project scope limited to the folder under the cursor |
+| `explorer.replace_folder` | Explorer: Replace in Folder | (unbound; same menu) as above with the replace row |
 
 ### `[palette]`
 

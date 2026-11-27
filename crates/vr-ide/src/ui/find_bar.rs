@@ -90,8 +90,8 @@ fn content_rows(app: &App, width: u16) -> (usize, usize) {
         Scope::Project => {
             let s = search_status(app);
             let w = Span::raw(s.as_str()).width() as u16;
-            let scope = scope_label(true, width < NARROW);
-            if w > 0 && !count_fits(width, scope, w) {
+            let scope = scope_label(app, true, width);
+            if w > 0 && !count_fits(width, &scope, w) {
                 wrapped(&s)
             } else {
                 0
@@ -103,20 +103,27 @@ fn content_rows(app: &App, width: u16) -> (usize, usize) {
     (status + notes + hint, results)
 }
 
-/// The scope label at the start of row 0.
-fn scope_label(project: bool, narrow: bool) -> &'static str {
+/// The scope label at the start of row 0; a folder scope (FR-31) shows the folder.
+fn scope_label(app: &App, project: bool, width: u16) -> String {
+    let narrow = width < NARROW;
     match (project, narrow) {
-        (false, false) => " File ",
-        (false, true) => " F ",
-        (true, false) => " Project ",
-        (true, true) => " P ",
+        (false, false) => " File ".into(),
+        (false, true) => " F ".into(),
+        (true, true) => match search::folder_label(app, usize::from(width / 3).max(4)) {
+            Some(f) => format!(" P: {f} "),
+            None => " P ".into(),
+        },
+        (true, false) => match search::folder_label(app, usize::from(width / 3).max(8)) {
+            Some(f) => format!(" Project: {f} "),
+            None => " Project ".into(),
+        },
     }
 }
 
 /// Row 0 of a box `width` wide has room for a count / status `count_w` wide after the scope
 /// label and a query field of at least 6 cells.
 fn count_fits(width: u16, scope: &str, count_w: u16) -> bool {
-    width > scope.len() as u16 + 1 + count_w + 2 + 6
+    width > Span::raw(scope).width() as u16 + 1 + count_w + 2 + 6
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
@@ -157,14 +164,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
 
     // Row 0: scope, query, count (File) or status (Project).
     let y = area.y;
-    let scope = scope_label(project, narrow);
+    let scope = scope_label(app, project, area.width);
     let scope_style = if focused {
         theme.button_selected
     } else {
         theme.button
     };
     let mut x = buf
-        .set_stringn(area.x, y, scope, usize::from(area.width), scope_style)
+        .set_stringn(area.x, y, &scope, usize::from(area.width), scope_style)
         .0
         + 1;
     let (input, query_field) = if project {
@@ -181,7 +188,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     };
     let end = area.x + area.width;
     let count_w = Span::raw(count.as_str()).width() as u16;
-    let show_count = count_w > 0 && count_fits(area.width, scope, count_w);
+    let show_count = count_w > 0 && count_fits(area.width, &scope, count_w);
     let field_w = end
         .saturating_sub(x + if show_count { count_w + 2 } else { 0 })
         .max(1);

@@ -20,6 +20,12 @@ const ITEMS: [(&str, &str); 6] = [
     ("Delete", "explorer.delete"),
 ];
 
+/// Items of a folder or root row (D328), after the common ones.
+const FOLDER_ITEMS: [(&str, &str); 2] = [
+    ("Search in Folder", "explorer.search_folder"),
+    ("Replace in Folder", "explorer.replace_folder"),
+];
+
 /// The extra item of a root row (W-2): runs `workspace.remove_folder` on that root; files on
 /// disk are never touched.
 pub const REMOVE_ROOT: &str = "Remove Folder from Workspace";
@@ -149,6 +155,17 @@ pub fn open(app: &mut App, column: u16, row: u16) {
             },
         })
         .collect();
+    // D328: a root or a folder (not a file) can be searched / replaced in.
+    if super::explorer::folder_under_cursor(app).is_some() {
+        for (label, command) in FOLDER_ITEMS {
+            items.push(Item {
+                label,
+                command,
+                key: app.display_key(command).unwrap_or_default(),
+                enabled: true,
+            });
+        }
+    }
     if remove_root {
         items.push(Item {
             label: REMOVE_ROOT,

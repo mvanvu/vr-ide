@@ -83,6 +83,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         run: delete,
     },
     CommandSpec {
+        name: "explorer.search_folder",
+        title: "Explorer: Search in Folder",
+        run: search_folder,
+    },
+    CommandSpec {
+        name: "explorer.replace_folder",
+        title: "Explorer: Replace in Folder",
+        run: replace_folder,
+    },
+    CommandSpec {
         name: "explorer.toggle_ignored",
         title: "Explorer: Toggle Ignored Files",
         run: toggle_ignored,
@@ -1756,6 +1766,37 @@ fn toggle_ignored(app: &mut App, _: CmdArgs) -> CmdResult {
         "explorer: ignored files hidden"
     });
     Ok(())
+}
+
+/// The folder row under the cursor (a root or a folder; never a file, a link or a root whose
+/// folder is gone), as a canonical path for the search scope.
+pub fn folder_under_cursor(app: &App) -> Option<PathBuf> {
+    let row = app.explorer.current()?;
+    if row.kind != NodeKind::Dir || row.missing {
+        return None;
+    }
+    let canon = row.path.canonicalize().ok()?;
+    // A child of an expanded link can resolve outside the workspace.
+    super::search::in_workspace(app, &canon).then_some(canon)
+}
+
+fn folder_search(app: &mut App, replace: bool) -> CmdResult {
+    ensure_loaded(app);
+    match folder_under_cursor(app) {
+        Some(f) => super::search::open_folder(app, &f, replace),
+        None => app.info("Select a folder in the explorer first"),
+    }
+    Ok(())
+}
+
+/// Search in Folder (D328): the find box in Project scope limited to the folder under the cursor.
+fn search_folder(app: &mut App, _: CmdArgs) -> CmdResult {
+    folder_search(app, false)
+}
+
+/// Replace in Folder (D328): as [`search_folder`], with the replace row.
+fn replace_folder(app: &mut App, _: CmdArgs) -> CmdResult {
+    folder_search(app, true)
 }
 
 /// Shows or hides dotfiles (`.git` is never listed).
