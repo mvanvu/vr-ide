@@ -10,3 +10,4 @@
 | oracle false positive (known) | FR-2 | strict swapping rule can flag the accepted D75(2)/D76(3) case (in-place write into our temp after the last check), seen once in 35 mutated runs | keep flagging; FR-3 adds diagnostics |
 | race (stale freshness check on user files) | FR-6 (T4 class, 4th) | equal-but-racy stamp trusted; racy decided after the read — same-length same-tick write overwritten in the no-EXCHANGE fallback; found by a 1 ms-tick machine at sign-off, then by opus review | fixed FR-6 r0–r1; same-tick tests with freeze_clock/no_exchange seams |
 | BASE-3 | T13 | theme tests written after the code | accepted; reviewer checks the tests fail on a broken theme (3rd task with this rule) |
+- FR-21 BASE-3: tests written with the code, not seen red first (dev's own row) — ledger.

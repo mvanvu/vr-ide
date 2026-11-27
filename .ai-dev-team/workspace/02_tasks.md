@@ -63,9 +63,25 @@
 | W-2 | Workspace UI: explorer multi-root, Add/Remove Folder, cross-root confinement, terminal root, welcome/status bar roots, open recent | fe | W-1, T18 | ui | AC-W1, AC-W3, AC-W5, AC-W6 | crates/vr-ide (explorer, welcome, status_bar, terminal commands), docs | `cargo test -p vr-ide` | done (r1 APPROVE, QC PASS 518) | 1 |
 
 Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SWEEP, COMPACT, REAL, EASE, ARCH, …) are `n-a: terminal UI, no web/mobile screen`; TUI look is covered by ratatui snapshot tests at 80x24 and 40x12.
+| FR-17 | ctrl+f7 (terminal.toggle_position) does not work in Ubuntu's default terminal: reproduce over a VTE-like legacy pty, fix (or rebind per USER-5, D313) | fe | - | ui | AC-F1, USER-5 | crates/vr-ide (input/keys, commands/terminal.rs), crates/vr-config/defaults/keymap.toml + config tests, docs/keymap.md, README (worktree .worktrees/FR-17, branch fr-17) | `cargo test -p vr-ide -p vr-config` | done (review APPROVE r1; merged 6c7dd87) | 1 |
+| FR-18 | Terminal panel scroll jumps / flickers while a program streams output (claude): scrolled view must hold | fe | - | ui | AC-F2 | crates/vr-term, crates/vr-ide (terminal_view.rs, commands/terminal.rs, terminal scroll) (worktree .worktrees/FR-18, branch fr-18) | `cargo test -p vr-term -p vr-ide` | done (review APPROVE + QP1 re-check, QC_PASS; merged b18f21e) | 0 |
+| FR-19 | Drag to reorder terminal tabs | fe | FR-17 (shares commands/terminal.rs; starts on fr-17 merged) | ui | AC-F3 | crates/vr-ide (terminal tab bar hit test/drag, terminal_view.rs, commands/terminal.rs, vr-term order if needed), README | `cargo test -p vr-ide` | done (review APPROVE r1, QC_PASS r1; merged 5fe55d1) | 1 |
+| FR-20 | Remove every /git command, the git popup and vr-git's write side; keep gutter, inline blame, status branch | fe | - | ui | AC-F4 | crates/vr-ide (slash.rs, git_popup.rs, git_history.rs, ui/git_popup.rs, ui/git_history.rs, app/event loop routing, quit guard), crates/vr-git (write side), docs, README, tests, snapshots (worktree .worktrees/FR-20, branch fr-20) | `cargo test -p vr-git -p vr-ide` | done (reviews APPROVE ×2 + QP1, QC_PASS; merged 149f47a) | 0 |
+| FR-21 | Explorer colours: folders and file extension groups from theme tokens | fe | - | ui | AC-F5 | crates/vr-ide (ui/explorer.rs, theme.rs, snapshots), README (worktree .worktrees/FR-21, branch fr-21) | `cargo test -p vr-ide` | done (review APPROVE r1; merged 120103f) | 1 |
+| FR-22 | Cosmetic leftovers of FR-20: rewrap vr-git lib.rs:36 doc line; theme.rs 'Git popup' comment | fe | FR-20 | - | - | crates/vr-git/src/lib.rs, crates/vr-ide/src/theme.rs (worktree .worktrees/FR-22) | guard | done (leader spot-check, comments only; merged 1306428) | 0 |
+| FR-23 | Phase 5 minors: COR-1 selection highlight at the top of a full scrollback after a hover; UI-3 dark theme kind colours >= 3:1 on the selection bg | fe | - | ui | AC-F2, AC-F5 | crates/vr-ide/src/commands/terminal.rs, terminal_tests.rs, theme.rs (worktree .worktrees/FR-23) | `cargo test -p vr-ide` | done (review APPROVE; merged 5797347) | 0 |
+| FR-24 | ctrl+f8 / ctrl+f9 also from a focused terminal (D316) | fe | - | ui | AC-F6, USER-5 | crates/vr-config/defaults/keymap.toml, crates/vr-config/tests/config.rs, crates/vr-ide/src/terminal_right_tests.rs, README.md, docs/keymap.md (worktree .worktrees/FR-24) | `cargo test -p vr-ide -p vr-config` | done (review APPROVE; merged 0c4b94b) | 0 |
+| FR-25-TM | Threat model for SSH sessions | - | - | security | AC-S1..S6 | .ai-dev-team/workspace/02_threat-model_SSH.md | - | done (02_threat-model_SSH.md, SEC-S1..S18) | 0 |
+| FR-25 | SSH sessions from the command window, full screen after login (D317) | fe | FR-25-TM, FR-23, FR-24 (shares commands/terminal.rs, keymap) | ui, security | AC-S1..S6, SEC-S1..S18 | crates/vr-ide (new ssh module, commands/terminal.rs, ui layout/terminal_view, slash/palette), crates/vr-config (keymap if a key is added), README, docs (worktree .worktrees/FR-25) | `cargo test -p vr-ide` | done (security review APPROVE r1, QC_PASS 60/60; merged 949e2a3) | 1 |
+| FR-26 | Terminal panel background distinct from the editor's (D319) | fe | FR-23 (shares theme.rs) | ui | AC-T1 | crates/vr-ide/src/theme.rs, theme/synthwave.rs, ui/terminal_view.rs, snapshots (worktree .worktrees/FR-26) | `cargo test -p vr-ide` | done (review APPROVE r1; merged adccb95) | 1 |
+| FR-27 | File blame annotations toggle in the editor (D321) | fe | - | ui, security | AC-B1..B5, USER-5 | crates/vr-git (read-only file blame), crates/vr-ide (editor_view gutter column, git.rs worker wiring, command registry/palette), crates/vr-config/defaults/keymap.toml + tests, README, docs (worktree .worktrees/FR-27) | `cargo test -p vr-git -p vr-ide` | done (review APPROVE r2, QC_PASS 23/23; merged 260d08b) | 2 |
+| FR-28 | Palette: show the selected row's full description (D322) | fe | - | ui | AC-P1 | crates/vr-ide/src/ui/palette.rs, commands/palette.rs (only if the model needs it), ui snapshots, README (worktree .worktrees/FR-28) | `cargo test -p vr-ide` | done (review APPROVE r1 + QP1; merged ce972e7) | 1 |
+| FR-29 | Final review 4 fixes: notices kept while SSH full screen (F4-1), tab drag on a logged-in SSH tab (F4-2), Focus Editor / ctrl+f8-f9 in full screen (F4-3, F4-4), docs (F4-5) | fe | FR-25..28 | ui | AC-S3..S5, AC-F3, AC-F6 | crates/vr-ide (ui/mod.rs, app.rs notices, commands/terminal.rs, commands/ssh.rs), README, docs/keymap.md (worktree .worktrees/FR-29) | `cargo test -p vr-ide` | done (review APPROVE r1; merged 5faa843) | 1 |
+| FR-30 | Editor tabs: x close button (D327) | fe | - | ui | AC-X1 | crates/vr-ide/src/ui/tabs.rs, commands/tab.rs (click routing), app.rs mouse, snapshots, README (worktree .worktrees/FR-30) | `cargo test -p vr-ide` | done (review APPROVE + QP1; merged ce023e2) | 0 |
+| FR-31 | Explorer right-click: Search / Replace in Folder (D328) | fe | - | ui | AC-R1 | crates/vr-ide/src/commands/explorer_menu.rs, ui/explorer_menu.rs, commands/search.rs + find box scope, crates/vr-search if a path filter is needed, README, docs (worktree .worktrees/FR-31) | `cargo test -p vr-ide -p vr-search` | done (review APPROVE r1, QC_PASS 20/20; merged 2e809d1) | 1 |
 
 ## Notes
-- presence: present (user typed, 03:11)
+- presence: away (user, 12:27)
 - hand-off: ready (23:52) — T14 → T15 (Synthwave, D148) → M4-1…M4-4 → sign-off → Phase 5 → report; commit + push per task; account_switch none
 - eta: ~19:00 (set 17:19, +25m: T10 needed rounds 2 and 3; r3 ~25m + recheck 15m → merge + message rewrite 10m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
@@ -335,3 +351,80 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - FR-15 candidate: git_tests::each_root_shows_its_own_repo waits for root a's branch not its marks (add wait_marks after open_path(&pa)); plus the earlier flaky list.
 - Sign-off 2 (2026-11-26): SIGNOFF_PASS (1171 tests, AC-1 23–41 ms / 7–20 MB, walks 46/46, 44/46 script-only misses, git 21/21). Final review 2: 1 major + 4 minor → FR-16, fixed and merged. Docs: focus.editor row added to docs/keymap.md by the leader (one-line fix).
 - 2026-11-26 user: removed the stopped worktree .worktrees/M7-1 and its unmerged branch m7-1-vr-git (never pushed).
+
+## Run 3 (2026-11-27, plugin 1.0.40) — FR-17 … FR-21
+- spec: 01_spec_FR17-21.md; rules: rules_run3.md; decisions D310–D313.
+- phase0: paths ✓ · profile fields ✓ · local fields ✓ (added: account_switch) · e2e one spec n-a (no e2e) · test logins n-a · temporary values ✓ (none) · stray-team-files ✓ · capabilities ✓ · env-drift n-a · gitignore ✓ · stack n-a (TUI) · upstream: no push this run · guard coverage ✓ (0 meta tests) · commit identity ✓ (mvanvu <mvanvu@gmail.com>; project CLAUDE.md: no AI attribution)
+- presence: away (user, 12:27)
+- fable-policy: auto (user, 09:58)
+- commits: local, one per task, no push (user, 09:58)
+- hand-off: ready (12:27; second sitting: FR-29, FR-31 to finish, then reinstall per D318)
+- parallel: FR-17 ∥ FR-18 ∥ FR-20 ∥ FR-21 — each in its own worktree (same crate = shared compile unit). Overlaps: FR-17/FR-18/FR-19 on commands/terminal.rs, terminal_view.rs; FR-20 on app.rs/slash.rs. Merge route: leader merges master into each branch in its worktree before merging back (--no-ff), one at a time; conflicts go to the task's developer. Snapshots regenerated, never hand-merged (COST-17).
+- FR-19 waits for FR-17 merged (same files, small task first).
+- Phase 5: 5 tasks → runs unattended via Agent (correctness + ui), then sign-off qc.
+- eta: ~13:10 (set 10:01, basis: critical path FR-17 (~30 min) → FR-19 (~60 min) + reviews/qc, FR-18 ~90 min in parallel, then Phase 5 ∥ sign-off ~45 min; 4 developers)
+- 10:01 started: FR-17 (sonnet), FR-18 (opus), FR-20 (sonnet), FR-21 (sonnet), each in its worktree. model note: FR-20 removal of guarded git write code → sonnet per removal row (it removes, not guards).
+- 10:05 FR-21 DONE (gate ✓ after one send-back); review sonnet (code + design QA, light tier, no qc).
+- 10:07 FR-17 DONE (no rebind; ctrl+f7 added to [terminal] table so it works from a focused terminal). held for user: f8/shift+f8/ctrl+f8/ctrl+f9 still go to the program in a focused terminal (documented) — handle the same way? Review sonnet now.
+- 10:07 verdict gate FR-21: ✓ (files read 6/6, rule check present). FR-21 review CHANGES_REQUESTED (2 major contrast dark/light + 2 minor) → fix round 1 to the same developer.
+- 10:08 verdict gate FR-17 ✓. Review CHANGES_REQUESTED: D279-5 conflict → D314 (confirm-on-return); README:306-308 stale; 2 long lines. Fix round 1 to the FR-17 developer.
+- 10:09 FR-17 done, merged 6c7dd87 (worktree removed). FR-19 started (opus) in .worktrees/FR-19 from master. parallel: FR-19 ∥ FR-18 share terminal_view.rs / commands/terminal.rs — separate worktrees; FR-18 merges first if ready first, the other merges master in its worktree before merging back.
+- 10:10 verdict gate FR-21 r1 ✓. FR-21 done, merged 120103f. Open minors for the report: focused row shows no kind colour (documented); light Archive Indexed(125) close in hue to Red/Magenta.
+- 10:13 FR-18 DONE (gate ✓: notes per-ID 31+17 BASE, 12+8 COST). D315 recorded. Follow-up candidates (report, not started): output clears a mouse selection while scrolled back (refresh); read_loop ignores DEC 2026 sync timeout. Review sonnet ∥ QC sonnet.
+- 10:14 verdict gate FR-20 group B ✓ (every file named; rows grouped by file name, accepted). APPROVE. Waiting: group A (opus) + QC.
+- 10:14 verdict gate FR-18 review ✓ APPROVE (1 minor: output wake clears the mouse selection while scrolled — commands/terminal.rs:795). Plan: quick pass for it after QC reports (no edits under a running verdict).
+- 10:15 verdict gate FR-20 QC ✓ QC_PASS (8/8 on the real binary). Waiting: group A review (opus).
+- 10:17 verdict gate FR-20 group A ✓ APPROVE (4 minor). Quick pass 1 (fresh sonnet; original dev near 255k): security test comments + deterministic control, worker assertion, cmd.rs comments, lib.rs wrap, README recovery-folder line. Re-check by group A reviewer (diff only).
+- 10:17 FR-19 DONE (gate ✓: per-ID 24+24 BASE, 13+7 COST; red 7 → green 9). Review sonnet ∥ QC sonnet. Diff base 6c7dd87.
+- 10:18 verdict gate FR-19 review ✓ APPROVE (1 minor doc: leftward drag past hidden tabs not described) → leader one-line doc fix after QC. Waiting: FR-19 QC.
+- 10:19 FR-20 done, merged 149f47a. Leftover cosmetic (accepted, follow-up batch): vr-git lib.rs:36 doc line 157 cols; theme.rs:50 'title of the Git popup' comment. Note: first FR-20 commit only had deletions (add aborted on a pathspec) → amended on the task branch before merge.
+- 10:27 verdict gate FR-19 QC ✓ → QC_FAIL (e1: narrow right panel, first drawn tab can't be dragged left past hidden tabs). wip committed on fr-19, master merged in: conflict commands/terminal.rs → FR-19 developer resolves + fix round 1 (QC defect + review doc minor).
+- 10:27 verdict gate FR-18 QC ✓ QC_PASS (a–g at 120x40/80x24, bottom + right). wip committed on fr-18, master merged clean. Quick pass 1 (same dev): keep the mouse selection while scrolled back and output arrives.
+- 10:33 FR-18 done, merged b18f21e. Open minors for the report: type_line does not clear the selection (one frame); at the bottom output still clears a selection; DEC 2026 sync timeout not applied.
+- 10:36 FR-19 r1 DONE (merge resolved; e1 fixed; 19/19 walk). Merges committed on fr-19 (36422ab) + FR-18 merged clean. Re-check: reviewer + qc. FR-22 (sonnet, light, comments only) started in .worktrees/FR-22.
+- 10:37 FR-22 done (comments only → leader spot-check instead of a reviewer), merged 1306428.
+- 10:39 FR-19 done, merged 5fe55d1. All tasks merged. Phase 5 (unattended: Agent reviewers correctness + ui, opus) ∥ sign-off qc on 5fe55d1.
+- 10:41 Phase 5 ui: 2 major (README:336, keymap.md:214 stale 'output returns to the bottom') + 1 doc minor (dotfiles) → fixed by the leader (one-line doc fixes, uncommitted, commit after sign-off). UI-3 minor (dark theme kind colours < 3:1 on the selection bg) → FR-23 after sign-off reports. Waiting: correctness dimension, sign-off.
+- 10:42 Phase 5 correctness: 0 major, 1 minor (COR-1: hover snapshot can keep a selection on slid lines at the top of a full scrollback; highlight only, clipboard right). Planned FR-23 after sign-off: COR-1 + UI-3.
+- 10:47 SIGNOFF_PASS on 5fe55d1 (1050 passed / 0 failed / 18 ignored; guard; release; bench 26 ms / 6 MB; walks FR-18 13×3, FR-19 19, FR-20 9 all PASS). Doc fixes committed. FR-23 (sonnet) started.
+- 10:53 user: new request — SSH from the command window; on a successful connection it takes over the full screen. Spec questions asked (plain text, FR-23 running).
+- 10:56 user: 'làm theo đề xuất' → D316 (FR-24), D317 (SSH, FR-25 after threat model), D318 (reinstall at the end). FR-24 sonnet ∥ FR-25-TM opus now; FR-25 waits for TM + FR-23/FR-24 merges (shared terminal.rs / keymap). eta: ~13:40.
+- 10:58 user: terminal background same as the IDE → FR-26 (sonnet, light + snapshots), starts when FR-23 is merged (theme.rs).
+- 10:59 verdict gate FR-24 ✓; done, merged 0c4b94b.
+- 11:02 FR-25-TM done. FR-25 starts when FR-23 is merged (commands/terminal.rs); fable-policy auto → FR-25 developer on fable (case 3: security + several modules: vr-term marker scan, vr-ide).
+- 11:04 FR-23 done, merged 5797347. FR-25 (fable, policy auto, case 3) ∥ FR-26 (sonnet) started in worktrees; both touch terminal_view.rs — FR-26 merges first, FR-25 merges master in before its merge-back.
+- 11:10 verdict gate FR-26 ✓ → CHANGES_REQUESTED (major: synthwave panel only 1.15 luminance vs editor). Fix round 1: floors synthwave ≥1.6, dracula ≥1.5, vs ANSI black ≥1.3; dark/light limit stated; cell_style default path. FR-25 told to render through theme_cell_style.
+- 11:14 FR-26 done, merged adccb95. FR-25 must merge master (render_grid conflict expected) before review.
+- 11:14 user: file blame show/hide → D321, FR-27 (opus; vr-git read path touched → opus review) started in worktree; parallel with FR-25 (shared: command registry/palette, keymap.toml — merge route: FR-25 merges first if ready first; the other merges master in its worktree).
+- 11:16 user: palette cuts descriptions with no way to read them → D322, FR-28 (sonnet, light + snapshots) in worktree; FR-25 may add a palette source (ssh) — merge route: snapshots regenerated, never hand-merged.
+- 11:21 verdict gate FR-28 ✓ → CHANGES_REQUESTED (2 major: cut titles never shown; command id shown + box resizes while arrowing). D323. Fix round 1.
+- 11:25 FR-28 done, merged ce972e7.
+- account: vu_mai@fastboy.net → mvanvu@fixecom.vn (7d 98%, 11:25)
+- 11:32 FR-27 DONE (gate ✓: 37 pass / 30 n-a; walk 10/10 release). D324 shift+f2. Review opus (vr-git read path) ∥ QC sonnet.
+- 11:34 FR-25 DONE (gate ✓: BASE 32/16, COST 11/9; walk 38/38 fake ssh; SEC-S5 sshd step not run — no sshd). wip committed, master (FR-26/28) merged clean. Review opus (security) ∥ QC sonnet.
+- 11:38 verdict gate FR-27 review ✓ → CHANGES_REQUESTED (2 major: FileBlame blocks the single git worker up to 30 s; lone CR shifts labels; 3 minor). D326. Fix round waits for FR-27 QC (worktree build in use).
+- 11:41 verdict gate FR-25 review ✓ APPROVE (4 minor + 1 low; SEC-S1..S18 pass). Leader re-grade: minor #2 (late probe answer steals focus → editor keys typed into ssh's password prompt) → major (input misrouted) → fix round after QC. QC told its disconnect step kills vr-ide (script bug).
+- 11:42 verdict gate FR-27 QC ✓ QC_PASS 23/23. Fix round 1 → fresh opus developer (first dev ~280k): own lane for FileBlame, lone CR (D326), 3 minors.
+- 11:45 verdict gate FR-25 QC ✓ QC_PASS 60/60 (script faults fixed, no product defect). Fix round 1 → fresh opus developer: focus steal (major, re-graded), config # comment, SpawnExtras Debug, probe reader thread, optional find_in_path helper.
+- 11:53 FR-27 r1 DONE (own FileBlame lane + cancel; lone CR; 3 minors; walk 10/10, qc_walk 23/23 on rebuilt release). Re-check: opus reviewer.
+- 11:55 verdict gate FR-27 r1 ✓ APPROVE; new minor (same-file blame restarted forever under frequent .git writes) re-graded major (work silently never done) → fix round 2 (same r1 developer).
+- 11:58 FR-25 r1 DONE (KeysAt + input_count; # comments; redacted Debug; polling probe read; #5 left with reason; 6 slash snapshots accepted = FR-28 detail via merge; late_probe 5/8→8/8; qc_walk 60/60). Re-check: opus reviewer.
+- 11:59 FR-27 r2 DONE (same-file queue; stale result kept; walk 10/10). Re-check: opus reviewer.
+- 12:00 FR-25 done, merged 949e2a3 (also refreshes 6 slash snapshots master had stale after FR-28).
+- 12:00 FR-27 done, merged 260d08b. All tasks of the second batch (FR-23..28) merged. Sign-off 4 (qc) ∥ Phase 5 b (correctness, security, ui; opus) on 260d08b; then reinstall (D318).
+- 12:05 Phase 5 b: 2 major (F4-1 notices dropped during SSH full screen; F4-2 tab press on a logged-in SSH tab enters full screen and breaks FR-19 drag) + 4 minor → FR-29 (opus) in a worktree now; sign-off 4 keeps running on 260d08b; F4-6 capabilities fixed by the leader.
+- 12:15 user: editor tab x button (FR-30, D327) + explorer Search/Replace in Folder (FR-31, D328); both sonnet, worktrees, parallel with FR-29 (FR-29 touches app.rs/terminal.rs — FR-30 app.rs mouse overlap → merge route: master merged in the later worktree).
+- 12:16 SIGNOFF_PASS 4 on 260d08b (1161 passed / 0 failed / 18 ignored; guard; release; bench 24 ms / 7 MB; walks all PASS incl. new fr24_26_28 8/8).
+- 12:21 FR-30 DONE (gate: guard missing → sent back). flaky under load (FR-30 dev): ssh_tests::ac_s6_sec_s16_sixteen_sessions_at_most (+2 unnamed) failed in full -p vr-ide runs under parallel load, pass alone — owner: FR-29 dev quick check after its round (FR-25 area); sign-off 4 full suite was green.
+- 12:23 verdict gate FR-30 ✓ (after files-read send-back) APPROVE; quick pass 1 (tests only): Discard/Save on a dirty non-active tab, double-click test.
+- 12:24 FR-30 QP1 DONE (tests: Discard/Save on dirty inactive tab, double-click; no defect). Re-check: same reviewer. FR-31 DONE (gate ✓; walk 9/9) → review opus (multi-file replace) ∥ QC sonnet.
+- 12:24 FR-30 done, merged ce023e2 (42 snapshots gain ' x' — FR-29/FR-31 merges must regenerate conflicted snapshots, COST-17).
+- 12:28 verdict gate FR-31 review ✓ → CHANGES_REQUESTED (3 major: folder outside the workspace via symlinked dir / removed root → replace writes outside; open_bar keeps the folder; missing tests; 2 minor). Fix round waits for FR-31 QC (worktree build in use).
+- 12:33 FR-29 DONE (F4-1..5; walk 60/62 → 62/62; FR-19 19/19). COST-8 self-reported fail = a perl -0pi edit — allowed bulk-regex method, recorded as n-a deviation, not a ledger entry. known flaky under load (owner: FR-32 after FR-29 review): ssh_tests::ac_s6_sec_s16_sixteen_sessions_at_most, ssh::tests::sec_s4_a_hanging_probe_is_killed_with_its_group_at_the_timeout. Review opus.
+- 12:35 verdict gate FR-31 QC ✓ QC_PASS 20/20. Fix round 1 (same developer): folder must stay inside a workspace root (symlinked dir / removed root), open_bar clears folder, tests, rename, narrow label.
+- 12:37 verdict gate FR-29 ✓ → CHANGES_REQUESTED (1 major: several waiting notices expire together; 3 minor). Fix round 1 to the same developer + ride-along: the two flaky ssh tests (reviewer: probe test ETXTBSY race in the test, not product) — known-red owner FR-29.
+- 12:41 FR-31 r1 DONE (in_workspace gate + scope_ok re-checks; open_bar; 7 tests red-first; rename; narrow label; walks pass at 120x40/80x24). Re-check: opus reviewer.
+- 12:43 FR-31 done, merged 2e809d1 (palette_80x24 snapshot auto-merged with FR-30's ' x' — the final check runs it).
+- 12:44 FR-29 r1 DONE (k-TTL notices; count/key; (col,row) click; flaky tests fixed 10/10). Re-check: opus reviewer.
+- 12:46 FR-29 done, merged 5faa843. All tasks merged. Final check (sign-off 5, qc) on 5faa843, then reinstall from a clean checkout (D318).
+- 12:59 SIGNOFF_PASS 5 on 5faa843 (suite green, guard, release, bench 24 ms / 7 MB, all walks pass). Reinstalled vr-ide from a clean checkout of 5faa843 (cargo install --locked; ~/.cargo/bin/vr-ide replaced 12:59). Run end.

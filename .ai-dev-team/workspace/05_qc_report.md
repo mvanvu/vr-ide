@@ -1517,3 +1517,289 @@ Scope: every task since 9c45cd1 (T18, W-1, T21, T20, T20b, T22, T23, FR-13, T19,
 | AC-1 perf | pass | bench |
 | USER-5 legacy bytes + SGR mouse | pass | both walks |
 | BASE-11/15/17 | pass | no commit/stash/checkout; only own pty sessions; temp repos and HOME only; none left |
+
+## QC FR-20
+Build: branch fr-20, HEAD b2d1b612d4fb8c045e5f68f88027ff71d8e7d6d9 + dirty tree, diff hash (git diff HEAD | sha256) 262bdd16bf09; `cargo build -p vr-ide` Finished. Flow: `qa-artifacts/FR-20/qc_walk.py` (real binary, pty 120x40, throwaway repo, removed afterwards); output `qa-artifacts/FR-20/run2.txt`. Engine: pty + own screen model (pyte absent). Developer's tests not rerun.
+
+| Check | Result | Evidence |
+|---|---|---|
+| welcome shows branch | pass | `qc-branch · 2 files` on welcome |
+| status bar branch | pass | `READ main.txt · qc-branch · Ln 1...` |
+| gutter marker on modified line | pass | `3▎CHANGED three` vs `2 line 2` |
+| inline blame (git_inline_blame=true) | pass | `1 line 1  QC, just now • first commit` |
+| F1 + `git`: no git command | pass | only fuzzy hits Terminal: Toggle Panel Position, Toggle Line Comment |
+| `/git` | pass | "No matching commands"; Enter: `unknown command /git (/help lists them)` |
+| `/set git_inline_blame false` / `true` | pass | blame disappears / returns; toast "for this session" |
+| ctrl+q, no terminal | pass | process exited on one ctrl+q, no dialog |
+
+Not driven live: git popup absence by other keys/menus (no popup key in docs/keymap.md; developer grep covers menus). Individual removed `/git ...` names are covered by the "No matching commands" result for the `/git` prefix.
+
+## Rule check FR-20
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-F4 | pass | run2.txt, all checks above |
+| BASE-23 | pass | palette typed `git`, `/git`, `/set`; ctrl+q path; welcome and status entry paths both checked |
+| BASE-46 | pass | build id above |
+
+QC_PASS
+
+## QC FR-19 — QC_FAIL (1 defect, minor-moderate)
+Build: `.worktrees/FR-19` HEAD 6c7dd87 + uncommitted diff sha1 918cb68727, binary `target/debug/vr-ide` sha1 5d20cf6d43be (rebuilt: Finished, no change). Engine: pty walk on the real binary, SGR mouse + legacy keys. Script `qa-artifacts/FR-19/qc_walk.py`, output `qa-artifacts/FR-19/qc_walk_result.txt`. Tools: Bash/Read/Edit/Write; no browser (TUI). No process left running.
+
+| Check | 120x40 | 80x24 | Evidence |
+|---|---|---|---|
+| a bottom, 3 tabs: AAA to end, last back to front; labels/order/active/own content (echo M1..M3) | pass | pass | `['BBB','CCC','AAA'] ('AAA',3,3)`, back `['AAA','BBB','CCC'] ('AAA',1,3)`, each tab shows its own marker |
+| b press-release no move | pass | pass | order unchanged, active BBB 2/3 |
+| c f8 / shift+f8 from editor, new order | pass | pass | f8 -> CCC 2/3, shift+f8 -> BBB, wrap -> AAA 3/3 |
+| d x on moved tab; + after drag | pass | pass | `['BBB','CCC']` after x on moved AAA; + -> `['BBB','CCC','DDD']` |
+| e right panel (ctrl+f7), 6 tabs, +N: to front, past visible end | pass | FAIL e1 (e2/e3 pass) | 120x40: FFF 1/6 then 6/6; 80x24: see defect |
+| f release outside panel, stray motion | pass | pass | order identical before/after stray motion |
+| g empty bar drag resizes bottom panel | pass | pass | 120×15 -> 120×18; 80×9 -> 80×12; order intact |
+| h shell exits mid-drag | pass | pass | alive, tab stays as `CCC [exited 0]`, 3 tabs, f8 still moves active |
+
+### Defect
+QC_FAIL FR-19 — right panel narrow with +N: the only drawn tab cannot be dragged left (AC-F3 overflow)
+Repro: `qc_walk.py <bin> <tmp> 24 80`, check e1: 6 terminals, ctrl+f7 (right panel); bar is ` │ 6 …h-longer-title-FFF x  +5  + ` (one tab drawn, 5 hidden). Press on the label, drag left to the panel edge and into the editor (tried to col sep+1 and sep-12), release.
+Expected: tab walks toward the front (dev note: "with overflow the window keeps the active tab last, so dragging left walks it to the front"), as it does at 120x40.
+Actual: stays 6/6 after 8 repeated drags; no move.
+Evidence: `commands/terminal.rs` `drag_tab_to`: left of the first drawn tab no `bar.tabs` entry matches `x` (`find(|t| x >= t.x ...)` -> None), and the "past the end" branch only handles the right side. With only one tab drawn there is no neighbour to swap with, so hidden tabs on the left can never be reached. Same applies whenever the dragged tab is the first drawn one with hidden tabs before it (the 120x40 case worked only because a second tab was visible). Suggested fix: when x is left of the first drawn tab and the dragged tab is first drawn with index>0, move to cur-1 (mirror of the `+N` rule).
+
+## Rule check FR-19
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-F3 | fail | all of a-d, f-h pass at both sizes, e passes at 120x40 and right-past-end at 80x24; e1 at 80x24 fails (defect above) |
+| BASE-23 | fail | bottom, right, overflow each exercised; overflow/left path at narrow width defective |
+| BASE-46 | pass | evidence names build 6c7dd87+diff 918cb68727, binary 5d20cf6d43be |
+
+QC_FAIL
+
+## QC FR-18 — QC_PASS
+Build: worktree .worktrees/FR-18, HEAD b2d1b61 + uncommitted diff sha256 8bc031029423, `target/debug/vr-ide` (cargo build up to date). Engine: real binary in a pty with legacy VTE-style key bytes (shift+pageup `ESC[5;2~`, SGR wheel, ctrl+f7 `ESC[18;5~` from the editor focus, NUL opens panel). Flow: `qa-artifacts/FR-18/qc_walk.py` + `qc_emitter.py` (outputs `qc-{120x40,80x24}-{bottom,right}.txt`). Each sample = emitter lines visible in the panel + live-region and "↑ n/len" indicator presence.
+| Check | 120x40 bottom | 80x24 bottom | 120x40 right | 80x24 right |
+|---|---|---|---|---|
+| a keys: up (>=22 samples, 1 distinct view, indicator on), further up (moved, stable), down step (moved, stable), bottom follows | pass | pass | pass | pass |
+| b wheel: same four steps | pass | pass | pass | pass |
+| c yes flood past 10000 cap while scrolled (no jump, view stable, indicator always) | pass | pass | pass | pass |
+| d key while scrolled: bottom, live region, keystroke reached program | pass | pass | pass | pass |
+| f mouse reporting on at bottom: wheel bytes `^[[<64;` reach `cat -v` | pass | pass | pass | pass |
+| g `less` alternate screen: UI alive, shell back after q | pass | pass | pass | pass |
+Excerpt (120x40 bottom): `a/keys scroll-up: PASS samples=22 distinct=1 live=0 indicator_all=True view=('hist 275','hist 276')`; `bottom-follows: PASS presses=2 distinct=11 live_all=True`. Right panel (120x40): `scroll-up PASS samples=22 distinct=1 ... view=('hist 238','hist 242')`.
+Notes: the first right-panel run failed only because my script's line filter did not strip the editor columns / panel border (harness bug, fixed in qc_walk.py, rerun all PASS). g: no pre-fix binary to compare, so "scroll as before" for alt screen is observed only as no crash and working return (wheel/shift+pageup in less caused no UI breakage). Flood past the cap: view sits on the oldest kept lines, indicator stays (by design, per dev notes). Not run: developer unit tests, vim, real `claude`. Out of scope noted by dev: selection cleared each frame while streaming. Processes: only my own pty children (killed in script); no background tasks left.
+
+## Rule check FR-18
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-F2 | pass | checks a-d, f above, 4 configs; follow-bottom unchanged (bottom-follows distinct>1, live region visible); mouse-reporting programs still get the wheel |
+| D315 | pass | view offset in emulator, keys/wheel/typing behave per decision (key returns to bottom, output keeps scrolled view) as exercised in a, b, d |
+| BASE-23 | pass | bottom and right panel (ctrl+f7 from editor), wheel and keys, two sizes |
+| BASE-46 | pass | build id HEAD b2d1b61 + diff sha256 8bc031029423 named above |
+
+## QC FR-19 re-check r1 — QC_PASS
+Build: fr-19 HEAD 82360fe (clean tree; includes the e1 fix, FR-18 and FR-20 merges), binary sha1 d7527f870097. Engine: pty walk on the real binary, `qa-artifacts/FR-19/qc_walk.py`, output `qa-artifacts/FR-19/qc_walk_result_r1.txt`. No process left running.
+| Size | Result |
+|---|---|
+| 120x40 | 19/19 pass (a-h) |
+| 80x24 | 19/19 pass (a-h); e1 now `('a-much-longer-title-FFF', 1, 6)`, previously stuck at 6/6 |
+The e1 defect is fixed; FR-18 scroll/selection merge did not disturb tab drag, f8, x, +, resize or exit-mid-drag.
+### Rule check FR-19 (r1)
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-F3 | pass | all checks a-h at both sizes |
+| BASE-23 | pass | bottom, right, overflow (wide and narrow) all exercised |
+| BASE-46 | pass | build 82360fe / d7527f870097 |
+
+QC_PASS
+
+## Sign-off 3 (run 3: FR-17 … FR-22) — evidence at 5fe55d1
+Artifacts: $TEAM_WS/qa-artifacts/signoff3/ (full.log, guard.log, release.log, bench.log, walk*.txt).
+
+- Full suite `cargo test --workspace -j 4`: exit 0, total 1050 passed / 0 failed / 18 ignored (vr-ide lib 593/0/7, vr-git read 13 + security 26 + worker 4 + bench 0/0/1, vr-syntax highlight 27/0/5, vr-term pty 21 + flood 1/0/1, and the other crates all ok). No flaky test failed, no rerun needed. Log: full.log.
+- Guard `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings`: exit 0.
+- Release build `cargo build --release -p vr-ide`: ok.
+- Bench (scripts/bench-startup.sh): first frame 26 ms (<100), RSS 6 MB (<60); 200 KB Rust first frame 37 ms, RSS after colours 19 MB; welcome monitor 9 MB. All inside targets.
+- Walks on the release binary:
+  - FR-17 walk.py (ctrl+f7 legacy bytes ESC[18;5~, 120x40): welcome screen, then terminal panel on the right with the hint; exit 0 (screen dump, no PASS/FAIL lines).
+  - FR-18 qc_walk.py: 120x40 bottom 13 PASS/0 FAIL; 120x40 right 13/0; 80x24 bottom 13/0.
+  - FR-19 qc_walk.py 120x40: 19 PASS / 0 FAIL.
+  - FR-20 qc_walk.py: 9 PASS / 0 FAIL (branch, gutter, blame on/off, no git palette command, ctrl+q exits without git prompt).
+- ACs:
+  - AC-F1 (FR-17) PASS: walk17 + keymap tests in suite.
+  - AC-F2 (FR-18) PASS: walk18 x3.
+  - AC-F3 (FR-19) PASS: walk19 19/19.
+  - AC-F4 (FR-20) PASS: walk20 9/9 + suite.
+  - AC-F5 (FR-21) PASS: suite tests explorer_names_take_their_kind_colour, theme::tests::explorer_kinds_are_told_apart_in_every_theme, explorer_kinds_read_on_the_explorer_and_selection_backgrounds, explorer_generated_and_hidden_differ_by_colour_in_every_theme, kinds_by_extension_name_and_case all ok (confirmed from tests, not printed from the binary).
+  - FR-22 (doc comment tidy): guard clean, suite green.
+  - D310–D315: no conflicting failure in suite or walks.
+
+## Rule check sign-off 3
+| Rule | Result | Evidence |
+|---|---|---|
+| BASE-46 (evidence names commit) | PASS | all runs on 5fe55d1, tree clean except team files |
+| BASE-14/15 | PASS | long runs as background tasks, no polling; no vr-ide process left |
+| USER-rules (startup/RSS budgets) | PASS | bench 26 ms / 6 MB; 37 ms / 19 MB |
+| Guard (fmt, clippy -D warnings) | PASS | guard.log |
+| Code edited by QC | none | |
+
+## QC FR-27
+Build: /home/vu-dev/DEV/vr-ide/.worktrees/FR-27 HEAD adccb95 + uncommitted diff sha256 7e2543cf822f (debug build `cargo build -p vr-ide`, finished). Engine: real binary in a pty (pty + vt.py screen model), legacy VTE bytes `ESC[1;2Q` for shift+f2, f1 palette. Script: qa-artifacts/FR-27/qc_walk.py, output qa-artifacts/FR-27/qc_walk-result.txt (23 PASS, 0 FAIL). Throwaway repo (2 authors, 4 commits, untracked file) and a non-repo dir removed; no process left.
+
+| Check | Result | Evidence |
+|---|---|---|
+| a read mode on/off (AC-B1,B2,B5) | PASS | `Alice Ander… 2025-01-10   1 l1 one`; `Bob Builder  2025-03-20   2 L2`; run-start on line 5 `2025-06-05`; lines 3,6 start `┊`; off: `  1 l1 one` |
+| b palette "Toggle Blame Annotations" | PASS | on and off same as key |
+| c edit mode (AC-B4) | PASS | inserted line `Not committed yet   3▎ins`; others keep labels (L3 starts a new run after the split, still Bob 2025-03-20); save re-reads: line 1 Alice, line 3 Not committed yet |
+| d second tab | PASS | on in tab 2 -> tab 1 has column; off in tab 1 -> tab 2 off |
+| e untracked / outside repo (AC-B1) | PASS | `u.txt is not tracked by git`; `o.txt is not in a git repository`; no column |
+| f widths (AC-B4) | PASS | 80x24 full; 60 cols `Alice… 2025-01-10`; 40x12 hidden, typing still works |
+| g inline blame + gutter marks (AC-B5) | PASS | `L3 ... 3▎ins  You, uncommitted` and `l1 one  Alice Anderson, 1 y…` beside the column; `▎` right of the column |
+| h hostile author | PASS | drawn `Mal^[[41mIC… 2025-06-06`; raw pty stream has no `PWNED`, no `Mal\x1b` |
+
+AC-B3 (off-UI-thread, hardened runner, too-large) was not exercised here (developer unit tests, not re-run); UI stayed responsive in every step (each key answered within the wait).
+
+## Rule check FR-27
+| Rule | Result |
+|---|---|
+| BASE-23 (read/edit mode, several tabs, 3 sizes, palette and key paths) | PASS, all covered above |
+| BASE-46 (build named) | PASS, HEAD adccb95 + diff 7e2543cf822f |
+| BASE-14/15 | PASS, foreground runs only, own processes killed |
+| BASE-17 | n/a, no DB/app data committed; throwaway repo removed |
+
+QC_PASS FR-27
+
+## QC FR-25 — SSH sessions (AC-S1..S6, AC-T1, D317/D320/D325)
+Build: worktree `.worktrees/FR-25`, branch fr-25 HEAD fb6a5de (clean), `cargo build -p vr-ide` debug (Finished). Engine: real binary over a pty (`qa-artifacts/FR-25/qc_walk.py`, fake `ssh` shim first on an absolute PATH, `.` ahead of it with a trap `./ssh`, temp HOME). Never a real host. Developer unit tests not rerun.
+Result: `qa-artifacts/FR-25/qc_walk_result.txt` = RESULT 60/60 passed (two sizes: L = 120x40 with the full flow, S = 80x24 flow). Two earlier-run FAILs were script faults and are fixed, not product defects: disconnect step used `$PPID` (now `kill -9 $$`, the shim's own pid), then B01 (target text legitimately still in the palette input line), D05 (my own typed command echoed "ssh other" on the remote screen), I02 (quit sent to a focused terminal). Reran the whole script after each fix.
+
+| Check | Result | Evidence |
+|---|---|---|
+| a host list: aliases, Include, wildcard skipped, recent; typed `user@host:2222` | PASS | L-S02 lists web1, git.example.com, inc-host (Include), ok2; absent: `db-*`, `!neg`, `a*b`, `"d e"`, `-oProxyCommand=x`, `inc-*`; L-S03 list ran no ssh/-G; L-A02 recent listed; L-S05 typed target opens tab `ssh bob@web1:2222` |
+| entry paths (BASE-23) | PASS | `ssh ` typed (S01/S02), palette row "SSH: Connect to Host" (S04), `/ssh target` (S05), tab click (S10), session list (S11/S12); both 120x40 and 80x24 |
+| b hostile targets refused, nothing run | PASS | L-B01 (`-oProxyCommand=x`, `a b`, `%h`, `$(x)`, `x;y`, `ssh://h:2`, `u@h@h`, `h:0`, `h:65536`) fixed notice "SSH: not a valid target", not echoed; L-B02 control char via bracketed paste; L-B03 shim log gained no `S` line, no `-G` for them |
+| c password in panel tab; login -> full screen with `SSH <target>`; marker never visible | PASS | S05/S06: status row ` SSH  bob@web1:2222 ... ctrl+\` editor`, no IDE chrome; S07 no `vr-ide-ssh`/nonce/password in any byte vr-ide drew; L-C01 nonce/password in no file vr-ide wrote; S08 mouse selection: OSC52 text contains neither marker nor nonce (clipboard-written text checked, 1 OSC52 write decoded) |
+| d forged marker / OSC title `ssh evil` | PASS | D-D01 forged marker + `ESC]2;ssh bank-prod` pre-auth: no full screen, label `ssh evil1`, OSC52 not forwarded; D-D03 status row vr-ide's own despite `ESC[999;1H` text; D-D04 real marker replayed: swallowed, still full screen; D-D05 label unchanged after leaving |
+| e ctrl+` back, session alive; reopen via tab click and list; resize | PASS | S09/S09b alive, ctrl+` again shows panel without forcing full screen (D325); S10 click -> full screen, one ssh only; S11/S12 list row `open session`; S13 status row follows resize; S14 pty rows = window-1 |
+| f exit / disconnect / restart | PASS | S15 `[process exited 7]`, Enter-to-restart; S16 restart argv has a new nonce; S17 full screen again; S18 killed ssh -> layout back with "process exited" |
+| g auth failure | PASS | G-G01 normal tab, "Permission denied", `[process exited 255]`, no full screen; G-G02 nothing recorded |
+| h user LocalCommand / `ssh_fullscreen = false` | PASS | H-H01 notice "your ssh config sets LocalCommand...", argv `-o ControlMaster=no -- web1`, user's command not run; H-H02 setting off: plain tab, no `-G`, no LocalCommand in argv. INFO: with the setting off no notice is shown (D320 requires a notice only for LocalCommand/mux; dev test `d320_...` asserts none). Not a defect. |
+| i two sessions; quit asks, Cancel default | PASS | I-I01 two tabs, two processes; I-I02 quit dialog, Enter keeps vr-ide and sessions; I-I03 Quit anyway ends vr-ide and all shim processes (/proc scan empty) |
+| j ssh-recent | PASS | L-J01 mode 0600, content exactly `bob@web1:2222`, no password/nonce/marker; failed login not recorded (G-G02). INFO: state dir mode is left as other features made it (775), per D325 |
+| k full-screen bg == terminal panel bg (synthwave) | PASS | L-K01/S-K01: fullscreen `48;2;32;64;122` == panel `32;64;122` != editor `26;16;40` (same at both sizes) |
+| AC-S1..S6, AC-T1 | PASS | as above |
+| SEC lines checked by qc | PASS | S2 (argv shape exact incl. `-- host`, trap `./ssh` not run, absolute shim ran; earlier developer walk a07/a08 on same binary), S4 (user LocalCommand -> options absent), S6/S8 (forged and replayed markers), S7 (nonce absent from screen and files), S9 (fixed notice, no echo), S10, S12 (label/status row), S13 (OSC52 not forwarded), S15 (env, walk a21), S17 (quit dialog, no leftover process), S18 (no marker -> never full screen; new nonce on restart) |
+| Not verified by qc | note | real sshd on localhost (SEC-S5 ControlMaster auto, SEC-S3 other shells), 50 MiB / FIFO config fixtures (SEC-S11), 17-session limit (SEC-S16), hanging `-G` kill (SEC-S4) rely on the developer's unit tests; scrollback content of a session not inspected through the UI |
+
+## Rule check FR-25
+| Rule | Result |
+|---|---|
+| BASE-23 (entry paths, 120x40 and 80x24) | PASS |
+| BASE-46 (build named) | PASS, fr-25 @ fb6a5de, debug build |
+| BASE-14/15 | PASS, long run as a background task, only my own processes (all shim/vr-ide children verified gone; an unrelated vr-ide pid 125760 started 09:26 left alone) |
+| BASE-17 | n/a, temp HOME/state under /tmp removed, nothing committed to any app |
+| BASE-19 | PASS, results written to qc_walk_result.txt per check |
+| COST-13 | PASS, nothing written to $TEAM_TOOLS |
+
+QC_PASS FR-25
+
+## Sign-off 4
+Build under test: master 260d08b (BASE-46), release binary target/release/vr-ide built from it. Logs: qa-artifacts/signoff4/.
+
+| Step | Result |
+|---|---|
+| a. `cargo test --workspace -j 4` (run-heavy, once) | EXIT 0: 1161 passed, 0 failed, 18 ignored (33 test binaries). Unit per crate: vr-ide 679, vr-core 155, vr-fs 44, vr-search 43, vr-syntax 24, vr-config 17, vr-term 14, vr-git 11. Integration: vr-git security 27 / read 14 / worker 9; vr-config config 24 / languages 8; vr-syntax highlight 27 / grammars 25 / registry 6; vr-term pty 21 / marker 6 / env 1 / flood 1 / leak 1; vr-fs and vr-search racing_writer. No load-sensitive failure, no rerun needed. |
+| b. guard | fmt --check exit 0; clippy --workspace --all-targets -D warnings exit 0 |
+| c. release + bench | build ok; first frame 24 ms, RSS 7 MB (sign-off 3: 26 ms / 6 MB); 200 KB rust file first frame 38 ms, RSS after colours 18 MB; welcome monitor 9 MB. All under targets |
+| d. walks (release) | FR-25 qc_walk 60/60; FR-25 late_probe_walk 8/8; FR-27 qc_walk all PASS, 0 FAIL; FR-19 qc_walk 19/19 at 80x24 and 120x40; FR-18 qc_walk 13/13 at 80x24 and 120x40, bottom and right; FR-20 qc_walk 9/9. No real host contacted (fake ssh shim) |
+| e. new walk | qa-artifacts/signoff4/fr24_26_28_walk.py, 8/8 (fr24_26_28.txt) |
+
+### AC results
+- AC-F1..F5 (FR-17/18/19/20) and FR-23 follow-ups: PASS (walks above, unit suites green).
+- AC-F6 (FR-24): PASS. Focused terminal at 120x40: ctrl+f8 (ESC[19;5~) panel 120x15 -> 120x17; ctrl+f9 twice (ESC[20;5~) -> 120x13; plain f8 (ESC[19~) leaves 120x13 (goes to the program).
+- AC-S1..S6 + SEC qc steps (FR-25): PASS, 60/60 plus late-probe 8/8.
+- AC-T1 (FR-26): PASS on the release binary in synthwave: panel bg 48;2;32;64;122 vs editor bg 48;2;26;16;40; the FR-25 walk confirms the full-screen view uses the panel bg.
+- AC-B1..B5 (FR-27): PASS, all walk checks (toggle, run labels, continuation, palette on/off, uncommitted, per-tab, untracked/outside-repo notices, 60-col compact, 40x12 hidden and editor usable, hostile author drawn without raw ESC).
+- AC-P1 (FR-28): PASS at 80x24: in the `/` list the cut row `/save-as [path] ... (no path: the Save As prom…` shows its full text wrapped in the detail area, input line and selected row stay visible, selecting a fitting row hides the detail. 120x40 and 40x12 covered by unit tests only, not walked.
+- D316..D326: consistent with observed behaviour.
+
+## Rule check sign-off 4
+| Rule | Result |
+|---|---|
+| BASE-46 | PASS, evidence names 260d08b |
+| BASE-14 | PASS, long commands as background tasks, no polling |
+| BASE-15 | PASS, no process-kill commands, walks end their own processes |
+| BASE-17 | PASS, temp HOMEs/repos removed, nothing committed to any app |
+| BASE-19 | PASS, one result line per check in signoff4/*.txt |
+| COST-13 | PASS, nothing written to $TEAM_TOOLS |
+| No code edits | PASS, only files under $TEAM_WS |
+
+SIGNOFF_PASS
+
+## QC FR-31 (Explorer right-click: Search / Replace in Folder, D328)
+- Build: `.worktrees/FR-31` HEAD 260d08b + uncommitted diff sha256 6466a0b2ed9b (9 files); `cargo build -p vr-ide` Finished (up to date), binary sha256 93245f99a235. Engine: real binary over a pty (T10 `vt.py` screen model), mouse + keys. Script `qa-artifacts/FR-31/qc_walk.py`, output `qa-artifacts/FR-31/qc_result.txt` (one line per check, 120x40 and 80x24).
+- Throwaway workspace (`vr-ide rootA rootB`): rootA{src{a.txt, sub/b.txt, link_out.txt -> ../outside/o.txt}, other/c.txt, top.txt}, rootB{lib{d.txt, deep/e.txt}, z.txt}, outside/{o.txt, same.txt}; every file "a needle here". Removed afterwards; no process left running.
+
+| Check | 120x40 | 80x24 |
+|---|---|---|
+| a. right-click root: both items (plus Remove Folder from Workspace in multi-root) | PASS | PASS |
+| a. right-click folder: both items | PASS | PASS |
+| a. right-click file: neither item | PASS | PASS |
+| b. Search in Folder: scope label `Project: rootA/src`, typed text in the search field, results only under src | PASS | PASS |
+| c. Replace in Folder: replace row + scope label | PASS | PASS |
+| c. preview only under src (a, b; link_out.txt shown as `[!] not a file inside the project`, not selected) | PASS | PASS |
+| c. confirm: changed files = rootA/src/a.txt, rootA/src/sub/b.txt only | PASS | PASS |
+| c. outside/o.txt (via symlink), outside/same.txt, c.txt, top.txt, rootB files unchanged; symlink still a symlink | PASS | PASS |
+| d. ctrl+f leaves folder scope, again returns to whole project (c/top/z results appear) | PASS | PASS |
+| d. Esc, then a new Search in Folder: scope = folder, no whole-project results | PASS | PASS |
+| e. folder in second root (rootB/lib): only d.txt, e.txt, label `Project: rootB/lib` | PASS | PASS |
+| f. menu keys: Down/Up keep the menu, End + Enter opens Replace in Folder on src | PASS | PASS |
+| f. palette (F1) "Explorer: Search in Folder" with the cursor on a folder opens the folder scope | PASS | PASS |
+
+- Hash summary (sha256 of 9 real files before/after): 2 changed (rootA/src/a.txt, rootA/src/sub/b.txt, as expected), 7 identical (c.txt, top.txt, d.txt, e.txt, z.txt, outside/o.txt, outside/same.txt). Same at both sizes.
+- Observations (not defects): (1) the folder search lists the symlink `link_out.txt` (its path is under the folder); the preview refuses it, so the outside file is never written. (2) There is no keyboard key that opens the explorer menu (it opens only on right-click, per docs/keymap.md); the keyboard path is arrows/End/Enter inside the open menu, and the palette commands `explorer.search_folder` / `explorer.replace_folder`. (3) Reopening the box keeps the earlier query (existing find behaviour); scope and results are those of the new folder. (4) At 120x40 the result list shows about 6 rows, so d. samples the visible ones.
+- Not run: developer unit tests (per brief).
+
+## Rule check FR-31
+| Rule | Result |
+|---|---|
+| BASE-23 | PASS: root and folder, mouse and menu keys, multi-root, 120x40 and 80x24 |
+| BASE-46 | PASS: build named above (HEAD 260d08b + diff 6466a0b2ed9b, binary 93245f99a235) |
+| Data safety | PASS: hash before/after, nothing outside the folder changed |
+| BASE-14 | PASS: all foreground, no polling |
+| BASE-15 | PASS: walk process ended by its own atexit kill; none left |
+| BASE-17 | PASS: throwaway workspace removed |
+| BASE-19 | PASS: one result line per check in qc_result.txt |
+| COST-13 | PASS: nothing written to $TEAM_TOOLS |
+| No code edits | PASS: only files under $TEAM_WS |
+
+QC_PASS FR-31
+
+## Sign-off 5
+Build: master 5faa843 (tree clean except .ai-dev-team team files). Release binary `target/release/vr-ide` built at this HEAD. Engines: cargo test / clippy / fmt, pty walks on the release binary (T10 vt.py screen model); no browser (TUI). Logs and results in `qa-artifacts/signoff5/`.
+
+| Check | Result |
+|---|---|
+| a. `cargo test --workspace -j 4` (once, run-heavy) | PASS, exit 0, no failing test, no rerun needed; the two former ssh flakies passed (ssh_tests + ssh::tests all ok); the 80.8 s ssh integration binary 27 passed / 5 ignored. `signoff5/a_suite.log` |
+| b. `cargo fmt --all --check` + `cargo clippy --workspace --all-targets -- -D warnings` | PASS, exit 0 |
+| c. `cargo build --release -p vr-ide` | PASS |
+| c. `scripts/bench-startup.sh` | first frame 24 ms, max RSS 7 MB (same as sign-off 4); rust 200kb: 40 ms / 10 MB / 19 MB after colours; welcome monitor 9 MB |
+| d. FR-25 qc_walk.py (incl. N-F41, T-F42) | 62/62 PASS |
+| d. FR-29 fr29_walk.py (F4-1, F4-2) | 2/2 PASS |
+| d. FR-30 walk.py (AC-X1) 120x40 / 80x24 | 6/6 / 6/6 PASS |
+| d. FR-31 qc_walk.py (AC-R1) 120x40 / 80x24 | 20/20 / 20/20 PASS |
+| d. FR-27 qc_walk.py | 23/23 PASS |
+| d. FR-19 qc_walk.py 120x40 / 80x24 | 19/19 / 19/19 PASS |
+| d. signoff4/fr24_26_28_walk.py | 8/8 PASS |
+
+Criteria: AC-X1 (FR-30) and AC-R1 (FR-31) proven by the walks above; F4-1 and F4-2 by the walks; F4-3, F4-4 and F4-5 by the unit/integration tests in the full suite (green) and not separately walked; earlier ACs of 01_spec_FR17-21.md (FR-18/19/20/24/25/26/27/28) still hold per the walks and the suite; D316-D328 covered by the suite plus the FR-27/FR-31 walks. No defect found. No process left (only my own walks ran, each ended itself); temp workspaces removed; nothing written to $TEAM_TOOLS.
+
+## Rule check sign-off 5
+| Rule | Result |
+|---|---|
+| BASE-46 | PASS, evidence names 5faa843 |
+| BASE-14 | PASS, long commands as background tasks, no polling or sleep loops |
+| BASE-15 | PASS, no process-kill commands, no process left running |
+| BASE-17 | PASS, temp workspaces removed, nothing committed to any app |
+| BASE-19 | PASS, one result line per check in signoff5/walk_*.txt |
+| COST-13 | PASS, nothing written to $TEAM_TOOLS |
+| No code edits | PASS, only files under $TEAM_WS |
+
+SIGNOFF_PASS
