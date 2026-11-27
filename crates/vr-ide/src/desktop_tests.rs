@@ -3,7 +3,9 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::desktop::{MARKER, build_entry, install, quote_exec_arg, uninstall, validate_exe};
+use crate::desktop::{
+    MARKER, build_entry, install, path_note, quote_exec_arg, uninstall, validate_exe,
+};
 
 /// Undo value-level escaping, then split `Exec` per the Desktop Entry spec.
 fn parse_exec(value: &str) -> Vec<String> {
@@ -155,31 +157,89 @@ fn uninstall_keeps_foreign_files() {
 }
 
 #[test]
-fn symlinks_are_not_followed() {
+fn install_refuses_unmarked_targets_and_writes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
-    let data = tmp.path().join("data");
     let exe = fake_exe(tmp.path(), "vr-ide");
     let victim = tmp.path().join("victim");
-    fs::write(&victim, "precious\n").unwrap();
+    for (target_is_desktop, as_symlink) in
+        [(true, false), (false, false), (true, true), (false, true)]
+    {
+        let data = tmp
+            .path()
+            .join(format!("data-{target_is_desktop}-{as_symlink}"));
+        let desktop = data.join("applications/vr-ide.desktop");
+        let icon = data.join("icons/hicolor/scalable/apps/vr-ide.svg");
+        let hand = if target_is_desktop { &desktop } else { &icon };
+        let other = if target_is_desktop { &icon } else { &desktop };
+        fs::create_dir_all(hand.parent().unwrap()).unwrap();
+        fs::write(&victim, "precious\n").unwrap();
+        if as_symlink {
+            symlink(&victim, hand).unwrap();
+        } else {
+            fs::write(hand, "hand\n").unwrap();
+        }
+        let err = install(&data, &exe, true).unwrap_err().to_string();
+        assert!(err.contains(hand.to_str().unwrap()), "{err}");
+        assert!(err.contains("not written by vr-ide"), "{err}");
+        assert!(!other.exists(), "nothing written");
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+        if !as_symlink {
+            assert_eq!(fs::read_to_string(hand).unwrap(), "hand\n");
+        }
+    }
+}
+
+#[test]
+fn install_replaces_our_own_files_but_uninstall_needs_the_exact_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let exe = fake_exe(tmp.path(), "vr-ide");
+    let data = tmp.path().join("data");
+    install(&data, &exe, true).unwrap();
+    install(&data, &exe, false).unwrap();
+
+    let other = tmp.path().join("other");
+    let desktop = other.join("applications/vr-ide.desktop");
+    let icon = other.join("icons/hicolor/scalable/apps/vr-ide.svg");
+    for p in [&desktop, &icon] {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+    }
+    fs::write(&desktop, format!("Comment={MARKER} not really\n")).unwrap();
+    fs::write(&icon, format!("<svg><!-- {MARKER} in text --></svg>\n")).unwrap();
+    assert!(uninstall(&other).unwrap().is_empty());
+    assert!(install(&other, &exe, true).is_err());
+}
+
+#[test]
+fn failed_desktop_write_removes_the_icon_this_run_created() {
+    let tmp = tempfile::tempdir().unwrap();
+    let exe = fake_exe(tmp.path(), "vr-ide");
+    let data = tmp.path().join("data");
     let apps = data.join("applications");
     fs::create_dir_all(&apps).unwrap();
-    symlink(&victim, apps.join("vr-ide.desktop")).unwrap();
-    install(&data, &exe, true).unwrap();
-    assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
-    assert!(
-        !fs::symlink_metadata(apps.join("vr-ide.desktop"))
-            .unwrap()
-            .is_symlink()
-    );
+    fs::set_permissions(&apps, fs::Permissions::from_mode(0o555)).unwrap();
+    // Root bypasses mode bits, so the failure cannot be produced there.
+    let bypassed = fs::write(apps.join("probe"), "").is_ok();
+    let res = install(&data, &exe, true);
+    fs::set_permissions(&apps, fs::Permissions::from_mode(0o755)).unwrap();
+    if bypassed {
+        return;
+    }
+    assert!(res.is_err());
+    assert!(!data.join("icons/hicolor/scalable/apps/vr-ide.svg").exists());
+}
 
-    // A symlink carrying the marker through its target is not removed.
-    fs::remove_file(apps.join("vr-ide.desktop")).unwrap();
-    let marked = tmp.path().join("marked");
-    fs::write(&marked, format!("{MARKER}\n")).unwrap();
-    symlink(&marked, apps.join("vr-ide.desktop")).unwrap();
-    uninstall(&data).unwrap();
-    assert!(marked.exists());
-    assert!(fs::symlink_metadata(apps.join("vr-ide.desktop")).is_ok());
+#[test]
+fn path_note_names_a_binary_that_is_not_the_one_on_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = fake_exe(tmp.path(), "a/vr-ide");
+    let b = fake_exe(tmp.path(), "b/vr-ide");
+    assert_eq!(path_note(&a, Some(&a)), None);
+    assert!(
+        path_note(&a, Some(&b))
+            .unwrap()
+            .contains(a.to_str().unwrap())
+    );
+    assert!(path_note(&a, None).unwrap().contains(a.to_str().unwrap()));
 }
 
 #[test]

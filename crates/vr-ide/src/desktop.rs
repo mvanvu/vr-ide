@@ -117,14 +117,64 @@ fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     res.with_context(|| format!("write {}", path.display()))
 }
 
-/// Install the entry and icon below `data_home`; returns the written paths.
+const SVG_MARKER: &str = "<!-- X-VrIde-Generated=true -->";
+
+/// True for a regular file (never a symlink) that vr-ide wrote: the `.desktop` carries the
+/// marker line, the icon carries the marker comment line or equals the bundled icon.
+fn is_ours(path: &Path) -> bool {
+    let Some(content) = read_regular_nofollow(path) else {
+        return false;
+    };
+    if path.extension().is_some_and(|e| e == "svg") {
+        content == ICON_SVG || content.lines().any(|l| l.trim() == SVG_MARKER)
+    } else {
+        content.lines().any(|l| l.trim() == MARKER)
+    }
+}
+
+/// Refuse a target that exists and is not ours; an absent one is fine.
+fn check_target(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) if is_ours(path) => Ok(true),
+        Ok(_) => bail!(
+            "{} exists and was not written by vr-ide; remove it first",
+            path.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("check {}", path.display())),
+    }
+}
+
+/// Install the entry and icon below `data_home`; returns the written paths. Both targets are
+/// checked before anything is written, and a failed second write undoes the first.
 pub fn install(data_home: &Path, exe: &Path, gnome_terminal: bool) -> Result<Vec<PathBuf>> {
     let exe = validate_exe(exe)?;
     let desktop = desktop_path(data_home);
     let icon = icon_path(data_home);
+    check_target(&desktop)?;
+    let icon_existed = check_target(&icon)?;
     write_atomic(&icon, ICON_SVG)?;
-    write_atomic(&desktop, &build_entry(exe, gnome_terminal))?;
+    if let Err(e) = write_atomic(&desktop, &build_entry(exe, gnome_terminal)) {
+        if !icon_existed {
+            let _ = fs::remove_file(&icon);
+        }
+        return Err(e);
+    }
     Ok(vec![desktop, icon])
+}
+
+/// A note for the user when the entry points at a binary other than the `vr-ide` on `PATH`.
+pub fn path_note(exe: &Path, on_path: Option<&Path>) -> Option<String> {
+    let same = on_path.is_some_and(|p| match (p.canonicalize(), exe.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => p == exe,
+    });
+    (!same).then(|| {
+        format!(
+            "note: the entry starts {}, not a vr-ide found on PATH",
+            exe.display()
+        )
+    })
 }
 
 fn read_regular_nofollow(path: &Path) -> Option<String> {
@@ -146,8 +196,7 @@ fn read_regular_nofollow(path: &Path) -> Option<String> {
 pub fn uninstall(data_home: &Path) -> Result<Vec<PathBuf>> {
     let mut removed = Vec::new();
     for path in [desktop_path(data_home), icon_path(data_home)] {
-        let ours = read_regular_nofollow(&path)
-            .is_some_and(|c| c.lines().any(|l| l.trim().contains(MARKER)));
+        let ours = is_ours(&path);
         if ours {
             fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
             removed.push(path);
@@ -192,11 +241,12 @@ pub fn run_install() -> Result<String> {
     let gnome = find_in_path("gnome-terminal").is_some();
     let written = install(&home, &exe, gnome)?;
     refresh_database(&home);
-    Ok(written
+    let mut lines: Vec<String> = written
         .iter()
         .map(|p| format!("wrote {}", p.display()))
-        .collect::<Vec<_>>()
-        .join("\n"))
+        .collect();
+    lines.extend(path_note(&exe, find_in_path("vr-ide").as_deref()));
+    Ok(lines.join("\n"))
 }
 
 /// `--uninstall-desktop`: returns a message for the user.
