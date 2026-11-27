@@ -1502,7 +1502,7 @@ fn panel_colours_follow_the_theme() {
     let s = cell_style(&red, p.as_ref(), crate::theme::ColorDepth::TrueColor);
     assert_eq!(s.fg, Some(p.unwrap().colors[1]));
     assert_eq!(s.bg, Some(p.unwrap().bg));
-    // dark keeps the terminal's own colours.
+    // No palette: Reset defaults and raw ANSI indices.
     let s = cell_style(&red, None, crate::theme::ColorDepth::TrueColor);
     assert_eq!(s.fg, Some(Color::Indexed(1)));
     assert_eq!(s.bg, Some(Color::Reset));

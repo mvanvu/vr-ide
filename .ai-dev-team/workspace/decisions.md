@@ -325,3 +325,12 @@ D325 (leader, 11:34; narrowing kept) SEC-S10: ssh-recent is 0600 always; vr-ide'
 D326 (leader, 11:38; correctness, reversible) Blame column with a lone CR in the file: annotate correctly by advancing to the next git line only on editor lines that end in \n (no 'cannot annotate' fallback). FileBlame gets its own worker lane; superseded / non-active FileBlame is cancelled.
 D327 (leader, 12:15; taste, reversible) Editor file tabs get an `x` close button at the end of each tab label, like the terminal tabs (T24): a click on it closes that tab exactly as ctrl+w would for it (unsaved changes ask the same dialog); a click elsewhere on the tab still switches; works with overflowing tabs and narrow widths.
 D328 (leader, 12:15; reading, reversible) Explorer right-click on a workspace root or a folder adds "Search in Folder" and "Replace in Folder": they open the find box in Project scope limited to that folder (the box shows the folder as its scope), with replace following the existing preview/confirm flow; a root uses the whole root. Files keep their current menu.
+
+## D329 (FR-32) — Homebrew terminal look
+- Question: "terminal colours too glaring, make the background black like Homebrew".
+- Reading (leader): the integrated terminal panel in every theme gets a pure black background (#000000) and the Homebrew profile's green default text; the 16 ANSI colours programs use stay per theme (re-fitted only if one becomes unreadable on black). Editor colours unchanged.
+- Why: Homebrew = black background + green text; applying to all themes keeps the panel the same whatever theme is set (default synthwave).
+
+## D330 (user 13:40, FR-33) — new / close terminal keys
+- User: "Ctrl+N → when the terminal is focused, open a new one; Ctrl+W when the terminal is focused closes the current tab". Closes the open question on ctrl+shift+t / ctrl+shift+w (taken by GNOME Terminal).
+- [terminal] context only: ctrl+n = new terminal (same as the tab bar '+', starts in the active file's root), ctrl+w = close the current terminal (same as its 'x', incl. the D296 Close/Cancel question when a non-shell program runs). The shell in a focused terminal no longer receives ctrl+n / ctrl+w. Amends D291 (terminals now also have keys). Editor/explorer ctrl+n / ctrl+w unchanged.
