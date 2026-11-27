@@ -4,6 +4,7 @@
 //! picker in its own tab starts new ones; a focused session gets every key but the `[ai]`
 //! table's.
 
+pub mod attention;
 pub mod picker;
 pub mod restore;
 pub mod spawn;
@@ -98,6 +99,8 @@ pub struct AiSession {
     pub mode: StartMode,
     /// The agent asked for the user (D9, T7 sets it): the order of the mark, oldest first.
     pub attention: Option<u64>,
+    /// Rate limit and text of the current notice (SEC-14).
+    pub notify: attention::NotifyState,
 }
 
 impl AiSession {
@@ -586,6 +589,7 @@ pub(crate) fn spawn_session(
         name,
         mode,
         attention: None,
+        notify: Default::default(),
     });
     app.dirty = true;
     Ok(())
@@ -613,6 +617,7 @@ fn start_program(
     let extras = SpawnExtras {
         marker: None,
         env_remove: spawn::internal_vars(std::env::vars_os()),
+        attention: true,
     };
     let output = Arc::new(AtomicBool::new(false));
     let size = grid_size(app);
@@ -765,8 +770,8 @@ pub fn close(app: &mut App, i: usize) {
 /// After a wake: other sessions' tabs are refreshed while the panel shows (the active one is
 /// snapshot by the next frame). True when the panel must be redrawn.
 pub fn refresh(app: &mut App) -> bool {
+    let mut changed = attention::collect(app);
     let p = &mut app.ai;
-    let mut changed = false;
     let active = if p.picker_active() {
         usize::MAX
     } else {

@@ -401,6 +401,23 @@ notice each). While the panel shows, a terminal set to the right sits at the bot
 the editor column. The tools are started directly (no shell), found only in the absolute
 `PATH` entries, and get no `VR_IDE_*` variables.
 
+#### Agent notifications
+
+When an agent rings the terminal bell (BEL) or sends a desktop notification (OSC 9, or OSC 777
+`notify`), its tab gets a yellow `◆` and a notice `◆ <tab> (<folder>): <message>  f12 shows it`
+appears, also while the panel is hidden (the status bar then shows `◆ <tab>  f12`). `f12` opens
+the session that has waited longest; viewing a tab clears its mark and notice. The text comes from
+the program, so it is shown with control characters made visible, cut at 200 characters, behind the
+tab name, and at most one notice per session per second. The terminal panel's tabs do not mark.
+
+The agent has to send the signal: vr-ide reports itself to the tool as a plain `xterm-256color`
+terminal, so a tool that only notifies inside terminals it recognises stays quiet. vr-ide does not
+change the tools' configuration; set it yourself if you want the marks. Claude Code: the
+`preferredNotifChannel` setting (`terminal_bell` rings BEL when it needs you; `auto` only notifies
+in terminals it knows). Codex: the `[tui]` notification settings in `~/.codex/config.toml`
+(`notification_method = "bel"` or `"osc9"`). Names change between tool versions; check the tool's
+own documentation if the mark does not appear.
+
 ### SSH sessions
 
 vr-ide opens SSH sessions with your system `ssh` (OpenSSH), so your `~/.ssh/config`, keys, agent
