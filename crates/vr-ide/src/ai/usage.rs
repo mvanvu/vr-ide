@@ -11,7 +11,20 @@
 //! `{"session_id": "<uuid>", "model": {"display_name": "Opus 5.5"}, "rate_limits":
 //! {"five_hour": {"used_percentage": 63, "resets_at": <unix seconds>}, "seven_day": {...}}}`;
 //! `rate_limits` and each window are optional (subscribers only, after the first answer).
+//!
+//! codex (AC-8, SEC-32) has no status command; its conversation id comes through its `notify`
+//! program instead. Found in the binary of codex 0.144.1 (`@openai/codex-linux-x64`, not run):
+//! the config key `notify` (an argv array, settable per run with `-c notify=<TOML>`; "the value
+//! portion is parsed as TOML") is run by `hooks/src/legacy_notify.rs` after each finished turn
+//! with one more argument, the JSON `{"type":"agent-turn-complete","thread-id":"<uuid>",
+//! "turn-id":…,"cwd":…,"client":…,"input-messages":[…],"last-assistant-message":…}`.
+//! `thread-id` is what `codex resume [SESSION_ID]` takes ("Conversation/session id (UUID)").
+//! A codex session vr-ide starts gets `-c notify=["<exe>","--ai-codex-notify","<report>"]`
+//! (built by the TOML serializer, run by codex without a shell); [`codex_helper`] keeps the
+//! thread id alone, validated, as the report's `session_id`. No usage numbers come this way, and
+//! no id before the first turn ends. codex's own files are never read.
 
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -24,12 +37,17 @@ use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 use serde_json::{Map, Value, json};
 
-use crate::cli::AI_STATUSLINE_FLAG;
+use crate::cli::{AI_CODEX_NOTIFY_FLAG, AI_STATUSLINE_FLAG};
 
 /// The folder under the state folder holding every session's settings and report.
 pub const DIR: &str = "ai-usage";
 /// Status JSON larger than this is ignored (SEC-23).
 pub const MAX_STATUS: usize = 64 * 1024;
+/// A codex notify payload larger than this is ignored. It carries the turn's messages, so it is
+/// allowed more than the status JSON. Linux caps one argument at 128 KiB (`MAX_ARG_STRLEN`):
+/// after a larger turn (a big paste) codex cannot start the helper at all (E2BIG), and that turn
+/// reports no id — an earlier or later turn's report still gives it.
+pub const MAX_NOTIFY: usize = 256 * 1024;
 /// A report larger than this is ignored (SEC-25); the helper writes a few hundred bytes.
 pub const MAX_REPORT: u64 = 4096;
 /// The helper gives up on stdin after this long (SEC-23).
@@ -620,6 +638,45 @@ pub(crate) fn helper(
     }
 }
 
+/// The thread id of a codex notify payload (AC-8, SEC-32): only an `agent-turn-complete` event
+/// with a canonical lowercase UUID ([`valid_session_id`]); every other field is skipped unread.
+pub fn parse_codex_notify(payload: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Notify {
+        #[serde(rename = "type")]
+        kind: String,
+        #[serde(rename = "thread-id")]
+        thread_id: String,
+    }
+    if payload.len() > MAX_NOTIFY {
+        return None;
+    }
+    let n: Notify = serde_json::from_str(payload).ok()?;
+    (n.kind == "agent-turn-complete" && valid_session_id(&n.thread_id)).then_some(n.thread_id)
+}
+
+/// `vr-ide --ai-codex-notify <report> <json>` (SEC-32, rules of SEC-23): run by codex after a
+/// turn, before anything else in `main`; touches no file but the report, prints nothing.
+/// Always exit code 0.
+pub fn run_codex_notify(report: &Path, payload: &OsStr) -> i32 {
+    codex_helper(report, payload);
+    0
+}
+
+pub(crate) fn codex_helper(report: &Path, payload: &OsStr) {
+    let Ok((dir, name)) = open_report_dir(report) else {
+        return;
+    };
+    let Some(id) = payload.to_str().and_then(parse_codex_notify) else {
+        return;
+    };
+    let u = Usage {
+        session_id: Some(id),
+        ..Usage::default()
+    };
+    let _ = commit_report(&dir, &name, &report_json(&u));
+}
+
 /// Everything until end of input, or `None` past `limit` bytes or `deadline`.
 pub(crate) fn read_bounded(fd: BorrowedFd<'_>, limit: usize, deadline: Instant) -> Option<Vec<u8>> {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -661,11 +718,15 @@ pub(crate) fn shell_quote(s: &str) -> String {
 }
 
 /// A session's settings and report files; dropping this removes both (the session closed or
-/// started again with new ones).
+/// started again with new ones). For codex the settings file is only the marker the helper
+/// checks: the session is still open.
 #[derive(Debug)]
 pub struct SessionFiles {
     pub settings: PathBuf,
     pub report: PathBuf,
+    /// The argv items naming the channel, put before the tool's own arguments: claude
+    /// `--settings <settings>`, codex `-c notify=[…]`.
+    pub args: Vec<OsString>,
 }
 
 impl Drop for SessionFiles {
@@ -684,10 +745,34 @@ fn command_path(p: &Path) -> Result<&str, &'static str> {
         .ok_or("vr-ide path unusable")
 }
 
+/// The program a session's tool reports through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Channel {
+    /// claude's statusLine command, run through its shell.
+    StatusLine,
+    /// codex's `notify` program, run as argv.
+    Notify,
+}
+
 /// SEC-22: makes `<state>/ai-usage/` (0700, real folder of this user) and a new settings file
 /// in it naming `exe` as the statusLine helper. `exe` must be an absolute, existing regular
 /// file, not one replaced since start (` (deleted)`).
 pub fn prepare(state: &Path, exe: &Path) -> Result<SessionFiles, &'static str> {
+    prepare_channel(state, exe, Channel::StatusLine)
+}
+
+/// SEC-32: the files of a codex session and `-c notify=["<exe>","--ai-codex-notify","<report>"]`,
+/// the TOML array written by the serializer; the paths follow the rules of [`prepare`]. This
+/// replaces the user's own `notify` setting for that run.
+pub fn prepare_codex(state: &Path, exe: &Path) -> Result<SessionFiles, &'static str> {
+    prepare_channel(state, exe, Channel::Notify)
+}
+
+fn prepare_channel(
+    state: &Path,
+    exe: &Path,
+    channel: Channel,
+) -> Result<SessionFiles, &'static str> {
     let exe_text = command_path(exe)?;
     if exe_text.ends_with(" (deleted)") || !std::fs::metadata(exe).is_ok_and(|m| m.is_file()) {
         return Err("vr-ide path unusable");
@@ -708,18 +793,38 @@ pub fn prepare(state: &Path, exe: &Path) -> Result<SessionFiles, &'static str> {
     );
     let settings_name = format!("{stem}{SETTINGS_EXT}");
     let report = dir_path.join(format!("{stem}{REPORT_EXT}"));
-    let command = format!(
-        "{} {AI_STATUSLINE_FLAG} {}",
-        shell_quote(exe_text),
-        shell_quote(command_path(&report).map_err(|_| "state folder path unusable")?)
-    );
-    let body = json!({ "statusLine": { "type": "command", "command": command } }).to_string();
+    let report_text = command_path(&report).map_err(|_| "state folder path unusable")?;
+    let settings = dir_path.join(&settings_name);
+    let (body, args) = match channel {
+        Channel::StatusLine => {
+            let command = format!(
+                "{} {AI_STATUSLINE_FLAG} {}",
+                shell_quote(exe_text),
+                shell_quote(report_text)
+            );
+            let body = json!({ "statusLine": { "type": "command", "command": command } });
+            let args = vec![OsString::from("--settings"), settings.clone().into()];
+            (body, args)
+        }
+        Channel::Notify => {
+            let argv = [exe_text, AI_CODEX_NOTIFY_FLAG, report_text];
+            let value = toml::Value::Array(
+                argv.iter()
+                    .map(|s| toml::Value::String(s.to_string()))
+                    .collect(),
+            );
+            let args = vec![OsString::from("-c"), format!("notify={value}").into()];
+            (json!({ "notify": argv }), args)
+        }
+    };
+    let body = body.to_string();
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let fd = rustix::fs::openat(&dir, settings_name.as_str(), flags, Mode::RUSR | Mode::WUSR)
         .map_err(|_| DIR_UNUSABLE)?;
     let files = SessionFiles {
-        settings: dir_path.join(settings_name),
+        settings,
         report,
+        args,
     };
     rustix::fs::fchmod(&fd, Mode::RUSR | Mode::WUSR).map_err(|_| DIR_UNUSABLE)?;
     File::from(fd)

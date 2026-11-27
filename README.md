@@ -497,7 +497,31 @@ an id they use the continue arguments, which with a shared history pick the fold
 recent conversation of any account and tab. If claude does not find the conversation, the next
 Enter falls back to the continue arguments.
 
-Codex and the other tools get the limit notice only; they are not switched.
+Codex sessions switch the same way, with `codex resume <conversation id>` (never `resume --last`),
+and Enter on an exited codex session or a restored tab resumes by that id too. Codex has no status
+line for vr-ide, so its id comes from codex's `notify` program: vr-ide starts codex with
+`-c notify=["<vr-ide>", "--ai-codex-notify", "<report file>"]`, and after each finished turn codex
+runs vr-ide with the turn's details, of which only the conversation id is kept (nothing is read
+from codex's files). This replaces your own `notify` setting from `~/.codex/config.toml` for the
+sessions vr-ide starts. What follows from it:
+
+- The id is known only once codex finished its first answer in that run; a limit before that
+  gives the limit notice and `codex@work: session id not known; not switching accounts`.
+- A turn whose text is larger than 128 KiB (a big paste) reports no id: Linux does not let codex
+  pass that much to vr-ide in one argument. Any smaller turn before or after it does.
+- Enter on an exited codex tab resumes its conversation by id even when you quit before codex
+  answered; only codex's own `No saved session found with ID …` drops the id, and the next start
+  is then a new conversation (never `resume --last`).
+- Codex does not report usage this way, so a codex tab shows no percent and `/ai usage` has
+  nothing for it; limits are seen from codex's limit message only. A codex account counts as
+  working once it finished an answer in vr-ide.
+- The continue line is not typed into codex (vr-ide does not know codex's input box and
+  questions): after the switch a notice says `codex@personal is waiting: type to continue`.
+  A sign-in screen is still noticed and the next account tried.
+- With codex's sub-agents the id of the last finished turn is kept; should that be a sub-agent's,
+  the switch resumes that conversation of the same folder.
+
+The other tools (gemini, aider, cursor-agent) get no limit notice and are not switched.
 
 #### Agent notifications
 

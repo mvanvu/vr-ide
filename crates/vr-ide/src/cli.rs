@@ -87,6 +87,20 @@ pub fn ai_statusline(args: &[OsString]) -> Option<PathBuf> {
     }
 }
 
+/// codex's notify program (SEC-32): `vr-ide --ai-codex-notify <report> <json>`, run by codex.
+pub const AI_CODEX_NOTIFY_FLAG: &str = "--ai-codex-notify";
+
+/// The report path and codex's payload, only for exactly the three arguments
+/// `--ai-codex-notify <report> <json>`.
+pub fn ai_codex_notify(args: &[OsString]) -> Option<(PathBuf, OsString)> {
+    match args {
+        [flag, report, payload] if flag == AI_CODEX_NOTIFY_FLAG => {
+            Some((PathBuf::from(report), payload.clone()))
+        }
+        _ => None,
+    }
+}
+
 /// Resolves launch arguments (without argv[0]) against `cwd`.
 pub fn resolve(args: &[OsString], cwd: &Path) -> Result<Launch, CliError> {
     if args.iter().any(|a| a == SESSION_FLAG) {
@@ -360,6 +374,30 @@ mod tests {
         ] {
             assert_eq!(ai_statusline(&args), None, "{args:?}");
         }
+    }
+
+    #[test]
+    fn ai_codex_notify_flag_with_exactly_two_args() {
+        assert_eq!(
+            ai_codex_notify(&[
+                os("--ai-codex-notify"),
+                os("/s/ai-usage/1-1-x.report"),
+                os("{}")
+            ]),
+            Some((PathBuf::from("/s/ai-usage/1-1-x.report"), os("{}")))
+        );
+        for args in [
+            vec![],
+            vec![os("--ai-codex-notify")],
+            vec![os("--ai-codex-notify"), os("/r")],
+            vec![os("--ai-codex-notify"), os("/r"), os("{}"), os("x")],
+            vec![os("/r"), os("--ai-codex-notify"), os("{}")],
+            vec![os("--ai-statusline"), os("/r"), os("{}")],
+        ] {
+            assert_eq!(ai_codex_notify(&args), None, "{args:?}");
+        }
+        // Never the statusLine helper's form either.
+        assert_eq!(ai_statusline(&[os("--ai-codex-notify"), os("/r")]), None);
     }
 
     #[cfg(unix)]

@@ -20,8 +20,8 @@
 //!   still there [`KILL_WAIT`] later the switch is given up with the target's hold dropped. The
 //!   old account's hold is released only once its run has exited; `account` and `account_lock`
 //!   change together.
-//! - **Arguments (SEC-24, SEC-31).** The new run gets the tool's `args`, `--resume` and the
-//!   session's own id as separate arguments ([`spawn::args_by_id`], which checks the id again);
+//! - **Arguments (SEC-24, SEC-31, SEC-32).** The new run gets the tool's `args`, its resume
+//!   words (claude `--resume`, codex `resume`) and the session's own id as separate arguments ([`spawn::args_by_id`], which checks the id again);
 //!   never the continue arguments, which would pick the folder's latest conversation.
 //! - **No loops (SEC-29).** One switch per limit event; each account at most once per event; at
 //!   most [`SWITCH_MAX`] starts per session in [`SWITCH_WINDOW`], then auto-switch turns itself
@@ -33,7 +33,10 @@
 //!   paste or mouse report reached the session since the limit. Otherwise nothing is typed; a
 //!   dialog, or no input box within [`PROMPT_WAIT`], gives a notice instead.
 //!
-//! Only claude switches here: its id comes through the usage report (T3). Codex is T7.
+//! claude and codex switch here, each by the id of its own report: claude's statusLine
+//! (T3), codex's notify program (SEC-32, see [`usage`]); codex resumes with `resume <id>` and
+//! never `resume --last`. codex's input box and dialogs are not known, so its new run is only
+//! read for its sign-in screen and never gets the continue prompt: the notice says to type.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -665,14 +668,18 @@ fn dialog_text(row: &str) -> &str {
 
 /// Reads a starting run's screen (SEC-30): [`Shown::Ready`] needs the tool's own input box — a
 /// prompt row right under a rule with a rule below it — among the last rows, and no line of a
-/// dialog there. Only claude's screens are known; any other tool is never ready.
+/// dialog there. Only claude's screens are known; codex is read for its sign-in screen alone,
+/// any other tool is never ready.
 pub fn start_screen(tool: &str, rows: &[&str], cols: usize) -> Shown {
-    let Some(kind @ Tool::Claude) = Tool::of(tool) else {
+    let Some(kind) = Tool::of(tool) else {
         return Shown::Busy;
     };
     let screen = Screen::new(rows, cols);
     if limits::login_in(kind, &screen, "") {
         return Shown::Login;
+    }
+    if !matches!(kind, Tool::Claude) {
+        return Shown::Busy;
     }
     let first = screen.window_start(limits::WINDOW);
     let last: Vec<usize> = (first..rows.len()).filter(|&r| !screen.blank(r)).collect();
@@ -817,5 +824,9 @@ mod tests {
         let rows: Vec<&str> = idle.lines().collect();
         assert_eq!(start_screen("codex", &rows, 80), Shown::Busy);
         assert_eq!(start_screen("gemini", &rows, 80), Shown::Busy);
+        // codex: its sign-in screen only (strings of codex 0.144.1).
+        let sign_in = ["  Sign in with ChatGPT to use Codex as part of your paid plan"];
+        assert_eq!(start_screen("codex", &sign_in, 80), Shown::Login);
+        assert_eq!(start_screen("gemini", &sign_in, 80), Shown::Busy);
     }
 }

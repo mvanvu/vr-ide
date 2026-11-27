@@ -25,11 +25,11 @@ pub fn capture(app: &App) -> AiSection {
                 account: s.account.clone().unwrap_or_default(),
                 folder: s.root.clone(),
                 label: s.name.clone().unwrap_or_default(),
-                // Not the id of a run that was started by it and ended without a report: the
-                // tool did not find that conversation.
+                // Not the id of a run that was started by it and showed the tool did not find
+                // that conversation.
                 session_id: s
                     .session_id()
-                    .filter(|_| s.running() || !s.switch.unconfirmed)
+                    .filter(|_| !s.id_refused())
                     .unwrap_or_default()
                     .to_string(),
             })

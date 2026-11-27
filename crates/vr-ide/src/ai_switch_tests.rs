@@ -201,29 +201,39 @@ impl Env {
 /// account itself was never used: the order after the last named one wraps to it), and a
 /// state folder.
 fn setup(named: &[&str]) -> Env {
+    setup_tool("claude", AGENT, named)
+}
+
+/// [`setup`] for `tool` (claude or codex) played by the script `agent`.
+fn setup_tool(name: &str, agent: &str, named: &[&str]) -> Env {
     let (d, mut app) = ai_app();
     let state = d.path().join(".state");
     std::fs::create_dir(&state).unwrap();
     app.ai.state_dir = Some(state.clone());
     let bin = d.path().join(".bin");
-    let agent = script(&bin, "claude", AGENT);
-    app.settings.ai_tools[0] = tool("claude", &agent, true);
-    let shared = d.path().join(".home/.claude/projects");
+    let agent = script(&bin, name, agent);
+    app.settings.ai_tools[0] = tool(name, &agent, true);
+    let history = if name == "codex" {
+        ".home/.codex/sessions"
+    } else {
+        ".home/.claude/projects"
+    };
+    let shared = d.path().join(history);
     std::fs::create_dir_all(&shared).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
     app.ai
         .history_dirs
-        .insert("claude".into(), shared.canonicalize().unwrap());
+        .insert(name.into(), shared.canonicalize().unwrap());
     let mut known = BTreeMap::new();
-    for name in named.iter().copied().chain(["default"]) {
-        if name != "default" {
-            accounts::create(&state, "claude", name).unwrap();
+    for account in named.iter().copied().chain(["default"]) {
+        if account != "default" {
+            accounts::create(&state, name, account).unwrap();
         }
         known.insert(
-            format!("claude/{name}"),
+            format!("{name}/{account}"),
             AccountState {
-                works: name != "default",
+                works: account != "default",
                 ..Default::default()
             },
         );
@@ -1011,6 +1021,302 @@ fn a_replayed_limit_line_after_the_resume_list_is_no_event() {
     pass(&mut app, t0 + Duration::from_millis(6000));
     pass(&mut app, t0 + Duration::from_millis(7100));
     assert!(app.ai.sessions[0].limit_seen);
+}
+
+// ---- codex (AC-8, SEC-32) ---------------------------------------------------------------------
+
+/// A codex for the switch: names its account (from `CODEX_HOME`) and arguments, logs its start
+/// and every line it is sent in `log`; on `turn <id>` it runs the `-c notify=[…]` program it was
+/// given the way codex 0.144.1 does (argv, the JSON as the last item) with `<id>` as the
+/// thread id; on `limit` it prints codex's limit line; on `quit` it ends. Accounts in `login`
+/// show the sign-in screen. Resumed with an id listed in `missing`, it prints codex 0.144.1's
+/// not-found sentence (as its binary holds it, no prefix) and exits; with one listed in `tail`, the conversation it shows again ends
+/// with that line as text, then its input box follows.
+const CODEX: &str = r#"#!/bin/sh
+dir=${0%/*}
+case $CODEX_HOME in */.state/accounts/*) acct=${CODEX_HOME##*/};; *) acct=default;; esac
+has() { grep -qx "$acct" "$dir/$1" 2>/dev/null; }
+echo "start $acct" >> "$dir/log"
+printf 'ARGV:'; printf '%s|' "$@"; echo
+printf 'ACCT:%s\n' "$acct"
+notify=; prev=; resumed=
+for a in "$@"; do
+  if [ "$prev" = -c ]; then case $a in notify=*) notify=${a#notify=};; esac; fi
+  if [ "$prev" = resume ]; then resumed=$a; fi
+  prev=$a
+done
+item() { printf '%s' "$notify" | grep -o '"[^"]*"' | sed -n "$1p" | tr -d '"'; }
+if [ -n "$resumed" ] && grep -qx "$resumed" "$dir/missing" 2>/dev/null; then
+  printf 'No saved session found with ID %s. Run `codex resume` without an ID to choose from existing sessions.\n' "$resumed"
+  exit 1
+fi
+if [ -n "$resumed" ] && grep -qx "$resumed" "$dir/tail" 2>/dev/null; then
+  printf 'Error: No saved session found with ID %s. Run `codex resume` without an ID to choose from existing sessions.\n\n' "$resumed"
+fi
+if has login; then printf '  Sign in with ChatGPT to use Codex as part of your paid plan\n'
+else printf '\342\200\272 Ask Codex to do anything\n'; fi
+while read cmd; do
+  echo "got $acct $cmd" >> "$dir/log"
+  case $cmd in
+    limit) printf "\342\226\240 You've hit your usage limit. Try again at 3:00 PM.\n";;
+    quit) exit 0;;
+    turn\ *) id=${cmd#turn }
+      "$(item 1)" "$(item 2)" "$(item 3)" "{\"type\":\"agent-turn-complete\",\"thread-id\":\"$id\",\"cwd\":\"/w\",\"input-messages\":[\"secret\"]}"
+      printf 'TURN:%s\n' "$id";;
+    *) printf 'GOT:%s\n' "$cmd";;
+  esac
+done
+"#;
+
+/// Stands in for `vr-ide --ai-codex-notify <report> <json>` (the real one runs in
+/// tests/statusline_helper.rs): writes the thread id, whatever it is, as the report's
+/// `session_id`, so vr-ide's own checks on reading are what is tested here.
+const CODEX_NOTIFY_STAND_IN: &str = r#"#!/bin/sh
+[ $# -eq 3 ] && [ "$1" = --ai-codex-notify ] || exit 0
+id=$(printf '%s' "$3" | sed -n 's/.*"thread-id":"\([^"]*\)".*/\1/p')
+printf '{"session_id":"%s"}' "$id" > "$2"
+"#;
+
+fn setup_codex(named: &[&str]) -> Env {
+    let mut e = setup_tool("codex", CODEX, named);
+    let t = &mut e.app.settings.ai_tools[0];
+    t.continue_args = vec!["resume".into(), "--last".into()];
+    t.resume_args = vec!["resume".into()];
+    e.app.ai.usage_exe = Some(script(&e.bin, "helper", CODEX_NOTIFY_STAND_IN));
+    e
+}
+
+impl Env {
+    /// Session `i` completes a turn whose notify payload names `id`; the loop reads the report.
+    fn codex_turn(&mut self, i: usize, id: &str) {
+        let reads = self.app.ai.usage_reads;
+        say(&self.app, i, &format!("turn {id}"));
+        wait_for(&self.app, i, |s| s.contains(&format!("TURN:{id}")));
+        for _ in 0..20 {
+            self.step(1100);
+            if self.app.ai.usage_reads > reads {
+                return;
+            }
+        }
+        panic!("no report read; notices {:?}", self.notices());
+    }
+
+    /// Enter on session `i` (exited: its tool starts again), once no switch owns the tab.
+    fn enter(&mut self, i: usize) {
+        self.step(0);
+        self.app.ai.visible = true;
+        self.app.ai.active = i;
+        self.app.focus = Focus::Ai;
+        press(&mut self.app, KeyCode::Enter);
+    }
+}
+
+/// AC-8, SEC-32: codex's id comes from the notify program vr-ide names in `-c notify=[…]`
+/// (argv, the report under `ai-usage/`); a limit moves the tab to the next account with
+/// `resume <id>` — never `resume --last` — and, codex's input box not being known, nothing is
+/// typed: a notice says to type.
+#[test]
+fn codex_switch_resumes_by_id() {
+    let mut e = setup_codex(&["work", "personal"]);
+    let i = e.open(Some("work"), None);
+    let first = e.app.ai.sessions[i].tab.screen_text().replace('\n', "");
+    let report = e.app.ai.sessions[i]
+        .usage_file
+        .clone()
+        .expect("a report path");
+    assert!(report.starts_with(e.state.join(usage::DIR)), "{report:?}");
+    let helper = e.app.ai.usage_exe.clone().unwrap();
+    assert!(
+        first.contains(&format!(
+            "ARGV:-c|notify=[\"{}\", \"--ai-codex-notify\", \"{}\"]|--base|",
+            helper.display(),
+            report.display()
+        )),
+        "{first}"
+    );
+    assert_eq!(e.app.ai.sessions[i].session_id(), None);
+    e.codex_turn(i, ID);
+    assert_eq!(e.app.ai.sessions[i].session_id(), Some(ID));
+    assert!(e.known()["codex/work"].works);
+
+    e.limit(i);
+    let text = e.switched(i, Some("personal")).replace('\n', "");
+    assert!(text.contains(&format!("|--base|resume|{ID}|")), "{text}");
+    assert!(!text.contains("--last"), "{text}");
+    let new_report = e.app.ai.sessions[i].usage_file.clone().unwrap();
+    assert_ne!(new_report, report, "each run has its own report");
+    assert!(!report.exists(), "the old run's files are gone");
+    assert!(
+        text.contains(&format!("\"{}\"]|", new_report.display())),
+        "{text}"
+    );
+    let notices = e.notices();
+    assert!(
+        notices
+            .iter()
+            .any(|n| n.starts_with("switched codex from work to personal")),
+        "{notices:?}"
+    );
+    assert_eq!(e.app.ai.sessions[i].session_id(), Some(ID));
+    for _ in 0..30 {
+        e.step(1100);
+    }
+    assert!(
+        e.notices()
+            .contains(&"codex@personal is waiting: type to continue".into()),
+        "{:?}",
+        e.notices()
+    );
+    assert_eq!(
+        e.log(),
+        [
+            "start work".to_string(),
+            format!("got work turn {ID}"),
+            "got work limit".into(),
+            "start personal".into(),
+        ],
+        "nothing typed into the new run"
+    );
+}
+
+/// SEC-24, SEC-32: a thread id that is no canonical UUID (here an option codex would obey) is
+/// never kept, so the limit is a notice only.
+#[test]
+fn codex_forged_thread_id_is_not_resumed() {
+    const FORGED: &str = "--dangerously-bypass-approvals-and-sandbox";
+    let mut e = setup_codex(&["work", "personal"]);
+    let i = e.open(Some("work"), None);
+    let pid = e.app.ai.sessions[i].tab.pid();
+    e.codex_turn(i, FORGED);
+    assert_eq!(e.app.ai.sessions[i].session_id(), None);
+    e.limit(i);
+    // An info notice: read before the loop's clock runs past its 5 s.
+    assert!(
+        e.notices()
+            .contains(&"codex@work: session id not known; not switching accounts".into()),
+        "{:?}",
+        e.notices()
+    );
+    for _ in 0..3 {
+        e.step(1100);
+    }
+    assert_eq!(e.app.ai.sessions[i].tab.pid(), pid);
+    assert_eq!(e.account(i), Some("work"));
+    assert_eq!(e.log().len(), 3, "{:?}", e.log());
+}
+
+/// A codex target showing its sign-in screen is not working: the next account is taken.
+#[test]
+fn codex_login_screen_target_is_skipped() {
+    let mut e = setup_codex(&["work", "personal", "third"]);
+    e.flag("login", "personal");
+    let i = e.open(Some("work"), None);
+    e.codex_turn(i, ID);
+    e.limit(i);
+    e.switched(i, Some("personal"));
+    e.settle(i, "Sign in with ChatGPT");
+    let text = e.switched(i, Some("third")).replace('\n', "");
+    assert!(text.contains(&format!("|resume|{ID}|")), "{text}");
+    assert!(!e.known().get("codex/personal").is_some_and(|a| a.works));
+}
+
+/// D62: codex reports only after a finished turn, so a run resumed by id that ends before one is
+/// no sign the conversation is missing: Enter and the session file keep the id.
+#[test]
+fn codex_keeps_its_id_when_a_resumed_run_ends_without_a_turn() {
+    let mut e = setup_codex(&["work", "personal"]);
+    let i = e.open(Some("work"), None);
+    e.codex_turn(i, ID);
+    e.limit(i);
+    e.switched(i, Some("personal"));
+    say(&e.app, i, "quit");
+    wait_exit(&e.app, i);
+    e.step(0);
+    assert_eq!(
+        crate::ai::restore::capture(&e.app).sessions[i].session_id,
+        ID
+    );
+    e.enter(i);
+    let text = wait_for(&e.app, i, |s| s.contains("ACCT:")).replace('\n', "");
+    assert!(text.contains(&format!("|--base|resume|{ID}|")), "{text}");
+    assert!(!text.contains("--last"), "{text}");
+    assert_eq!(count(&e.log().join("\n"), "start personal"), 2);
+}
+
+/// D62: codex's own not-found line drops the id; the next start is a new conversation, never
+/// `resume --last` (which could pick another tab's conversation). The line is recognised at
+/// every panel width, also where a wrap falls on one of its spaces (a row loses its trailing
+/// blanks).
+#[test]
+fn codex_drops_an_id_it_did_not_find_and_starts_new() {
+    for width in [10, 16, 24, 30, 35, 80] {
+        let mut e = setup_codex(&["work", "personal"]);
+        let i = e.open(Some("work"), None);
+        e.codex_turn(i, ID);
+        e.flag("missing", ID);
+        // The limit is read on the wide screen; the run on `personal` starts `width` wide.
+        say(&e.app, i, "limit");
+        wait_for(&e.app, i, |s| s.contains("hit your"));
+        e.app.layout.ai = ratatui::layout::Rect::new(0, 0, width, 81);
+        e.step(0);
+        e.step(1100);
+        e.until("switch", |app| {
+            app.ai.sessions[i].account.as_deref() == Some("personal")
+        });
+        wait_for(&e.app, i, |s| {
+            squeeze(s).contains(&squeeze(&format!("No saved session found with ID {ID}.")))
+        });
+        wait_exit(&e.app, i);
+        e.step(0);
+        assert_eq!(
+            crate::ai::restore::capture(&e.app).sessions[i].session_id,
+            "",
+            "width {width}"
+        );
+        e.enter(i);
+        let text = wait_for(&e.app, i, |s| s.contains("ACCT:")).replace('\n', "");
+        assert!(text.contains("|--base|"), "width {width}: {text}");
+        assert!(
+            !text.contains("resume"),
+            "width {width}, neither the id nor --last: {text}"
+        );
+        assert_eq!(e.app.ai.sessions[i].session_id(), None, "width {width}");
+        assert_eq!(e.app.ai.sessions[i].mode, StartMode::New, "width {width}");
+    }
+}
+
+/// D62: only codex's exit message counts. A resumed conversation whose tail merely shows the
+/// not-found line, quit before an answer, keeps its id.
+#[test]
+fn codex_keeps_its_id_when_only_the_conversation_mentions_not_found() {
+    let mut e = setup_codex(&["work", "personal"]);
+    let i = e.open(Some("work"), None);
+    e.codex_turn(i, ID);
+    e.flag("tail", ID);
+    e.limit(i);
+    e.switched(i, Some("personal"));
+    say(&e.app, i, "quit");
+    wait_exit(&e.app, i);
+    e.step(0);
+    assert!(
+        e.app.ai.sessions[i]
+            .tab
+            .screen_text()
+            .contains("No saved session found with ID"),
+        "the tail is on screen"
+    );
+    assert_eq!(
+        crate::ai::restore::capture(&e.app).sessions[i].session_id,
+        ID
+    );
+    e.enter(i);
+    let text = wait_for(&e.app, i, |s| s.contains("ACCT:")).replace('\n', "");
+    assert!(text.contains(&format!("|--base|resume|{ID}|")), "{text}");
+}
+
+/// `text` with every blank removed.
+fn squeeze(text: &str) -> String {
+    text.split_whitespace().collect()
 }
 
 // ---- restart and restore by id (SEC-31, D5) ---------------------------------------------------

@@ -42,6 +42,10 @@ fn main() -> Result<()> {
     if let Some(report) = cli::ai_statusline(&args) {
         std::process::exit(vr_ide::ai::usage::run_helper(&report));
     }
+    // codex's notify program (SEC-32): the same place, the same rules.
+    if let Some((report, payload)) = cli::ai_codex_notify(&args) {
+        std::process::exit(vr_ide::ai::usage::run_codex_notify(&report, &payload));
+    }
     match cli::desktop_action(&args) {
         Ok(Some(action)) => {
             let result = match action {

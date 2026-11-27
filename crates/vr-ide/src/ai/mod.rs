@@ -197,6 +197,21 @@ impl AiSession {
             .filter(|id| usage::valid_session_id(id))
     }
 
+    /// The run in the tab was started by id and has ended showing that its tool did not find
+    /// that conversation. claude reports at once, so an exit without a report says so; codex
+    /// reports only after a finished turn (an exit without one is the usual quit), so only its
+    /// own not-found line counts (D62).
+    pub(crate) fn id_refused(&self) -> bool {
+        if !self.switch.unconfirmed || self.running() {
+            return false;
+        }
+        if self.tool != "codex" {
+            return true;
+        }
+        self.session_id()
+            .is_some_and(|id| spawn::codex_not_found(&self.tab.screen_text(), id))
+    }
+
     /// A run was put in the tab with `start`: a start by id keeps that id until the run reports
     /// its own, and is unconfirmed until then; a run on an earlier conversation shows its tail
     /// again, so a limit line there is not this run's until something was sent to it.
@@ -842,16 +857,10 @@ fn start_program(
         }
     };
     let mut args: Vec<OsString> = words.into_iter().map(OsString::from).collect();
-    // SEC-22: two argv elements, before the tool's own arguments.
+    // SEC-22, SEC-32: two argv elements, before the tool's own arguments.
     let usage_files = usage_files(app, tool);
     if let Some(f) = &usage_files {
-        args.splice(
-            0..0,
-            [
-                OsString::from("--settings"),
-                f.settings.clone().into_os_string(),
-            ],
-        );
+        args.splice(0..0, f.args.iter().cloned());
     }
     let mut env = Vec::new();
     if let Some(p) = &path {
@@ -880,13 +889,16 @@ fn start_program(
     Ok((t, program, output, usage_files))
 }
 
-/// AC-3, SEC-22: claude with a state folder reports through the statusLine helper; the first
-/// one of a run sweeps what ended windows left. A path the helper cannot be named by gives one
-/// notice per run and a start without it.
+/// AC-3, SEC-22: claude with a state folder reports through the statusLine helper, codex
+/// (AC-8, SEC-32) its conversation id through the notify helper; the first one of a run sweeps
+/// what ended windows left. A path the helper cannot be named by gives one notice per run and a
+/// start without it.
 fn usage_files(app: &mut App, tool: &AiTool) -> Option<usage::SessionFiles> {
-    if tool.name != "claude" {
-        return None;
-    }
+    let prepare = match tool.name.as_str() {
+        "claude" => usage::prepare,
+        "codex" => usage::prepare_codex,
+        _ => return None,
+    };
     let state = app.ai.state_dir.clone()?;
     if !app.ai.usage_swept {
         app.ai.usage_swept = true;
@@ -896,12 +908,17 @@ fn usage_files(app: &mut App, tool: &AiTool) -> Option<usage::SessionFiles> {
         Some(e) => Ok(e),
         None => std::env::current_exe().map_err(|_| "vr-ide path unusable"),
     };
-    match exe.and_then(|e| usage::prepare(&state, &e)) {
+    match exe.and_then(|e| prepare(&state, &e)) {
         Ok(files) => Some(files),
         Err(why) => {
             if !app.ai.usage_warned {
                 app.ai.usage_warned = true;
-                app.warn(format!("claude usage not available ({why})"));
+                let what = if tool.name == "codex" {
+                    "codex session id"
+                } else {
+                    "claude usage"
+                };
+                app.warn(format!("{what} not available ({why})"));
             }
             None
         }
@@ -1023,13 +1040,14 @@ fn restart(app: &mut App) {
     if s.switch.busy() {
         return;
     }
-    // A run started by id that ended without a report did not find the conversation: the id
-    // is given up, so this start is not the same failure again.
-    if s.switch.unconfirmed
-        && let Some(u) = &mut s.usage
-    {
+    // A run started by id that did not find the conversation: the id is given up, so this
+    // start is not the same failure again.
+    let refused = s.id_refused();
+    if refused && let Some(u) = &mut s.usage {
         u.session_id = None;
     }
+    // codex then starts a new conversation: its `resume --last` could pick another tab's (D62).
+    let fresh = refused && s.tool == "codex";
     let (name, account, root) = (s.tool.clone(), s.account.clone(), s.root.clone());
     let id = s.session_id().map(str::to_string);
     let unheld = account.is_some() && s.account_lock.is_none();
@@ -1050,7 +1068,11 @@ fn restart(app: &mut App) {
     };
     let result = find_tool(app, &name).and_then(|tool| {
         // SEC-31: the known conversation, not the folder's latest one.
-        let start = spawn::again(&tool, id.as_deref());
+        let start = if fresh {
+            spawn::Start::Mode(StartMode::New)
+        } else {
+            spawn::again(&tool, id.as_deref())
+        };
         start_program(app, &tool, account.as_deref(), start, &root)
             .map(|r| (r, start.mode(), matches!(start, spawn::Start::Id(_))))
     });

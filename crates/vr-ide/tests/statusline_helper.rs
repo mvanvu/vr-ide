@@ -114,3 +114,56 @@ fn helper_gives_up_on_open_stdin() {
     );
     assert!(!report.exists());
 }
+
+/// codex's notify program (AC-8, SEC-32): `vr-ide --ai-codex-notify <report> <json>` as codex
+/// 0.144.1 runs it — argv, the payload last, stdin closed — keeps the thread id alone, and
+/// starts nothing else.
+#[test]
+fn codex_notify_helper_keeps_only_the_thread_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let report = usage_dir(tmp.path());
+    let run = |target: &Path, payload: &str| {
+        Command::new(env!("CARGO_BIN_EXE_vr-ide"))
+            .arg("--ai-codex-notify")
+            .arg(target)
+            .arg(payload)
+            .env("HOME", tmp.path())
+            .env("VR_IDE_STATE_DIR", tmp.path().join("state"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let payload = |id: &str| {
+        format!(
+            r#"{{"type":"agent-turn-complete","thread-id":"{id}","turn-id":"t","cwd":"/w","client":"codex-tui","input-messages":["my secret"],"last-assistant-message":"ok"}}"#
+        )
+    };
+    std::fs::write(tmp.path().join(".bashrc"), "rc").unwrap();
+    for (target, body) in [
+        (tmp.path().join(".bashrc"), payload(ID)),
+        (
+            report.clone(),
+            payload("--dangerously-bypass-approvals-and-sandbox"),
+        ),
+        (report.clone(), "not json".to_string()),
+    ] {
+        let out = run(&target, &body);
+        assert!(out.status.success());
+        assert!(out.stdout.is_empty() && out.stderr.is_empty());
+    }
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join(".bashrc")).unwrap(),
+        "rc"
+    );
+    assert!(!report.exists());
+
+    let out = run(&report, &payload(ID));
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty() && out.stderr.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&report).unwrap(),
+        format!(r#"{{"session_id":"{ID}"}}"#)
+    );
+    assert_eq!(std::fs::metadata(&report).unwrap().mode() & 0o777, 0o600);
+    assert!(!tmp.path().join("state").exists());
+}

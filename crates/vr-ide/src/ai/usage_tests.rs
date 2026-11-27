@@ -1,5 +1,6 @@
 //! The statusLine helper and its report (AC-3, SEC-22..SEC-25, SEC-39).
 
+use std::ffi::{OsStr, OsString};
 use std::fs::Permissions;
 use std::os::fd::AsFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
@@ -548,6 +549,151 @@ fn report_never_outlives_its_session() {
         std::fs::read_dir(report.parent().unwrap()).unwrap().count(),
         0
     );
+}
+
+// ---- codex's notify channel (AC-8, SEC-32) ---------------------------------------------------
+
+/// What codex 0.144.1 appends to the notify program's argv after a turn (fields from its
+/// binary), with the user's text the helper must drop.
+fn notify_payload(id: &str) -> String {
+    format!(
+        r#"{{"type":"agent-turn-complete","thread-id":"{id}","turn-id":"t1","cwd":"/w","client":"codex-tui","input-messages":["my secret"],"last-assistant-message":"done"}}"#
+    )
+}
+
+#[test]
+fn codex_notify_keeps_only_a_valid_thread_id() {
+    assert_eq!(parse_codex_notify(&notify_payload(ID)).as_deref(), Some(ID));
+    let other_type = notify_payload(ID).replace("agent-turn-complete", "approval-requested");
+    let no_type = notify_payload(ID).replace(r#""type":"agent-turn-complete","#, "");
+    let big = format!(
+        r#"{{"type":"agent-turn-complete","thread-id":"{ID}","input-messages":["{}"]}}"#,
+        "x".repeat(MAX_NOTIFY)
+    );
+    for bad in [
+        notify_payload("--dangerously-bypass-approvals-and-sandbox"),
+        notify_payload("-x"),
+        notify_payload("abc-123"),
+        notify_payload(&ID.to_uppercase()),
+        notify_payload(&format!("{ID}\\n")),
+        notify_payload(""),
+        other_type,
+        no_type,
+        r#"{"type":"agent-turn-complete","thread-id":7}"#.to_string(),
+        "not json".into(),
+        "[]".into(),
+        big,
+    ] {
+        assert_eq!(parse_codex_notify(&bad), None, "{bad:.120}");
+    }
+    // Kept as a report holding the id alone: none of the user's text.
+    let u = Usage {
+        session_id: parse_codex_notify(&notify_payload(ID)),
+        ..Usage::default()
+    };
+    assert_eq!(
+        String::from_utf8(report_json(&u)).unwrap(),
+        format!(r#"{{"session_id":"{ID}"}}"#)
+    );
+}
+
+#[test]
+fn codex_notify_helper_writes_only_its_own_report() {
+    let (tmp, report) = usage_dir();
+    let home = tmp.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join(".bashrc"), "rc").unwrap();
+    let dir = report.parent().unwrap().to_path_buf();
+    for target in [
+        home.join(".bashrc"),
+        dir.join("x.report"),
+        dir.join(format!("4242-2-{HEX}.report")),
+    ] {
+        codex_helper(&target, OsStr::new(&notify_payload(ID)));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "{target:?}");
+    }
+    assert_eq!(std::fs::read_to_string(home.join(".bashrc")).unwrap(), "rc");
+    // A forged or other payload writes nothing.
+    codex_helper(&report, OsStr::new(&notify_payload("--x")));
+    codex_helper(
+        &report,
+        std::os::unix::ffi::OsStrExt::from_bytes(b"{\"type\":\xff}"),
+    );
+    assert!(!report.exists());
+
+    codex_helper(&report, OsStr::new(&notify_payload(ID)));
+    let text = std::fs::read_to_string(&report).unwrap();
+    assert_eq!(text, format!(r#"{{"session_id":"{ID}"}}"#));
+    assert_eq!(std::fs::metadata(&report).unwrap().mode() & 0o777, 0o600);
+    assert_eq!(
+        read_report(&report).unwrap().session_id.as_deref(),
+        Some(ID)
+    );
+}
+
+/// SEC-32: codex is told the helper through `-c notify=<TOML array>` built by a serializer —
+/// two argv items, no shell — naming the exe, the flag and the report; the marker file beside the
+/// report is private and goes with the session.
+#[test]
+fn codex_channel_names_the_helper_in_argv() {
+    let tmp = tempfile::tempdir().unwrap();
+    let weird = tmp.path().join("a b");
+    std::fs::create_dir(&weird).unwrap();
+    let exe = weird.join("'x$y`;z\"]");
+    std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&exe, Permissions::from_mode(0o755)).unwrap();
+    let state = tmp.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+
+    let files = prepare_codex(&state, &exe).unwrap();
+    assert_eq!(files.args.len(), 2, "{:?}", files.args);
+    assert_eq!(files.args[0], "-c");
+    let value = files.args[1]
+        .to_str()
+        .unwrap()
+        .strip_prefix("notify=")
+        .unwrap();
+    let table: toml::Table = toml::from_str(&format!("notify = {value}")).unwrap();
+    let argv: Vec<&str> = table["notify"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        argv,
+        [
+            exe.to_str().unwrap(),
+            "--ai-codex-notify",
+            files.report.to_str().unwrap()
+        ]
+    );
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().mode() & 0o777;
+    assert_eq!(mode(&files.settings), 0o600);
+    assert_eq!(files.settings.with_extension("report"), files.report);
+    // The helper accepts the report it was given.
+    codex_helper(&files.report, OsStr::new(&notify_payload(ID)));
+    assert_eq!(
+        read_report(&files.report).unwrap().session_id.as_deref(),
+        Some(ID)
+    );
+    let (settings, report) = (files.settings.clone(), files.report.clone());
+    drop(files);
+    assert!(!settings.exists() && !report.exists());
+
+    // claude's files name their channel too: `--settings <file>`.
+    let claude = prepare(&state, &exe).unwrap();
+    assert_eq!(
+        claude.args,
+        [OsString::from("--settings"), claude.settings.clone().into()]
+    );
+    // The same path rules as claude's helper.
+    for bad in ["vr\nide", "vr\\ide"] {
+        let p = tmp.path().join(bad);
+        std::fs::write(&p, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&p, Permissions::from_mode(0o755)).unwrap();
+        assert!(prepare_codex(&state, &p).is_err(), "{bad:?}");
+    }
 }
 
 // ---- display (AC-4) -------------------------------------------------------------------------

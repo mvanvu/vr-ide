@@ -84,12 +84,44 @@ impl Start<'_> {
 }
 
 /// The words `tool` resumes one conversation by its id with (the id follows as its own
-/// argument). Fixed per tool like the account variables, never from settings: claude only.
+/// argument). Fixed per tool like the account variables, never from settings: claude
+/// `--resume <id>`, codex `resume <id>` (its subcommand, codex 0.144.1; SEC-32).
 pub fn resume_words(tool: &str) -> Option<&'static [&'static str]> {
     match tool {
         "claude" => Some(&["--resume"]),
+        "codex" => Some(&["resume"]),
         _ => None,
     }
+}
+
+/// What codex 0.144.1 prints (and then exits) when `resume <id>` names no saved conversation.
+pub const CODEX_NOT_FOUND: &str = "No saved session found with ID";
+
+/// Most non-blank characters codex's not-found line has after the id: the rest of its one
+/// sentence ("<id>. Run `codex resume` without an ID to choose from existing sessions.").
+const NOT_FOUND_REST_MAX: usize = 120;
+
+/// `screen` (rows joined by `\n`) ends with codex's exit message saying it found no conversation
+/// `id`: with every blank removed (a row loses its trailing blanks and a wrap may fall on a
+/// space), the rows after the last blank one hold [`CODEX_NOT_FOUND`] + `id`, followed by no
+/// more than the rest of that sentence. Whatever precedes it (codex's binary holds the sentence
+/// alone; a caller may add `Error: `) does not matter. A conversation shown again that merely
+/// quotes the line is not that message.
+pub fn codex_not_found(screen: &str, id: &str) -> bool {
+    let squeeze = |s: &str| s.split_whitespace().collect::<String>();
+    let rows: Vec<&str> = screen.lines().collect();
+    let Some(end) = rows.iter().rposition(|r| !r.trim().is_empty()) else {
+        return false;
+    };
+    let start = rows[..end]
+        .iter()
+        .rposition(|r| r.trim().is_empty())
+        .map_or(0, |r| r + 1);
+    let block = squeeze(&rows[start..=end].concat());
+    let want = format!("{}{id}", squeeze(CODEX_NOT_FOUND));
+    block
+        .rfind(&want)
+        .is_some_and(|at| block[at + want.len()..].chars().count() <= NOT_FOUND_REST_MAX)
 }
 
 /// The arguments resuming conversation `id` (SEC-24, SEC-31): the tool's `args`, its resume
@@ -301,11 +333,62 @@ mod tests {
                 "{bad:?}"
             );
         }
-        // A tool without resume-by-id words (codex here) and one that cannot continue keep
-        // their mode.
-        assert_eq!(args_by_id(&tool(), ID), None);
-        assert_eq!(again(&tool(), Some(ID)), Start::Mode(StartMode::Continue));
+        // codex (SEC-32): `resume <id>` as two arguments, never `resume --last` beside it.
+        assert_eq!(
+            args_by_id(&tool(), ID).unwrap(),
+            ["--model", "o4 mini", "resume", ID]
+        );
+        assert_eq!(again(&tool(), Some(ID)), Start::Id(ID));
+        assert_eq!(
+            args_by_id(&tool(), "--dangerously-bypass-approvals-and-sandbox"),
+            None
+        );
+        // A tool without resume-by-id words and one that cannot continue keep their mode.
+        let mut gemini = tool();
+        gemini.name = "gemini".into();
+        assert_eq!(args_by_id(&gemini, ID), None);
+        assert_eq!(again(&gemini, Some(ID)), Start::Mode(StartMode::Continue));
         claude.continue_args.clear();
         assert_eq!(again(&claude, Some(ID)), Start::Mode(StartMode::New));
+    }
+
+    /// `line` the way a terminal `width` wide shows it: cut into rows, each without its trailing
+    /// blanks.
+    fn wrapped(line: &str, width: usize) -> String {
+        let chars: Vec<char> = line.chars().collect();
+        chars
+            .chunks(width)
+            .map(|c| c.iter().collect::<String>().trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn codex_not_found_line_at_every_width_and_only_as_the_exit_message() {
+        const ID: &str = "0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b";
+        // codex 0.144.1's sentence as its binary holds it; whatever prefix may precede it.
+        let line = format!(
+            "No saved session found with ID {ID}. Run `codex resume` without an ID to choose \
+             from existing sessions."
+        );
+        for prefix in ["", "Error: ", "! "] {
+            // From 2: one column wide, each space of the sentence would be a blank row.
+            for width in 2..=200 {
+                let screen = format!(
+                    "ARGV:-c|notify=…|resume|{ID}|\nACCT:x\n{}\n\n",
+                    wrapped(&format!("{prefix}{line}"), width)
+                );
+                assert!(codex_not_found(&screen, ID), "width {width}:\n{screen}");
+            }
+        }
+        // Another conversation's id.
+        let other = line.replace(ID, "11111111-2222-4333-8444-555555555555");
+        assert!(!codex_not_found(&other, ID));
+        // A conversation's tail quoting it, then codex's own rows.
+        let tail = format!("{line}\n\n› Ask Codex to do anything\nquit\n");
+        assert!(!codex_not_found(&tail, ID));
+        let long = format!("{line} {}", "more ".repeat(40));
+        assert!(!codex_not_found(&long, ID));
+        assert!(!codex_not_found("", ID));
     }
 }

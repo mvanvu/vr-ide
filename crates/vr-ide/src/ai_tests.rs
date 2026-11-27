@@ -19,7 +19,8 @@ use crate::session::{AiSection, AiSession};
 pub(crate) const WAIT: Duration = Duration::from_secs(10);
 
 /// Prints its arguments and folder, then echoes what it is sent (an agent waiting for input).
-const ECHO_AGENT: &str = "#!/bin/sh\nprintf ARGV:; printf '%s|' \"$@\"; echo; printf 'CWD:%s\\n' \"$PWD\"; \
+/// The `ARGV:` line is one write, so a test that sees `ARGV:` sees the whole line.
+const ECHO_AGENT: &str = "#!/bin/sh\nprintf 'ARGV:%s\\n' \"$(printf '%s|' \"$@\")\"; printf 'CWD:%s\\n' \"$PWD\"; \
                           printf 'VRIDE:%s\\n' \"$(env | grep -c '^VR_IDE_')\"; exec cat\n";
 /// Prints its arguments and exits.
 const QUICK_AGENT: &str = "#!/bin/sh\nprintf RAN:; printf '%s|' \"$@\"; echo\n";
@@ -1018,12 +1019,12 @@ fn reopening_the_open_folder_asks_nothing() {
 const USAGE_ID: &str = "0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b";
 
 /// A claude that does what claude does with `--settings`: runs the statusLine command through
-/// `sh` with the status JSON on stdin, then prints its arguments and waits.
+/// `sh` with the status JSON on stdin, then prints its arguments (one write) and waits.
 const STATUS_AGENT: &str = r#"#!/bin/sh
-[ "$1" = --settings ] || { echo NOSETTINGS; printf ARGV:; printf '%s|' "$@"; echo; exec cat; }
+[ "$1" = --settings ] || { printf 'NOSETTINGS\nARGV:%s\n' "$(printf '%s|' "$@")"; exec cat; }
 cmd=$(sed -n 's/.*"command":"\([^"]*\)".*/\1/p' "$2")
 printf '%s' 'STATUS' | sh -c "$cmd"
-echo; printf ARGV:; printf '%s|' "$@"; echo; exec cat
+printf '\nARGV:%s\n' "$(printf '%s|' "$@")"; exec cat
 "#;
 
 /// Stands in for `vr-ide --ai-statusline <report>`: the unit-test binary is not vr-ide (the real

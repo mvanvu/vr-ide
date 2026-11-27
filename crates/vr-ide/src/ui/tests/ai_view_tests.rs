@@ -706,8 +706,13 @@ fn label_marks_auto_switch_off() {
     };
     assert_eq!(tab(1), " 2 claude@work ⊘ 63% x ");
     assert!(!tab(0).contains('⊘'), "on: no mark");
-    assert!(!tab(2).contains('⊘'), "codex does not switch: no mark");
+    // codex switches too (AC-8, T7).
+    assert!(tab(2).contains('⊘'), "{}", tab(2));
     assert_eq!(app.ai.label(1), "claude@work");
+    app.ai.sessions[2].tool = "gemini".into();
+    let bar = crate::ui::ai_view::tab_bar(&app, 120);
+    let gemini = &bar.tabs.iter().find(|t| t.index == 2).unwrap().label;
+    assert!(!gemini.contains('⊘'), "gemini does not switch: no mark");
     for w in [120, 80, 40, 30, 25, 20, 16] {
         bar_fits(&mut app, w);
     }

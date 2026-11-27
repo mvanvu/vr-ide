@@ -229,3 +229,27 @@ Case: Resume start (StartMode::Resume) on personal, fake claude shows a list; ke
 - After a second empty Enter (+3 quiet seconds): same: no notice, nothing recorded, account personal, log `start personal, got personal [ESC[B ESC[A], got personal []`. PASS
 - Then a real line `real` and fresh limit line: notices `claude@personal hit its usage limit (resets 15:00)`, `switched claude from personal to other (personal limited until 15:00)`; state personal limited_until=1795878000; old pid 2469639 -> new pid 2469644, argv ACCT:other. PASS
 Rule check T6 re-check: AC-6 PASS, AC-7 PASS (no event on replay), SEC-29 PASS (no event from a replayed tail), BASE-14/15/17 PASS.
+
+## QC T7 (Codex limits) - QC_PASS
+Engine: in-crate temporary harness (BASE-50; removed, `git status --short` and `git diff --stat` identical before/after), fake codex shell script through the real spawn path (`start_program`, PTY), REAL helper = `target/debug/vr-ide` (built once via run-heavy.sh). The fake parses the notify TOML with python `tomllib` and runs program + one JSON arg like codex. Harness copy: qa-artifacts/T7/qc_t7_tests.rs.txt; logs qc_run.log, qc_q5.log, q*.argv, q*.log. Tools: Bash only (no browser needed); no real codex/claude run.
+
+| Case | Result | Evidence |
+|---|---|---|
+| 1 ARGV + helper | pass | ARGV `-c|notify=["/home/rainy/DEV/vr-ide/target/debug/vr-ide", "--ai-codex-notify", "<state>/ai-usage/<pid>-1-<hex>.report"]|--base|`; TOML parsed back, helper run with payload carrying input-messages "secret msg"/last-assistant-message; report body exactly `{"session_id":"0f8e2c1a-..."}`, mode 600; session_id() = ID |
+| 2 limit switch | pass | restart ARGV `...report(new)"]|--base|resume|0f8e2c1a-...|`, no `--last`; old pid gone (/proc absent); CODEX_HOME=`.state/accounts/personal`; log: start work, turn, limit, start personal - nothing typed; notices: "codex@work hit its usage limit (resets 15:00)", "switched codex from work to personal (work limited until 15:00)", "codex@personal is waiting: type to continue" |
+| 3 forged id | pass | `--dangerously-bypass-approvals-and-sandbox` and uppercase UUID: real helper writes nothing (report absent), session_id None, limit gives "codex@work: session id not known; not switching accounts", same pid/account |
+| 4a resumed, no turn | pass | session.toml id kept (ID); Enter ARGV `...|--base|resume|<ID>|`, no `--last` |
+| 4b not-found, w=30 and 35 | pass | prefix-less sentence, exit; id dropped (""), Enter ARGV `...|--base|` only (no resume, no --last), mode New |
+| 5 helper hardening | pass with note | outside ai-usage, state root, live-marker + 300 KiB payload (direct `run_codex_notify`): rc 0, nothing written; positive control writes report. Real binary: relative path, `..` path, valid payload with no marker: exit 0, nothing written. A 300 KiB argument cannot be exec'd at all (E2BIG, 128 KiB per-arg limit; shell reports "Argument list too long"), so the size cap was proven in-process |
+
+Observation (not a defect against the rules): real binary with wrong arg counts (`--ai-codex-notify` with 0, 1 or 3+ args) is not taken as the helper form; it falls through to normal CLI parsing and exits 2 with "path does not exist: --ai-codex-notify", writes nothing. Same design as `--ai-statusline` (cli.rs tests `ai_codex_notify_flag_with_exactly_two_args`). Brief expected exit 0; SEC-23 "accepts only its exact form, writes only its own report" holds. Codex always sends the exact form.
+
+## Rule check T7
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-8 | pass | cases 1, 2: id via notify channel, `resume <id>` |
+| SEC-32 | pass | cases 2, 3, 4b: no `--last` on switch; refused id starts New |
+| SEC-31 | pass | case 4: id kept/dropped only per codex exit message, ids validated |
+| SEC-23 | pass | case 5: only exact form, only own report under ai-usage with live marker, mode 0600, payload cap |
+| BASE-50 | pass | harness + mod line removed; status/stat identical |
+Project files written: crates/vr-ide/src/qc_t7_tests.rs (deleted), one `mod` line in crates/vr-ide/src/ai_switch_tests.rs (removed). Artifacts only under qa-artifacts/T7/.
