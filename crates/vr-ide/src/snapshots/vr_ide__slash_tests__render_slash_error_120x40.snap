@@ -1,6 +1,5 @@
 ---
 source: crates/vr-ide/src/slash_tests.rs
-assertion_line: 911
 expression: t.backend()
 ---
 " /home/user/DEV/shop                                                                                                    "
@@ -15,8 +14,8 @@ expression: t.backend()
 "  ctrl+e  Explorer                                        │                                                             "
 "  ctrl+o  Open file                                       │                                                             "
 "  ctrl+`  Terminal                                        │ CORE —                                                      "
-"  ctrl+q  Quit                                            │                                                             "
-"                                                          │ RAM ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    —  "
+"  f12     AI panel                                        │                                                             "
+"  ctrl+q  Quit                                            │ RAM ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    —  "
 "                                                          │ SWP ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    —  "
 "                                                          │                                                             "
 "                                                          │ LOAD —                                                UP —  "

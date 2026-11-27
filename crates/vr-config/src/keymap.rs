@@ -20,7 +20,8 @@ type Seen = HashMap<(Context, KeyChord), String>;
 pub const RESERVED_COMMANDS: &[&str] = &["focus.editor"];
 
 /// Where a binding applies, like VS Code's `when`. Lookup in a context falls back to `Global`,
-/// except `Terminal`: a focused terminal receives every key that it does not bind itself (D8).
+/// except `Terminal` and `Ai`: a focused terminal or AI session receives every key that it does
+/// not bind itself (D8, D7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Context {
     Global,
@@ -28,15 +29,18 @@ pub enum Context {
     Explorer,
     Palette,
     Terminal,
+    /// A focused session of the AI panel (D7).
+    Ai,
 }
 
 impl Context {
-    pub const ALL: [Context; 5] = [
+    pub const ALL: [Context; 6] = [
         Context::Global,
         Context::Editor,
         Context::Explorer,
         Context::Palette,
         Context::Terminal,
+        Context::Ai,
     ];
 
     pub fn name(self) -> &'static str {
@@ -46,6 +50,7 @@ impl Context {
             Context::Explorer => "explorer",
             Context::Palette => "palette",
             Context::Terminal => "terminal",
+            Context::Ai => "ai",
         }
     }
 
@@ -99,11 +104,12 @@ impl Keymap {
         self.command_for_in(Context::Editor, k)
     }
 
-    /// Command for `k` in `ctx`: the context's own binding, then the global one (not for `Terminal`).
+    /// Command for `k` in `ctx`: the context's own binding, then the global one (not for `Terminal`
+    /// and `Ai`).
     pub fn command_for_in(&self, ctx: Context, k: &KeyChord) -> Option<&str> {
         let own = self.bindings.get(&(ctx, k.clone()));
         let fallback = || match ctx {
-            Context::Global | Context::Terminal => None,
+            Context::Global | Context::Terminal | Context::Ai => None,
             _ => self.bindings.get(&(Context::Global, k.clone())),
         };
         own.or_else(fallback).map(String::as_str)

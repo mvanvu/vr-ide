@@ -38,6 +38,8 @@ pub enum Focus {
     Search,
     /// The integrated terminal panel (M5): every key but the `[terminal]` ones goes to it (D8).
     Terminal,
+    /// The AI panel (D7): every key but the `[ai]` ones goes to the session (or the picker).
+    Ai,
 }
 
 impl Focus {
@@ -51,6 +53,7 @@ impl Focus {
             Focus::Palette => Context::Palette,
             Focus::Search => Context::Global,
             Focus::Terminal => Context::Terminal,
+            Focus::Ai => Context::Ai,
         }
     }
 }
@@ -212,6 +215,8 @@ pub struct App {
     pub config_dir: Option<PathBuf>,
     /// The integrated terminal panel (M5); no terminal runs until the user opens one (AC-1).
     pub terminal: commands::terminal::TerminalPanel,
+    /// The AI panel (D7); no agent runs until the user starts one.
+    pub ai: crate::ai::AiPanel,
     /// SSH sessions (FR-25): the recent targets and the session being started.
     pub ssh: commands::ssh::SshState,
     /// Branch and missing mark of each root for the welcome screen (W-2), read with the
@@ -280,6 +285,7 @@ impl App {
         );
         terminal.position = settings.terminal_position;
         terminal.width_percent = settings.terminal_width_percent;
+        let settings_ai_width = settings.ai_width_percent;
         App {
             workspace,
             recent_workspaces: Default::default(),
@@ -330,6 +336,7 @@ impl App {
             recent_writer: None,
             config_dir: None,
             terminal,
+            ai: crate::ai::AiPanel::new(settings_ai_width),
             ssh: Default::default(),
             root_info: Vec::new(),
             root_files: Default::default(),
@@ -1275,7 +1282,8 @@ impl App {
         }
         // A focused terminal takes every key but its own table (D8); elsewhere a legacy
         // terminal's NUL stands for ctrl+` (D185).
-        if commands::terminal::handle_key(self, &key)
+        if crate::ai::handle_key(self, &key)
+            || commands::terminal::handle_key(self, &key)
             || commands::terminal::legacy_toggle(self, &key)
         {
             return;
@@ -1368,6 +1376,7 @@ impl App {
             Focus::Explorer => {}
             Focus::Editor => commands::edit::insert_pasted(self, text),
             Focus::Terminal => commands::terminal::paste(self, text),
+            Focus::Ai => crate::ai::paste(self, text),
         }
     }
 
@@ -1422,7 +1431,7 @@ impl App {
             self.palette_dismissed(outside);
             return;
         }
-        if commands::terminal::handle_mouse(self, &ev) {
+        if crate::ai::handle_mouse(self, &ev) || commands::terminal::handle_mouse(self, &ev) {
             return;
         }
         // A click on the notice dismisses it without moving the focus: a focused terminal
@@ -1445,7 +1454,7 @@ impl App {
         if matches!(ev.kind, MouseEventKind::Down(_))
             && matches!(
                 self.focus,
-                Focus::Explorer | Focus::Search | Focus::FindBar | Focus::Terminal
+                Focus::Explorer | Focus::Search | Focus::FindBar | Focus::Terminal | Focus::Ai
             )
         {
             self.focus = Focus::Editor;

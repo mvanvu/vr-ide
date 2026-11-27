@@ -233,7 +233,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         "ai",
         "<tool>",
         ArgKind::Text,
-        "Run an AI tool (e.g. claude) in a new terminal tab",
+        "Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name>",
         ai,
     ),
     cmd(
@@ -903,11 +903,16 @@ fn run(app: &mut App, line: &str) -> Result<(), String> {
     super::terminal::type_line(app, line, LineTarget::Active)
 }
 
-/// The tool runs through the user's shell in a new tab, so a missing one shows that shell's
-/// own error.
-fn ai(app: &mut App, tool: &str) -> Result<(), String> {
-    one_line("ai", tool)?;
-    super::terminal::type_line(app, tool, LineTarget::NewTab)
+/// `/ai <tool> [@account]` starts a tool of `ai_tools` in the AI panel (D7) as argv, never through
+/// a shell (SEC-8); `/ai rename <name>` names the active session (AI: Rename Session).
+fn ai(app: &mut App, arg: &str) -> Result<(), String> {
+    one_line("ai", arg)?;
+    if let Some(rest) = arg.strip_prefix("rename")
+        && (rest.is_empty() || rest.starts_with(' '))
+    {
+        return crate::ai::rename(app, rest);
+    }
+    crate::ai::open_tool(app, arg)
 }
 
 /// The W-1 checks apply: a missing folder, a file, a repeat or a nested folder is refused.
@@ -1380,6 +1385,11 @@ pub(crate) fn apply_settings(app: &mut App, new: vr_config::Settings) {
     if old.terminal_width_percent != new.terminal_width_percent {
         app.terminal.width_percent = new.terminal_width_percent;
         app.terminal.width_cols = None;
+    }
+    if old.ai_width_percent != new.ai_width_percent {
+        app.ai.width_percent = new.ai_width_percent;
+        app.ai.width_cols = None;
+        app.dirty = true;
     }
     if old.terminal_position != new.terminal_position {
         app.terminal.position = new.terminal_position;

@@ -560,6 +560,7 @@ pub fn tick(app: &mut App, now: Instant) {
     {
         return;
     }
+    crate::ai::restore::report(app);
     let snap = snapshot(app);
     let Some(k) = app.session.as_mut() else {
         return;
@@ -610,6 +611,7 @@ pub fn save_on_quit(app: &mut App) {
     if !app.session.as_ref().is_some_and(Keeper::saves) {
         return;
     }
+    crate::ai::restore::report(app);
     let snap = snapshot(app);
     if let Some(k) = app.session.as_mut() {
         k.send(snap);

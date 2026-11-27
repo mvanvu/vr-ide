@@ -93,6 +93,8 @@ pub enum DialogAction {
     QuitTerminalsDiscard,
     /// A terminal tab's 'x' while a program holds it (D296): Close / Cancel; the tab's pid.
     CloseTerminal(Option<u32>),
+    /// An AI session's close while its program runs (D7): Close / Cancel; the session's pid.
+    CloseAiSession(Option<u32>),
     /// Find box, File scope (D279): Replace: One / All / Cancel.
     ReplaceInFile,
     /// Unsaved files before the roots are replaced (W-1): Save all / Discard / Cancel.
@@ -156,6 +158,9 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
         (DialogAction::QuitTerminals, Outcome::Chosen(b)) => super::terminal::answer_quit(app, b),
         (DialogAction::CloseTerminal(pid), Outcome::Chosen(0)) => {
             super::terminal::answer_close(app, pid);
+        }
+        (DialogAction::CloseAiSession(pid), Outcome::Chosen(0)) => {
+            crate::ai::answer_close(app, pid)
         }
         (DialogAction::QuitStuckReplaceDiscard, Outcome::Chosen(0)) => {
             super::search::allow_quit(app);

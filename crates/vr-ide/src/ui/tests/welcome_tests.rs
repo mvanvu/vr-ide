@@ -254,7 +254,11 @@ fn a_command_without_a_key_has_no_hint() {
     assert!(row.contains("ctrl+`"), "{screen}");
     let dir = tempfile::tempdir().unwrap();
     let user = dir.path().join("keymap.toml");
-    std::fs::write(&user, "\"ctrl+`\" = \"\"\n[terminal]\n\"ctrl+`\" = \"\"\n").unwrap();
+    std::fs::write(
+        &user,
+        "\"ctrl+`\" = \"\"\n[terminal]\n\"ctrl+`\" = \"\"\n[ai]\n\"ctrl+`\" = \"\"\n",
+    )
+    .unwrap();
     app.keymap = vr_config::Keymap::load(Some(&user)).0;
     let screen = lines(&mut app, 120, 40).join("\n");
     assert!(
