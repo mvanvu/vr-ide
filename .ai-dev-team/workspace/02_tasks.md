@@ -79,9 +79,11 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 | FR-29 | Final review 4 fixes: notices kept while SSH full screen (F4-1), tab drag on a logged-in SSH tab (F4-2), Focus Editor / ctrl+f8-f9 in full screen (F4-3, F4-4), docs (F4-5) | fe | FR-25..28 | ui | AC-S3..S5, AC-F3, AC-F6 | crates/vr-ide (ui/mod.rs, app.rs notices, commands/terminal.rs, commands/ssh.rs), README, docs/keymap.md (worktree .worktrees/FR-29) | `cargo test -p vr-ide` | done (review APPROVE r1; merged 5faa843) | 1 |
 | FR-30 | Editor tabs: x close button (D327) | fe | - | ui | AC-X1 | crates/vr-ide/src/ui/tabs.rs, commands/tab.rs (click routing), app.rs mouse, snapshots, README (worktree .worktrees/FR-30) | `cargo test -p vr-ide` | done (review APPROVE + QP1; merged ce023e2) | 0 |
 | FR-31 | Explorer right-click: Search / Replace in Folder (D328) | fe | - | ui | AC-R1 | crates/vr-ide/src/commands/explorer_menu.rs, ui/explorer_menu.rs, commands/search.rs + find box scope, crates/vr-search if a path filter is needed, README, docs (worktree .worktrees/FR-31) | `cargo test -p vr-ide -p vr-search` | done (review APPROVE r1, QC_PASS 20/20; merged 2e809d1) | 1 |
+| FR-32 | Terminal panel: black background, Homebrew-style text (D329) | fe | - | ui | AC-H1 | crates/vr-ide/src/theme.rs, theme/synthwave.rs, theme/ansi.rs, theme tests, terminal_view.rs only if needed, ui snapshots, README/docs theme lines | `cargo test -p vr-ide` | done (review APPROVE + QP1 comments) | 0 |
+| FR-33 | Focused terminal: ctrl+n opens a new terminal, ctrl+w closes the current one (D330) | fe | - | ui | AC-K1, AC-K2, USER-5 | crates/vr-config/defaults/keymap.toml [terminal] + keymap tests, crates/vr-ide/src/commands/terminal.rs (+ command registry), README, docs/keymap.md (worktree .worktrees/FR-33) | `cargo test -p vr-ide -p vr-config` | in progress (light tier, sonnet) | 0 |
 
 ## Notes
-- presence: away (user, 12:27)
+- presence: present (user typed, 13:36)
 - hand-off: ready (23:52) — T14 → T15 (Synthwave, D148) → M4-1…M4-4 → sign-off → Phase 5 → report; commit + push per task; account_switch none
 - eta: ~19:00 (set 17:19, +25m: T10 needed rounds 2 and 3; r3 ~25m + recheck 15m → merge + message rewrite 10m → sign-off 25m → Phase 5 40m + fixes 20m)
 - fable-policy: auto (user, 11:21)
@@ -355,7 +357,7 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 ## Run 3 (2026-11-27, plugin 1.0.40) — FR-17 … FR-21
 - spec: 01_spec_FR17-21.md; rules: rules_run3.md; decisions D310–D313.
 - phase0: paths ✓ · profile fields ✓ · local fields ✓ (added: account_switch) · e2e one spec n-a (no e2e) · test logins n-a · temporary values ✓ (none) · stray-team-files ✓ · capabilities ✓ · env-drift n-a · gitignore ✓ · stack n-a (TUI) · upstream: no push this run · guard coverage ✓ (0 meta tests) · commit identity ✓ (mvanvu <mvanvu@gmail.com>; project CLAUDE.md: no AI attribution)
-- presence: away (user, 12:27)
+- presence: present (user typed, 13:36)
 - fable-policy: auto (user, 09:58)
 - commits: local, one per task, no push (user, 09:58)
 - hand-off: ready (12:27; second sitting: FR-29, FR-31 to finish, then reinstall per D318)
@@ -428,3 +430,7 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - 12:44 FR-29 r1 DONE (k-TTL notices; count/key; (col,row) click; flaky tests fixed 10/10). Re-check: opus reviewer.
 - 12:46 FR-29 done, merged 5faa843. All tasks merged. Final check (sign-off 5, qc) on 5faa843, then reinstall from a clean checkout (D318).
 - 12:59 SIGNOFF_PASS 5 on 5faa843 (suite green, guard, release, bench 24 ms / 7 MB, all walks pass). Reinstalled vr-ide from a clean checkout of 5faa843 (cargo install --locked; ~/.cargo/bin/vr-ide replaced 12:59). Run end.
+- 13:36 user: terminal too glaring → black background like Homebrew. FR-32 light tier (sonnet dev + sonnet reviewer), task-base 7453c34. TEAM_BIN → 1.0.41.
+- 13:39 FR-32 DONE (gate ✓: AC-H1 test, guard clean, 710 pass; settings.toml doc line outside row — accepted). Review sonnet. Held for user: new/close terminal keys (ctrl+shift+t/w taken by GNOME Terminal, USER-5; proposed ctrl+f12 / ctrl+f5; reverses D291).
+- 13:41 user: 'ctrl+n in a focused terminal opens a new one, ctrl+w closes the current tab' → D330 (amends D291; held question on ctrl+shift+t/w closed). FR-33 sonnet in worktree .worktrees/FR-33 (branch fr-33 from b0d6d0f; same crate as FR-32 → worktree). merge route: FR-32 committed on master first, then master merged into fr-33 before its merge.
+- 13:42 FR-32 QP1 DONE (3 comment fixes, comment-only → no re-review; theme 40 + terminal 96 pass, guard clean). FR-32 done, committed.

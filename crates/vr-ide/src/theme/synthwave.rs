@@ -18,10 +18,6 @@ struct Palette {
     input: Surface,
     picked: Surface,
     found: Surface,
-    /// Default background of the terminal panel: a lifted blue against the purple editor.
-    terminal: Surface,
-    /// Selected text in the terminal panel (the editor's selection is too close to the panel).
-    terminal_selection: Surface,
     fg: u32,
     comment: u32,
     dim: u32,
@@ -56,11 +52,9 @@ pub(super) fn build(depth: ColorDepth) -> Theme {
     let (bg, bar, raised) = (surface(p.bg), surface(p.bar), surface(p.raised));
     let (line, input) = (surface(p.line), surface(p.input));
     let (picked, found) = (surface(p.picked), surface(p.found));
-    let tbg = surface(p.terminal);
-    let tsel = surface(p.terminal_selection);
+    let (tfg, tbg, tsel) = super::ansi::panel_colors(depth);
     let fit = |rgb, on: &[Color], min| fit(depth, rgb, on, min);
     let fg = fit(p.fg, &[bg, bar, raised, line, input, picked, found], 4.5);
-    let tfg = fit(p.fg, &[tbg], 7.0);
     let comment = fit(p.comment, &[bg], 3.0);
     let dim = fit(p.dim, &[bg, bar, raised, line, picked], 3.0);
     let muted = fit(p.dim, &[bg, bar, raised], 4.5);
@@ -185,8 +179,6 @@ const SYNTHWAVE: Palette = Palette {
     input: (0x3a2760, 54),
     picked: (0x7433a6, 92),
     found: (0x5e3b0c, 94),
-    terminal: (0x20407a, 20),
-    terminal_selection: (0x8a4fc7, 91),
     fg: 0xf6eefc,
     comment: 0x8068b0,
     dim: 0xb9a6e6,

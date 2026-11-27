@@ -326,8 +326,7 @@ pub(crate) fn render_grid(
             }
             // The spacer of a wide character is covered by it; a wide character that would
             // stick out of the panel is drawn as a blank.
-            // Concealed text (SGR 8) is not drawn at all: with the terminal's own default
-            // colours (dark / light) "fg = bg" cannot hide it.
+            // Concealed text (SGR 8) is not drawn at all, whatever its colours.
             let blank = cell.flags.wide_spacer || cell.ch.is_empty() || cell.flags.hidden;
             let symbol = if blank || (cell.flags.wide && c + 1 >= w) {
                 " "
