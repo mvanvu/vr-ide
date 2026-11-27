@@ -9,6 +9,7 @@ pub mod layout;
 pub mod palette;
 pub mod safe_text;
 pub mod search_panel;
+pub mod ssh_view;
 pub mod status_bar;
 pub mod tabs;
 pub mod terminal_view;
@@ -31,6 +32,16 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     app.sync_syntax();
     // Paint the theme background everywhere first; widgets then only patch their own cells.
     frame.buffer_mut().set_style(area, theme.text);
+    // A logged-in SSH session chosen for it takes the whole window (FR-25).
+    crate::commands::terminal::sync_full(app);
+    if area.height >= 2 && crate::commands::terminal::full_screen(app) {
+        ssh_view::render(frame, area, app, theme);
+        if app.palette.is_some() {
+            palette::render(frame, area, app, theme);
+        }
+        app.syntax.frame_drawn();
+        return;
+    }
     let notice_rows = status_bar::notice_rows(app, area.width);
     let side = if app.explorer.visible {
         crate::commands::explorer::ensure_loaded(app);
@@ -96,6 +107,7 @@ mod tests {
     use super::*;
     use crate::app_tests::{app_with_file, test_app};
 
+    mod palette_detail;
     mod preview;
     mod welcome_tests;
 

@@ -25,8 +25,9 @@ use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::io::Errno;
 
+use crate::marker::MarkerScan;
 use crate::snapshot;
-use crate::types::{Grid, Notify, SpawnOptions, TermError, TermStatus};
+use crate::types::{Grid, Notify, SpawnExtras, SpawnOptions, TermError, TermStatus};
 
 /// How long a child gets to exit after SIGHUP before the group gets SIGKILL, and again after it.
 pub const KILL_GRACE: Duration = Duration::from_millis(300);
@@ -165,6 +166,8 @@ struct Shared {
     dirty: AtomicBool,
     /// Set by `Drop`: no more `Notify` calls for a terminal the UI already let go.
     closed: AtomicBool,
+    /// The session's marker came through its own output while its child ran (sticky).
+    marker_seen: AtomicBool,
     notify: Notify,
 }
 
@@ -211,6 +214,15 @@ impl Terminal {
     /// Starts `opts.shell` in a new PTY session with `TERM=xterm-256color`; `COLORTERM`
     /// is left as inherited (the caller sets it through `opts.env`). `notify` is called (coalesced) whenever there is something new to draw.
     pub fn spawn(opts: SpawnOptions, notify: Notify) -> Result<Terminal, TermError> {
+        Terminal::spawn_with(opts, SpawnExtras::default(), notify)
+    }
+
+    /// [`Terminal::spawn`] for a session with a marker to watch for or variables to withhold.
+    pub fn spawn_with(
+        opts: SpawnOptions,
+        extras: SpawnExtras,
+        notify: Notify,
+    ) -> Result<Terminal, TermError> {
         if opts.cols == 0 || opts.rows == 0 {
             return Err(TermError::BadSize {
                 cols: opts.cols,
@@ -228,6 +240,9 @@ impl Terminal {
         cmd.args(&opts.args);
         cmd.cwd(&opts.cwd);
         for key in OUTER_TERMINAL_ENV {
+            cmd.env_remove(key);
+        }
+        for key in &extras.env_remove {
             cmd.env_remove(key);
         }
         cmd.env("TERM", "xterm-256color");
@@ -283,6 +298,7 @@ impl Terminal {
             status_changed: Condvar::new(),
             dirty: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            marker_seen: AtomicBool::new(false),
             notify,
         });
 
@@ -324,9 +340,10 @@ impl Terminal {
             wake: wake.clone(),
         };
         let reader_wake = wake.clone();
+        let scan = extras.marker.and_then(MarkerScan::new);
         terminal.threads.push(spawn_thread(
             "vr-term-reader",
-            Box::new(move || read_loop(&reader, &reader_wake, &shared)),
+            Box::new(move || read_loop(&reader, &reader_wake, &shared, scan)),
         )?);
         terminal.threads.push(spawn_thread(
             "vr-term-writer",
@@ -400,6 +417,12 @@ impl Terminal {
         }
         *size = (cols, rows);
         Ok(())
+    }
+
+    /// The marker given at spawn came through this terminal's own output while its child ran.
+    /// Later occurrences, and any after the child exited, are removed without effect.
+    pub fn marker_seen(&self) -> bool {
+        self.shared.marker_seen.load(Ordering::SeqCst)
     }
 
     /// Running, or exited with its code once the child is reaped.
@@ -564,9 +587,19 @@ fn ready(fd: &OwnedFd, events: PollFlags, wake: &OwnedFd) -> bool {
     }
 }
 
-fn read_loop(reader: &OwnedFd, wake: &OwnedFd, shared: &Shared) {
+fn read_loop(reader: &OwnedFd, wake: &OwnedFd, shared: &Shared, mut scan: Option<MarkerScan>) {
     let mut parser: Processor = Processor::new();
     let mut buf = vec![0u8; READ_BUF];
+    // What is left of a read once the marker scanner took its bytes out.
+    let mut kept = Vec::new();
+    let mut parse = |bytes: &[u8]| {
+        for slice in bytes.chunks(PARSE_SLICE) {
+            while shared.snapshot_waiting.load(Ordering::SeqCst) > 0 {
+                thread::yield_now();
+            }
+            parser.advance(&mut *lock(&shared.term), slice);
+        }
+    };
     loop {
         // A holder of the slave that writes faster than we parse would never let the read hit
         // EAGAIN (where the wake fd is polled), so look at the close flag on every round too.
@@ -574,25 +607,43 @@ fn read_loop(reader: &OwnedFd, wake: &OwnedFd, shared: &Shared) {
             return;
         }
         let n = match rustix::io::read(reader, &mut buf[..]) {
-            // EOF, or EIO once every holder of the slave side has gone.
-            Ok(0) => return,
-            Ok(n) => n,
+            Ok(n) if n > 0 => n,
             Err(Errno::INTR) => continue,
-            Err(Errno::AGAIN) => {
-                if ready(reader, PollFlags::IN, wake) {
-                    continue;
-                }
-                return;
-            }
-            Err(_) => return,
+            Err(Errno::AGAIN) if ready(reader, PollFlags::IN, wake) => continue,
+            // EOF, or EIO once every holder of the slave side has gone, or `Drop`'s wake.
+            Ok(_) | Err(_) => break,
         };
-        for slice in buf[..n].chunks(PARSE_SLICE) {
-            while shared.snapshot_waiting.load(Ordering::SeqCst) > 0 {
-                thread::yield_now();
-            }
-            parser.advance(&mut *lock(&shared.term), slice);
+        let Some(scan) = &mut scan else {
+            parse(&buf[..n]);
+            shared.mark_dirty();
+            continue;
+        };
+        kept.clear();
+        let hits = scan.feed(&buf[..n], &mut kept);
+        parse(&kept);
+        // Only the first marker counts, and only while the child runs: whatever still holds
+        // the PTY after its exit proves nothing about the session.
+        if hits > 0
+            && *lock(&shared.status) == TermStatus::Running
+            && !shared.marker_seen.swap(true, Ordering::SeqCst)
+            && !shared.closed.load(Ordering::SeqCst)
+        {
+            // Not coalesced with output: the UI must hear of it even when it has not looked
+            // at this terminal since the last output.
+            (shared.notify)();
         }
         shared.mark_dirty();
+    }
+    // The start of a marker that never completed is ordinary output.
+    if let Some(scan) = &mut scan
+        && !shared.closed.load(Ordering::SeqCst)
+    {
+        kept.clear();
+        scan.flush(&mut kept);
+        if !kept.is_empty() {
+            parse(&kept);
+            shared.mark_dirty();
+        }
     }
 }
 

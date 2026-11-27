@@ -37,6 +37,12 @@ or `ctrl+f8` / `ctrl+f9`, to change it) and falls back to the bottom while the e
 under 60 columns wide. A new terminal and closing one: the `+` and the `x` of each tab in the
 panel's tab bar (no slash command, no key).
 
+`/ssh` (also: `ssh` and a space, or SSH: Connect to Host in the command list) lists the open SSH
+sessions, the recently used targets and the `Host` names of `~/.ssh/config`; type
+`[user@]host[:port]` for any other host and press Enter on its row. The session starts in a
+terminal tab and takes the whole window once the login succeeded; see "SSH sessions" in the
+README.
+
 Git (read only): in a folder that is a git repository (or inside one) the gutter marks the lines
 of the active file that differ from the git index, unsaved changes included: a bar for added and
 changed lines, a low or high bar where lines were removed. The status bar shows the branch (or
@@ -110,6 +116,7 @@ protocol does not send are marked).
 | `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
 | `/ai <tool>` | Run an AI tool (e.g. claude) in a new terminal tab |
+| `/ssh [target]` | Open an SSH session: [user@]host[:port] (no target: list hosts) |
 | `/ws add <dir>` | Add a folder to the workspace |
 | `/ws remove [root]` | Remove a workspace folder (default: the active file's) |
 | `/ws save [file]` | Save the workspace folders to a .vr-workspace file |

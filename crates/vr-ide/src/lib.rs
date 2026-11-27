@@ -14,6 +14,7 @@ pub mod git;
 pub mod monitor;
 mod recent_files;
 pub mod recovery;
+pub mod ssh;
 pub mod syntax;
 pub mod theme;
 pub mod ui;
@@ -45,6 +46,8 @@ mod search_tests;
 mod slash2_tests;
 #[cfg(test)]
 mod slash_tests;
+#[cfg(test)]
+mod ssh_tests;
 #[cfg(test)]
 mod syntax_tests;
 #[cfg(test)]
