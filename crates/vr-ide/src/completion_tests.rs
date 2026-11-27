@@ -525,3 +525,88 @@ fn a_completed_destination_gets_a_space_and_shows_what_runs() {
     typ(app, "x");
     assert_eq!(phase(app), None);
 }
+
+/// SEC-16: path completion lists nothing inside an account folder (not even names), while a
+/// sibling folder still completes.
+#[test]
+fn sec16_path_completion_never_lists_an_account_folder() {
+    let mut f = Fx::new("vr-ide");
+    let state = tempfile::tempdir().unwrap();
+    crate::ai::accounts::create(state.path(), "claude", "work").unwrap();
+    let work = crate::ai::accounts::path_of(state.path(), "work").unwrap();
+    std::fs::write(work.join(".credentials.json"), "").unwrap();
+    std::fs::write(work.join("token"), "").unwrap();
+    std::fs::create_dir(state.path().join("otherdir")).unwrap();
+    f.app.ai.state_dir = Some(state.path().to_path_buf());
+    let app = &mut f.app;
+    let s = state.path().display().to_string();
+    slash(app, "/open");
+    for cmd in ["/open", "/ws add", "/ssh -i"] {
+        let typed = format!("{cmd} {s}/accounts/work/");
+        crate::slash_tests::set(app, &typed);
+        key(app, KeyCode::Tab);
+        let leaked = |app: &App| {
+            let all = [vec![input(app)], titles(app)].concat();
+            all.iter()
+                .any(|t| t.contains("token") || t.contains(".credentials"))
+        };
+        assert!(!leaked(app), "{typed}");
+        let dotted = format!("{typed}.");
+        crate::slash_tests::set(app, &dotted);
+        key(app, KeyCode::Tab);
+        assert!(!leaked(app), "{dotted}");
+    }
+    // Through a symlink as well.
+    let link = state.path().join("lnk");
+    std::os::unix::fs::symlink(work, &link).unwrap();
+    let typed = format!("/open {s}/lnk/to");
+    crate::slash_tests::set(app, &typed);
+    key(app, KeyCode::Tab);
+    assert_eq!(input(app), typed);
+    // A folder next to the accounts still completes.
+    key(app, KeyCode::Esc);
+    slash(app, &format!("/ws add {s}/oth"));
+    key(app, KeyCode::Tab);
+    assert_eq!(input(app), format!("/ws add {s}/otherdir/"));
+}
+
+/// SEC-16: the `accounts/` folder itself is never listed either (the names are the accounts),
+/// by any command that completes a path.
+#[test]
+fn sec16_the_accounts_folder_itself_is_never_listed() {
+    let mut f = Fx::new("vr-ide");
+    let state = tempfile::tempdir().unwrap();
+    crate::ai::accounts::create(state.path(), "claude", "work").unwrap();
+    crate::ai::accounts::create(state.path(), "claude", "other").unwrap();
+    f.app.ai.state_dir = Some(state.path().to_path_buf());
+    let app = &mut f.app;
+    let s = state.path().display().to_string();
+    for cmd in ["/ws add", "/open", "/ssh -i", "/run x"] {
+        for tail in ["accounts/", "accounts/w"] {
+            let typed = format!("{cmd} {s}/{tail}");
+            key(app, KeyCode::Esc);
+            slash(app, &typed);
+            key(app, KeyCode::Tab);
+            key(app, KeyCode::Tab);
+            assert_eq!(input(app), typed, "{cmd} {tail}: Tab fills nothing");
+            let listed = titles(app).join("|");
+            assert!(
+                !listed.contains("work") && !listed.contains("other"),
+                "{cmd} {tail}: {listed}"
+            );
+        }
+    }
+}
+
+/// Tab with nothing to complete leaves what was typed in `/ssh`.
+#[test]
+fn tab_with_no_candidates_keeps_the_typed_ssh_line() {
+    let mut f = Fx::new("vr-ide");
+    let app = &mut f.app;
+    for typed in ["/ssh -i /nonexistent-zz/", "/ssh -o Foo=bar"] {
+        key(app, KeyCode::Esc);
+        slash(app, typed);
+        key(app, KeyCode::Tab);
+        assert_eq!(input(app), typed);
+    }
+}

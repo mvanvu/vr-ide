@@ -641,6 +641,33 @@ impl DirListing {
 /// Entries read from one folder at most.
 pub const READ_LIMIT: usize = 1000;
 
+/// `dir` is, or is under, the accounts folder: nothing in it is listed, not even names (SEC-16).
+fn in_accounts(app: &App, dir: &Path) -> bool {
+    let state = app
+        .ai
+        .state_dir
+        .clone()
+        .unwrap_or_else(vr_config::state_dir);
+    let (Ok(accounts), Ok(dir)) = (
+        crate::ai::accounts::accounts_dir(&state).canonicalize(),
+        dir.canonicalize(),
+    ) else {
+        return false;
+    };
+    dir.starts_with(accounts)
+}
+
+/// The one way path completion reads a folder: an empty listing for the accounts folder.
+fn read_listing(app: &App, base: &Path) -> DirListing {
+    if in_accounts(app, base) {
+        return DirListing {
+            base: base.to_path_buf(),
+            entries: Vec::new(),
+        };
+    }
+    DirListing::read(base)
+}
+
 /// The entries of `dir` (name, is a folder), read once per window: the listing the window
 /// holds when it is for `dir`, else read now and held.
 pub(crate) fn cached_listing(app: &mut App, dir: &Path) -> Vec<(String, bool)> {
@@ -652,7 +679,7 @@ pub(crate) fn cached_listing(app: &mut App, dir: &Path) -> Vec<(String, bool)> {
     {
         return l.entries.clone();
     }
-    let listing = DirListing::read(dir);
+    let listing = read_listing(app, dir);
     let entries = listing.entries.clone();
     if let Some(p) = &mut app.palette {
         p.dir_cache = Some(listing);
@@ -742,7 +769,7 @@ pub fn prepare(app: &mut App, input: &str) {
         .and_then(|p| p.dir_cache.as_ref())
         .is_some_and(|l| l.base == base);
     if !held {
-        let listing = DirListing::read(&base);
+        let listing = read_listing(app, &base);
         if let Some(p) = &mut app.palette {
             p.dir_cache = Some(listing);
         }
@@ -762,7 +789,7 @@ fn path_candidates(app: &App, arg: &str, dirs_only: bool) -> Vec<(String, String
     let listing = match held {
         Some(l) => l,
         None => {
-            read = DirListing::read(&base);
+            read = read_listing(app, &base);
             &read
         }
     };
