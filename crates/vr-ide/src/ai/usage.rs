@@ -229,7 +229,7 @@ fn days_in_month(year: i64, month: i64) -> i64 {
 }
 
 /// Days since 1970-01-01 of a proleptic Gregorian date (H. Hinnant's `days_from_civil`).
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let y = if month <= 2 { year - 1 } else { year };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
@@ -288,7 +288,7 @@ pub fn write_report(path: &Path, u: &Usage) -> io::Result<()> {
     write_at(&dir, &name, &report_json(u))
 }
 
-fn write_at(dir: &OwnedFd, name: &str, body: &[u8]) -> io::Result<()> {
+pub(crate) fn write_at(dir: &OwnedFd, name: &str, body: &[u8]) -> io::Result<()> {
     let tmp = format!("{name}{TEMP_MARK}{}", std::process::id());
     let _ = rustix::fs::unlinkat(dir, tmp.as_str(), AtFlags::empty());
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;

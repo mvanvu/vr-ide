@@ -46,7 +46,7 @@ fn width_of(s: &str) -> usize {
 
 /// Seconds east of UTC at `secs`, from the system's zone file (TZif: the last transition not
 /// after the time decides); 0 when it cannot be read.
-fn utc_offset(secs: i64) -> i64 {
+pub(crate) fn utc_offset(secs: i64) -> i64 {
     if cfg!(test) {
         return 0;
     }
@@ -65,7 +65,7 @@ fn utc_offset(secs: i64) -> i64 {
 }
 
 /// (transition time, offset after it), oldest first; the first entry is the zone's base.
-fn parse_tzif(b: &[u8]) -> Option<Vec<(i64, i64)>> {
+pub(crate) fn parse_tzif(b: &[u8]) -> Option<Vec<(i64, i64)>> {
     let be = |at: usize, n: usize| -> Option<i64> {
         let s = b.get(at..at + n)?;
         Some(match n {

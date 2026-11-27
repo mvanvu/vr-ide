@@ -10,6 +10,7 @@ pub mod changes;
 #[cfg(test)]
 mod changes_tests;
 pub mod history;
+pub mod limits;
 pub mod picker;
 pub mod restore;
 pub mod review;
@@ -131,6 +132,11 @@ pub struct AiSession {
     pub(crate) usage_poll: usage::Poll,
     /// The settings and report files of the current run; dropping them removes both.
     pub(crate) usage_files: Option<usage::SessionFiles>,
+    /// The tool showed its limit message and this event is not over yet (AC-5, SEC-26): set on a
+    /// new hit, cleared once the user typed and the limit line is gone, or by a restart.
+    pub limit_seen: bool,
+    /// When its screen is read for limit and login messages.
+    pub(crate) limit_watch: limits::Watch,
 }
 
 impl AiSession {
@@ -162,6 +168,8 @@ impl AiSession {
             usage: None,
             usage_poll: Default::default(),
             usage_files: None,
+            limit_seen: false,
+            limit_watch: Default::default(),
         }
     }
 
@@ -853,8 +861,8 @@ fn usage_files(app: &mut App, tool: &AiTool) -> Option<usage::SessionFiles> {
 /// read at most once a second); true when a session's usage changed.
 pub(crate) fn read_usage(app: &mut App, now: std::time::Instant) -> bool {
     let p = &mut app.ai;
-    let mut changed = false;
-    for s in &mut p.sessions {
+    let mut reported = Vec::new();
+    for (i, s) in p.sessions.iter_mut().enumerate() {
         let Some(path) = &s.usage_file else {
             continue;
         };
@@ -867,10 +875,14 @@ pub(crate) fn read_usage(app: &mut App, now: std::time::Instant) -> bool {
             && s.usage.as_ref() != Some(&u)
         {
             s.usage = Some(u);
-            changed = true;
+            reported.push(i);
         }
     }
-    changed
+    // Whether the account works and is limited (SEC-27).
+    for &i in &reported {
+        limits::on_report(app, i);
+    }
+    !reported.is_empty()
 }
 
 /// The session grid's size: the panel's last frame, else where the next frame puts it.
@@ -975,6 +987,8 @@ fn restart(app: &mut App) {
                 s.usage_file = usage_files.as_ref().map(|f| f.report.clone());
                 s.usage_files = usage_files;
                 s.usage_poll = Default::default();
+                s.limit_seen = false;
+                s.limit_watch.restarted();
             }
             app.dirty = true;
         }
@@ -1204,6 +1218,7 @@ pub fn refresh(app: &mut App) -> bool {
         if !s.tab.take_output() {
             continue;
         }
+        s.limit_watch.output();
         if i == active {
             p.selection = None;
         }
@@ -1337,7 +1352,7 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     if let Some(k) = term::term_key(key) {
         let bytes = encode_key(k, modes);
         s.tab.scroll_to_bottom();
-        send(app, &bytes);
+        send_typed(app, &bytes);
     }
     true
 }
@@ -1409,7 +1424,15 @@ pub fn paste(app: &mut App, text: &str) {
     s.tab.scroll_to_bottom();
     let bytes = encode_paste(text, s.tab.grid.modes);
     app.ai.selection = None;
-    send(app, &bytes);
+    send_typed(app, &bytes);
+}
+
+/// Keys or a paste for the active session: input that ends a limit event once answered.
+fn send_typed(app: &mut App, bytes: &[u8]) {
+    if let Some(s) = app.ai.active_session_mut() {
+        s.limit_watch.typed_input(bytes);
+    }
+    send(app, bytes);
 }
 
 /// Writes to the active session; a program that stopped reading gets one warning.

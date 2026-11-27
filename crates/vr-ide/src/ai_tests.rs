@@ -1239,3 +1239,241 @@ fn restart_replaces_usage_files_and_forgets_a_new_runs_old_id() {
         assert!(!report.exists() && !report.with_extension("json").exists());
     }
 }
+
+// ---- limit screens and account state (AC-5, SEC-26, SEC-27) ----------------------------------
+
+/// Prints claude's limit line or a reply on request, then waits like a stopped claude.
+const LIMIT_AGENT: &str = r#"#!/bin/sh
+printf 'ready\n'
+while read cmd; do
+  case $cmd in
+    limit) printf "  \342\216\277  You've hit your 5-hour limit \302\267 resets 3pm\n";;
+    reply) printf '\342\227\217 Done.\n';;
+    login) printf ' Select login method:\n';;
+  esac
+done
+"#;
+
+fn limit_app() -> (tempfile::TempDir, App, PathBuf) {
+    let (d, mut app) = ai_app();
+    let state = d.path().join(".state");
+    std::fs::create_dir(&state).unwrap();
+    app.ai.state_dir = Some(state.clone());
+    let agent = script(&d.path().join(".bin"), "limits", LIMIT_AGENT);
+    app.settings.ai_tools = vec![tool("claude", &agent, true)];
+    start(&mut app, &d, 0);
+    wait_for(&app, 0, |s| s.contains("ready"));
+    (d, app, state)
+}
+
+fn limit_notices(app: &App) -> Vec<String> {
+    app.notices
+        .iter()
+        .map(|n| n.text.clone())
+        .filter(|t| t.contains("usage limit"))
+        .collect()
+}
+
+/// The agent prints `cmd`'s line; the loop sees the output at `at`.
+fn agent_says(app: &mut App, cmd: &str, want: &str, at: Instant) {
+    let before = app.ai.sessions[0].tab.screen_text().matches(want).count();
+    say(app, 0, cmd);
+    wait_for(app, 0, |s| s.matches(want).count() > before);
+    pass(app, at);
+}
+
+#[test]
+fn ai_limit_counts_after_a_quiet_second_with_one_notice_per_event() {
+    let (_d, mut app, state) = limit_app();
+    let t0 = Instant::now();
+    let s = |ms: u64| t0 + Duration::from_millis(ms);
+    agent_says(&mut app, "limit", "hit your", s(0));
+    pass(&mut app, s(900));
+    assert!(limit_notices(&app).is_empty(), "not quiet for a second yet");
+    assert!(!app.ai.sessions[0].limit_seen);
+    pass(&mut app, s(1000));
+    assert_eq!(
+        limit_notices(&app),
+        ["claude hit its usage limit (resets 15:00)"]
+    );
+    assert!(app.ai.sessions[0].limit_seen);
+    assert!(
+        app.ai.sessions[0].running(),
+        "a limit never ends the process"
+    );
+    let until = crate::ai::limits::load_state(&state)["claude/default"].limited_until;
+    let now = crate::ai::usage::now_secs();
+    assert!(
+        until.is_some_and(|t| t > now && t <= now + 86_400),
+        "{until:?}"
+    );
+    // The same event: no second notice however long it stays.
+    pass(&mut app, s(70_000));
+    assert_eq!(limit_notices(&app).len(), 1);
+
+    // The user types, the tool answers and the line is gone: the event is over. A new limit
+    // within the minute is an event, but without a second notice.
+    app.ai.sessions[0].limit_watch.typed = true;
+    agent_says(&mut app, "reply", "Done.", s(5000));
+    pass(&mut app, s(6000));
+    assert!(!app.ai.sessions[0].limit_seen);
+    agent_says(&mut app, "limit", "hit your", s(10_000));
+    pass(&mut app, s(11_000));
+    assert!(app.ai.sessions[0].limit_seen);
+    assert_eq!(limit_notices(&app).len(), 1, "at most one notice a minute");
+    // Without typing the event does not end, even when the line goes.
+    agent_says(&mut app, "reply", "Done.", s(20_000));
+    pass(&mut app, s(21_000));
+    assert!(app.ai.sessions[0].limit_seen);
+    app.ai.sessions[0].limit_watch.typed = true;
+    pass(&mut app, s(21_500));
+    agent_says(&mut app, "reply", "Done.", s(22_000));
+    pass(&mut app, s(23_000));
+    assert!(!app.ai.sessions[0].limit_seen);
+    agent_says(&mut app, "limit", "hit your", s(70_000));
+    pass(&mut app, s(71_000));
+    assert_eq!(limit_notices(&app).len(), 2);
+}
+
+/// SEC-26: output after the limit line within the second means the tool went on.
+#[test]
+fn ai_limit_line_followed_by_output_is_no_event() {
+    let (_d, mut app, state) = limit_app();
+    let t0 = Instant::now();
+    agent_says(&mut app, "limit", "hit your", t0);
+    agent_says(&mut app, "reply", "Done.", t0 + Duration::from_millis(500));
+    pass(&mut app, t0 + Duration::from_millis(1200));
+    pass(&mut app, t0 + Duration::from_millis(3000));
+    assert!(limit_notices(&app).is_empty());
+    assert!(!app.ai.sessions[0].limit_seen);
+    assert!(crate::ai::limits::load_state(&state).is_empty());
+}
+
+/// A typed key marks the session as answered by the user (the event ends once the line goes).
+#[test]
+fn ai_limit_typing_marks_the_session() {
+    let (_d, mut app, _) = limit_app();
+    app.ai.visible = true;
+    app.ai.active = 0;
+    app.focus = Focus::Ai;
+    assert!(!app.ai.sessions[0].limit_watch.typed);
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.ai.sessions[0].limit_watch.typed);
+}
+
+/// SEC-27: a validated report with a session id marks the account working; one under 100 %
+/// ends a 5-hour/weekly limit but not a sticky one (a model's own limit, spend, credits: the
+/// report does not show those); 100 % alone neither ends the process nor makes an event (AC-5).
+#[test]
+fn ai_limit_state_follows_usage_reports() {
+    for (percent, sticky) in [(63, false), (63, true), (100, false)] {
+        let (d, mut app, _) = usage_app();
+        let state = app.ai.state_dir.clone().unwrap();
+        let now = crate::ai::usage::now_secs();
+        let mut seeded = std::collections::BTreeMap::new();
+        seeded.insert(
+            "claude/default".to_string(),
+            crate::ai::limits::AccountState {
+                works: false,
+                limited_until: Some(now + 3600),
+                sticky,
+            },
+        );
+        crate::ai::limits::save_state(&state, &seeded).unwrap();
+        if percent == 100 {
+            let bin = d.path().join(".bin");
+            let text = std::fs::read_to_string(bin.join("claude")).unwrap();
+            std::fs::write(
+                bin.join("claude"),
+                text.replace("\"used_percentage\":63", "\"used_percentage\":100"),
+            )
+            .unwrap();
+        }
+        start(&mut app, &d, 0);
+        wait_for(&app, 0, |s| s.contains("ARGV:"));
+        let t0 = Instant::now();
+        pass(&mut app, t0);
+        pass(&mut app, t0 + Duration::from_secs(2));
+        let got = crate::ai::limits::load_state(&state)["claude/default"];
+        assert!(got.works, "{percent}%");
+        if percent == 100 {
+            assert_eq!(got.limited_until, Some(now + 3600));
+            assert!(app.ai.sessions[0].running());
+            assert!(!app.ai.sessions[0].limit_seen);
+            assert!(limit_notices(&app).is_empty());
+        } else if sticky {
+            assert_eq!(got.limited_until, Some(now + 3600), "sticky kept");
+            assert!(got.sticky);
+        } else {
+            assert_eq!(got.limited_until, None);
+        }
+    }
+}
+
+/// QC F1: a program with no input box echoes what the user typed at column 0; that text is
+/// never the tool's limit message.
+#[test]
+fn ai_limit_typed_text_echoed_is_no_event() {
+    let (_d, mut app, state) = limit_app();
+    app.ai.visible = true;
+    app.ai.active = 0;
+    app.focus = Focus::Ai;
+    let line = "You've hit your limit · resets 3pm";
+    crate::ai::paste(&mut app, line);
+    press(&mut app, KeyCode::Enter);
+    wait_for(&app, 0, |s| s.contains("resets 3pm"));
+    let t0 = Instant::now();
+    pass(&mut app, t0);
+    pass(&mut app, t0 + Duration::from_secs(2));
+    assert!(limit_notices(&app).is_empty());
+    assert!(!app.ai.sessions[0].limit_seen);
+    assert!(crate::ai::limits::load_state(&state).is_empty());
+    // The tool's own line still counts.
+    agent_says(
+        &mut app,
+        "limit",
+        "hit your 5-hour",
+        t0 + Duration::from_secs(3),
+    );
+    pass(&mut app, t0 + Duration::from_secs(5));
+    assert!(app.ai.sessions[0].limit_seen);
+}
+
+/// A login screen on a quiet session marks its account as not working (once per run).
+#[test]
+fn ai_limit_login_screen_marks_the_account_not_working() {
+    let (_d, mut app, state) = limit_app();
+    let mut seeded = std::collections::BTreeMap::new();
+    seeded.insert(
+        "claude/default".to_string(),
+        crate::ai::limits::AccountState {
+            works: true,
+            limited_until: None,
+            sticky: false,
+        },
+    );
+    crate::ai::limits::save_state(&state, &seeded).unwrap();
+    let t0 = Instant::now();
+    agent_says(&mut app, "login", "login method", t0);
+    pass(&mut app, t0 + Duration::from_millis(500));
+    assert!(crate::ai::limits::load_state(&state)["claude/default"].works);
+    pass(&mut app, t0 + Duration::from_millis(1000));
+    assert!(!crate::ai::limits::load_state(&state).contains_key("claude/default"));
+    assert!(limit_notices(&app).is_empty());
+}
+
+/// A run that already sent a validated report with an id works: a login line on its screen
+/// (printed by the agent, say) does not mark it not working.
+#[test]
+fn ai_limit_login_line_after_a_report_keeps_the_account_working() {
+    let (_d, mut app, state) = limit_app();
+    crate::ai::limits::update_state(&state, |m| {
+        m.entry("claude/default".into()).or_default().works = true;
+    })
+    .unwrap();
+    app.ai.sessions[0].limit_watch.works_marked = true;
+    let t0 = Instant::now();
+    agent_says(&mut app, "login", "login method", t0);
+    pass(&mut app, t0 + Duration::from_secs(2));
+    assert!(crate::ai::limits::load_state(&state)["claude/default"].works);
+}

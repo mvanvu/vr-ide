@@ -173,7 +173,7 @@ impl Drop for IndexLock {
 /// Lets go of a `flock` before its descriptor closes. The lock belongs to the open file, which a
 /// child forked meanwhile by any thread shares until it execs; closing only our descriptor
 /// would leave the lock held through that copy (a closed session's account then reads "in use").
-fn unlock(fd: &OwnedFd) {
+pub(crate) fn unlock(fd: &OwnedFd) {
     let _ = rustix::fs::flock(fd, rustix::fs::FlockOperation::Unlock);
 }
 

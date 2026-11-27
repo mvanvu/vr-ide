@@ -263,6 +263,10 @@ pub(crate) fn background_pass(app: &mut App, now: Instant) {
     if crate::ai::read_usage(app, now) {
         app.dirty = true;
     }
+    // A quiet session's screen is read for its limit or login message (AC-5, SEC-26).
+    if crate::ai::limits::check(app, now) {
+        app.dirty = true;
+    }
 }
 
 /// Runs until a command sets `app.quit`. Draws only when something changed.

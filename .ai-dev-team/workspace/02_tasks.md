@@ -9,7 +9,7 @@ Spec: `.ai-dev-team/workspace/01_spec.md` · Plan: `.ai-dev-team/workspace/02_pl
 | T2 | Shared history between accounts | be | TM | security | AC-2, SEC-n | crates/vr-ide/src/ai/history.rs (new), ai/accounts.rs, ai/mod.rs, README.md | `cargo test -p vr-ide` | done (review APPROVE + QP1 re-check, QC_PASS) | 0 |
 | T2b | SEC-38 for shells, ssh and /run (drop inherited CLAUDE_CONFIG_DIR/CODEX_HOME into accounts/),  | be | T2 | security | SEC-38 | commands/terminal.rs, commands/ssh.rs, commands/run (where /run spawns) | `cargo test -p vr-ide` | done (review APPROVE + QP1 re-check, QC_PASS; committed on run5-T2b, merge after T3) | 0 |
 | T3 | Claude usage report (statusLine helper) | be | TM, T2 | security | AC-3, SEC-n | crates/vr-ide/src/ai/usage.rs (new), cli.rs, main.rs, ai/mod.rs, Cargo.toml, crates/vr-ide/Cargo.toml, Cargo.lock | `cargo test -p vr-ide` | done (review APPROVE r1, QC_PASS + re-check) | 1 |
-| T5 | Limit/login detection, per-account state (sets `works` on usage reports) | be | T3 | security | AC-5, SEC-n | crates/vr-ide/src/ai/limits.rs (new), ai/mod.rs | `cargo test -p vr-ide` | todo | 0 |
+| T5 | Limit/login detection, per-account state (sets `works` on usage reports) | be | T3 | security | AC-5, SEC-n | crates/vr-ide/src/ai/limits.rs (new), ai/mod.rs | `cargo test -p vr-ide` | done (review APPROVE r1 + QP1, QC_PASS + re-check) | 1 |
 | T4 | Usage display (label, 90 % notice, `/ai usage`) | fe | T3, T5 | ui | AC-4 | ai/mod.rs (label), ui/ai_view.rs, ai/usage.rs, commands/slash.rs, docs/commands.md, README.md | `cargo test -p vr-ide` | todo | 0 |
 | T6 | Auto-switch | be | T1, T2, T4, T5 | security | AC-6, AC-7, SEC-n | crates/vr-ide/src/ai/switch.rs (new), ai/mod.rs, commands/slash.rs, docs/commands.md, README.md | `cargo test -p vr-ide` | todo | 0 |
 | T7 | Codex limits | be | T6 | security | AC-8 | ai/usage.rs, ai/mod.rs, ai/switch.rs, README.md | `cargo test -p vr-ide` | todo | 0 |
@@ -26,7 +26,7 @@ Spec: `.ai-dev-team/workspace/01_spec.md` · Plan: `.ai-dev-team/workspace/02_pl
 - account_switch: none (local.md, user)
 - hand-off: ready (22:31) — apt deps installed (webkit2gtk-4.1 2.52.6), plugin 1.0.45 loaded, account_switch: none (cswap present), Workflow not used while away (Phase 5 via Agent)
 - parallel: TM ∥ T1 — TM read-only, T1 in vr-config only (22:27)
-- eta: ~06:30 (set 22:27, basis: critical path TM→T2→T3→T5→T4→T6→T7→T8 + final review, ~45–90 min per task incl. review/qc, sequential in one crate)
+- eta: ~05:20 (set 22:27 as ~06:30, updated 23:19: 5 tasks done in ~65 min; remaining T5 45, T4 40, T6 90, T7 40, T8 90, final review 45)
 - 22:27 verdict gate T1 review ✓ APPROVE (sonnet, files read 3/3, no findings, rule check table present). Waiting: QC T1.
 - 22:28 verdict gate T1 QC ✓ QC_PASS (sonnet, 10 harness cases + crate tests). T1 done.
 - TEAM_BIN → /home/rainy/.claude/plugins/cache/mvanvu/ai-dev-team/1.0.45/skills/project-profiling/references (plugin 1.0.45 reloaded by the user, 22:31)
@@ -48,3 +48,12 @@ Spec: `.ai-dev-team/workspace/01_spec.md` · Plan: `.ai-dev-team/workspace/02_pl
 - 23:17 T3 R1 DONE (5/5; red→green; related 303 + e2e 3 pass; guard clean; event_loop.rs added). Re-check: T3 reviewer (all findings); QC T3 re-checks the hidden-panel/idle read case.
 - 23:18 verdict gate T3 R1 re-check ✓ APPROVE (opus, 5/5 closed, no new). Waiting: QC T3 re-check (hidden panel).
 - 23:18 verdict gate T3 QC re-check ✓ QC_PASS (hidden panel, idle, 1 read/s). T3 done. Next: merge run5-T2b into master, then T5.
+- 23:38 T5 DONE gate ✓ (merged tree green first; compliance per ID; guard clean). Dev's D1–D9 renumbered D19–D27; open point (other tools) decided D21. Extra files: event_loop.rs (one call), visibility in usage.rs/accounts.rs/ui/ai_changes.rs, limits_tests.rs, ai_tests.rs. Review opus + QC sonnet.
+- 23:40 verdict gate T5 QC ✓ QC_PASS (7 cases; F1 low: user-typed limit text at column 0 in a program without input box → notice; F2 info = D21). Process note: qc edited ai_tests.rs temporarily (restored from .orig) while the T5 review ran — future qc briefs: harness under qa-artifacts, not repo files. Waiting: review T5.
+- 23:42 verdict gate T5 review ✓ REQUEST_CHANGES (opus; blocker: non-ASCII reset text panics the main loop limits.rs:475 — confirmed by probe; medium: printed login line marks account not working; 4 minor: DST/TZ, rollover, cross-session clear, spend/credit stop messages; uncertain: real limit-screen layout unverified → user check on return). + QC F1. Fix round 1 → a FRESH opus developer from 04_dev_T5.md (T5's developer is at 261k tokens, COST-16).
+- 23:42 note: leader re-ran task-base T5 by mistake (now 1cbbbaef = tree at the start of fix round 1, used as the round-1 base). Full T5 diff = git diff HEAD + untracked limits*.rs (HEAD 1c4223a has no T5 change). Fix round 1 → fresh opus developer.
+- 23:59 T5 R1 DONE (7/7, mutation red→green per finding, related tests + guard clean; ui/ai_changes.rs visibility only). Decisions D28–D32. Out of scope noted: TZif footer rule ignored by utc_offset (also the UI clock) → Phase 6 report. Re-check: T5 reviewer (all); QC re-checks the crash (non-ASCII) and typed-text cases.
+- 00:00 verdict gate T5 R1 re-check ✓ APPROVE (opus; 7/7 closed; 2 new minor: shorter limit overwrites a longer sticky one; derived Debug on Watch would print typed text). Quick pass after QC's re-check reports (no edits under a running verdict).
+- 00:01 verdict gate T5 QC re-check ✓ QC_PASS (crash replay: no panic; F1 typed/pasted at column 0: no notice). codex keeps the notice without a time when the reset is unparsable (genuine head) — accepted. Quick pass 1 (2 minors) → T5 R1 developer; re-check by the T5 reviewer.
+- 00:03 T5 QP1 DONE (2/2 red→green, guard clean). Re-check by the T5 reviewer.
+- 00:03 verdict gate T5 QP1 re-check ✓ APPROVE. T5 done. Next: T4.

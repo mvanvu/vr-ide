@@ -101,3 +101,52 @@ Output:
 - write3 (33%), pass at +1100 ms after the first read: usage=33 (the last value), dirty=true, reads=2
 - `test result: ok. 3 passed` (the two existing usage tests still pass).
 Rule check: AC-3 pass (hidden panel, idle agent); SEC-39 read-rate bound pass (no read at +300 ms).
+
+## QC T5 — limit/login detection, per-account state
+Method: temporary tests appended to `crates/vr-ide/src/ai_tests.rs` (fake agent `sh` script started through `spawn_session`, temp state folder, `background_pass` with injected clock); file restored from `qa-artifacts/T5/ai_tests.rs.orig` afterwards (no `qc_t5` left). Logs: `qa-artifacts/T5/qc_run1.log`, `qc_run2.log`. Real claude/codex never run. Engine: cargo test (no browser; be task).
+
+| # | Scenario | Result (real output) |
+|---|---|---|
+| 1 | claude screen `⎿  You've hit your 5-hour limit · resets 3pm` + full rounded input box | @500 ms and @999 ms: notices=[]; @1000 ms: `["claude hit its usage limit (resets 15:00)"]`; repeat passes to +30 s: still 1; running=true; state `{"claude/default":{"limited_until":1795878000,"works":false}}` mode 600. With account `work`: `claude@work hit its usage limit (resets 15:00)` |
+| 2 | codex `■ You've hit your usage limit. Try again at 3:30 PM.` + composer | `["codex hit its usage limit (resets 15:30)"]`, state `codex/default` limited_until 1795879800, mode 600 |
+| 3 | spoofs: inside longer line; `> ` quote; `●` bullet; limit line followed by `● Done` then quiet; echoed in input box; `> ` prompt echo; typed via keys into a box-less screen | first six: notices=[], state absent, running. Typed via real key events (tty echo on a bare screen with no input box): notice shown — see F1 |
+| 4 | usage report "5h 100% used" on screen, no limit line; plus existing `ai_limit_state_follows_usage_reports` at 100 % | no notice, running=true, limit not ended/created |
+| 5 | login screen `Select login method:` with seeded `works:true` | before `works:true`, after `{"claude/default":{"limited_until":1795801208,"works":false}}` mode 600 (a default entry with no limit is dropped from the file by design, absence = works false) |
+| 6 | two writers: 2 threads x 60 updates; 2 separate processes x 150 updates (run concurrently) | both: valid JSON, both `claude/a` and `codex/b` keys present, mode 600, lock file present |
+| 7 | garbage bytes, 1 MB junk, 1 MB valid-looking JSON, wrong types, array | `load_state` = {} each, no crash; following update rewrites a valid 61-byte file |
+Own-process check: `cargo test -p vr-ide --lib ai_limit` 5 passed; `limits::` 14 passed.
+
+Notes: my first claude run showed no notice because my fake box had no bottom border (a single rule is not an input box and the rule row counted as later content). With a complete box it passes; controls had to pass before the spoof results counted, and they did (scenario 1).
+
+Findings (non-blocking):
+- F1 (low): text typed by the user with real keys into a program that only tty-echoes (no prompt marker, no input box) at column 0 and then goes quiet is treated as a limit line (notice + state `limited_until`). Real claude/codex draw typed text inside the input box or after `>`/`›`, which are ignored (scenarios 3, tests `the_input_box_is_ignored`). Cheap hardening: ignore a screen check when `limit_watch.typed` was set since the last tool output. Matches the accepted residual in the threat model (T6 restart cap bounds it).
+- F2 (info): D3 — gemini/aider/cursor-agent have no patterns; leader's call.
+
+## Rule check T5
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-5 | pass | scenarios 1, 2 (one notice with reset time, only after >= 1 s quiet, no repeat), 4 (100 % alone: no notice, process running) |
+| SEC-26 | pass (F1 residual) | scenario 3: whole-line only, quote/bullet/longer line/followed output/input-box echo give no notice; notice text fixed |
+| SEC-27 | pass | scenarios 5, 6, 7: mode 0600, locked updates keep both keys across threads and processes, garbage/1 MB ignored without crash |
+| BASE-14 | pass | cargo runs in background, no polling |
+| BASE-15 | pass | no process stopped |
+| BASE-17 | pass | temp dirs removed, test file restored |
+| BASE-18 | pass | no agents |
+| BASE-19 | pass | results written to report |
+
+## QC T5 re-check
+Harness: temporary module `crates/vr-ide/src/qc_t5_tests.rs` plus one `mod` line in the untouched `lib.rs`; both removed afterwards (lib.rs diff empty again; no task-diff file touched). Copy kept as `qa-artifacts/T5/qc_t5_tests.rs.txt`, log `qa-artifacts/T5/qc_recheck.log`. Fake agents through `spawn_session` + `background_pass` at 0/0.5/1/1.1/5 s.
+
+| Case | Real output |
+|---|---|
+| claude `resets naïve`, `resets 3pmé`, `resets éé` | no panic, notices=[], state absent, process running |
+| codex `Try again at aaé.`, `…3:30 PMé`, `…at é` | no panic, process running, state absent; notice `codex hit its usage limit` (fixed text, no reset part, no screen text). By design: the codex head `You've hit your usage limit.` is genuine alone and an unparsable reset only drops the time. Flagged in case a non-time should also suppress the codex notice (claude does) |
+| control claude `resets 3pm` | `claude hit its usage limit (resets 15:00)`, state written |
+| F1: user types exact claude and codex limit text, keys / keys+Enter / paste, bare tty echo at column 0, quiet 5 s | 6 of 6: notices=[], no `ai-account-state` file created |
+
+## Rule check T5 re-check
+| Rule | Status | Evidence |
+|---|---|---|
+| SEC-26 | pass | no panic on non-ASCII reset text; typed/pasted limit text gives no notice and no state |
+| SEC-27 | pass | no state written for any spoof case |
+| BASE-17 | pass | temp module and lib.rs line removed |

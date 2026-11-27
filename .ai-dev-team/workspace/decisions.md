@@ -20,3 +20,17 @@ Taken by the leader while the user is away (presence: away since 22:24). Recomme
 - D16 (T3 R1, 23:17): usage reports are read on every event-loop pass (`event_loop::background_pass`): checked at most every 250 ms, read at most once a second per session.
 - D17 (T3 R1, 23:17): the usage-file sweep needs both a pid not alive here and files untouched for over a day; accepted cost: a window in another container/host idle > 1 day can lose its files and shows no usage until it restarts.
 - D18 (T3 R1, 23:17): a New-mode restart forgets the session id (keeps the account's window numbers); Continue keeps it until the new run reports.
+- D19 (T5, 23:38): a limit event ends only when the user typed and the limit line is gone, or on a restart (claude echoes typing, so "any output" would re-fire).
+- D20 (T5, 23:38): a hit also needs the limit line to be the last content above the input box (stricter than SEC-26).
+- D21 (T5, 23:38; leader on the open point): limit patterns exist only for claude and codex; gemini, aider and cursor-agent get no limit detection in this run (their strings cannot be checked here). README states it. confirm-on-return.
+- D22 (T5, 23:38): `limited_until` is stored only when a reset time is known (screen time, else the session's own report at ≥ 100 %).
+- D23 (T5, 23:38): a report < 100 % clears `limited_until` only when that session is not at its limit now.
+- D24 (T5, 23:38): a login screen sets `works = false`.
+- D25 (T5, 23:38): state file format and write path as in 04_dev_T5.md.
+- D26 (T5, 23:38): notice "claude@work hit its usage limit (resets 15:00)"; "Mon D HH:MM" when the reset is ≥ 24 h away.
+- D27 (T5, 23:38): a session scrolled back is checked again a second later. Accepted residual risk: an exact limit message alone in a code block as the last content matches.
+- D28 (T5 R1): only 5-hour/weekly limits are cleared by a report < 100 %; model/spend/credit limits are stored "sticky" and last until their reset.
+- D29 (T5 R1): text the user typed (keys and pastes, ≤ 2048 chars, kept per run) is never taken as a limit or login line; cost: a real message identical to text typed earlier in the run is missed.
+- D30 (T5 R1): screen reset times are believed only in vr-ide's own zone (TZ, else /etc/localtime); otherwise the report's reset is used; the notice shows " UTC" when the zone is unknown.
+- D31 (T5 R1): login lines follow the limit rules (window, last content, not typed); rows inside a box still count.
+- D32 (T5 R1): a clock time that passed < 1 h ago counts as passed (no limited_until from the screen).
