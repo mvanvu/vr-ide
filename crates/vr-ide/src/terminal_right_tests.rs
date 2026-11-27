@@ -381,6 +381,44 @@ fn grow_and_shrink_change_the_width_on_the_right() {
     assert!(app.layout.terminal.height < tallest);
 }
 
+/// ctrl+f8 / ctrl+f9 resize the panel from a focused terminal too (kitty and legacy bytes),
+/// while f8 still reaches the program.
+#[test]
+fn ctrl_f8_and_ctrl_f9_resize_from_a_focused_terminal() {
+    for enhanced in [true, false] {
+        for position in [TerminalPosition::Right, TerminalPosition::Bottom] {
+            let (_d, mut app) = right_app();
+            app.terminal.position = position;
+            app.keyboard_enhanced = enhanced;
+            app.focus = Focus::Terminal;
+            draw(&mut app, 120, 40);
+            let ev = |k: &str| {
+                if enhanced {
+                    crate::app_tests::kitty_event(k)
+                } else {
+                    legacy_event(k).1.unwrap()
+                }
+            };
+            let size = |a: &App| (a.terminal.width_percent, a.terminal.height_percent);
+            let before = size(&app);
+            app.handle_key(ev("ctrl+f8"));
+            let grown = size(&app);
+            let ctx = format!("enhanced={enhanced} {position:?}");
+            match position {
+                TerminalPosition::Right => assert!(grown.0 > before.0, "width {ctx}"),
+                TerminalPosition::Bottom => assert!(grown.1 > before.1, "height {ctx}"),
+            }
+            app.handle_key(ev("ctrl+f9"));
+            assert_eq!(size(&app), before, "shrink {ctx}");
+            assert_eq!(app.focus, Focus::Terminal, "{ctx}");
+            // f8 goes to the program: the tab does not change.
+            let active = app.terminal.active;
+            app.handle_key(ev("f8"));
+            assert_eq!(app.terminal.active, active, "f8 {ctx}");
+        }
+    }
+}
+
 /// On a wide column one percent is several cells: a drag keeps the separator on the mouse.
 #[test]
 fn dragging_follows_the_mouse_column_on_a_wide_editor() {
