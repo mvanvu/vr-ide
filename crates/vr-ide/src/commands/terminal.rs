@@ -319,6 +319,9 @@ pub struct TerminalPanel {
     resizing: bool,
     /// The tab of terminal `i` is being dragged along the bar to a new place (FR-19).
     tab_drag: Option<usize>,
+    /// Cell (column, row) of the press on a logged-in SSH tab: its release there, with no move
+    /// in between, gives the session the window (a drag reorders it instead).
+    full_on_release: Option<(u16, u16)>,
     /// "Quit anyway" was chosen; the next quit does not ask about terminals
     /// again (one shot).
     quit_confirmed: bool,
@@ -345,6 +348,7 @@ impl TerminalPanel {
             captured: false,
             resizing: false,
             tab_drag: None,
+            full_on_release: None,
             quit_confirmed: false,
             wake: Arc::default(),
         }
@@ -494,8 +498,26 @@ fn shrink(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
+/// Full screen hides the panel and its layout: a size or place change there would apply to
+/// something unseen, measured on the wrong grid. Says so instead (shown after full screen).
+fn held_in_full_screen(app: &mut App) -> bool {
+    if !full_screen(app) {
+        return false;
+    }
+    let back = app.key_hint("terminal.toggle");
+    let text = format!("The terminal panel changes in the IDE layout ({back} gives it back)");
+    // Repeated presses must not stack copies for when the layout is back.
+    if !app.notices.iter().any(|n| n.text == text) {
+        app.info(text);
+    }
+    true
+}
+
 fn step_size(app: &mut App, up: bool) {
     use crate::ui::layout::{EDITOR_MIN_ROWS, TERMINAL_MIN_ROWS, right_cols};
+    if held_in_full_screen(app) {
+        return;
+    }
     let right = right_now(app);
     let column = app.layout.tabs.width;
     let screen = app.layout.status.y + app.layout.status.height;
@@ -546,6 +568,9 @@ fn share(cells: u16, total: u16) -> u16 {
 
 /// ctrl+f7: bottom ↔ right for this session (D227). A hidden panel stays hidden.
 fn toggle_position(app: &mut App, _: CmdArgs) -> CmdResult {
+    if held_in_full_screen(app) {
+        return Ok(());
+    }
     let to = match app.terminal.position {
         TerminalPosition::Bottom => TerminalPosition::Right,
         TerminalPosition::Right => TerminalPosition::Bottom,
@@ -612,6 +637,11 @@ fn right_now(app: &App) -> bool {
 
 /// The editor gets the keys; the panel stays (`focus.editor`, also what a click on the editor does).
 fn focus_editor(app: &mut App, _: CmdArgs) -> CmdResult {
+    // Full screen lays out no editor, which is not a covered one: leave it as ctrl+` does.
+    if full_screen(app) {
+        hide(app);
+        return Ok(());
+    }
     // A panel that covers the whole editor keeps the keys: nothing would show them.
     if editor_covered(app) && has_keys(app) {
         return Ok(());
@@ -1300,15 +1330,29 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
     if app.terminal.tab_drag.is_some() {
         match ev.kind {
             MK::Drag(MB::Left) => {
-                drag_tab_to(app, ev.column);
+                // Any move off the pressed cell, or a move of the tab, makes it a drag.
+                if app.terminal.full_on_release != Some((ev.column, ev.row)) {
+                    app.terminal.full_on_release = None;
+                }
+                if drag_tab_to(app, ev.column) {
+                    app.terminal.full_on_release = None;
+                }
                 return true;
             }
             MK::Up(MB::Left) => {
                 app.terminal.tab_drag = None;
+                // A click, not a drag: the session takes the window after the release, so no
+                // part of the click reaches the program.
+                if app.terminal.full_on_release.take() == Some((ev.column, ev.row)) {
+                    enter_full(app);
+                }
                 return true;
             }
             // The release was let go where vr-ide could not see it.
-            MK::Down(_) => app.terminal.tab_drag = None,
+            MK::Down(_) => {
+                app.terminal.tab_drag = None;
+                app.terminal.full_on_release = None;
+            }
             _ => {}
         }
     }
@@ -1370,8 +1414,10 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
                     app.terminal.captured = false;
                     app.terminal.tab_drag = Some(i);
                     app.focus = Focus::Terminal;
-                    // Choosing a logged-in session's tab gives it the whole window again.
-                    enter_full(app);
+                    // Clicking a logged-in session's tab gives it the whole window again, on
+                    // the release: entering on the press would end a drag of the tab (FR-19).
+                    app.terminal.full_on_release =
+                        active_session_live(app).then_some((ev.column, ev.row));
                 }
                 // At the bottom the tab bar is the top edge; on the right the separator is.
                 None if app.layout.terminal_sep.width == 0 => app.terminal.resizing = true,
@@ -1519,20 +1565,20 @@ fn bar_hit(app: &App, x: u16) -> Option<BarHit> {
 /// when it already is that tab, which carries it past tabs hidden behind `+N`. Mirrored on the
 /// left: on the first drawn tab's leading cells (its space and number) or left of the panel, it
 /// moves one place toward the front, past tabs hidden before it (only a bar that draws the
-/// active tab alone has hidden tabs before its first drawn one).
-fn drag_tab_to(app: &mut App, column: u16) {
+/// active tab alone has hidden tabs before its first drawn one). Returns whether it moved.
+fn drag_tab_to(app: &mut App, column: u16) -> bool {
     let Some(cur) = app.terminal.tab_drag else {
-        return;
+        return false;
     };
     let n = app.terminal.tabs.len();
     if cur >= n {
         app.terminal.tab_drag = None;
-        return;
+        return false;
     }
     let area = app.layout.terminal;
     let bar = crate::ui::terminal_view::tab_bar(app, area.width);
     let (Some(me), Some(last)) = (bar.tabs.iter().find(|t| t.index == cur), bar.tabs.last()) else {
-        return;
+        return false;
     };
     // Left of the panel (the separator, the editor) counts as its first column.
     let x = column.saturating_sub(area.x);
@@ -1555,7 +1601,7 @@ fn drag_tab_to(app: &mut App, column: u16) {
             })
     };
     let Some(to) = to else {
-        return;
+        return false;
     };
     let p = &mut app.terminal;
     let tab = p.tabs.remove(cur);
@@ -1563,6 +1609,7 @@ fn drag_tab_to(app: &mut App, column: u16) {
     p.active = to;
     p.tab_drag = Some(to);
     app.dirty = true;
+    true
 }
 
 /// Dragging the edge: at the bottom the panel reaches from the mouse row to its bottom; on the

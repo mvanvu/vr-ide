@@ -369,13 +369,18 @@ and known hosts apply as they do in a terminal.
 - When the login succeeded the tab takes the whole window: only the last row stays vr-ide's
   (`SSH <target>` and the key back). Every key goes to the session except the keys a focused
   terminal keeps: ``ctrl+` `` (back to the editor; the session keeps running), `F1`, `ctrl+f7`,
-  `ctrl+f8`, `ctrl+f9`. `shift+pageup` / `shift+pagedown` scroll back as in any terminal tab.
-- To return to a session: click its tab in the terminal panel, or choose it in the ssh list.
-  Several sessions can be open, one tab each (at most 16).
+  `ctrl+f8`, `ctrl+f9` (these three change the panel only in the IDE layout; in full screen they
+  just say so). `shift+pageup` / `shift+pagedown` scroll back as in any terminal tab. Notices
+  raised meanwhile wait for the IDE layout (the last row counts them) and are shown when it is
+  back.
+- To return to a session: click its tab in the terminal panel (dragging the tab moves it along
+  the bar instead), or choose it in the ssh list. Several sessions can be open, one tab each (at
+  most 16).
 - When ssh ends (logout, a dropped connection, a failed login) the editor comes back and the tab
   shows `[process exited N]`; Enter there connects to the same target again. Quitting vr-ide or
   closing the tab of a live session asks first.
-- Recently used targets (at most 20, recorded after a successful login) are kept in
+- Recently used targets (at most 20, recorded after a successful login, or after a clean
+  exit when `ssh_fullscreen = false`) are kept in
   `~/.local/state/vr-ide/ssh-recent`, readable by you only. No password or key is ever stored.
 
 How the login is detected: vr-ide starts ssh as
