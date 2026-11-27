@@ -7,6 +7,7 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, Clear, Widget};
 
 use crate::app::App;
+use crate::commands::completion;
 use crate::commands::palette::{PaletteItem, PaletteMode};
 use crate::theme::Theme;
 
@@ -68,6 +69,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         }
         _ => Vec::new(),
     };
+    // Tab completion (D6) owns the area under the list while it is open.
+    let comp = p.completion.clone();
+    let need = match &comp {
+        Some(c) => {
+            detail_lines = completion_detail(c, p.input.text(), text_w);
+            detail_lines.len()
+        }
+        None => need,
+    };
     let spare = room.saturating_sub(3 + err_rows + 1);
     let reserved = need.min(usize::from(spare.saturating_sub(1)));
     detail_lines.truncate(reserved);
@@ -98,7 +108,41 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let pw = prompt.len() as u16;
     buf.set_style(Rect::new(x0, rect.y + 1, inner_w, 1), theme.input);
     buf.set_string(x0, rect.y + 1, prompt, theme.input);
-    let field_w = inner_w.saturating_sub(pw);
+    // Right of the input while completing: `tab: list (N)` or `i/N`. The typed text and the
+    // cursor after it keep their room: a narrow box takes the short tag or none; the list
+    // counter always stays.
+    let typed_w = Span::raw(p.input.text()).width() as u16 + 1;
+    let avail = inner_w.saturating_sub(pw);
+    let fits = |t: &str| {
+        let w = Span::raw(t).width() as u16;
+        !t.is_empty() && w + 1 + typed_w <= avail
+    };
+    let tag = match &comp {
+        None => String::new(),
+        Some(c) => {
+            let full = c.tag();
+            if fits(&full) {
+                full
+            } else if let Some(s) = c.short_tag().filter(|s| fits(s)) {
+                s
+            } else if matches!(c.phase, completion::Phase::List(_)) {
+                full
+            } else {
+                String::new()
+            }
+        }
+    };
+    let tag_w = Span::raw(tag.as_str()).width() as u16;
+    let tag_room = if tag.is_empty() || tag_w + 2 > avail {
+        0
+    } else {
+        tag_w + 1
+    };
+    let field_w = inner_w.saturating_sub(pw + tag_room);
+    if tag_room > 0 {
+        let tx = x0 + inner_w - tag_w - 1;
+        buf.set_string(tx, rect.y + 1, &tag, theme.input.patch(theme.dim));
+    }
     let (shown, cx) = p.input.view(field_w);
     buf.set_stringn(
         x0 + pw,
@@ -131,6 +175,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let width = usize::from(inner_w.saturating_sub(2));
     let slash =
         p.mode == PaletteMode::Commands && crate::commands::palette::is_slash(p.input.text());
+    // Candidate folders in the folder colour (S5).
+    let folders = comp
+        .as_ref()
+        .is_some_and(|c| matches!(c.phase, completion::Phase::List(_)));
+    let folder = ratatui::style::Style::default().fg(theme.popup_border.fg.unwrap_or_default());
     if p.items.is_empty() {
         buf.set_stringn(
             x0 + 1,
@@ -185,6 +234,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             }
             let style = if item.hits.contains(&ci) {
                 base.patch(theme.matched)
+            } else if folders && item.title.ends_with('/') {
+                base.patch(folder)
             } else {
                 base
             };
@@ -305,4 +356,64 @@ fn ellipsize(text: &str, cells: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// The lines under the list while a completion is open: the common part's candidates on one
+/// line, the `/ssh` command the input runs (wrapped at spaces and after `/`), the folder paths
+/// come from, or the key hint.
+fn completion_detail(c: &completion::Completion, input: &str, width: u16) -> Vec<String> {
+    match (c.phase, &c.note) {
+        (completion::Phase::Common, _) => vec![ellipsize(&c.detail(), usize::from(width))],
+        (completion::Phase::List(_) | completion::Phase::Done, completion::Note::SshRuns(base)) => {
+            let arg = input.strip_prefix("/ssh").unwrap_or(input).trim_start();
+            wrap_runs(
+                &completion::ssh_runs_line(arg, base),
+                usize::from(width),
+                MAX_DETAIL_ROWS,
+            )
+        }
+        (completion::Phase::Done, _) => Vec::new(),
+        _ => wrap_cut(&c.detail(), width, MAX_DETAIL_ROWS),
+    }
+}
+
+/// `text` (`runs: ssh …`) in lines of `width` cells, broken only after a space or a `/`
+/// (never inside a name); continuation lines are indented under the command. More than
+/// `rows` lines: the last one ends in "…".
+fn wrap_runs(text: &str, width: usize, rows: usize) -> Vec<String> {
+    let indent = " ".repeat("runs: ".len());
+    let mut pieces: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for ch in text.chars() {
+        cur.push(ch);
+        if ch == ' ' || ch == '/' {
+            pieces.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        pieces.push(cur);
+    }
+    let cells = |s: &str| Span::raw(s).width();
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for piece in pieces {
+        if !line.trim().is_empty() && cells(&line) + cells(piece.trim_end()) > width {
+            lines.push(line.trim_end().to_string());
+            line = indent.clone();
+        }
+        line.push_str(&piece);
+    }
+    if !line.trim().is_empty() {
+        lines.push(line.trim_end().to_string());
+    }
+    if lines.len() > rows {
+        lines.truncate(rows);
+        if let Some(last) = lines.last_mut() {
+            *last = ellipsize(&format!("{last} …"), width);
+            if !last.ends_with('…') {
+                last.push('…');
+            }
+        }
+    }
+    lines
 }

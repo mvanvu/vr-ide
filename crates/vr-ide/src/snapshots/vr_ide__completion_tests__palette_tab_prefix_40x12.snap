@@ -1,0 +1,16 @@
+---
+source: crates/vr-ide/src/completion_tests.rs
+expression: "frame(&t, &tmp)"
+---
+" session.rs x                           "
+"  ┌ Command Palette ─────────────────┐  "
+"  │> /ws add ../fixecom      tab (2) │  "
+"  │ /ws add <folder>  Add a folder … │  "
+"  │ ──────────────────────────────── │  "
+"  │ Common part completed: fixecom/… │  "
+"  └──────────────────────────────────┘  "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+" READ session.rs · Ln 1, Col 1          "

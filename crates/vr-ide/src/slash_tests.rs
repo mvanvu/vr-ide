@@ -134,7 +134,7 @@ fn parse_reports_bad_commands_and_arguments() {
         "/reload takes no argument"
     );
     assert_eq!(parse("/run").unwrap_err(), "/run needs <command>");
-    assert_eq!(parse("/ws add   ").unwrap_err(), "/ws add needs <dir>");
+    assert_eq!(parse("/ws add   ").unwrap_err(), "/ws add needs <folder>");
     assert_eq!(
         parse("/theme pink").unwrap_err(),
         "/theme: pink is not one of synthwave, dracula, dark, light"
@@ -710,7 +710,9 @@ fn ws_add_tab_completes_folders() {
     );
     key(&mut app, KeyCode::Tab);
     assert_eq!(input(&app), "/ws add ../other", "the shared prefix first");
-    key(&mut app, KeyCode::Down);
+    // D6: a second Tab opens the candidate list, the next one steps to the second.
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(input(&app), "/ws add ../other/");
     key(&mut app, KeyCode::Tab);
     assert_eq!(input(&app), "/ws add ../other2/");
     // Hidden folders only when the name starts with a dot.

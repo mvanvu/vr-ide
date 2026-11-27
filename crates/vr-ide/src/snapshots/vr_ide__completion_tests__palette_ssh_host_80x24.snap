@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/completion_tests.rs
+expression: text
+---
+" session.rs x                                                                   "
+"  1 ┌ Command Palette ─────────────────────────────────────────────────────┐    "
+"  2 │> /ssh -i credentials/id_fixecom root@app.fixecom.vn              1/5 │    "
+"    │ root@app.fixecom.vn                                           recent │    "
+"    │ app.fixecom.vn                                         ~/.ssh/config │    "
+"    │ app-staging                                            ~/.ssh/config │    "
+"    │ bastion                                                ~/.ssh/config │    "
+"    │ git.example.com                                        ~/.ssh/config │    "
+"    │ ──────────────────────────────────────────────────────────────────── │    "
+"    │ runs: ssh -i /tmp/vrT4XXXXXX/DEV/fixecom/credentials/id_fixecom      │    "
+"    │       root@app.fixecom.vn                                            │    "
+"    └──────────────────────────────────────────────────────────────────────┘    "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" READ session.rs · Ln 1, Col 1 · LF · UTF-8                                     "
