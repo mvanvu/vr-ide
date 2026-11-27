@@ -437,3 +437,4 @@ Rule packs: only `TOOL` (T1) applies besides `BASE`/`COST`. Web/mobile packs (SW
 - 13:44 FR-33 DONE (gate ✓; 716 pass, guard clean; PALETTE_HIDDEN keeps D291). Review sonnet.
 - 13:47 verdict gate FR-33 ✓ CHANGES_REQUESTED docs-only (3 stale 'no key' lines → fixed by the leader as one-line doc fixes; nit: handle_key exited-tab close branch now only reachable if user unbinds [terminal] ctrl+w → Phase 6 report). Committed ab34701 on fr-33, master merged in clean (2a767f6); related tests running before merge to master.
 - 13:48 FR-33 related tests on merged branch: vr-ide 714 / vr-config 49 pass, 0 fail. FR-33 done, merged 73061e5. Reinstall from a clean checkout of 73061e5 (D318).
+- 13:46 reinstalled vr-ide from a clean checkout of 73061e5 (~/.cargo/bin/vr-ide 13:46). Running instance pid 1263376 still old until restart. Not pushed. Run end.
