@@ -6,9 +6,11 @@ use ratatui::style::{Color, Modifier, Style};
 use vr_syntax::Capture;
 
 mod ansi;
+mod explorer;
 mod synthwave;
 
 pub use ansi::AnsiPalette;
+pub use explorer::ExplorerKind;
 
 /// The theme used when settings name none or an unknown one.
 pub const DEFAULT_THEME: &str = "synthwave";
@@ -68,6 +70,8 @@ pub struct Theme {
     pub git_deleted: Style,
     /// The inline blame after the cursor line: quieter than code.
     pub git_blame: Style,
+    /// Colour of an explorer name by kind; read through [`Theme::explorer`].
+    explorer_kinds: explorer::Table,
     /// Colours of programs in the integrated terminal; read through [`Theme::ansi_palette`].
     ansi: Option<AnsiPalette>,
 }
@@ -95,6 +99,11 @@ impl Theme {
     /// background, the selection and find matches, which keep their own background.
     pub fn syntax(&self, capture: Capture) -> Style {
         self.captures[capture as usize]
+    }
+
+    /// Style of an explorer name of this kind (AC-F5): foreground only.
+    pub fn explorer(&self, kind: ExplorerKind) -> Style {
+        self.explorer_kinds[kind as usize]
     }
 
     pub fn dark() -> Theme {
@@ -155,6 +164,20 @@ impl Theme {
             git_blame: Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::ITALIC),
+            explorer_kinds: explorer::ansi(
+                [
+                    Color::Indexed(75),
+                    Color::Indexed(203),
+                    Color::LightGreen,
+                    Color::Yellow,
+                    Color::LightCyan,
+                    Color::LightMagenta,
+                    Color::Indexed(208),
+                    Color::Indexed(246),
+                    Color::Indexed(250),
+                ],
+                true,
+            ),
             ansi: None,
         }
     }
@@ -217,6 +240,20 @@ impl Theme {
             git_blame: Style::default()
                 .fg(Color::Gray)
                 .add_modifier(Modifier::ITALIC),
+            explorer_kinds: explorer::ansi(
+                [
+                    Color::Blue,
+                    Color::Red,
+                    Color::Indexed(28),
+                    Color::Indexed(130),
+                    Color::Indexed(23),
+                    Color::Magenta,
+                    Color::Indexed(125),
+                    Color::Indexed(238),
+                    Color::Indexed(243),
+                ],
+                true,
+            ),
             ansi: None,
         }
     }
@@ -508,6 +545,16 @@ impl Theme {
             git_modified: Style::default().fg(cyan),
             git_deleted: Style::default().fg(red),
             git_blame: Style::default().fg(dim).add_modifier(Modifier::ITALIC),
+            explorer_kinds: explorer::fitted(
+                depth,
+                [
+                    0xbd93f9, 0xff79c6, 0x50fa7b, 0xffb86c, 0xf1fa8c, 0x8be9fd, 0xff7878, 0xa3a3ad,
+                    0x9aa8d4,
+                ],
+                Style::default().fg(fg),
+                bg,
+                line,
+            ),
             ansi: Some(ansi::palette(depth, fg, bg, &ansi::DRACULA_ANSI)),
         }
     }
@@ -776,6 +823,108 @@ mod tests {
                     "{depth:?} {name}: {f:?} on {b:?} is {:.2}",
                     ratio(f, b)
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn explorer_kinds_read_on_the_explorer_and_selection_backgrounds() {
+        for depth in BOTH {
+            for t in [Theme::dracula_with(depth), Theme::synthwave_with(depth)] {
+                let (bg, line) = (t.text.bg.unwrap(), t.selection.bg.unwrap());
+                for k in ExplorerKind::ALL {
+                    let f = t.explorer(k).fg.unwrap();
+                    assert!(
+                        ratio(f, bg) >= 4.5,
+                        "{depth:?} {k:?} on bg {:.2}",
+                        ratio(f, bg)
+                    );
+                    assert!(
+                        ratio(f, line) >= 3.0,
+                        "{depth:?} {k:?} on selection {:.2}",
+                        ratio(f, line)
+                    );
+                }
+            }
+        }
+    }
+
+    /// Standard xterm RGB of a terminal-defined colour; indexed colours use the xterm-256 table.
+    fn xterm_rgb(c: Color) -> (u8, u8, u8) {
+        match c {
+            Color::Black => (0, 0, 0),
+            Color::Red => (205, 0, 0),
+            Color::Green => (0, 205, 0),
+            Color::Yellow => (205, 205, 0),
+            Color::Blue => (0, 0, 238),
+            Color::Magenta => (205, 0, 205),
+            Color::Cyan => (0, 205, 205),
+            Color::Gray => (229, 229, 229),
+            Color::DarkGray => (127, 127, 127),
+            Color::LightRed => (255, 0, 0),
+            Color::LightGreen => (0, 255, 0),
+            Color::LightYellow => (255, 255, 0),
+            Color::LightBlue => (92, 92, 255),
+            Color::LightMagenta => (255, 0, 255),
+            Color::LightCyan => (0, 255, 255),
+            Color::White => (255, 255, 255),
+            other => rgb(other),
+        }
+    }
+
+    #[test]
+    fn explorer_kinds_of_dark_and_light_read_on_common_terminal_backgrounds() {
+        let cases = [
+            ("light", Theme::light(), vec![(255, 255, 255)]),
+            ("dark", Theme::dark(), vec![(0x30, 0x0a, 0x24), (0, 0, 0)]),
+        ];
+        for (name, t, backgrounds) in cases {
+            for k in ExplorerKind::ALL {
+                let Some(f) = t.explorer(k).fg else { continue };
+                for &b in &backgrounds {
+                    let r = contrast(xterm_rgb(f), b);
+                    assert!(r >= 4.5, "{name} {k:?} {f:?} on {b:?} is {r:.2}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn explorer_generated_and_hidden_differ_by_colour_in_every_theme() {
+        for t in [
+            Theme::dark(),
+            Theme::light(),
+            Theme::dracula_with(ColorDepth::TrueColor),
+            Theme::dracula_with(ColorDepth::Indexed256),
+            Theme::synthwave_with(ColorDepth::TrueColor),
+            Theme::synthwave_with(ColorDepth::Indexed256),
+        ] {
+            assert_ne!(
+                t.explorer(ExplorerKind::Generated).fg,
+                t.explorer(ExplorerKind::Hidden).fg
+            );
+        }
+    }
+
+    #[test]
+    fn explorer_kinds_are_told_apart_in_every_theme() {
+        for t in [
+            Theme::dark(),
+            Theme::light(),
+            Theme::dracula_with(ColorDepth::TrueColor),
+            Theme::dracula_with(ColorDepth::Indexed256),
+            Theme::synthwave_with(ColorDepth::TrueColor),
+            Theme::synthwave_with(ColorDepth::Indexed256),
+        ] {
+            let mut seen = vec![];
+            for k in ExplorerKind::ALL {
+                let s = t.explorer(k);
+                // Hidden shares the dim colour with generated files but is italic.
+                assert!(
+                    !seen.contains(&(s.fg, s.add_modifier)),
+                    "{k:?} repeats a colour"
+                );
+                seen.push((s.fg, s.add_modifier));
             }
         }
     }

@@ -8,10 +8,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::blame::Blame;
-use crate::diff::{FileDiff, LineChange};
-use crate::log::{CommitInfo, CommitSummary};
-use crate::parse::is_oid;
-use crate::repo::{AheadBehind, Head, Repo, Status};
+use crate::diff::LineChange;
+use crate::repo::{AheadBehind, Head, Repo};
 use crate::{GitError, Result};
 
 /// A query for the worker. Buffer texts are shared, not copied, between the editor and the worker.
@@ -19,23 +17,6 @@ use crate::{GitError, Result};
 pub enum Request {
     Head,
     AheadBehind,
-    Status,
-    DiffUnstaged(PathBuf),
-    DiffStaged(PathBuf),
-    DiffCommit {
-        rev: String,
-        path: Option<PathBuf>,
-    },
-    Log {
-        limit: usize,
-        path: Option<PathBuf>,
-    },
-    Commit(String),
-    Blame(PathBuf),
-    BlameText {
-        path: PathBuf,
-        text: Arc<str>,
-    },
     /// Inline blame of the cursor line (automatic read: short timeout).
     InlineBlame {
         path: PathBuf,
@@ -51,11 +32,6 @@ pub enum Request {
 pub enum Reply {
     Head(Head),
     AheadBehind(Option<AheadBehind>),
-    Status(Status),
-    Diff(Option<FileDiff>),
-    Diffs(Vec<FileDiff>),
-    Log(Vec<CommitSummary>),
-    Commit(CommitInfo),
     Blame(Option<Blame>),
     LineChanges(Option<Vec<LineChange>>),
 }
@@ -74,60 +50,38 @@ pub struct Response {
 struct Key {
     kind: u8,
     path: Option<PathBuf>,
-    arg: String,
 }
+
+/// Kinds below this are repo-wide: a change of any file drops them, while per-file replies of
+/// other files stay cached.
+const REPO_WIDE_KINDS: u8 = 2;
 
 impl Request {
     fn key(&self) -> Key {
-        let k = |kind, path: Option<&PathBuf>, arg: String| Key {
+        let k = |kind, path: Option<&PathBuf>| Key {
             kind,
             path: path.cloned(),
-            arg,
         };
         match self {
-            Request::Head => k(0, None, String::new()),
-            Request::AheadBehind => k(1, None, String::new()),
-            Request::Status => k(2, None, String::new()),
-            Request::DiffUnstaged(p) => k(3, Some(p), String::new()),
-            Request::DiffStaged(p) => k(4, Some(p), String::new()),
-            Request::DiffCommit { rev, path } => k(5, path.as_ref(), rev.clone()),
-            Request::Log { limit, path } => k(6, path.as_ref(), limit.to_string()),
-            Request::Commit(rev) => k(7, None, rev.clone()),
-            Request::Blame(p) => k(8, Some(p), String::new()),
-            Request::BlameText { path, .. } => k(9, Some(path), String::new()),
-            Request::LineChanges { path, .. } => k(10, Some(path), String::new()),
-            Request::InlineBlame { path, .. } => k(11, Some(path), String::new()),
-        }
-    }
-
-    /// Results that can never change (a full commit id).
-    fn immutable(&self) -> bool {
-        match self {
-            Request::Commit(rev) | Request::DiffCommit { rev, .. } => {
-                rev.len() >= 40 && is_oid(rev)
-            }
-            _ => false,
+            Request::Head => k(0, None),
+            Request::AheadBehind => k(1, None),
+            Request::InlineBlame { path, .. } => k(2, Some(path)),
+            Request::LineChanges { path, .. } => k(3, Some(path)),
         }
     }
 
     fn text(&self) -> Option<&str> {
         match self {
-            Request::BlameText { text, .. }
-            | Request::InlineBlame { text, .. }
-            | Request::LineChanges { text, .. } => Some(text),
+            Request::InlineBlame { text, .. } | Request::LineChanges { text, .. } => Some(text),
             _ => None,
         }
     }
 
     fn path(&self) -> Option<&Path> {
         match self {
-            Request::DiffUnstaged(p) | Request::DiffStaged(p) | Request::Blame(p) => {
-                Some(p.as_path())
+            Request::InlineBlame { path, .. } | Request::LineChanges { path, .. } => {
+                Some(path.as_path())
             }
-            Request::BlameText { path, .. }
-            | Request::InlineBlame { path, .. }
-            | Request::LineChanges { path, .. } => Some(path.as_path()),
-            Request::DiffCommit { path, .. } | Request::Log { path, .. } => path.as_deref(),
             _ => None,
         }
     }
@@ -185,7 +139,7 @@ impl GitWorker {
         let _ = self.tx.send(Msg::Invalidate(None));
     }
 
-    /// Drop cached results of one file (and the status lists).
+    /// Drop cached results of one file.
     pub fn invalidate_path(&self, path: &Path) {
         let _ = self.tx.send(Msg::Invalidate(Some(path.to_path_buf())));
     }
@@ -248,9 +202,6 @@ fn repo_stamp(repo: &Repo) -> Vec<Option<(i64, i64, u64, u64)>> {
 }
 
 fn stamp_of(repo: &Repo, req: &Request) -> Option<Stamp> {
-    if req.immutable() {
-        return None;
-    }
     let file = req
         .path()
         .map(|p| {
@@ -277,14 +228,6 @@ fn execute(repo: &Repo, req: &Request) -> Result<Reply> {
     Ok(match req {
         Request::Head => Reply::Head(repo.head()?),
         Request::AheadBehind => Reply::AheadBehind(repo.ahead_behind()?),
-        Request::Status => Reply::Status(repo.status()?),
-        Request::DiffUnstaged(p) => Reply::Diff(repo.diff_unstaged(p)?),
-        Request::DiffStaged(p) => Reply::Diff(repo.diff_staged(p)?),
-        Request::DiffCommit { rev, path } => Reply::Diffs(repo.diff_commit(rev, path.as_deref())?),
-        Request::Log { limit, path } => Reply::Log(repo.log(*limit, path.as_deref())?),
-        Request::Commit(rev) => Reply::Commit(repo.commit(rev)?),
-        Request::Blame(p) => Reply::Blame(repo.blame(p)?),
-        Request::BlameText { path, text } => Reply::Blame(repo.blame_text(path, text)?),
         Request::InlineBlame { path, text } => Reply::Blame(repo.inline_blame(path, text)?),
         Request::LineChanges { path, text } => Reply::LineChanges(repo.line_changes(path, text)?),
     })
@@ -314,7 +257,7 @@ fn run(repo: Repo, rx: Receiver<Msg>, tx: Sender<Response>, notify: Box<dyn Fn()
                 Msg::Invalidate(None) => cache.map.clear(),
                 Msg::Invalidate(Some(p)) => cache
                     .map
-                    .retain(|k, _| k.path.as_deref() != Some(&p) && k.kind > 2),
+                    .retain(|k, _| k.path.as_deref() != Some(&p) && k.kind >= REPO_WIDE_KINDS),
                 Msg::Req(id, r) => reqs.push((id, r)),
             }
         }

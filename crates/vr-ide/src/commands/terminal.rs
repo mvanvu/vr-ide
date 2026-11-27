@@ -263,8 +263,8 @@ pub struct TerminalPanel {
     captured: bool,
     /// The panel's edge is being dragged: its tab bar at the bottom, the separator on the right.
     resizing: bool,
-    /// "Quit anyway" was chosen; the next quit does not ask about terminals or a running git
-    /// write again (one shot).
+    /// "Quit anyway" was chosen; the next quit does not ask about terminals
+    /// again (one shot).
     quit_confirmed: bool,
     /// Set by any terminal's `Notify`.
     wake: Arc<AtomicBool>,
@@ -1361,9 +1361,8 @@ pub fn selected_text(grid: &Grid, sel: Selection) -> String {
 
 // ---- quit -----------------------------------------------------------------------------------
 
-/// Quit while terminals run, or while the Git popup runs a push, pull or commit (D309), asks
-/// first in one question: "N terminals still running" / "A git push is running" — Quit
-/// anyway / Cancel, Cancel selected (AC-14d). True when quitting may go on.
+/// Quit while terminals run, asks first: Quit anyway / Cancel, Cancel
+/// selected (AC-14d). True when quitting may go on.
 pub fn quit_allowed(app: &mut App) -> bool {
     quit_allowed_for(app, DialogAction::QuitTerminals)
 }
@@ -1374,23 +1373,11 @@ pub fn quit_allowed_for(app: &mut App, action: DialogAction) -> bool {
         return true;
     }
     let n = app.terminal.running();
-    let git = crate::git_popup::running_write(app);
     let mut parts = Vec::new();
     match n {
         0 => {}
         1 => parts.push("1 terminal still running; quitting ends it.".to_string()),
         n => parts.push(format!("{n} terminals still running; quitting ends them.")),
-    }
-    if let Some(w) = git {
-        let what = if w.label == w.op {
-            String::new()
-        } else {
-            format!(" ({})", w.label)
-        };
-        parts.push(format!(
-            "A git {} is running{what}; quitting cancels it.",
-            w.op
-        ));
     }
     if parts.is_empty() {
         return true;
@@ -1402,8 +1389,8 @@ pub fn quit_allowed_for(app: &mut App, action: DialogAction) -> bool {
     false
 }
 
-/// Quit anyway was chosen: the next quit does not ask about the terminals or a running git
-/// write again (one shot).
+/// Quit anyway was chosen: the next quit does not ask about the terminals
+/// again (one shot).
 pub fn confirm_quit(app: &mut App) {
     app.terminal.quit_confirmed = true;
 }

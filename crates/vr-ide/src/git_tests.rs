@@ -527,7 +527,7 @@ fn folder_without_git_shows_nothing_and_no_errors() {
     std::fs::write(&p, "x\n").unwrap();
     let mut app = single(&f, &f.dir);
     app.open_path(&p).unwrap();
-    slash_run(&mut app, "/git blame line");
+    slash_run(&mut app, "/set git_inline_blame true");
     wait(&mut app, "discovery", |a| !a.git.discovering());
     let t = Instant::now();
     for i in 0..5 {
@@ -697,8 +697,6 @@ fn removing_a_root_and_exit_shut_the_git_workers_down() {
     let mut app = git_app(&a, ws);
     wait(&mut app, "both repos", |x| x.git.repo_count() == 2);
     // Reader clones share the worker's runner: removing the root kills their reads too.
-    // Writes never use them: M7-3's popup writes through vr_git::Writer::open (own runner),
-    // which root removal and workspace replace wait for, never kill (D304).
     let ra = app.git.repo_of_root(&a.dir).unwrap();
     let rb = app.git.repo_of_root(&b.dir).unwrap();
     let id = app.workspace.root_of(&b.dir).unwrap().id;
@@ -859,7 +857,7 @@ fn blame_line_shows_author_age_and_subject_after_a_rest() {
     app.git.now_secs = Some(when + 3 * DAY + 3600);
     assert!(!app.settings.git_inline_blame, "off by default");
     app.open_path(&p).unwrap();
-    slash_run(&mut app, "/git blame line");
+    slash_run(&mut app, "/set git_inline_blame true");
     assert!(app.settings.git_inline_blame);
     let t0 = Instant::now();
     wait_blame(&mut app, t0);
@@ -896,20 +894,20 @@ fn blame_line_shows_author_age_and_subject_after_a_rest() {
         crate::git::inline_text(&app).as_deref(),
         Some("You, uncommitted")
     );
-    slash_run(&mut app, "/git blame line");
+    slash_run(&mut app, "/set git_inline_blame false");
     assert!(!app.settings.git_inline_blame);
     app.tick(t1 + Duration::from_millis(400));
     assert_eq!(crate::git::inline_text(&app), None);
 }
 
 #[test]
-fn blame_line_is_a_registered_slash_command_and_setting() {
-    let c = crate::commands::slash::SLASH_COMMANDS
-        .iter()
-        .find(|c| c.name == "git blame line")
-        .expect("registered");
-    assert!(c.description.contains("blame"));
-    assert!(crate::commands::slash::docs_table().contains("`/git blame line`"));
+fn inline_blame_is_switched_by_the_setting_and_there_is_no_git_slash_command() {
+    assert!(
+        crate::commands::slash::SLASH_COMMANDS
+            .iter()
+            .all(|c| !c.name.starts_with("git")),
+        "AC-F4: no /git command"
+    );
     let (mut app, _) = test_app(Path::new("/nonexistent-root"));
     crate::slash_tests::slash(&mut app, "/set git_inline_blame true");
     crate::slash_tests::key(&mut app, KeyCode::Enter);

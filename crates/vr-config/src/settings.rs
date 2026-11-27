@@ -49,7 +49,7 @@ pub struct Settings {
     /// Without the kitty protocol, NUL (what ctrl+` sends) in a focused terminal goes to the
     /// program instead of giving the keys back to the editor (D214, D230).
     pub terminal_pass_nul: bool,
-    /// Inline blame of the cursor line (M7-4a); `/git blame line` toggles it for the session.
+    /// Inline blame of the cursor line (M7-4a).
     pub git_inline_blame: bool,
     pub ai_presets: Vec<AiPreset>,
 }

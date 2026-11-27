@@ -69,15 +69,6 @@ pub fn save_doc(app: &mut App, i: usize) -> SaveOutcome {
         .path
         .as_deref()
         .map_or_else(|| "untitled".to_string(), |p| app.display_path(p));
-    // A git discard of this path is moving it aside right now (D305(4)).
-    if let Some(msg) = doc
-        .path
-        .as_deref()
-        .and_then(|p| crate::git_popup::save_blocked(app, p))
-    {
-        app.error(msg);
-        return SaveOutcome::Failed;
-    }
     let doc = &mut app.docs[i];
     doc.buffer.break_undo_group();
     let result = doc.save();
@@ -446,9 +437,6 @@ pub fn save_as_doc(
     seen: Option<&DiskVersion>,
 ) -> Result<(), SaveAsError> {
     let name = app.display_path(target);
-    if let Some(msg) = crate::git_popup::save_blocked(app, target) {
-        return Err(SaveAsError::Failed(msg));
-    }
     check_other_tabs(app, i, target).map_err(SaveAsError::Failed)?;
     if i >= app.docs.len() {
         return Ok(());
@@ -617,14 +605,6 @@ fn keep_mine(app: &mut App, i: usize, seen: Option<&DiskVersion>) {
         let msg = format!("{name}: read again; nothing was replaced");
         return prompt_external_change_with(app, i, true, Some(msg));
     };
-    if let Some(msg) = app.docs[i]
-        .path
-        .as_deref()
-        .and_then(|p| crate::git_popup::save_blocked(app, p))
-    {
-        app.error(msg);
-        return;
-    }
     let doc = &mut app.docs[i];
     doc.buffer.break_undo_group();
     let result = match injected_commit_error() {
