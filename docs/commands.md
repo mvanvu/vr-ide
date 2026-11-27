@@ -38,10 +38,12 @@ under 60 columns wide. A new terminal and closing one: the `+` and the `x` of ea
 panel's tab bar, or `ctrl+n` / `ctrl+w` in a focused terminal (no slash command).
 
 `/ssh` (also: `ssh` and a space, or SSH: Connect to Host in the command list) lists the open SSH
-sessions, the recently used targets and the `Host` names of `~/.ssh/config`; type
-`[user@]host[:port]` for any other host and press Enter on its row. The session starts in a
-terminal tab and takes the whole window once the login succeeded; see "SSH sessions" in the
-README.
+sessions, the recently used lines and the `Host` names of `~/.ssh/config`; type what you would
+type after `ssh ` in a terminal (`-i credentials/key user@host`, `-p 2222 user@host`,
+`-J jump host`; quotes and `\` work, no shell runs it) and press Enter on its row. Relative paths
+resolve in the workspace folder of the active file; the window shows `runs: ssh …` with them
+resolved. The session starts in a terminal tab and takes the whole window once the login
+succeeded; see "SSH sessions" in the README.
 
 Git (read only): in a folder that is a git repository (or inside one) the gutter marks the lines
 of the active file that differ from the git index, unsaved changes included: a bar for added and
@@ -116,7 +118,7 @@ protocol does not send are marked).
 | `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
 | `/ai <tool>` | Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name> |
-| `/ssh [target]` | Open an SSH session: [user@]host[:port] (no target: list hosts) |
+| `/ssh [ssh args]` | Open an SSH session, args as after ssh (none: list hosts) |
 | `/ws add <dir>` | Add a folder to the workspace |
 | `/ws remove [root]` | Remove a workspace folder (default: the active file's) |
 | `/ws save [file]` | Save the workspace folders to a .vr-workspace file |
