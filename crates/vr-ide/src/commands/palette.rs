@@ -66,12 +66,17 @@ pub struct Palette {
     pub ssh_hosts: Option<Vec<String>>,
 }
 
-/// Commands the palette offers: every registered one except itself and the placeholders of
-/// later tasks.
+/// Registered only so a `[terminal]` key can run them (D291, D330).
+const PALETTE_HIDDEN: &[&str] = &["terminal.new", "terminal.close"];
+
+/// Commands the palette offers: every registered one except itself, the placeholders of later
+/// tasks and the palette-hidden ones.
 fn candidates() -> Vec<&'static CommandSpec> {
     all_commands()
         .iter()
-        .filter(|c| c.name != "app.palette" && !is_pending(c.name))
+        .filter(|c| {
+            c.name != "app.palette" && !is_pending(c.name) && !PALETTE_HIDDEN.contains(&c.name)
+        })
         .collect()
 }
 

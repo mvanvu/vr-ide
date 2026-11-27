@@ -65,6 +65,8 @@ keys back with the panel shown).
 | `terminal.shrink` | Terminal: Decrease Panel Size | `ctrl+f9` (height at the bottom, width on the right) |
 | `terminal.toggle_position` | Terminal: Toggle Panel Position | `ctrl+f7` (bottom ↔ right for this session; `terminal_position` in settings keeps it) |
 | `editor.toggle_blame` | Toggle Blame Annotations | `shift+f2` (blame column on / off for this session, every editor tab, read and edit mode; see `docs/commands.md`) |
+| `terminal.new` | Terminal: New Terminal | `ctrl+n` in a focused terminal only (`[terminal]`; not in the palette) |
+| `terminal.close` | Terminal: Close Terminal | `ctrl+w` in a focused terminal only (`[terminal]`; not in the palette; asks first while a program runs) |
 | `focus.editor` | Focus Editor | (palette only) |
 
 On the right the panel takes the editor's full height under the tab bar and
@@ -114,9 +116,11 @@ No keymap entries; the palette's keys are built in (see below).
 
 ### `[terminal]`
 
-A focused terminal receives every key except five: ``ctrl+` ``, `f1` (the command window, from
-the terminal too), `ctrl+f7` (panel position, bottom ↔ right) and `ctrl+f8` / `ctrl+f9` (grow /
-shrink the panel). Global keys such as `ctrl+s`, `ctrl+w`, `ctrl+p` or `f8` go to the program.
+A focused terminal receives every key except seven: ``ctrl+` ``, `f1` (the command window, from
+the terminal too), `ctrl+f7` (panel position, bottom ↔ right), `ctrl+f8` / `ctrl+f9` (grow /
+shrink the panel), `ctrl+n` (`terminal.new`: a new terminal tab, as the `+` button does) and
+`ctrl+w` (`terminal.close`: closes this terminal, as its `x` does; it asks "Close terminal?" first
+while a program other than the shell runs). Other global keys such as `ctrl+s`, `ctrl+p` or `f8` go to the program.
 Add your own keys to `[terminal]` to take them from programs.
 
 | Panel | ``ctrl+` `` does (wherever the keys are) |
@@ -126,8 +130,8 @@ Add your own keys to `[terminal]` to take them from programs.
 
 To leave a terminal with the panel shown, click the editor. The panel's tab bar has a `+` after the
 tabs (a new terminal in the active file's workspace folder) and an `x` at the end of each tab
-(closes that terminal, its programs are hung up; the last one hides the panel; while a program other than the shell runs in it, "Close terminal?" asks first, Cancel being the default); there are no keys
-for them. `shift+f12` (from the editor, explorer or find box) hides the panel too.
+(closes that terminal, its programs are hung up; the last one hides the panel; while a program other than the shell runs in it, "Close terminal?" asks first, Cancel being the default); in a focused terminal
+`ctrl+n` and `ctrl+w` do the same. `shift+f12` (from the editor, explorer or find box) hides the panel too.
 Without the kitty protocol the terminal sends ``ctrl+` `` as NUL, the same byte as
 `ctrl+space`; vr-ide takes NUL as ``ctrl+` `` too, inside a focused terminal as well, unless
 `terminal_pass_nul = true` (then the program gets NUL and a click on the editor gives the keys
@@ -168,7 +172,7 @@ A `ctrl+space` binding you add to `[terminal]` wins over the NUL rule.
 
 Match case and regex are part of the query (see [The find box](#the-find-box)); there are no
 option commands. A new terminal starts in the active file's workspace folder (the first one still on disk
-when that one is gone); there is no key, palette entry or slash command for it: the panel's `+`.
+when that one is gone); there is no palette entry or slash command for it: the panel's `+`, or `ctrl+n` in a focused terminal.
 
 ## The find box
 
@@ -215,7 +219,7 @@ Typing and cursor movement are built in and not listed in `keymap.toml`.
 | Palette | `up`/`down`, `pageup`/`pagedown` move; `enter` runs; `esc` closes |
 | Dialogs | `left`/`right`/`tab`/`shift+tab` choose a button; `enter` confirms; `esc` cancels. A held (repeating) `enter` never confirms |
 | Find box, File scope | typing searches as you type; `up`/`down`/`pageup`/`pagedown` move in the list (the editor shows the match); `enter` in the find field goes to the match and gives the editor the keys in read mode (the box stays open: `f4`/`shift+f4` go on); `shift+enter` there selects the previous match and keeps the box (terminals with the kitty keyboard protocol; others send it as `enter`); in the replace field `enter` asks "Replace: One / All / Cancel" (One first; the box shows "enter replace"; each replacement is one undo step); `tab`/`shift+tab` switch field; `esc` closes the box and returns to read mode. A click on a row selects that match |
-| Terminal | Every key goes to the program except ``ctrl+` ``, `f1`, `ctrl+f7`, `ctrl+f8`, `ctrl+f9` and these: `shift+pageup`/`shift+pagedown` scroll back (main screen only; a key sent to the program or a paste returns to the bottom, new output keeps the view); `ctrl+shift+v` pastes the clipboard (bracketed when the program asked for it). After the program exits, `enter` starts a new shell in the tab (an SSH tab connects to the same target again) and the Close File key (`ctrl+w`) closes it. Mouse: drag selects and copies, the wheel scrolls back (programs that ask for the mouse get it; hold `shift` to select anyway), a click on a tab switches to it, dragging a tab along the bar moves it there (past the last tab shown, onto `+N`, it moves on one place per cell; at the bar's left edge, past the first tab shown, it moves toward the front the same way), on its `x` closes it (asks "Close terminal?" first while a program other than the shell runs in it; Cancel is the default), on the `+` opens a new terminal, dragging the rest of the tab bar (at the bottom) or the separator (on the right) resizes the panel |
+| Terminal | Every key goes to the program except ``ctrl+` ``, `f1`, `ctrl+f7`, `ctrl+f8`, `ctrl+f9`, `ctrl+n` (new terminal), `ctrl+w` (close this terminal) and these: `shift+pageup`/`shift+pagedown` scroll back (main screen only; a key sent to the program or a paste returns to the bottom, new output keeps the view); `ctrl+shift+v` pastes the clipboard (bracketed when the program asked for it). After the program exits, `enter` starts a new shell in the tab (an SSH tab connects to the same target again) and `ctrl+w` closes it. Mouse: drag selects and copies, the wheel scrolls back (programs that ask for the mouse get it; hold `shift` to select anyway), a click on a tab switches to it, dragging a tab along the bar moves it there (past the last tab shown, onto `+N`, it moves on one place per cell; at the bar's left edge, past the first tab shown, it moves toward the front the same way), on its `x` closes it (asks "Close terminal?" first while a program other than the shell runs in it; Cancel is the default), on the `+` opens a new terminal, dragging the rest of the tab bar (at the bottom) or the separator (on the right) resizes the panel |
 | Find box, Project scope | `tab`/`shift+tab` switch field; `enter` in the search field searches, in the replace field shows the replace preview, on a result opens it (read mode; the box stays open), and on a shown preview confirms the replace; `down` moves into the results; `up`/`down`/`pageup`/`pagedown`/`home`/`end` move in the list; `space` checks or unchecks a replace preview row; `esc` closes a preview (cancels a running replace), otherwise closes the box and returns to read mode |
 
 A user binding for a plain key in a context wins over that context's built-in key.

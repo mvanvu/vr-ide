@@ -58,7 +58,7 @@
 "ctrl+r" = "search.replace_project"
 # Integrated terminal (M5). Hidden: show and focus it (a terminal starts if there is none);
 # shown: hide it, whatever has the keys (D280). The "+" and "x" of the panel's tab bar open and
-# close terminals (no keys, D291).
+# close terminals; from a focused terminal ctrl+n and ctrl+w do the same (see [terminal], D330).
 # Terminals without the kitty protocol send ctrl+` as NUL (the same byte as ctrl+space); that
 # byte toggles too (in a focused terminal as well, unless the setting terminal_pass_nul = true).
 "ctrl+`" = "terminal.toggle"
@@ -119,8 +119,9 @@
 # ctrl+` hides the panel and the editor gets the keys. Without the kitty protocol ctrl+` arrives
 # as NUL and does the same, unless terminal_pass_nul = true sends it to the program (then click
 # the editor to leave); a "ctrl+space" key added here wins over that. f1 opens the command window
-# from a focused terminal too (D279). Built in, not listed: shift+pageup / shift+pagedown scroll
-# back, ctrl+shift+v pastes.
+# from a focused terminal too (D279); ctrl+n and ctrl+w (D330) open / close a terminal tab, so the
+# editor and explorer keys of the same name never reach a program. Built in, not listed:
+# shift+pageup / shift+pagedown scroll back, ctrl+shift+v pastes.
 "ctrl+`" = "terminal.toggle"
 "f1" = "app.palette"
 # The panel position and size keys work from a focused terminal too (they never reach the
@@ -128,3 +129,7 @@
 "ctrl+f7" = "terminal.toggle_position"
 "ctrl+f8" = "terminal.grow"
 "ctrl+f9" = "terminal.shrink"
+# ctrl+n opens a new terminal (like the tab bar '+'), ctrl+w closes this one (like its 'x'; it asks
+# first while a program other than the shell runs). Neither reaches the program.
+"ctrl+n" = "terminal.new"
+"ctrl+w" = "terminal.close"

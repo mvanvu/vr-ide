@@ -35,7 +35,7 @@ discards.
 On the right the panel takes `terminal_width_percent` of the editor column (drag the separator,
 or `ctrl+f8` / `ctrl+f9`, to change it) and falls back to the bottom while the editor column is
 under 60 columns wide. A new terminal and closing one: the `+` and the `x` of each tab in the
-panel's tab bar (no slash command, no key).
+panel's tab bar, or `ctrl+n` / `ctrl+w` in a focused terminal (no slash command).
 
 `/ssh` (also: `ssh` and a space, or SSH: Connect to Host in the command list) lists the open SSH
 sessions, the recently used targets and the `Host` names of `~/.ssh/config`; type

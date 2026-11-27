@@ -389,8 +389,9 @@ fn keys_typed_into_a_focused_terminal_never_reach_the_editor() {
     ctrl_backtick(&mut app);
     typ(&mut app, "echo vr-$((6*7))\n");
     wait_text(&app, "vr-42");
-    // Global and editor chords go to the program as well (ctrl+s, ctrl+w, Esc, ctrl+z).
-    for c in ['s', 'w', 'z', 'a'] {
+    // Global and editor chords go to the program as well (ctrl+s, Esc, ctrl+z); ctrl+w closes
+    // the terminal (D330) and is covered by its own tests.
+    for c in ['s', 'z', 'a'] {
         key(&mut app, KeyCode::Char(c), KeyModifiers::CONTROL);
     }
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -1814,4 +1815,82 @@ fn panel_default_background_is_the_terminal_token_in_every_theme() {
         }
         assert_ne!(theme.terminal_bg, editor_bg, "{name}");
     }
+}
+
+/// D330: ctrl+n in a focused terminal opens a new terminal tab, like the '+'.
+#[test]
+fn ctrl_n_in_a_focused_terminal_opens_a_new_terminal() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    assert_eq!(app.focus, Focus::Terminal);
+    key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+    assert_eq!(app.terminal.tabs.len(), 2);
+    assert_eq!(app.terminal.active, 1);
+    assert_eq!(app.focus, Focus::Terminal);
+    assert!(app.dialog.is_none());
+}
+
+/// D330: ctrl+w closes an idle shell at once and asks while a program holds the terminal.
+#[test]
+fn ctrl_w_in_a_focused_terminal_closes_it_like_the_x() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+    assert_eq!(app.terminal.tabs.len(), 2);
+    let deadline = Instant::now() + WAIT;
+    while !tab(&app).shell_in_foreground() {
+        assert!(Instant::now() < deadline, "shell never in the foreground");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+    assert!(app.dialog.is_none());
+    assert_eq!(app.terminal.tabs.len(), 1);
+    // Last tab: closes and hides the panel like the 'x'.
+    let deadline = Instant::now() + WAIT;
+    while !tab(&app).shell_in_foreground() {
+        assert!(Instant::now() < deadline, "shell never in the foreground");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+    assert!(app.terminal.tabs.is_empty());
+    assert!(!app.terminal.visible);
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+#[test]
+fn ctrl_w_with_a_foreground_program_asks_first() {
+    let (_d, mut app, _) = term_app();
+    start_cat(&mut app);
+    let pid = tab(&app).pid().unwrap();
+    key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+    let d = app.dialog.as_ref().expect("the question");
+    assert!(matches!(
+        d.action,
+        crate::commands::dialog::DialogAction::CloseTerminal(Some(p)) if p == pid
+    ));
+    assert_eq!(app.terminal.tabs.len(), 1);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.terminal.tabs.len(), 1, "Cancel is the default");
+    key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.terminal.tabs.is_empty());
+}
+
+/// D330: outside a terminal ctrl+n and ctrl+w keep their commands.
+#[test]
+fn ctrl_n_and_ctrl_w_outside_a_terminal_are_unchanged() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keymap.keys_for("file.close").len(), 1);
+    key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+    assert!(app.terminal.tabs.is_empty());
+    key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+    assert!(app.terminal.tabs.is_empty());
 }

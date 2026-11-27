@@ -308,9 +308,11 @@ the keys are, to hide the panel (the shells keep running); click the editor to l
 with the panel shown. `shift+f12` from the editor hides the panel too. No terminal starts until you
 open one.
 
-- A focused terminal receives every key, `ctrl+s`, `ctrl+w` and `ctrl+p` included, so `vim`, `htop`
+- A focused terminal receives every key, `ctrl+s` and `ctrl+p` included, so `vim`, `htop`
   or `lazygit` work as in any terminal; vr-ide keeps only ``ctrl+` ``, `F1` (the command window),
-  `ctrl+f7` (panel position), `ctrl+f8` and `ctrl+f9` (panel size); the other panel keys work from
+  `ctrl+f7` (panel position), `ctrl+f8` and `ctrl+f9` (panel size), `ctrl+n` (a new terminal, like
+  the `+` button) and `ctrl+w` (close this terminal, like its `x`; it asks first while a program
+  other than the shell runs); the other panel keys work from
   the editor. The status bar shows `TERM` while the terminal has the keys (read and edit mode do
   not apply there).
 - The `+` after the tabs opens another terminal (in the active file's workspace folder); the `x`
