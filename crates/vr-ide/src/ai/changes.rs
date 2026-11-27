@@ -492,6 +492,10 @@ struct State {
     /// Bytes the other vr-ides' stores hold, and when that was read.
     others: Option<(Instant, u64)>,
     next_blob: u64,
+    /// Device of the root: files on another file system are never copied (D27).
+    root_dev: u64,
+    /// Folders and files of secrets (canonical): remembered and watched, never copied (D27).
+    secret: Vec<PathBuf>,
     excluded: Vec<PathBuf>,
     own: Option<OwnWrites>,
     /// Start of the program's current run.
@@ -689,6 +693,21 @@ impl State {
         self.aside.contains(rel)
             || vr_core::is_save_temp(&abs)
             || self.excluded.iter().any(|x| abs.starts_with(x))
+    }
+
+    /// D27: the walk and a new baseline keep no copy of `rel` (`meta` its look): a secret by
+    /// its folder or name, or a file of another file system (an encrypted mount shows
+    /// plaintext). A change to it is still listed, without an earlier version (Keep only).
+    fn no_copy(&self, rel: &Path, meta: &Metadata) -> bool {
+        let abs = self.root.join(rel);
+        #[cfg(test)]
+        if seam::on_other_device(&abs) {
+            return true;
+        }
+        meta.dev() != self.root_dev
+            || rel.file_name().is_some_and(secret_name)
+            || in_secret_folder(rel)
+            || self.secret.iter().any(|d| abs.starts_with(d))
     }
 
     fn note(&mut self, why: Incomplete) {
@@ -906,6 +925,117 @@ pub fn load_index(dir: &Path) -> Vec<Record> {
     out
 }
 
+/// D27 / D29: file names of secrets: SSH keys (`id_rsa*`, `id_dsa*`, `id_ecdsa*`,
+/// `id_ed25519*`), `*.pem`, `*.key`, `.env*`, `*credentials*`, and the home folder's `.netrc`
+/// and `.claude.json` wherever that folder is reached from. Folder names are not looked at.
+fn secret_name(name: &std::ffi::OsStr) -> bool {
+    let n = name.to_string_lossy().to_lowercase();
+    ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"]
+        .iter()
+        .any(|k| n.starts_with(k))
+        || n.ends_with(".pem")
+        || n.ends_with(".key")
+        || n.starts_with(".env")
+        || n.contains("credentials")
+        || n == ".netrc"
+        || n == ".claude.json"
+}
+
+/// D29: folders of keys and logins, matched as folder sequences anywhere in a path, so a
+/// home folder reached through a link or a copy (`dotfiles/.config/gh`) counts too.
+const SECRET_SEQS: [&[&str]; 6] = [
+    &[".ssh"],
+    &[".gnupg"],
+    &[".aws"],
+    &[".config", "gh"],
+    &[".claude"],
+    &[".codex"],
+];
+
+/// `rel` lies in one of the [`SECRET_SEQS`] folders.
+fn in_secret_folder(rel: &Path) -> bool {
+    let dirs: Vec<&std::ffi::OsStr> = rel
+        .parent()
+        .into_iter()
+        .flat_map(|p| p.components())
+        .map(|c| c.as_os_str())
+        .collect();
+    SECRET_SEQS.iter().any(|seq| {
+        dirs.windows(seq.len()).any(|w| {
+            w.iter()
+                .zip(seq.iter())
+                .all(|(a, b)| *a == std::ffi::OsStr::new(b))
+        })
+    })
+}
+
+/// `p` with its longest existing beginning made canonical: a folder made later below a
+/// linked one is compared by where it will really be.
+fn resolve(p: &Path) -> PathBuf {
+    let mut tail = Vec::new();
+    let mut cur = p;
+    loop {
+        if let Ok(real) = fs::canonicalize(cur) {
+            return tail.iter().rev().fold(real, |a, n| a.join(n));
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                cur = parent;
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+}
+
+/// D27 / D29: where keys and the AI tools' logins live: below `$HOME`, plus the config
+/// folders the tools were pointed at (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`, `$GH_CONFIG_DIR`,
+/// `$XDG_CONFIG_HOME/gh`); relative values are taken from the current folder. vr-ide's own
+/// state folder is excluded as a whole ([`Config::excluded`]).
+fn secret_dirs() -> Vec<PathBuf> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    #[cfg(test)]
+    if let Some(h) = seam::home_dir() {
+        let get = move |k: &str| (k == "HOME").then(|| h.clone().into_os_string());
+        return secret_dirs_with(&get, &cwd);
+    }
+    secret_dirs_with(&|k| std::env::var_os(k), &cwd)
+}
+
+pub(crate) fn secret_dirs_with(
+    get: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    cwd: &Path,
+) -> Vec<PathBuf> {
+    let var = |k: &str| {
+        get(k)
+            .filter(|v| !v.is_empty())
+            .map(|v| cwd.join(PathBuf::from(v)))
+    };
+    const IN_HOME: [&str; 8] = [
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".netrc",
+        ".config/gh",
+        ".claude",
+        ".claude.json",
+        ".codex",
+    ];
+    let home = var("HOME").map(|h| resolve(&h));
+    let mut out: Vec<PathBuf> = home
+        .iter()
+        .flat_map(|h| IN_HOME.iter().map(move |d| h.join(d)))
+        .chain(var("CLAUDE_CONFIG_DIR"))
+        .chain(var("CODEX_HOME"))
+        .chain(var("GH_CONFIG_DIR"))
+        .chain(var("XDG_CONFIG_HOME").map(|x| x.join("gh")))
+        .map(|p| resolve(&p))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Makes `state_dir()/ai` private: created 0700; an existing one must be a real folder of
 /// this user and loses any group / other access.
 fn private_base(base: &Path) -> io::Result<()> {
@@ -923,8 +1053,13 @@ fn private_base(base: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// A new store folder under a generated name, 0700, with its lock held.
-fn create_store(base: &Path) -> io::Result<(PathBuf, File)> {
+/// Prefix of a store folder still being made: [`sweep`] leaves it alone while it is young.
+const MAKING: &str = ".new-";
+
+/// A new store folder under a generated name, 0700, with its lock held. It is made under a
+/// name [`sweep`] passes over and gets its real name only once its lock is held, so a sweep
+/// running meanwhile (this vr-ide's or another's) never takes it for a stale one.
+pub(crate) fn create_store(base: &Path) -> io::Result<(PathBuf, File)> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     private_base(base)?;
     for _ in 0..16 {
@@ -936,24 +1071,63 @@ fn create_store(base: &Path) -> io::Result<(PathBuf, File)> {
             SEQ.fetch_add(1, Ordering::Relaxed),
             u64::from_ne_bytes(rand)
         );
-        let dir = base.join(name);
+        let (making, dir) = (base.join(format!("{MAKING}{name}")), base.join(&name));
+        if fs::symlink_metadata(&dir).is_ok() {
+            continue;
+        }
         let mut b = fs::DirBuilder::new();
         std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-        match b.create(&dir) {
+        match b.create(&making) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }
-        let lock = crate::recovery::create_private_file(&dir.join(LOCK_NAME))?;
-        rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
-        return Ok((dir, lock));
+        let locked =
+            crate::recovery::create_private_file(&making.join(LOCK_NAME)).and_then(|lock| {
+                #[cfg(test)]
+                seam::store_lock();
+                rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
+                Ok(lock)
+            });
+        let done = locked.and_then(|lock| {
+            rustix::fs::renameat_with(
+                rustix::fs::CWD,
+                &making,
+                rustix::fs::CWD,
+                &dir,
+                rustix::fs::RenameFlags::NOREPLACE,
+            )
+            .or_else(|e| match e {
+                // A file system without RENAME_NOREPLACE: the name was free a moment ago and
+                // carries 64 random bits.
+                rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS => {
+                    rustix::fs::rename(&making, &dir)
+                }
+                e => Err(e),
+            })?;
+            Ok(lock)
+        });
+        match done {
+            Ok(lock) => return Ok((dir, lock)),
+            Err(e) => {
+                let _ = fs::remove_dir_all(&making);
+                // NotFound: a sweep took the `.new-` folder (it stood still for over a minute).
+                if !matches!(
+                    e.kind(),
+                    io::ErrorKind::AlreadyExists | io::ErrorKind::NotFound
+                ) {
+                    return Err(e);
+                }
+            }
+        }
     }
     Err(io::Error::other("no free AI changes folder name"))
 }
 
 /// Start-up: removes the store folders no running vr-ide holds (SEC-10). Entries that are not
-/// real folders are left alone and no link is followed; a folder without a lock file is one
-/// being made (left for a minute) or a broken one.
+/// real folders are left alone and no link is followed; a folder without a lock file, or one
+/// still being made, is left for a minute (then it is a broken one). The lock is held until
+/// the folder is gone.
 pub fn sweep(base: &Path) {
     let Ok(entries) = fs::read_dir(base) else {
         return;
@@ -966,22 +1140,29 @@ pub fn sweep(base: &Path) {
         if !meta.is_dir() {
             continue;
         }
+        let old = || {
+            meta.modified()
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > Duration::from_secs(60))
+        };
+        if e.file_name().to_string_lossy().starts_with(MAKING) && !old() {
+            continue;
+        }
         let flags = OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-        let stale = match OpenOptions::new()
+        let (stale, _held) = match OpenOptions::new()
             .read(true)
             .custom_flags(flags.bits() as i32)
             .open(dir.join(LOCK_NAME))
         {
             Ok(lock) => {
-                rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
-                    .is_ok()
+                let free =
+                    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+                        .is_ok();
+                (free, Some(lock))
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => meta
-                .modified()
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > Duration::from_secs(60)),
-            Err(_) => false,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (old(), None),
+            Err(_) => (false, None),
         };
         if stale {
             let _ = fs::remove_dir_all(&dir);
@@ -1020,13 +1201,23 @@ struct Engine {
 
 /// Directories below `root` that the ignore rules (.gitignore, .ignore, git's excludes) keep,
 /// root-relative, at most `cap` entries looked at.
-fn clean_dirs(root: &Path, cap: usize, stop: &dyn Fn() -> bool) -> HashSet<PathBuf> {
+pub(crate) fn clean_dirs(
+    root: &Path,
+    cap: usize,
+    stop: &dyn Fn() -> bool,
+    excluded: &[PathBuf],
+) -> HashSet<PathBuf> {
     let mut out = HashSet::new();
     out.insert(PathBuf::new());
+    let excluded = excluded.to_vec();
     let walk = ignore::WalkBuilder::new(root)
         .hidden(false)
         .follow_links(false)
-        .filter_entry(|e| e.file_name() != ".git")
+        // Excluded folders (the state folder with its accounts, other stores) are not even listed
+        // (SEC-16).
+        .filter_entry(move |e| {
+            e.file_name() != ".git" && !excluded.iter().any(|x| e.path().starts_with(x))
+        })
         .build();
     for (n, entry) in walk.flatten().enumerate() {
         if n >= cap || (n % 256 == 0 && stop()) {
@@ -1069,12 +1260,19 @@ impl Engine {
         }
         self.scan = None;
         if running {
-            let (shared, known) = (Arc::clone(&self.shared), self.shared.lock().limits.known);
+            let (shared, known, excluded) = {
+                let st = self.shared.lock();
+                (
+                    Arc::clone(&self.shared),
+                    st.limits.known,
+                    st.excluded.clone(),
+                )
+            };
             let stop = move || shared.stop.load(Ordering::Relaxed);
             self.scan = Some(Scan {
                 epoch,
                 queue: VecDeque::from([PathBuf::new()]),
-                clean: clean_dirs(&root, known, &stop),
+                clean: clean_dirs(&root, known, &stop, &excluded),
                 entries: None,
             });
         }
@@ -1258,7 +1456,7 @@ impl Engine {
         }
         let mut base = plain(Some(NoEarlier::NotSeen));
         let mut bytes = None;
-        if clean && meta.is_file() {
+        if clean && meta.is_file() && !self.shared.lock().no_copy(rel, &meta) {
             match read_regular(&abs, cap) {
                 Ok(ReadOut::Bytes(st, b)) if st == stamp => bytes = Some(b),
                 Ok(ReadOut::TooLarge) => base.why = Some(NoEarlier::TooLarge),
@@ -1323,6 +1521,7 @@ impl Engine {
         if st.record_at(rel).is_some() || !st.running {
             return;
         }
+        let copy = !st.no_copy(rel, &meta);
         if !proven {
             // A file where the kept deletion was is a new file.
             let kind = match expect {
@@ -1334,13 +1533,15 @@ impl Engine {
             return;
         }
         match read {
-            Ok(ReadOut::Bytes(s, bytes)) if s == stamp => match st.put(&bytes, stamp.mode) {
-                Ok(blob) => {
-                    base.blob = Some(blob);
-                    base.why = None;
+            Ok(ReadOut::Bytes(s, bytes)) if s == stamp && copy => {
+                match st.put(&bytes, stamp.mode) {
+                    Ok(blob) => {
+                        base.blob = Some(blob);
+                        base.why = None;
+                    }
+                    Err(why) => base.why = Some(why),
                 }
-                Err(why) => base.why = Some(why),
-            },
+            }
             Ok(ReadOut::TooLarge) => base.why = Some(NoEarlier::TooLarge),
             _ => {}
         }
@@ -1757,6 +1958,8 @@ fn line_text(s: &str) -> String {
 
 /// (added, removed) lines; `None` for binary content.
 fn counts(old: &[u8], new: &[u8]) -> Option<(u32, u32)> {
+    #[cfg(test)]
+    seam::counted();
     if is_binary(old) || is_binary(new) {
         return None;
     }
@@ -2244,6 +2447,7 @@ pub struct Changes {
 impl Changes {
     fn build(cfg: Config) -> io::Result<Arc<Shared>> {
         let root = fs::canonicalize(&cfg.root)?;
+        let root_dev = fs::metadata(&root)?.dev();
         let (dir, lock) = create_store(&cfg.store_base)?;
         let mut excluded: Vec<PathBuf> = cfg
             .excluded
@@ -2264,6 +2468,8 @@ impl Changes {
                 flushed: None,
                 others: None,
                 next_blob: 0,
+                root_dev,
+                secret: secret_dirs(),
                 excluded,
                 own: cfg.own,
                 t0: SystemTime::now(),
@@ -2553,6 +2759,15 @@ impl Changes {
             (Kind::Modified | Kind::Deleted, None, _) => lines = plain_lines(new.as_deref()),
             _ => {}
         }
+        self.counts_shown(
+            &record,
+            &abs,
+            &seen,
+            old.as_deref(),
+            new.as_deref(),
+            &lines,
+            (added, removed),
+        );
         if seen.is_folder() {
             let text = "Now a folder is at this path; it is not read, and revert is off while \
                         it is there.";
@@ -2588,6 +2803,60 @@ impl Changes {
                 _ => side_text(new.as_deref()),
             },
         })
+    }
+
+    /// The list row of `record` takes the counts of the diff just made, so it never shows
+    /// other numbers than the diff's header (a diff reloaded after a refused Revert or Keep
+    /// comes before the watcher's event of that write). Counts of a version that is no longer
+    /// the file are never written back: a recount of the newer one may already be there.
+    #[allow(clippy::too_many_arguments)]
+    fn counts_shown(
+        &self,
+        record: &Record,
+        abs: &Path,
+        seen: &Seen,
+        old: Option<&[u8]>,
+        new: Option<&[u8]>,
+        lines: &[DiffLine],
+        shown: (u32, u32),
+    ) {
+        let sides = match (record.kind, old, new) {
+            (Kind::Created, _, Some(n)) => (&b""[..], n),
+            (Kind::Deleted, Some(o), _) => (o, &b""[..]),
+            (Kind::Modified, Some(o), Some(n)) => (o, n),
+            _ => return,
+        };
+        // A cut diff counted only the part shown; the watcher's recount has the full counts,
+        // and counting again here would cost the UI thread up to DIFF_TIMEOUT more.
+        if lines.len() > DIFF_LINES_MAX {
+            return;
+        }
+        let fresh = if is_binary(sides.0) || is_binary(sides.1) {
+            None
+        } else {
+            Some(shown)
+        };
+        #[cfg(test)]
+        seam::counts_now();
+        let mut st = self.shared.lock();
+        let Some(i) = st.record_at(&record.rel) else {
+            return;
+        };
+        let r = &mut st.records[i];
+        if r.kind != record.kind || r.pre != record.pre || r.recount {
+            return;
+        }
+        // Looked at under the lock: a write after this look gets its own event and recount.
+        let now = fs::symlink_metadata(abs).ok().map(|m| Stamp::of(&m));
+        if now != seen.0.as_ref().map(|s| s.stamp) {
+            return;
+        }
+        let (added, removed) = (fresh.map(|c| c.0), fresh.map(|c| c.1));
+        if (r.added, r.removed) != (added, removed) {
+            (r.added, r.removed) = (added, removed);
+            drop(st);
+            self.shared.bump();
+        }
     }
 
     /// Keep: the record and its pre-image go, while the file is still the version `seen` (what
@@ -3007,5 +3276,67 @@ pub mod seam {
 
     pub(super) fn lacks() -> Lacks {
         LACKS.with(|c| c.get())
+    }
+
+    thread_local! {
+        static BEFORE_LOCK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    }
+
+    pub fn before_store_lock(f: impl FnOnce() + 'static) {
+        BEFORE_LOCK.with(|s| *s.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(super) fn store_lock() {
+        if let Some(f) = BEFORE_LOCK.with(|s| s.borrow_mut().take()) {
+            f();
+        }
+    }
+
+    thread_local! {
+        static HOME: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+        static OTHER_DEVICE: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+    }
+
+    thread_local! {
+        static BEFORE_COUNTS: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+        static FULL_COUNTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Runs between a diff's read and the write of its counts into the list.
+    pub fn before_counts(f: impl FnOnce() + 'static) {
+        BEFORE_COUNTS.with(|s| *s.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(super) fn counts_now() {
+        if let Some(f) = BEFORE_COUNTS.with(|s| s.borrow_mut().take()) {
+            f();
+        }
+    }
+
+    /// Full line counts made on this thread so far.
+    pub fn full_counts() -> usize {
+        FULL_COUNTS.with(|c| c.get())
+    }
+
+    pub(super) fn counted() {
+        FULL_COUNTS.with(|c| c.set(c.get() + 1));
+    }
+
+    /// The home folder the next tracker of this thread takes its secret folders from.
+    pub fn home(p: Option<std::path::PathBuf>) {
+        HOME.with(|s| *s.borrow_mut() = p);
+    }
+
+    pub(super) fn home_dir() -> Option<std::path::PathBuf> {
+        HOME.with(|s| s.borrow().clone())
+    }
+
+    /// Files below `p` count as on another file system (a mount a test cannot make).
+    pub fn other_device(p: Option<std::path::PathBuf>) {
+        OTHER_DEVICE.with(|s| *s.borrow_mut() = p);
+    }
+
+    pub(super) fn on_other_device(abs: &std::path::Path) -> bool {
+        OTHER_DEVICE.with(|s| s.borrow().as_ref().is_some_and(|d| abs.starts_with(d)))
     }
 }

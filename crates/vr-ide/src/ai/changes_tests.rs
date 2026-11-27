@@ -188,9 +188,9 @@ fn sec9_ignored_folders_are_watched_but_not_copied() {
     fx.write(".gitignore", "target/\n");
     fs::create_dir_all(fx.root.join(".git")).unwrap();
     let built = fx.write("target/out.bin", "v1");
-    let env = fx.write(".env", "KEY=1\n");
+    let env = fx.write("app.toml", "KEY=1\n");
     let c = fx.started(Fx::limits());
-    assert_eq!(blobs(&c.store_dir()).len(), 2, ".gitignore and .env");
+    assert_eq!(blobs(&c.store_dir()).len(), 2, ".gitignore and app.toml");
     fs::write(&built, "v2").unwrap();
     fs::write(&env, "KEY=2\n").unwrap();
     c.feed(FsEvent::Modified(built));
@@ -200,8 +200,8 @@ fn sec9_ignored_folders_are_watched_but_not_copied() {
         rec(&records, "target/out.bin").missing,
         Some(NoEarlier::NotSeen)
     );
-    assert!(rec(&records, ".env").can_revert());
-    fx.revert(&c, ".env").unwrap();
+    assert!(rec(&records, "app.toml").can_revert());
+    fx.revert(&c, "app.toml").unwrap();
     assert_eq!(fs::read(&env).unwrap(), b"KEY=1\n");
 }
 
@@ -305,7 +305,7 @@ fn an_exited_program_is_not_blamed_and_a_restart_walks_again() {
 #[test]
 fn sec10_the_store_is_private_and_names_nothing() {
     let fx = Fx::new();
-    let env = fx.write(".env", "SECRET=1\n");
+    let env = fx.write("notes.txt", "SECRET=1\n");
     fs::set_permissions(&env, fs::Permissions::from_mode(0o644)).unwrap();
     // A state folder left group-writable by something else is closed.
     let base = fx.state.join("ai");
@@ -324,7 +324,7 @@ fn sec10_the_store_is_private_and_names_nothing() {
     for e in fs::read_dir(&dir).unwrap() {
         let name = e.unwrap().file_name().to_string_lossy().into_owned();
         assert!(
-            !name.contains("env"),
+            !name.contains("notes"),
             "{name} is derived from a workspace path"
         );
     }
@@ -2110,4 +2110,339 @@ fn sec12_a_taken_aside_name_is_passed_over() {
     for s in &stale {
         assert_eq!(fs::read(s).unwrap(), b"stale\n");
     }
+}
+
+// ---- FR-2: what the baseline does not copy (D27, SEC-16), the store against the sweep -------
+
+/// D27: with the session's folder as the home folder, secrets (fixed folders and name
+/// patterns) and files on another file system are remembered without a copy; a change to
+/// them is still listed, without an earlier version (Keep only), and Keep stores no copy.
+#[test]
+fn d27_secrets_and_other_mounts_are_listed_but_never_copied() {
+    let fx = Fx::new();
+    seam::home(Some(fx.root.clone()));
+    seam::other_device(Some(fx.root.join("mnt")));
+    let plain = fx.write("notes.txt", "plain\n");
+    let key = fx.write(".ssh/id_ed25519", "PRIVATE KEY\n");
+    let env = fx.write(".env", "TOKEN=1\n");
+    let env_local = fx.write("app/.env.local", "TOKEN=2\n");
+    let aws = fx.write(".aws/config", "[default]\n");
+    let creds = fx.write("app/db_credentials.json", "{}\n");
+    let pem = fx.write("certs/site.PEM", "cert\n");
+    let gh = fx.write(".config/gh/hosts.yml", "token: x\n");
+    let claude = fx.write(".claude.json", "{}\n");
+    let netrc = fx.write(".netrc", "machine x\n");
+    let mounted = fx.write("mnt/plain.txt", "decrypted\n");
+    let c = fx.started(Fx::limits());
+    seam::home(None);
+    let stored = blobs(&c.store_dir());
+    assert_eq!(stored.len(), 1, "only notes.txt: {stored:?}");
+    assert_eq!(fs::read(&stored[0]).unwrap(), b"plain\n");
+    let secrets = [
+        &key, &env, &env_local, &aws, &creds, &pem, &gh, &claude, &netrc, &mounted,
+    ];
+    for p in secrets {
+        fs::write(p, "agent\n").unwrap();
+        c.feed(FsEvent::Modified(p.clone()));
+    }
+    fs::write(&plain, "agent\n").unwrap();
+    c.feed(FsEvent::Modified(plain));
+    let records = c.records();
+    assert_eq!(records.len(), secrets.len() + 1);
+    for p in secrets {
+        let rel = p.strip_prefix(&fx.root).unwrap().to_str().unwrap();
+        let r = rec(&records, rel);
+        assert_eq!(
+            (r.kind, r.missing),
+            (Kind::Modified, Some(NoEarlier::NotSeen)),
+            "{rel}"
+        );
+        assert!(!r.can_revert(), "{rel}: Keep only");
+    }
+    assert!(rec(&records, "notes.txt").can_revert());
+    assert!(matches!(fx.revert(&c, ".env"), Err(RevertError::NoEarlier)));
+    // Keep makes the kept version the baseline: still no copy of a secret.
+    assert!(fx.keep(&c, ".env"));
+    assert!(fx.keep(&c, "mnt/plain.txt"));
+    assert_eq!(
+        blobs(&c.store_dir()).len(),
+        1,
+        "the pre-image of notes.txt only"
+    );
+    // A later change is listed again, still without an earlier version.
+    fs::write(&env, "agent 2\n").unwrap();
+    c.feed(FsEvent::Modified(env));
+    let records = c.records();
+    assert_eq!(rec(&records, ".env").missing, Some(NoEarlier::NotSeen));
+    seam::other_device(None);
+}
+
+/// SEC-16: the ignore-rules pass reads no listing inside the excluded folders (the state
+/// folder with its accounts, other sessions' stores).
+#[test]
+fn sec16_the_ignore_pass_does_not_list_excluded_folders() {
+    let fx = Fx::new();
+    fx.write("src/main.rs", "fn main() {}\n");
+    fx.write(".local/state/vr-ide/accounts/a1/sub/x", "secret\n");
+    let excluded = vec![fx.root.join(".local/state/vr-ide")];
+    let dirs = clean_dirs(&fx.root, 10_000, &|| false, &excluded);
+    assert!(dirs.contains(Path::new("src")));
+    assert!(dirs.contains(Path::new(".local/state")));
+    let inside: Vec<&PathBuf> = dirs
+        .iter()
+        .filter(|d| d.starts_with(".local/state/vr-ide"))
+        .collect();
+    assert!(
+        inside.is_empty(),
+        "listed inside an excluded folder: {inside:?}"
+    );
+}
+
+/// A sweep (another vr-ide's start, or this one's) running while a store is made never takes
+/// that store: the maker gets its folder with its lock held, and the folder stays.
+#[test]
+fn sec10_a_store_being_made_survives_a_concurrent_sweep() {
+    let fx = Fx::new();
+    let base = fx.state.join("ai");
+    fs::create_dir_all(&base).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let sweeper = {
+        let (base, stop) = (base.clone(), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                sweep(&base);
+            }
+        })
+    };
+    let mut failures = Vec::new();
+    let mut held = std::collections::VecDeque::new();
+    for _ in 0..3000 {
+        match create_store(&base) {
+            Ok((dir, lock)) => {
+                let same = fs::metadata(dir.join("lock"))
+                    .is_ok_and(|m| m.ino() == lock.metadata().unwrap().ino());
+                if !same {
+                    failures.push(format!("{}: swept while being made", dir.display()));
+                }
+                held.push_back((dir, lock));
+                if held.len() > 64 {
+                    held.pop_front();
+                }
+            }
+            Err(e) => failures.push(format!("not made: {e}")),
+        }
+        if failures.len() > 5 {
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    sweeper.join().unwrap();
+    assert!(failures.is_empty(), "{failures:?}");
+    sweep(&base);
+    for (dir, lock) in &held {
+        let ino = fs::metadata(dir.join("lock")).map(|m| m.ino()).ok();
+        assert_eq!(
+            ino,
+            Some(lock.metadata().unwrap().ino()),
+            "{}",
+            dir.display()
+        );
+    }
+    // Nothing is left half made once the makers are done.
+    drop(held);
+    sweep(&base);
+    let left: Vec<_> = fs::read_dir(&base)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert!(
+        left.iter()
+            .all(|n| !n.to_string_lossy().starts_with(".new-")),
+        "{left:?}"
+    );
+}
+
+/// The same with the sweep placed exactly between the store's folder being made and its lock
+/// being taken.
+#[test]
+fn sec10_a_sweep_between_mkdir_and_lock_leaves_the_new_store_alone() {
+    let fx = Fx::new();
+    let base = fx.state.join("ai");
+    fs::create_dir_all(&base).unwrap();
+    let b = base.clone();
+    seam::before_store_lock(move || sweep(&b));
+    let made = create_store(&base);
+    let (dir, lock) = made.expect("made despite the sweep");
+    let ino = fs::metadata(dir.join("lock")).map(|m| m.ino()).ok();
+    assert_eq!(
+        ino,
+        Some(lock.metadata().unwrap().ino()),
+        "the store was swept"
+    );
+    sweep(&base);
+    assert!(dir.join("lock").exists(), "a held store stays");
+}
+
+// ---- FR-2 fix round 1 -------------------------------------------------------------------------
+
+/// D29: the secret name patterns look at the file name only, and `id_*` means SSH keys: a
+/// source folder named `credentials/` or a file `id_map.rs` keeps its copy and Revert.
+#[test]
+fn d29_source_files_with_secret_like_folder_names_keep_revert() {
+    let fx = Fx::new();
+    seam::home(Some(fx.outside.clone()));
+    let provider = fx.write("src/credentials/provider.py", "x = 1\n");
+    let tokens = fx.write("auth/id_tokens/mod.rs", "fn a() {}\n");
+    let map = fx.write("src/id_map.rs", "fn b() {}\n");
+    let key = fx.write("deploy/id_ed25519", "PRIVATE\n");
+    let rsa = fx.write("deploy/id_rsa.pub", "ssh-rsa\n");
+    let c = fx.started(Fx::limits());
+    assert_eq!(blobs(&c.store_dir()).len(), 3, "the three source files");
+    for p in [&provider, &tokens, &map, &key, &rsa] {
+        fs::write(p, "agent\n").unwrap();
+        c.feed(FsEvent::Modified(p.clone()));
+    }
+    let records = c.records();
+    for rel in [
+        "src/credentials/provider.py",
+        "auth/id_tokens/mod.rs",
+        "src/id_map.rs",
+    ] {
+        assert!(rec(&records, rel).can_revert(), "{rel}");
+    }
+    for rel in ["deploy/id_ed25519", "deploy/id_rsa.pub"] {
+        assert_eq!(
+            rec(&records, rel).missing,
+            Some(NoEarlier::NotSeen),
+            "{rel}"
+        );
+    }
+    fx.revert(&c, "src/id_map.rs").unwrap();
+    assert_eq!(fs::read(&map).unwrap(), b"fn b() {}\n");
+}
+
+/// D29: a home folder reached through a link, a secret folder made after the start (`gh auth
+/// login`) and copies of secret folders elsewhere (`dotfiles/.config/gh`) are never copied,
+/// not even by the baseline a Keep takes.
+#[test]
+fn d29_secret_folders_by_linked_home_late_creation_and_anywhere() {
+    let fx = Fx::new();
+    let home_link = fx.outside.join("home");
+    symlink(&fx.root, &home_link).unwrap();
+    seam::home(Some(home_link));
+    let copy = fx.write("dotfiles/.config/gh/hosts.yml", "token: old\n");
+    let backup = fx.write("backup/.gnupg/secring.gpg", "key\n");
+    let c = fx.started(Fx::limits());
+    assert!(
+        blobs(&c.store_dir()).is_empty(),
+        "{:?}",
+        blobs(&c.store_dir())
+    );
+    let hosts = fx.write(".config/gh/hosts.yml", "token: new\n");
+    c.feed(FsEvent::Created(hosts));
+    assert!(fx.keep(&c, ".config/gh/hosts.yml"));
+    for p in [&copy, &backup] {
+        fs::write(p, "agent\n").unwrap();
+        c.feed(FsEvent::Modified(p.clone()));
+        assert!(fx.keep(&c, p.strip_prefix(&fx.root).unwrap().to_str().unwrap()));
+    }
+    assert!(
+        blobs(&c.store_dir()).is_empty(),
+        "{:?}",
+        blobs(&c.store_dir())
+    );
+}
+
+/// D29: the tools' config folders as the environment names them, relative ones against the
+/// current folder, and gh's own (`$GH_CONFIG_DIR`, `$XDG_CONFIG_HOME/gh`).
+#[test]
+fn d29_secret_folders_follow_the_environment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = fs::canonicalize(tmp.path()).unwrap();
+    fs::create_dir_all(t.join("real")).unwrap();
+    symlink(t.join("real"), t.join("home")).unwrap();
+    let env = |k: &str| -> Option<std::ffi::OsString> {
+        match k {
+            "HOME" => Some(t.join("home").into()),
+            "CLAUDE_CONFIG_DIR" => Some("rel/claude".into()),
+            "CODEX_HOME" => Some(t.join("codex").into()),
+            "GH_CONFIG_DIR" => Some(t.join("ghc").into()),
+            "XDG_CONFIG_HOME" => Some(t.join("xdg").into()),
+            _ => None,
+        }
+    };
+    let dirs = secret_dirs_with(&env, &t.join("cwd"));
+    for want in [
+        t.join("real/.ssh"),
+        t.join("real/.config/gh"),
+        t.join("cwd/rel/claude"),
+        t.join("codex"),
+        t.join("ghc"),
+        t.join("xdg/gh"),
+    ] {
+        assert!(dirs.contains(&want), "{want:?} not in {dirs:?}");
+    }
+}
+
+/// The counts a diff writes back never replace newer ones a watcher event recounted while
+/// the diff was being made.
+#[test]
+fn a_diff_does_not_put_back_older_counts() {
+    let fx = Fx::new();
+    let p = fx.write("a.txt", "1\n");
+    let c = fx.started(Fx::limits());
+    fs::write(&p, "1\n2\n").unwrap();
+    c.feed(FsEvent::Modified(p.clone()));
+    assert_eq!(rec(&c.records(), "a.txt").added, Some(1));
+    let c = std::rc::Rc::new(c);
+    let (c2, p2) = (std::rc::Rc::clone(&c), p.clone());
+    seam::before_counts(move || {
+        fs::write(&p2, "1\n2\n3\n4\n").unwrap();
+        c2.feed(FsEvent::Modified(p2.clone()));
+    });
+    let d = c.diff(Path::new("a.txt")).unwrap();
+    assert_eq!(d.added, 1, "the diff read the older version");
+    let records = c.records();
+    assert_eq!(
+        rec(&records, "a.txt").added,
+        Some(3),
+        "the newer count stays"
+    );
+}
+
+/// A diff cut at its line cap leaves the counts to the watcher's recount: no second full
+/// count on the UI thread.
+#[test]
+fn a_cut_diff_does_not_count_again() {
+    let fx = Fx::new();
+    let p = fx.write("big.txt", "");
+    let c = fx.started(Fx::limits());
+    let text: String = (0..30_000).map(|i| format!("line {i}\n")).collect();
+    fs::write(&p, &text).unwrap();
+    c.feed(FsEvent::Modified(p));
+    assert_eq!(rec(&c.records(), "big.txt").added, Some(30_000));
+    let before = seam::full_counts();
+    let d = c.diff(Path::new("big.txt")).unwrap();
+    assert!(d.lines.len() > 20_000);
+    assert_eq!(seam::full_counts(), before, "counted again");
+    assert_eq!(rec(&c.records(), "big.txt").added, Some(30_000));
+}
+
+/// A `.new-` folder swept from under its maker (it stood still for over a minute) makes the
+/// maker try another name, not fail the session.
+#[test]
+fn sec10_a_store_swept_while_being_made_is_made_again() {
+    let fx = Fx::new();
+    let base = fx.state.join("ai");
+    fs::create_dir_all(&base).unwrap();
+    let b = base.clone();
+    seam::before_store_lock(move || {
+        for e in fs::read_dir(&b).unwrap().flatten() {
+            fs::remove_dir_all(e.path()).unwrap();
+        }
+    });
+    let (dir, lock) = create_store(&base).expect("made under another name");
+    let ino = fs::metadata(dir.join("lock")).map(|m| m.ino()).ok();
+    assert_eq!(ino, Some(lock.metadata().unwrap().ino()));
 }

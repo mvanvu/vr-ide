@@ -318,6 +318,7 @@ fn keep_is_refused_when_the_file_changed_since_it_was_shown() {
         )]
     );
     assert!(diff_text(&fx.app).contains("// one more line"));
+    assert_row_counts_follow_the_diff(&fx);
     // Shown again, it is kept; a later change is compared with what was kept.
     fx.app.notices.clear();
     press(&mut fx.app, "f5");
@@ -410,6 +411,19 @@ fn revert_asks_first_and_writes_the_earlier_version_back() {
     assert!(fx.rels().is_empty());
 }
 
+/// After a refused Keep or Revert the list row of the file shows the counts of the reloaded
+/// diff in the same frame, not those of the version shown before.
+fn assert_row_counts_follow_the_diff(fx: &Fx) {
+    let d = &fx.app.ai.diff.as_ref().expect("the diff tab").diff;
+    let s = &fx.app.ai.sessions[0];
+    let r = s
+        .records
+        .iter()
+        .find(|r| r.rel == Path::new(SESSION_RS))
+        .unwrap();
+    assert_eq!((r.added, r.removed), (Some(d.added), Some(d.removed)));
+}
+
 #[test]
 fn revert_is_refused_when_the_file_changed_since_it_was_shown() {
     let mut fx = changed();
@@ -433,6 +447,7 @@ fn revert_is_refused_when_the_file_changed_since_it_was_shown() {
         diff_text(&fx.app).contains("// one more"),
         "the diff reloads"
     );
+    assert_row_counts_follow_the_diff(&fx);
     // Looked at again, it reverts.
     press(&mut fx.app, "shift+f5");
     confirm(&mut fx.app);

@@ -4,7 +4,7 @@ expression: t.backend()
 ---
 " ± session_tests.rs x                           │ 1 claude x                  + "
 " A session_tests.rs  new · +88 · claude         │ Changes · claude · 3 files f6 "
-"     @@ -0,0 +1,88 @@ new file                  │ M session.rs            +9 -3 "
+"     @@ -0,0 +1,88 @@ new file                  │ M session.rs           +10 -3 "
 "  1 +// test line 1                             │ A session_tests.rs        +88 "
 "  2 +// test line 2                             │ D old-session.md          -40 "
 "  3 +// test line 3                             │ Counts edits by any program in"
