@@ -994,6 +994,8 @@ pub(crate) fn spawn_sized(
     let p = &app.terminal;
     let mut child = child_env(&p.env, crate::theme::ColorDepth::detect());
     child.extend(env);
+    // SEC-38: every terminal child (shell, ssh, `/run`, agent) passes here.
+    let extras = without_stray_vars(app.ai.state_dir.as_deref(), std::env::vars_os(), extras);
     let (o, w) = (output.clone(), p.wake.clone());
     let notify: vr_term::Notify = Arc::new(move || {
         o.store(true, Ordering::Release);
@@ -1012,6 +1014,24 @@ pub(crate) fn spawn_sized(
         extras,
         notify,
     )
+}
+
+/// `extras` with the inherited `CLAUDE_CONFIG_DIR` / `CODEX_HOME` that point into vr-ide's
+/// account folders added to `env_remove` (SEC-38); `vars` is the inherited environment. A
+/// variable a session sets itself (a named account) is applied after the removal.
+pub(crate) fn without_stray_vars(
+    state: Option<&Path>,
+    vars: impl Iterator<Item = (OsString, OsString)>,
+    mut extras: SpawnExtras,
+) -> SpawnExtras {
+    if let Some(state) = state {
+        for k in crate::ai::history::stray_vars(state, vars) {
+            if !extras.env_remove.contains(&k) {
+                extras.env_remove.push(k);
+            }
+        }
+    }
+    extras
 }
 
 /// Environment of a new terminal: `COLORTERM=truecolor` only when vr-ide itself can show true

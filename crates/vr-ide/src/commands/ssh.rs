@@ -532,11 +532,18 @@ fn start(app: &mut App, line: Line, base: PathBuf, replace: Option<u64>) -> Resu
         session_path(app),
         app.ssh.probe_timeout,
     );
+    // SEC-38: the probe runs the user's `Match exec` commands, so it drops the same variables.
+    let dropped = terminal::without_stray_vars(
+        app.ai.state_dir.as_deref(),
+        std::env::vars_os(),
+        Default::default(),
+    )
+    .env_remove;
     let wake = app.terminal.wake_handle();
     let started = std::thread::Builder::new()
         .name("vr-ssh-probe".into())
         .spawn(move || {
-            let _ = tx.send(ssh::probe(&bin, &line, &cwd, &path, timeout));
+            let _ = tx.send(ssh::probe(&bin, &line, &cwd, &path, &dropped, timeout));
             wake.store(true, Ordering::Release);
         });
     match started {
