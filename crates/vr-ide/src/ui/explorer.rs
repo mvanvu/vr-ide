@@ -117,7 +117,7 @@ fn icon(row: &Row, expanded: bool) -> &'static str {
 }
 
 /// `text` cut to `width` cells, ending in "…" when it did not fit.
-fn fit(text: &str, width: usize) -> String {
+pub(crate) fn fit(text: &str, width: usize) -> String {
     use ratatui::text::Span;
     if Span::raw(text).width() <= width {
         return text.to_string();

@@ -141,22 +141,31 @@ impl Fixture {
 /// An app on `ws` with git started on the fixture's environment; debounce and rest are zero
 /// unless a test sets them (timing has its own tests).
 fn git_app(f: &Fixture, ws: Workspace) -> App {
+    git_app_with(ws, f.options())
+}
+
+fn git_app_with(ws: Workspace, options: vr_git::Options) -> App {
     let (mut app, _) = test_app(&ws.primary().path.clone());
     app.workspace = ws;
     app.roots_changed();
-    app.git.options = f.options();
+    app.git.options = options;
     app.git.debounce = Duration::ZERO;
     app.git.rest = Duration::ZERO;
     app.start_git();
     app
 }
 
-fn single(f: &Fixture, root: &Path) -> App {
+pub(crate) fn single(f: &Fixture, root: &Path) -> App {
     git_app(f, Workspace::single(root.to_path_buf()))
 }
 
+/// [`single`] with git run through `options` (a shim).
+pub(crate) fn single_with(root: &Path, options: vr_git::Options) -> App {
+    git_app_with(Workspace::single(root.to_path_buf()), options)
+}
+
 /// Ticks (real time) until `cond` holds; fails after 15 s.
-fn wait(app: &mut App, what: &str, mut cond: impl FnMut(&App) -> bool) {
+pub(crate) fn wait(app: &mut App, what: &str, mut cond: impl FnMut(&App) -> bool) {
     let end = Instant::now() + Duration::from_secs(15);
     loop {
         app.tick(Instant::now());
@@ -175,7 +184,7 @@ fn current_marks(app: &App) -> Option<Vec<LineChange>> {
     (version == doc.buffer.version()).then(|| marks.to_vec())
 }
 
-fn wait_marks(app: &mut App) -> Vec<LineChange> {
+pub(crate) fn wait_marks(app: &mut App) -> Vec<LineChange> {
     let mut got = None;
     wait(app, "gutter marks", |a| {
         got = current_marks(a);
@@ -232,13 +241,13 @@ fn typ(app: &mut App, s: &str) {
     }
 }
 
-fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
     t.draw(|f| crate::ui::render(f, app)).unwrap();
     t
 }
 
-fn row(t: &Terminal<TestBackend>, y: u16) -> String {
+pub(crate) fn row(t: &Terminal<TestBackend>, y: u16) -> String {
     let buf = t.backend().buffer();
     (0..buf.area.width)
         .map(|x| buf[(x, y)].symbol().to_string())
@@ -724,7 +733,7 @@ fn slow_git(f: &Fixture) -> vr_git::Options {
 }
 
 /// Options whose `git` is the shell script `body` (`{git}` = the real git), first in PATH.
-fn shim_git(f: &Fixture, body: &str) -> vr_git::Options {
+pub(crate) fn shim_git(f: &Fixture, body: &str) -> vr_git::Options {
     let bin = f.base.join("slowbin");
     std::fs::create_dir_all(&bin).unwrap();
     let real = Command::new("sh")

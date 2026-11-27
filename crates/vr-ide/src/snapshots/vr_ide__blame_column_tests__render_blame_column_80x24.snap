@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/blame_column_tests.rs
+expression: t.backend()
+---
+" a.txt ●                                                                        "
+"Not committed yet         1▎// new                                              "
+"Ann Author   2023-11-14   2 one                                                 "
+"┊                         3 two                                                 "
+"Bob Builder… 2023-11-14   4 THREE                                               "
+"┊                         5 FOUR                                                "
+"                          6                                                     "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" EDIT a.txt · main · Ln 2, Col 1 · LF · UTF-8                                   "

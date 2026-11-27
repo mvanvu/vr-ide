@@ -399,7 +399,11 @@ vr-ide. The last row (`SSH <target>`) is drawn by vr-ide and cannot be written b
 In a git repository the gutter marks changed lines and the status bar shows the branch with
 `↑n ↓n` against its upstream (see `docs/commands.md`). The welcome screen shows the branch too.
 With `git_inline_blame = true` in `settings.toml` a dim `Author, 3 days ago • subject` follows the
-cursor line once the cursor rests there. vr-ide only reads the repository: stage, commit, push,
+cursor line once the cursor rests there. `shift+f2` (palette: "Toggle Blame Annotations") shows
+or hides a blame column left of the line numbers: author and commit date (UTC) on the first line
+of each run of lines from one commit, `Not committed yet` on lines not committed; it applies to
+every editor tab for the session, in read and edit mode, follows your edits and is read again on
+save. vr-ide only reads the repository: stage, commit, push,
 pull and history are done with git in a terminal tab. Recovery copies that older builds wrote
 under `~/.local/state/vr-ide/git-recovery` are no longer listed and can be deleted by hand.
 

@@ -59,6 +59,7 @@ const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("global", "ctrl+f8", "terminal.grow"),
     ("global", "ctrl+f9", "terminal.shrink"),
     ("global", "ctrl+f7", "terminal.toggle_position"),
+    ("global", "shift+f2", "editor.toggle_blame"),
     ("global", "f1", "app.palette"),
     ("global", "ctrl+q", "app.quit"),
     // Explorer focus. ctrl+n there asks File / Folder first (user change to the spec).
@@ -140,6 +141,7 @@ const KNOWN: &[&str] = &[
     "terminal.hide",
     "terminal.shrink",
     "terminal.toggle_position",
+    "editor.toggle_blame",
 ];
 
 #[test]

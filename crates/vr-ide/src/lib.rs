@@ -23,6 +23,8 @@ pub mod workspace;
 #[cfg(test)]
 mod app_tests;
 #[cfg(test)]
+mod blame_column_tests;
+#[cfg(test)]
 mod config_reload_tests;
 #[cfg(test)]
 mod dialog_tests;

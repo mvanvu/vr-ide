@@ -51,7 +51,19 @@ was found above the workspace folder (e.g. a dotfiles repo in your home folder).
 folder uses its own repository; a folder without git shows nothing. Set `git_inline_blame = true`
 in `settings.toml` for a dim `Author, 3 days ago • subject` after the cursor line once the cursor
 rests there (`You, uncommitted` for lines not committed yet); it hides while you type. It is off
-by default. Stage, commit, push, pull and history are done with git in a terminal tab.
+by default.
+
+Blame annotations (`shift+f2`, palette "Toggle Blame Annotations"): a column left of the line
+numbers shows the author and the commit date (`YYYY-MM-DD`, UTC) on the first line of each run of
+lines from one commit and a thin `┊` on the rest; lines not committed yet show `Not committed yet`.
+It is on or off for the whole session and every editor tab, in read and edit mode, next to the
+gutter marks and the inline blame. While you edit, each annotation stays on its line and new or
+changed lines show as not committed; saving reads the blame from git again. The column needs room
+beside the text: when the editor leaves fewer than 72 cells next to the line numbers (about 76
+columns of editor with no side panel; open panels and a wider line-number gutter take more) the
+author is shortened, below 50 cells the column hides.
+A file outside a repository, an untracked file or one over the size cap shows a notice instead. Stage, commit, push, pull and
+history are done with git in a terminal tab.
 
 File commands act on the active tab. `/rename <name>` renames its file in the same folder with the
 explorer's checks (one name, no `/`; an existing name is never replaced) and the tab follows,

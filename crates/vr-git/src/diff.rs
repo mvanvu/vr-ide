@@ -234,6 +234,30 @@ pub(crate) fn line_changes_between(old: &str, new: &str) -> Vec<LineChange> {
     merged
 }
 
+/// For each line of `new` (line breaks kept, a last line without one counts), the line of
+/// `old` it is an unchanged copy of, by a line diff; `None` for an added or changed line. The
+/// blame column uses it to keep annotations on their lines while the buffer is edited.
+pub fn equal_lines(old: &str, new: &str) -> Vec<Option<usize>> {
+    use similar::{Algorithm, DiffOp, TextDiff};
+    let diff = TextDiff::configure()
+        .algorithm(Algorithm::Myers)
+        .deadline(Instant::now() + Duration::from_millis(100))
+        .diff_lines(old, new);
+    let mut out = Vec::new();
+    for op in diff.ops() {
+        match *op {
+            DiffOp::Equal { old_index, len, .. } => {
+                out.extend((old_index..old_index + len).map(Some))
+            }
+            DiffOp::Insert { new_len, .. } | DiffOp::Replace { new_len, .. } => {
+                out.extend(std::iter::repeat_n(None, new_len))
+            }
+            DiffOp::Delete { .. } => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +290,16 @@ mod tests {
             }]
         );
         assert_eq!(line_changes_between(old, old), vec![]);
+    }
+
+    #[test]
+    fn equal_lines_follow_moved_and_kept_lines() {
+        assert_eq!(
+            equal_lines("a\nb\nc\n", "a\nX\nb\nc\n"),
+            vec![Some(0), None, Some(1), Some(2)]
+        );
+        assert_eq!(equal_lines("a\nb\n", "B\n"), vec![None]);
+        assert_eq!(equal_lines("a\nb", "a\nb\n"), vec![Some(0), None]);
+        assert_eq!(equal_lines("", ""), Vec::<Option<usize>>::new());
     }
 }

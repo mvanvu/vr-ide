@@ -37,6 +37,12 @@ fn wait(w: &GitWorker, wake: &Receiver<()>, id: u64) -> (Response, Vec<Response>
 
 /// The repo behind a git that takes a second for every command whose arguments contain `word`.
 fn slow(f: &Fixture, word: &str) -> Repo {
+    slow_for(f, word, 1)
+}
+
+/// The repo behind a git that sleeps `secs` before every command whose arguments match the
+/// shell pattern `*word*`.
+fn slow_for(f: &Fixture, word: &str, secs: u32) -> Repo {
     let dir = f.tmp.path().join("shim");
     std::fs::create_dir_all(&dir).unwrap();
     let real = std::env::split_paths(&std::env::var_os("PATH").unwrap())
@@ -47,7 +53,7 @@ fn slow(f: &Fixture, word: &str) -> Repo {
     std::fs::write(
         &shim,
         format!(
-            "#!/bin/sh\ncase \"$*\" in *{word}*) sleep 1;; esac\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\ncase \"$*\" in *{word}*) sleep {secs};; esac\nexec '{}' \"$@\"\n",
             real.display()
         ),
     )
@@ -223,4 +229,154 @@ fn errors_are_delivered_not_panics() {
         wait(&w, &wake, id).0.result,
         Err(GitError::OutsideRepo(_))
     ));
+}
+
+#[test]
+fn file_blame_request_is_answered_with_a_blame() {
+    let f = repo_with_file();
+    let (w, wake) = start(f.repo());
+    let id = w.request(Request::FileBlame {
+        path: f.path("a.txt"),
+        text: Arc::from("one\nTWO\nthree\n"),
+    });
+    let r = wait(&w, &wake, id).0.result.unwrap();
+    let Reply::Blame(Some(b)) = &*r else {
+        panic!("{r:?}");
+    };
+    assert_eq!(b.lines.len(), 3);
+    assert!(!b.commit_of(1).unwrap().uncommitted);
+    assert!(b.commit_of(2).unwrap().uncommitted);
+}
+
+/// A repo with `a.txt` and `slow.txt` whose blame takes 30 s (any other git answers at once).
+fn slow_blame_repo() -> (Fixture, Repo) {
+    let f = repo_with_file();
+    f.write("slow.txt", "s\n");
+    f.commit_all("slow");
+    let repo = slow_for(&f, "blame*slow.txt", 30);
+    (f, repo)
+}
+
+fn file_blame(f: &Fixture, name: &str) -> Request {
+    Request::FileBlame {
+        path: f.path(name),
+        text: Arc::from(std::fs::read_to_string(f.path(name)).unwrap().as_str()),
+    }
+}
+
+#[test]
+fn automatic_reads_answer_while_a_file_blame_runs() {
+    let (f, repo) = slow_blame_repo();
+    let (w, wake) = start(repo);
+    let blame = w.request(file_blame(&f, "slow.txt"));
+    // Let the blame reach git before the automatic reads are asked.
+    std::thread::sleep(Duration::from_millis(300));
+    let t = Instant::now();
+    let marks = w.request(Request::LineChanges {
+        path: f.path("a.txt"),
+        text: Arc::from("one\nX\n"),
+    });
+    let head = w.request(Request::Head);
+    let (r, earlier) = wait(&w, &wake, head);
+    assert!(matches!(r.result.as_deref(), Ok(Reply::Head(_))), "{r:?}");
+    let m = earlier
+        .iter()
+        .find(|r| r.id == marks)
+        .expect("marks answered");
+    assert!(matches!(
+        m.result.as_deref(),
+        Ok(Reply::LineChanges(Some(_)))
+    ));
+    assert!(
+        earlier.iter().all(|r| r.id != blame),
+        "the blame still runs"
+    );
+    assert!(
+        t.elapsed() < Duration::from_secs(5),
+        "automatic reads waited for the file blame: {:?}",
+        t.elapsed()
+    );
+    w.cancel_file_blame(blame);
+}
+
+#[test]
+fn a_newer_file_blame_cancels_the_running_one() {
+    let (f, repo) = slow_blame_repo();
+    let (w, wake) = start(repo);
+    let slow = w.request(file_blame(&f, "slow.txt"));
+    std::thread::sleep(Duration::from_millis(300));
+    let t = Instant::now();
+    let fast = w.request(file_blame(&f, "a.txt"));
+    let (r, earlier) = wait(&w, &wake, fast);
+    assert!(
+        matches!(r.result.as_deref(), Ok(Reply::Blame(Some(_)))),
+        "{r:?}"
+    );
+    let old = earlier
+        .iter()
+        .find(|r| r.id == slow)
+        .expect("old blame answered");
+    assert!(matches!(old.result, Err(GitError::Superseded)), "{old:?}");
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+}
+
+#[test]
+fn a_cancelled_file_blame_stops_its_git() {
+    let (f, repo) = slow_blame_repo();
+    let (w, wake) = start(repo);
+    let id = w.request(file_blame(&f, "slow.txt"));
+    std::thread::sleep(Duration::from_millis(300));
+    let t = Instant::now();
+    w.cancel_file_blame(id);
+    let (r, _) = wait(&w, &wake, id);
+    assert!(matches!(r.result, Err(GitError::Superseded)), "{r:?}");
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    // The lane takes the next blame at once.
+    let id = w.request(file_blame(&f, "a.txt"));
+    assert!(matches!(
+        wait(&w, &wake, id).0.result.as_deref(),
+        Ok(Reply::Blame(Some(_)))
+    ));
+}
+
+#[test]
+fn newer_file_blames_of_the_same_file_wait_for_the_running_one() {
+    let f = repo_with_file();
+    f.write("slow.txt", "s\n");
+    f.commit_all("slow");
+    let (w, wake) = start(slow_for(&f, "blame*slow.txt", 2));
+    // Asked again and again more often than the blame takes (a busy `.git`).
+    let first = w.request(file_blame(&f, "slow.txt"));
+    let mut ids = vec![first];
+    for _ in 0..8 {
+        std::thread::sleep(Duration::from_millis(300));
+        ids.push(w.request(file_blame(&f, "slow.txt")));
+    }
+    let last = *ids.last().unwrap();
+    let (r, earlier) = wait(&w, &wake, last);
+    assert!(
+        matches!(r.result.as_deref(), Ok(Reply::Blame(Some(_)))),
+        "{r:?}"
+    );
+    let first = earlier
+        .iter()
+        .find(|r| r.id == first)
+        .expect("first answered");
+    assert!(
+        matches!(first.result.as_deref(), Ok(Reply::Blame(Some(_)))),
+        "the running blame was killed: {:?}",
+        first.result
+    );
+    let skipped = earlier
+        .iter()
+        .filter(|r| matches!(r.result, Err(GitError::Superseded)))
+        .count();
+    // Requests replaced while waiting are dropped; how many ran in between depends on timing.
+    let answered = earlier.iter().filter(|r| ids.contains(&r.id)).count();
+    assert_eq!(
+        answered,
+        ids.len() - 1,
+        "every request gets exactly one response"
+    );
+    assert!(skipped >= 1, "waiting requests were replaced, not stacked");
 }

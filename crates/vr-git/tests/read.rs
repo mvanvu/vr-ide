@@ -440,3 +440,36 @@ fn symlink_is_addressed_by_its_own_path() {
     let r = f.repo();
     assert_eq!(r.relative(&f.path("link")).unwrap(), PathBuf::from("link"));
 }
+
+#[test]
+fn file_blame_matches_porcelain_and_marks_unsaved_lines() {
+    let f = Fixture::new();
+    f.write("b.txt", "one\ntwo\nthree\n");
+    let c1 = f.commit_all("first");
+    f.write("b.txt", "one\nTWO\nthree\n");
+    let c2 = f.commit_all("second");
+    let r = f.repo();
+    let b = r
+        .file_blame(Path::new("b.txt"), "one\nTWO\nthree\n")
+        .unwrap()
+        .unwrap();
+    let oids: Vec<&str> = (0..3)
+        .map(|i| b.commit_of(i).unwrap().oid.as_str())
+        .collect();
+    assert_eq!(oids, [c1.as_str(), c2.as_str(), c1.as_str()]);
+    // An unsaved buffer: changed and added lines are not committed yet.
+    let bt = r
+        .file_blame(Path::new("b.txt"), "one\nTWO\nedited\nnew line\n")
+        .unwrap()
+        .unwrap();
+    let unc: Vec<bool> = (0..4)
+        .map(|i| bt.commit_of(i).unwrap().uncommitted)
+        .collect();
+    assert_eq!(unc, [false, false, true, true]);
+    // Untracked: nothing; staged only: all uncommitted.
+    f.write("new.txt", "x\n");
+    assert_eq!(r.file_blame(Path::new("new.txt"), "x\n").unwrap(), None);
+    f.git(&["add", "new.txt"]);
+    let staged = r.file_blame(Path::new("new.txt"), "x\n").unwrap().unwrap();
+    assert!(staged.commit_of(0).unwrap().uncommitted);
+}
