@@ -4,8 +4,9 @@
 |---|---|---|---|---|---|---|---|---|---|
 | T1 | Frontend seam: event_loop::step + Frontend trait | fe | — | crates/vr-ide/src/{event_loop.rs,main.rs,frontend.rs,lib.rs} + tests | ui | BASE, COST, AC-W1 | cargo test -p vr-ide; guard | done | 0 |
 | T2 | vr-window renderer (PixelBackend, fonts, glyph cache) + bench gate | fe | — | crates/vr-window/** (new), Cargo.toml, Cargo.lock | ui | BASE, COST, AC-W2, AC-W3 | cargo test -p vr-window; bench | done | 1 |
-| T3 | vr-window input translation + IME state | fe | T2 | crates/vr-window/src/input*.rs, crates/vr-window/src/lib.rs | ui | BASE, COST, AC-W4, AC-W5 | cargo test -p vr-window | todo | 0 |
+| T3 | vr-window input translation + IME state | fe | T2 | crates/vr-window/src/input*.rs, crates/vr-window/src/lib.rs | ui | BASE, COST, AC-W4, AC-W5 | cargo test -p vr-window | in progress | 0 |
 | T5 | Desktop entry new form + migration | fe | T1 | crates/vr-ide/src/desktop.rs, desktop_tests.rs | security | BASE, COST, AC-W7 | cargo test -p vr-ide desktop | done | 1 |
+| T4a | Font settings + PTY pixel size | fe | — | crates/vr-config/**, crates/vr-term/src/terminal.rs + tests | ui | BASE, COST, AC-W6, AC-W8 | cargo test -p vr-config -p vr-term | done | 0 |
 | T4 | Window app: runner, wiring, launch, quit path, font settings, PTY pixels | fe | T1, T2, T3, T5 | crates/vr-window/src/app*.rs, crates/vr-ide/src/{main.rs,cli.rs,window_frontend.rs,…}, crates/vr-ide/Cargo.toml, crates/vr-config/**, crates/vr-term/src/terminal.rs, defaults/settings.toml | ui | BASE, COST, AC-W1..AC-W8 | cargo test --workspace (related); guard both feature sets; release build | todo | 0 |
 | T6 | Docs | fe | T4 | README.md, docs/*.md | docs | BASE | leader spot-check + sonnet reviewer | todo | 0 |
 
@@ -45,3 +46,8 @@
 - 06:32 verdict gate T5 QC re-check ✓ QC_PASS. T5 done, committed.
 - 06:32 verdict gate T2 QC re-check ✓ QC_PASS (default font DejaVu Sans Mono = fc-match). Waiting for review re-check.
 - 06:33 verdict gate T2 re-check review ✓ APPROVED (1 minor → report). T2 done, committed. T3 starts.
+- 06:34 T3 started (developer opus). T4 split: T4a (vr-config font settings + vr-term PTY pixels, sonnet, small) started now. parallel: T3 ∥ T4a — files disjoint (vr-window+Cargo vs vr-config/vr-term), per-crate tests.
+- 06:38 T4a DONE gate ✓ (guard green). Review (sonnet) + QC (sonnet) started.
+- 06:39 verdict gate T4a review ✓ APPROVED (2 minor: test cases → quick pass after QC; caller → T4). Waiting for QC.
+- 06:40 verdict gate T4a QC ✓ QC_PASS (warnings name keys; /set unproven at runtime, statically same check). Quick pass 1 (test cases) sent to T4a developer.
+- 06:41 T4a quick pass (tests only) spot-checked by the leader on the diff (4 cases added, no code). T4a done, committed.

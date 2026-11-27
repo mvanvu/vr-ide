@@ -39,7 +39,8 @@ pub enum TerminalPosition {
     Right,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+// No Eq: the font settings are floats.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub tab_width: usize,
@@ -68,6 +69,13 @@ pub struct Settings {
     pub ai_auto_switch: bool,
     /// One line typed into the resumed session after an automatic switch, 1..=200 characters.
     pub ai_auto_switch_prompt: String,
+    /// Font family of the window frontend; empty = the system monospace font. One line, at most
+    /// 100 characters.
+    pub font_family: String,
+    /// Font size in points, 6..=72.
+    pub font_size: f32,
+    /// Line height as a multiple of the font height, 1.0..=2.0.
+    pub line_height: f32,
     pub ai_tools: Vec<AiTool>,
 }
 
@@ -210,6 +218,16 @@ fn parse(table: toml::Table) -> Result<Settings, String> {
     let prompt = &s.ai_auto_switch_prompt;
     if prompt.is_empty() || prompt.chars().count() > 200 || prompt.chars().any(char::is_control) {
         return Err("ai_auto_switch_prompt must be one line of 1 to 200 characters".into());
+    }
+    let family = &s.font_family;
+    if family.chars().count() > 100 || family.chars().any(char::is_control) {
+        return Err("font_family must be one line of at most 100 characters".into());
+    }
+    if !(6.0..=72.0).contains(&s.font_size) {
+        return Err("font_size must be between 6 and 72".into());
+    }
+    if !(1.0..=2.0).contains(&s.line_height) {
+        return Err("line_height must be between 1.0 and 2.0".into());
     }
     for (i, t) in s.ai_tools.iter().enumerate() {
         if !valid_tool_name(&t.name) {

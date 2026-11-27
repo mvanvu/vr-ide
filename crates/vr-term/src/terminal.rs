@@ -257,7 +257,7 @@ impl Terminal {
             return Err(TermError::BadCwd(opts.cwd.clone()));
         }
         let pair = native_pty_system()
-            .openpty(pty_size(opts.cols, opts.rows))
+            .openpty(pty_size(opts.cols, opts.rows, 0, 0))
             .map_err(|e| TermError::Pty(e.to_string()))?;
         let mut cmd = CommandBuilder::new(&opts.shell);
         cmd.args(&opts.args);
@@ -424,8 +424,19 @@ impl Terminal {
         })
     }
 
-    /// Resizes the emulator and the PTY (the program gets SIGWINCH).
+    /// Resizes the emulator and the PTY (the program gets SIGWINCH); the PTY reports 0 pixels.
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), TermError> {
+        self.resize_with_pixels(cols, rows, 0, 0)
+    }
+
+    /// Like `resize`, and the PTY reports `cols * cell_w` by `rows * cell_h` pixels (saturating).
+    pub fn resize_with_pixels(
+        &self,
+        cols: u16,
+        rows: u16,
+        cell_w: u16,
+        cell_h: u16,
+    ) -> Result<(), TermError> {
         if cols == 0 || rows == 0 {
             return Err(TermError::BadSize { cols, rows });
         }
@@ -437,7 +448,7 @@ impl Terminal {
         });
         if let Some(master) = &self.master {
             master
-                .resize(pty_size(cols, rows))
+                .resize(pty_size(cols, rows, cell_w, cell_h))
                 .map_err(|e| TermError::Pty(e.to_string()))?;
         }
         *size = (cols, rows);
@@ -588,12 +599,12 @@ impl Drop for Terminal {
     }
 }
 
-fn pty_size(cols: u16, rows: u16) -> PtySize {
+fn pty_size(cols: u16, rows: u16, cell_w: u16, cell_h: u16) -> PtySize {
     PtySize {
         rows,
         cols,
-        pixel_width: 0,
-        pixel_height: 0,
+        pixel_width: cols.saturating_mul(cell_w),
+        pixel_height: rows.saturating_mul(cell_h),
     }
 }
 
@@ -758,4 +769,55 @@ fn wait_loop(
     drop(status);
     shared.status_changed.notify_all();
     shared.mark_dirty();
+}
+
+#[cfg(test)]
+mod pixel_tests {
+    use super::pty_size;
+
+    #[test]
+    fn pty_size_multiplies_and_saturates() {
+        let s = pty_size(80, 24, 9, 18);
+        assert_eq!((s.pixel_width, s.pixel_height), (720, 432));
+        let s = pty_size(80, 24, 0, 0);
+        assert_eq!((s.pixel_width, s.pixel_height), (0, 0));
+        let s = pty_size(1000, 1000, 200, 200);
+        assert_eq!((s.pixel_width, s.pixel_height), (u16::MAX, u16::MAX));
+    }
+}
+
+#[cfg(test)]
+mod pixel_pty_tests {
+    use super::{SpawnOptions, Terminal};
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    #[test]
+    fn resize_with_pixels_reaches_the_pty_and_resize_clears_them() {
+        let term = Terminal::spawn_with(
+            SpawnOptions {
+                shell: PathBuf::from("/bin/sh"),
+                args: vec![OsString::from("-c"), OsString::from("read x")],
+                cwd: PathBuf::from("/"),
+                env: Vec::new(),
+                cols: 80,
+                rows: 24,
+                scrollback: 100,
+            },
+            Default::default(),
+            Arc::new(|| {}),
+        )
+        .expect("spawn /bin/sh");
+        let size = |t: &Terminal| t.master.as_ref().unwrap().get_size().unwrap();
+        term.resize_with_pixels(100, 30, 9, 18).unwrap();
+        let s = size(&term);
+        assert_eq!(
+            (s.cols, s.rows, s.pixel_width, s.pixel_height),
+            (100, 30, 900, 540)
+        );
+        term.resize(80, 24).unwrap();
+        let s = size(&term);
+        assert_eq!((s.pixel_width, s.pixel_height), (0, 0));
+    }
 }

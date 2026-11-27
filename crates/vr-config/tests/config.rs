@@ -934,3 +934,52 @@ fn ai_auto_switch_defaults_and_override() {
     assert!(w.is_empty(), "{w:?}");
     assert_eq!(s.ai_auto_switch_prompt, ok);
 }
+
+#[test]
+fn font_settings_defaults_valid_and_invalid() {
+    let (s, w) = Settings::load(None);
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(s.font_family, "");
+    assert_eq!((s.font_size, s.line_height), (11.0, 1.2));
+
+    let (_d, path) =
+        write_user("font_family = \"JetBrains Mono\"\nfont_size = 14.5\nline_height = 1.5\n");
+    let (s, w) = Settings::load(Some(&path));
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(s.font_family, "JetBrains Mono");
+    assert_eq!((s.font_size, s.line_height), (14.5, 1.5));
+
+    for (line, key) in [
+        ("font_size = 5.9", "font_size"),
+        ("font_size = 72.5", "font_size"),
+        ("line_height = 0.9", "line_height"),
+        ("line_height = 2.1", "line_height"),
+        ("font_size = nan", "font_size"),
+        ("font_size = inf", "font_size"),
+        ("line_height = -1.0", "line_height"),
+        ("line_height = nan", "line_height"),
+        ("font_family = \"a\\nb\"", "font_family"),
+    ] {
+        let (_d, path) = write_user(&format!("{line}\n"));
+        let (s, w) = Settings::load(Some(&path));
+        assert_eq!(s.font_family, "", "{line}");
+        assert_eq!((s.font_size, s.line_height), (11.0, 1.2), "{line}");
+        assert!(
+            matches!(w.as_slice(), [ConfigWarning::InvalidValue { key: k, .. }] if k == key),
+            "{line}: {w:?}"
+        );
+    }
+    let long = "f".repeat(101);
+    let (_d, path) = write_user(&format!("font_family = \"{long}\"\n"));
+    let (s, w) = Settings::load(Some(&path));
+    assert_eq!(s.font_family, "");
+    assert!(
+        matches!(w.as_slice(), [ConfigWarning::InvalidValue { key, .. }] if key == "font_family"),
+        "{w:?}"
+    );
+    let ok = "f".repeat(100);
+    let (_d, path) = write_user(&format!("font_family = \"{ok}\"\n"));
+    let (s, w) = Settings::load(Some(&path));
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(s.font_family, ok);
+}

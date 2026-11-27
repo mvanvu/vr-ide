@@ -67,3 +67,19 @@ Rebuilt `cargo build -p vr-ide` (ok). Temp XDG_DATA_HOME/HOME under qa-artifacts
 Rebuilt the scratch program (qa-artifacts/T2/qc/render) against the fixed vr-window. `FontSet::new` with the default config now resolves to "DejaVu Sans Mono" at scale 1 and 2 (matches `fc-match monospace`), no warning; cell 10x19 at scale 1.
 Re-rendered at 1920x1080 scale 1 (qa-artifacts/T2/qc/render/out2/1920x1080_s1_text.png and 1920x1080_s1_preedit.png, both viewed): Vietnamese line correct (pixel dump of the ế cell shows acute and circumflex both inside the cell, not clipped); preedit "việ" underlined at col 5,row 6; other styled/wide/emoji rows unchanged and correct. Only qa-artifacts/T2/qc/ and this report written (BASE-50).
 Verdict: QC_PASS T2
+
+## QC T4a
+Engine: real `target/debug/vr-ide` (built with `cargo build -p vr-ide`, ok) in a pty driver, `VR_IDE_CONFIG_DIR` pointed at `qa-artifacts/T4a/qc/cfg_*` (real ~/.config untouched). Driver: `qa-artifacts/T4a/qc/run.py`, logs `screen_*.log`.
+- AC-W8 settings side, bad values: `font_size = 99` -> status warning "settings.toml: font_size: font_size must be between 6 and 72"; `line_height = 0.5` -> "line_height: line_height must be between 1.0 and 2.0"; two-line `font_family` -> "font_family: font_family must be one line of at most 100 characters" (+2 more queued when all three are bad); `line_height=2.5`+`font_size=5` -> font_size warning, "+1 more". App stays alive and accepts edit input (typed text drawn) in every case. PASS.
+- Valid values (14.0 / 1.5 / "DEJAVU Sans Mono") and no settings file: no warning, app works. PASS.
+- `/set font_size 99`: not exercised at runtime (my driver could not open the command window reliably; the notice queue swallowed the keys). Static: `/set` uses `Settings::with_value`, which accepts any key in `Settings::names()` (derived from the defaults table, which now holds the three keys) and re-validates through the same `parse` range check, so out-of-range values return an error. Not runtime-proven; no defect found.
+- AC-W6 PTY part: not rerun (developer's PTY test).
+- Experiments only under qa-artifacts/T4a/qc/; `git status` shows no new repo files from QC.
+
+## Rule check T4a
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-W8 settings warnings at runtime | pass | bad values name the key; good values silent; app keeps working |
+| AC-W8 `/set` for font keys | not run (static ok) | see above |
+| BASE-26 | pass | warnings name the key and the range; app not crashed |
+| BASE-50 | pass | only qa-artifacts/T4a/qc and this report written |
