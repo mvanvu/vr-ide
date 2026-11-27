@@ -95,6 +95,8 @@ pub enum DialogAction {
     CloseTerminal(Option<u32>),
     /// An AI session's close while its program runs (D7): Close / Cancel; the session's pid.
     CloseAiSession(Option<u32>),
+    /// Delete on a named account in the AI picker (D11, SEC-17): Remove / Cancel, Cancel first.
+    RemoveAiAccount(String),
     /// Find box, File scope (D279): Replace: One / All / Cancel.
     ReplaceInFile,
     /// Unsaved files before the roots are replaced (W-1): Save all / Discard / Cancel.
@@ -161,6 +163,9 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
         }
         (DialogAction::CloseAiSession(pid), Outcome::Chosen(0)) => {
             crate::ai::answer_close(app, pid)
+        }
+        (DialogAction::RemoveAiAccount(name), Outcome::Chosen(0)) => {
+            crate::ai::answer_remove_account(app, &name)
         }
         (DialogAction::QuitStuckReplaceDiscard, Outcome::Chosen(0)) => {
             super::search::allow_quit(app);

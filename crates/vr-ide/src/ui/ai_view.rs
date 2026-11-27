@@ -438,6 +438,30 @@ fn render_picker(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         for (i, row) in pk.rows.iter().enumerate() {
             match row {
                 picker::Row::Header { tool } => put(buf, y, area.x + 1, tool, header),
+                picker::Row::Add { tool } => match pk.adding.as_ref().filter(|f| &f.tool == tool) {
+                    Some(field) => {
+                        // `name personal▌`, then the rule, or why Enter refused the name.
+                        let label = "   name ";
+                        put(buf, y, area.x, label, theme.dim);
+                        let x = area.x + width_of(label) as u16;
+                        let text = crate::ui::safe_text::sanitize(&field.text);
+                        put(buf, y, x, &format!("{text}▌"), theme.text);
+                        y += 1;
+                        let (line, style) = match &field.error {
+                            Some(e) => (format!("   {e}"), theme.error),
+                            None => (format!("   a-z 0-9 - _, for {tool}"), theme.note),
+                        };
+                        put(buf, y, area.x, &line, style);
+                    }
+                    None => row_line(
+                        buf,
+                        y,
+                        "   + Add account…",
+                        "",
+                        theme.note,
+                        i == pk.selected,
+                    ),
+                },
                 picker::Row::Choice {
                     tool,
                     account,
@@ -452,10 +476,11 @@ fn render_picker(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
                     let (left, style) = if *single {
                         (format!(" {tool}"), header)
                     } else {
-                        (
-                            format!("   {}", account.as_deref().unwrap_or("default")),
-                            Style::default(),
-                        )
+                        match account {
+                            // Named accounts in the AI badge's purple, shown as validated.
+                            Some(a) => (format!("   {a}"), account_style(theme)),
+                            None => ("   default".to_string(), Style::default()),
+                        }
                     };
                     row_line(buf, y, &left, &right, style, i == pk.selected);
                 }
@@ -487,8 +512,26 @@ fn render_picker(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     } else {
         "back"
     };
+    // `del remove` only when there is a named account to remove.
+    let accounts = pk.second.is_none()
+        && pk.rows.iter().any(|r| {
+            matches!(
+                r,
+                picker::Row::Choice {
+                    account: Some(_),
+                    ..
+                }
+            )
+        });
+    let keys: Vec<(&str, &str)> = if pk.adding.is_some() {
+        vec![("enter", "create + start"), ("esc", "cancel")]
+    } else if accounts {
+        vec![("enter", "start"), ("del", "remove"), ("esc", esc)]
+    } else {
+        vec![("enter", "start"), ("esc", esc)]
+    };
     let mut x = area.x + 1;
-    for (k, word) in [("enter", "start"), ("esc", esc)] {
+    for (k, word) in keys {
         put(buf, fy, x, k, theme.warning);
         x += width_of(k) as u16 + 1;
         put(buf, fy, x, word, theme.dim);
@@ -522,7 +565,10 @@ pub fn render_status(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
                 .as_ref()
                 .map(|k| crate::git::home_relative(&k.folder))
                 .unwrap_or_default();
-            let what = if p.sessions.is_empty() {
+            let adding = p.picker.as_ref().is_some_and(|k| k.adding.is_some());
+            let what = if adding {
+                "new account"
+            } else if p.sessions.is_empty() {
                 "no session"
             } else {
                 "new session"
@@ -574,4 +620,12 @@ pub fn render_status(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         rw,
         theme.status,
     );
+}
+
+/// Named accounts in the picker: the `AI` badge's colour as text.
+fn account_style(theme: &Theme) -> Style {
+    theme
+        .mode_ai
+        .bg
+        .map_or_else(Style::default, |c| Style::default().fg(c))
 }

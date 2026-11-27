@@ -205,6 +205,9 @@ fn ai_panel_short_labels() {
 #[test]
 fn ai_picker() {
     let mut app = panel_app(3);
+    let state = tempfile::tempdir().unwrap();
+    crate::ai::accounts::create(state.path(), "claude", "work").unwrap();
+    app.ai.state_dir = Some(state.path().to_path_buf());
     let picker = Picker::build(&app, PathBuf::from(ROOT), Some(("claude", None)), Some(0));
     app.ai.picker = Some(picker);
     app.ai.active = 3;
@@ -214,11 +217,13 @@ fn ai_picker() {
     for want in [
         "New session in /home/user/DEV/vr-ide",
         "   default",
+        "   work",
+        "   + Add account…",
         "1 open",
         "gemini",
         "Not on PATH: aider, cursor-agent",
         "(ai_tools in settings)",
-        "enter start  esc back",
+        "enter start  del remove  esc back",
         "new session · /home/user/DEV/vr-ide",
     ] {
         assert!(text.contains(want), "{want}:\n{text}");
@@ -234,6 +239,88 @@ fn ai_picker() {
     for want in ["Continue last", "--continue", "Choose earlier", "--resume"] {
         assert!(text.contains(want), "{want}:\n{text}");
     }
+}
+
+/// S2 accounts (mockups ai-account-add-120x40, ai-account-remove-80x24,
+/// ai-account-busy-80x24): the name field with its rule and its error, the remove question
+/// (Cancel selected), the busy notice.
+#[test]
+fn ai_account_screens() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |app: &mut App, code: KeyCode| {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    };
+    let mut app = panel_app(2);
+    let state = tempfile::tempdir().unwrap();
+    crate::ai::accounts::create(state.path(), "claude", "work").unwrap();
+    crate::ai::accounts::create(state.path(), "claude", "old-team").unwrap();
+    app.ai.state_dir = Some(state.path().to_path_buf());
+    let mut picker = Picker::build(&app, PathBuf::from(ROOT), None, Some(0));
+    picker.selected = picker
+        .rows
+        .iter()
+        .position(|r| matches!(r, crate::ai::picker::Row::Add { tool } if tool == "claude"))
+        .unwrap();
+    app.ai.picker = Some(picker);
+    app.ai.active = 2;
+    press(&mut app, KeyCode::Enter);
+    for c in "personal".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    snap("ai_account_add", &mut app, &[(120, 40)]);
+    let text = format!("{:?}", draw(&mut app, 120, 40).backend());
+    for want in [
+        "   name personal▌",
+        "   a-z 0-9 - _, for claude",
+        "enter create + start  esc cancel",
+        "new account · /home/user/DEV/vr-ide",
+    ] {
+        assert!(text.contains(want), "{want}:\n{text}");
+    }
+    // A refused name: the reason replaces the rule, the text stays.
+    press(&mut app, KeyCode::Char('!'));
+    press(&mut app, KeyCode::Enter);
+    let text = format!("{:?}", draw(&mut app, 120, 40).backend());
+    assert!(text.contains("   name personal!▌"), "{text}");
+    assert!(text.contains("   use a-z 0-9 - _ only"), "{text}");
+    press(&mut app, KeyCode::Esc);
+    // Remove: the question, with a path that does not depend on the temp folder.
+    app.ai.state_dir = Some(PathBuf::from("/home/user/.local/state/vr-ide"));
+    let p = app.ai.picker.as_mut().unwrap();
+    p.selected = p
+        .rows
+        .iter()
+        .position(|r| matches!(r, crate::ai::picker::Row::Choice { account: Some(a), .. } if a == "old-team"))
+        .unwrap();
+    press(&mut app, KeyCode::Delete);
+    assert!(app.dialog.is_some());
+    snap("ai_account_remove", &mut app, &[(80, 24)]);
+    let text = format!("{:?}", draw(&mut app, 80, 24).backend());
+    for want in [
+        "Remove account old-team?",
+        "/home/user/.local/state/vr-ide/accounts/old-team/",
+        "[Remove]",
+    ] {
+        assert!(text.contains(want), "{want}:\n{text}");
+    }
+    press(&mut app, KeyCode::Esc);
+    // Busy: session 2 runs on work.
+    let p = app.ai.picker.as_mut().unwrap();
+    p.selected = p
+        .rows
+        .iter()
+        .position(
+            |r| matches!(r, crate::ai::picker::Row::Choice { account: Some(a), .. } if a == "work"),
+        )
+        .unwrap();
+    press(&mut app, KeyCode::Delete);
+    assert!(app.dialog.is_none());
+    snap("ai_account_busy", &mut app, &[(80, 24)]);
+    let text = format!("{:?}", draw(&mut app, 80, 24).backend());
+    assert!(
+        text.contains("Not removed: close the session on work first, tab 2"),
+        "{text}"
+    );
 }
 
 #[test]

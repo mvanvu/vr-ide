@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/tests/ai_view_tests.rs
+expression: t.backend()
+---
+" /home/user/DEV/vr-ide                          │ 1  2 ◆  3 new                 "
+" vr-ide v0.1.0                                  │                               "
+"                                                │ New session in /home/user/DEV/"
+" CPU                                          — │                               "
+" RAM ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    — │ claude                        "
+"                                                │   default              1 open "
+" ctrl+p  Go to file                             │   old-team                new "
+" f1      Command palette                        │   work                 1 open "
+" ctrl+e  Explorer                               │   + Add account…              "
+" ctrl+o  Open file                              │ codex                         "
+" ctrl+`  Terminal                               │   default                 new "
+" f12     AI panel                               │   + Add account…              "
+" ctrl+q  Quit                                   │ gemini                    new "
+"                                                │                               "
+"                                                │ Not on PATH: aider,           "
+"                                                │ cursor-agent                  "
+"                                                │ (ai_tools in settings)        "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │ enter start  del remove  esc b"
+"Not removed: close the session on work first, tab 2  (click)                    "
+" AI  new session · /home/user/DEV/vr-ide                         3/3 · f12 hide "

@@ -625,7 +625,7 @@ fn ai_starts_only_tools_of_ai_tools_never_through_a_shell() {
     );
     assert_eq!(app.terminal.tabs.len(), 1, "no new terminal tab");
     assert!(app.ai.sessions.is_empty());
-    slash_needs(&mut app, "/ai", "/ai needs <tool>");
+    slash_needs(&mut app, "/ai", "/ai needs <tool> [@account]");
 }
 
 /// Enter on `text` (in a fresh window) shows `message`.

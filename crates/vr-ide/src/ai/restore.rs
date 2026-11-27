@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::spawn;
+use super::{accounts, spawn};
 use crate::app::App;
 
 /// Most sessions a restore reopens.
@@ -72,7 +72,7 @@ pub fn restore(app: &mut App, state: &AiPanelState) {
     for (i, s) in state.sessions.iter().take(MAX_SESSIONS).enumerate() {
         match check(app, s, path.as_deref()) {
             Err(why) => app.error(format!("Not reopened: {}", why)),
-            Ok(root) => {
+            Ok((root, account)) => {
                 let tool = app
                     .settings
                     .ai_tools
@@ -81,8 +81,14 @@ pub fn restore(app: &mut App, state: &AiPanelState) {
                     .cloned()
                     .expect("checked");
                 let name = s.name.as_deref().and_then(|n| super::clean_name(n).ok());
-                match super::spawn_session(app, &tool, None, spawn::again_mode(&tool), &root, name)
-                {
+                match super::spawn_session(
+                    app,
+                    &tool,
+                    account,
+                    spawn::again_mode(&tool),
+                    &root,
+                    name,
+                ) {
                     Ok(()) => opened.push(i),
                     Err(e) => app.error(format!("Not reopened: {} ({e})", s.tool)),
                 }
@@ -100,8 +106,14 @@ pub fn restore(app: &mut App, state: &AiPanelState) {
     app.dirty = true;
 }
 
-/// The folder a saved session may reopen in, or why it may not (the notice's text).
-fn check(app: &App, s: &AiSessionState, path: Option<&std::ffi::OsStr>) -> Result<PathBuf, String> {
+/// The folder and account a saved session may reopen on, or why it may not (the notice's text).
+/// The account must pass SEC-15 and its folder SEC-16 now; there is no fallback to `default` or
+/// another account (SEC-18).
+fn check(
+    app: &App,
+    s: &AiSessionState,
+    path: Option<&std::ffi::OsStr>,
+) -> Result<(PathBuf, Option<String>), String> {
     let shown = crate::git::home_relative(&s.root);
     let tool_name = if vr_config::valid_tool_name(&s.tool) {
         s.tool.clone()
@@ -113,18 +125,21 @@ fn check(app: &App, s: &AiSessionState, path: Option<&std::ffi::OsStr>) -> Resul
             "{tool_name} in {shown}, {tool_name} is not in ai_tools"
         ));
     };
-    if let Some(account) = &s.account {
-        let account = crate::ui::safe_text::sanitize(account);
-        return Err(format!(
-            "{tool_name}@{account}, account folder missing (no fallback)"
-        ));
-    }
+    let account = match &s.account {
+        None => None,
+        Some(a) => {
+            let shown = crate::ui::safe_text::sanitize(a);
+            accounts::ready(app.ai.state_dir.as_deref(), &tool.name, a)
+                .map_err(|why| format!("{tool_name}@{shown}, {why} (no fallback)"))?;
+            Some(a.clone())
+        }
+    };
     if spawn::resolve(&tool.command, path).is_none() {
         return Err(format!("{tool_name} in {shown}, {tool_name} not on PATH"));
     }
     let root = workspace_root(app, &s.root)
         .ok_or_else(|| format!("{tool_name} in {shown} (folder missing)"))?;
-    Ok(root)
+    Ok((root, account))
 }
 
 /// `root` when it is one of the workspace's folders and exists, canonical.

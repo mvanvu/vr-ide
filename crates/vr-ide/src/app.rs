@@ -386,6 +386,7 @@ impl App {
         app.recent_files = list;
         app.recent_files_file = Some(files);
         app.ssh = commands::ssh::SshState::load(&state);
+        app.ai.state_dir = Some(state.clone());
         app.config_dir = Some(dir);
         (app, warnings)
     }

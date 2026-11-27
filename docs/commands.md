@@ -115,7 +115,7 @@ protocol does not send are marked).
 | `/term right` | Terminal panel on the right, for this session |
 | `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
-| `/ai <tool>` | Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name> |
+| `/ai <tool> [@account]` | Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name> |
 | `/ssh [target]` | Open an SSH session: [user@]host[:port] (no target: list hosts) |
 | `/ws add <dir>` | Add a folder to the workspace |
 | `/ws remove [root]` | Remove a workspace folder (default: the active file's) |
