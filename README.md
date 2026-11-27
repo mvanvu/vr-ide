@@ -404,6 +404,26 @@ notice each). While the panel shows, a terminal set to the right sits at the bot
 the editor column. The tools are started directly (no shell), found only in the absolute
 `PATH` entries, and get no `VR_IDE_*` variables.
 
+#### Accounts
+
+claude and codex sessions can each run on their own account, side by side. vr-ide keeps one
+config folder per account, `~/.local/state/vr-ide/accounts/<name>/` (private to you, 0700),
+and starts a session on it with `CLAUDE_CONFIG_DIR` (claude) or `CODEX_HOME` (codex) set to that
+folder, for that session only; `default` is the tool's own config (no variable). The picker lists
+each tool's accounts under it.
+
+- Add: `+ Add account…`, type a name (`a-z 0-9 - _`, up to 32, unique across tools), `enter`: the
+  folder is made and a session starts on it. Sign in once with `/login` in that tab; the tool
+  writes its login into the folder. vr-ide never reads, copies or stores tokens.
+- Use: pick the account in the picker, or `/ai claude @work` (`tab` after `@` completes the names). The tab shows it (`2 claude@work`);
+  a restored session reopens on the same account, or not at all (a notice) when its folder is
+  missing or not safe — never on `default`.
+- Remove: `del` on the account in the picker. It asks first, and is refused while a session on it
+  is open. The folder is deleted for good (not to the trash); the sign-in stays valid at the
+  provider, so run `/logout` in a session on that account first if you want it ended.
+- A folder that is a symlink, belongs to another user, or is open to others is refused or made
+  private (0700) before use. No usage tracking and no switching on its own.
+
 #### Agent notifications
 
 When an agent rings the terminal bell (BEL) or sends a desktop notification (OSC 9, or OSC 777

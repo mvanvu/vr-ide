@@ -390,6 +390,34 @@ fn ai_completes_the_names_of_the_ai_tools_setting() {
     assert_eq!(input(app), "/ai cursor-agent ");
 }
 
+/// `/ai <tool> @` completes that tool's accounts (and `@default`); a tool without accounts and a
+/// third word complete nothing (D11).
+#[test]
+fn ai_completes_the_accounts_of_the_tool() {
+    let mut f = Fx::new("vr-ide");
+    let state = tempfile::tempdir().unwrap();
+    crate::ai::accounts::create(state.path(), "claude", "work").unwrap();
+    crate::ai::accounts::create(state.path(), "claude", "alt").unwrap();
+    crate::ai::accounts::create(state.path(), "codex", "cx").unwrap();
+    f.app.ai.state_dir = Some(state.path().to_path_buf());
+    let app = &mut f.app;
+    slash(app, "/ai claude @w");
+    key(app, KeyCode::Tab);
+    assert_eq!(input(app), "/ai claude @work");
+    crate::slash_tests::set(app, "/ai claude ");
+    key(app, KeyCode::Tab);
+    key(app, KeyCode::Tab);
+    assert_eq!(titles(app), ["@default", "@alt", "@work"]);
+    crate::slash_tests::set(app, "/ai codex @");
+    key(app, KeyCode::Tab);
+    assert_eq!(titles(app), ["@default", "@cx"]);
+    for none in ["/ai gemini @", "/ai claude @work x", "/ai claude w"] {
+        crate::slash_tests::set(app, none);
+        key(app, KeyCode::Tab);
+        assert_eq!(input(app), none, "{none}");
+    }
+}
+
 #[test]
 fn existing_palette_keys_still_work() {
     let mut f = Fx::new("vr-ide");

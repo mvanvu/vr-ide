@@ -231,7 +231,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     ),
     cmd(
         "ai",
-        "<tool>",
+        "<tool> [@account]",
         ArgKind::Text,
         "Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name>",
         ai,

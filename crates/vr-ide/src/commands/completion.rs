@@ -396,8 +396,32 @@ fn find(app: &mut App, input: &str) -> Option<Found> {
             Some(found(cands, word, Note::Keys))
         }
         ("ai", _) => {
-            if arg.contains(char::is_whitespace) {
-                return None;
+            if let Some((tool, rest)) = arg.split_once(' ') {
+                // `/ai <tool> @…`: the accounts added under that tool (D11), `@default` first;
+                // names come from the validated listing only.
+                let word = rest.trim_start();
+                let plain = word.is_empty() || word.starts_with('@');
+                if word.contains(char::is_whitespace)
+                    || !plain
+                    || !crate::ai::picker::supports_accounts(tool)
+                    || !ai_tool_names(app).iter().any(|t| t == tool)
+                {
+                    return None;
+                }
+                let state = app.ai.state_dir.clone()?;
+                let lead = &input[..input.len() - word.len()];
+                let typed = word.strip_prefix('@').unwrap_or("");
+                let cands = std::iter::once(crate::ai::accounts::DEFAULT.to_string())
+                    .chain(crate::ai::accounts::for_tool(&state, tool))
+                    .filter(|n| n.starts_with(typed))
+                    .map(|n| Cand {
+                        fill: format!("{lead}@{n}"),
+                        label: format!("@{n}"),
+                        kind: CandKind::Other,
+                        source: "",
+                    })
+                    .collect();
+                return Some(found(cands, word, Note::Keys));
             }
             let cands = ai_tool_names(app)
                 .into_iter()

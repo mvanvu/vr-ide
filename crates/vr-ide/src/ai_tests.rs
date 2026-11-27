@@ -107,7 +107,11 @@ fn f12_opens_the_empty_picker_with_installed_tools_and_hides_again() {
     assert_eq!(p.back, None);
     assert_eq!(p.missing, ["aider"]);
     assert_eq!(p.choice(), Some(("claude", None)), "the first default");
-    assert_eq!(p.rows.len(), 3, "claude header + default, gemini row");
+    assert_eq!(
+        p.rows.len(),
+        4,
+        "claude header + default + add account, gemini row"
+    );
     // Esc in the empty state hides the panel; f12 hides it too once shown and focused.
     press(&mut app, KeyCode::Esc);
     assert!(!app.ai.visible);
@@ -155,8 +159,9 @@ fn picker_second_step_starts_each_mode_with_its_arguments() {
     let text = wait_for(&app, 1, |s| s.contains("CWD:"));
     assert!(text.contains("ARGV:--base|--resume|"), "{text}");
 
-    // gemini: no second step.
+    // gemini: no second step (below claude's `+ Add account…`).
     key(&mut app, KeyCode::F(12), KeyModifiers::CONTROL);
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.ai.sessions.len(), 3);
