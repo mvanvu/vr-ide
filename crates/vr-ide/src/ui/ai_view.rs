@@ -465,6 +465,9 @@ fn render_picker(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     } else {
         ("New session in ", crate::git::home_relative(&pk.folder))
     };
+    // One free cell on the right; a long path is left-shortened so the folder name stays.
+    let room = w.saturating_sub(2 + width_of(lead));
+    let folder = crate::ui::status_bar::shorten_left(&folder, room);
     put(buf, area.y + 1, area.x + 1, lead, theme.text);
     put(
         buf,
