@@ -84,8 +84,7 @@ pub enum DialogAction {
     /// Quit while a cancelled project replace has not stopped (its worker is blocked in
     /// I/O): Quit anyway / Cancel.
     QuitStuckReplace,
-    /// Quit while terminals run (M5) or a git push, pull or commit runs (D309): Quit anyway /
-    /// Cancel, Cancel first.
+    /// Quit while terminals run (M5): Quit anyway / Cancel, Cancel first.
     QuitTerminals,
     /// `/q!` (T20, D268): [`DialogAction::QuitStuckReplace`] whose Quit anyway goes on
     /// discarding the unsaved files (recovery copy kept), never asking about them.
@@ -98,35 +97,6 @@ pub enum DialogAction {
     ReplaceInFile,
     /// Unsaved files before the roots are replaced (W-1): Save all / Discard / Cancel.
     OpenWorkspace(Box<crate::workspace::Workspace>),
-    /// Git popup (M7-3): Cancel / Discard of `plan` (Cancel first, SEC-16).
-    GitDiscard {
-        session: u64,
-        plan: Box<vr_git::DiscardPlan>,
-    },
-    /// Git popup: Push / Cancel to the shown target.
-    GitPush {
-        session: u64,
-        target: Box<vr_git::PushTarget>,
-    },
-    /// Git popup: Keep running / Cancel it for a running push or pull.
-    GitCancelJob { session: u64 },
-    /// Git popup: Keep running / Cancel it for a running commit (ctrl+s again).
-    GitCancelCommit { session: u64 },
-    /// Git popup: Cancel / Amend anyway when the last commit is already on the upstream.
-    GitAmendPushed {
-        session: u64,
-        commit: Box<crate::git_popup::PendingCommit>,
-    },
-    /// Git popup: a leftover of an interrupted discard: Keep / Restore as… or Delete.
-    GitLeftover {
-        session: u64,
-        leftover: vr_git::LeftoverDiscard,
-    },
-    /// Git popup: the name to restore a leftover `.old` as.
-    GitLeftoverRestore {
-        session: u64,
-        path: std::path::PathBuf,
-    },
 }
 
 pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
@@ -196,27 +166,6 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
             super::app::quit_discarding(app);
         }
         (DialogAction::OpenWorkspace(ws), Outcome::Chosen(b)) => app.answer_open_workspace(*ws, b),
-        (DialogAction::GitDiscard { session, plan }, Outcome::Chosen(b)) => {
-            crate::git_popup::answer_discard(app, session, *plan, b);
-        }
-        (DialogAction::GitPush { session, target }, Outcome::Chosen(b)) => {
-            crate::git_popup::answer_push(app, session, *target, b);
-        }
-        (DialogAction::GitCancelJob { session }, Outcome::Chosen(b)) => {
-            crate::git_popup::answer_cancel_job(app, session, b);
-        }
-        (DialogAction::GitCancelCommit { session }, Outcome::Chosen(b)) => {
-            crate::git_popup::answer_cancel_commit(app, session, b);
-        }
-        (DialogAction::GitAmendPushed { session, commit }, Outcome::Chosen(b)) => {
-            crate::git_popup::answer_amend_pushed(app, session, *commit, b);
-        }
-        (DialogAction::GitLeftover { session, leftover }, Outcome::Chosen(b)) => {
-            crate::git_popup::answer_leftover(app, session, leftover, b);
-        }
-        (DialogAction::GitLeftoverRestore { session, path }, Outcome::Submitted(text)) => {
-            crate::git_popup::answer_leftover_restore(app, session, path, &text);
-        }
         _ => {}
     }
 }

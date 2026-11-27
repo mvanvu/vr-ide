@@ -2,10 +2,8 @@
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::log::Signature;
 use crate::parse::{is_oid, lossy, os, parse_err, path_from, unquote};
 use crate::repo::Repo;
 use crate::{GitError, Result};
@@ -37,6 +35,15 @@ pub struct BlameLine {
     pub final_line: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signature {
+    /// Name and email after `.mailmap`.
+    pub name: String,
+    pub email: String,
+    /// Unix seconds.
+    pub time: i64,
+}
+
 /// Blame of a whole file: `lines[i]` is line `i + 1` of the blamed text.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Blame {
@@ -52,26 +59,10 @@ impl Blame {
 }
 
 impl Repo {
-    /// Blame of the worktree file. `None` when the file is untracked or missing; a file that is
-    /// only staged (not in HEAD) is all uncommitted.
-    pub fn blame(&self, path: &Path) -> Result<Option<Blame>> {
-        let rel = self.relative(path)?;
-        self.blame_inner(&rel, None, true)
-    }
-
-    /// Blame of `buffer` (unsaved editor text) as the file's current content; lines that differ
-    /// from HEAD are uncommitted. `None` when the file is not tracked.
-    pub fn blame_text(&self, path: &Path, buffer: &str) -> Result<Option<Blame>> {
-        self.blame_buffer(path, buffer, true)
-    }
-
-    /// [`Repo::blame_text`] for the automatic inline blame of the cursor line: it runs with the
-    /// automatic-read timeout, not the user one.
+    /// Blame of `buffer` (unsaved editor text) as the file's current content, for the automatic
+    /// inline blame of the cursor line (automatic-read timeout); lines that differ from HEAD are
+    /// uncommitted. `None` when the file is not tracked.
     pub fn inline_blame(&self, path: &Path, buffer: &str) -> Result<Option<Blame>> {
-        self.blame_buffer(path, buffer, false)
-    }
-
-    fn blame_buffer(&self, path: &Path, buffer: &str, user: bool) -> Result<Option<Blame>> {
         let rel = self.relative(path)?;
         let max = self.git.opts().max_file;
         if buffer.len() > max {
@@ -80,50 +71,29 @@ impl Repo {
                 limit: max,
             });
         }
-        self.blame_inner(&rel, Some(buffer.as_bytes()), user)
+        self.blame_inner(&rel, buffer.as_bytes())
     }
 
-    fn blame_inner(&self, rel: &Path, buffer: Option<&[u8]>, user: bool) -> Result<Option<Blame>> {
+    fn blame_inner(&self, rel: &Path, buffer: &[u8]) -> Result<Option<Blame>> {
         if self.index_entries(rel)?.is_empty() {
             return Ok(None);
         }
-        // git blames the worktree file (and the fallback below reads it): bound both.
-        let max = self.git.opts().max_file;
-        if buffer.is_none()
-            && std::fs::symlink_metadata(self.workdir().join(rel))
-                .is_ok_and(|m| m.is_file() && m.len() > max as u64)
-        {
-            return Err(GitError::TooLarge {
-                cmd: "blame".into(),
-                limit: max,
-            });
-        }
-        let mut args: Vec<&OsStr> = vec![os("blame"), os("--porcelain")];
-        if buffer.is_some() {
-            args.extend([os("--contents"), os("-")]);
-        }
-        args.extend([os("--"), rel.as_os_str()]);
-        let out = self.git.run(
-            self.workdir(),
-            &args,
-            buffer,
-            if user {
-                self.git.user()
-            } else {
-                self.git.auto()
-            },
-        )?;
+        let args: Vec<&OsStr> = vec![
+            os("blame"),
+            os("--porcelain"),
+            os("--contents"),
+            os("-"),
+            os("--"),
+            rel.as_os_str(),
+        ];
+        let out = self
+            .git
+            .run(self.workdir(), &args, Some(buffer), self.git.auto())?;
         if out.code == 0 {
             return parse_blame(&out.stdout).map(Some);
         }
         // In the index but blame failed: not in HEAD yet (staged new file, unborn branch).
-        let text = match buffer {
-            Some(b) => b.to_vec(),
-            None => match self.read_worktree_file(rel)? {
-                Some(t) => t,
-                None => return Ok(None),
-            },
-        };
+        let text = buffer;
         if self.head_oid()?.is_some() && self.path_in_head(rel)? {
             return Err(GitError::Failed {
                 cmd: "blame".into(),
@@ -131,56 +101,18 @@ impl Repo {
                 stderr: out.stderr,
             });
         }
-        Ok(Some(all_uncommitted(rel, &text)))
-    }
-
-    /// The worktree file, bounded by the per-file cap; `None` when it is missing or not a
-    /// regular file (a FIFO would block the read).
-    fn read_worktree_file(&self, rel: &Path) -> Result<Option<Vec<u8>>> {
-        let full = self.workdir().join(rel);
-        let max = self.git.opts().max_file;
-        let too_large = || GitError::TooLarge {
-            cmd: "read".into(),
-            limit: max,
-        };
-        match std::fs::symlink_metadata(&full) {
-            Ok(m) if m.is_file() => {
-                if m.len() > max as u64 {
-                    return Err(too_large());
-                }
-            }
-            // A tracked symlink's content is its target.
-            Ok(m) if m.is_symlink() => {
-                return Ok(std::fs::read_link(&full)
-                    .ok()
-                    .map(|t| t.into_os_string().into_encoded_bytes()));
-            }
-            _ => return Ok(None),
-        }
-        let Ok(file) = std::fs::File::open(&full) else {
-            return Ok(None);
-        };
-        // The file may grow after the size check.
-        let mut text = Vec::new();
-        file.take(max as u64 + 1).read_to_end(&mut text)?;
-        if text.len() > max {
-            return Err(too_large());
-        }
-        Ok(Some(text))
+        Ok(Some(all_uncommitted(rel, text)))
     }
 
     fn path_in_head(&self, rel: &Path) -> Result<bool> {
-        let out = self.run(
-            &[
-                os("ls-tree"),
-                os("-z"),
-                os("--name-only"),
-                os("HEAD"),
-                os("--"),
-                rel.as_os_str(),
-            ],
-            false,
-        )?;
+        let out = self.run(&[
+            os("ls-tree"),
+            os("-z"),
+            os("--name-only"),
+            os("HEAD"),
+            os("--"),
+            rel.as_os_str(),
+        ])?;
         Ok(!out.is_empty())
     }
 }

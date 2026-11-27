@@ -3,13 +3,12 @@
 mod common;
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use common::Fixture;
-use vr_git::{FileStatus, GitError, GitWorker, Options, Reply, Repo, Request, Response};
+use vr_git::{GitError, GitWorker, Options, Reply, Repo, Request, Response};
 
 fn start(repo: Repo) -> (GitWorker, Receiver<()>) {
     let (tx, rx) = mpsc::channel();
@@ -86,19 +85,22 @@ fn repo_with_file() -> Fixture {
 #[test]
 fn requests_never_block_and_ids_increase() {
     let f = repo_with_file();
-    let repo = slow(&f, "status");
+    let repo = slow(&f, "symbolic-ref");
     let (w, wake) = start(repo);
     let t = Instant::now();
-    let a = w.request(Request::Status);
-    let b = w.request(Request::Head);
-    let c = w.request(Request::Blame(f.path("a.txt")));
+    let a = w.request(Request::Head);
+    let b = w.request(Request::AheadBehind);
+    let c = w.request(Request::InlineBlame {
+        path: f.path("a.txt"),
+        text: Arc::from("one\nTWO\n"),
+    });
     assert!(
         t.elapsed() < Duration::from_millis(50),
         "request blocked for {:?}",
         t.elapsed()
     );
     assert!(a < b && b < c);
-    assert!(w.try_recv().is_none(), "status is still running");
+    assert!(w.try_recv().is_none(), "head is still running");
     let (r, _) = wait(&w, &wake, c);
     assert!(matches!(r.result.as_deref(), Ok(Reply::Blame(Some(_)))));
 }
@@ -106,13 +108,10 @@ fn requests_never_block_and_ids_increase() {
 #[test]
 fn queued_requests_for_the_same_target_are_superseded() {
     let f = repo_with_file();
-    let (w, wake) = start(slow(&f, "--max-count"));
+    let (w, wake) = start(slow(&f, "symbolic-ref"));
     let p = f.path("a.txt");
-    // A slow log keeps the worker busy so the next three queue up behind it.
-    let busy = w.request(Request::Log {
-        limit: 1000,
-        path: None,
-    });
+    // A slow head keeps the worker busy so the next three queue up behind it.
+    let busy = w.request(Request::Head);
     let texts = ["one\n", "one\nX\n", "one\nTWO\nthree\n"];
     let ids: Vec<u64> = texts
         .iter()
@@ -147,9 +146,14 @@ fn cache_is_reused_and_invalidated_by_head_index_and_file_changes() {
     let f = repo_with_file();
     let (w, wake) = start(f.repo());
     let p = f.path("a.txt");
-    let id = w.request(Request::Blame(p.clone()));
+    let text: Arc<str> = Arc::from("one\nTWO\n");
+    let blame = |text: &Arc<str>| Request::InlineBlame {
+        path: p.clone(),
+        text: text.clone(),
+    };
+    let id = w.request(blame(&text));
     let first = wait(&w, &wake, id).0.result.unwrap();
-    let id = w.request(Request::Blame(p.clone()));
+    let id = w.request(blame(&text));
     let second = wait(&w, &wake, id).0.result.unwrap();
     assert!(
         Arc::ptr_eq(&first, &second),
@@ -158,7 +162,7 @@ fn cache_is_reused_and_invalidated_by_head_index_and_file_changes() {
 
     // File change (mtime/size) → recomputed.
     f.write("a.txt", "one\nTWO\nthree\n");
-    let id = w.request(Request::Blame(p.clone()));
+    let id = w.request(blame(&Arc::from("one\nTWO\nthree\n")));
     let third = wait(&w, &wake, id).0.result.unwrap();
     let Reply::Blame(Some(b)) = &*third else {
         panic!()
@@ -166,30 +170,30 @@ fn cache_is_reused_and_invalidated_by_head_index_and_file_changes() {
     assert_eq!(b.lines.len(), 3);
     assert!(b.commit_of(2).unwrap().uncommitted);
 
-    // Status is cached until the index/HEAD change or an explicit invalidation.
-    let id = w.request(Request::Status);
-    let s1 = wait(&w, &wake, id).0.result.unwrap();
-    let Reply::Status(s) = &*s1 else { panic!() };
-    assert_eq!(s.unstaged.len(), 1);
-    f.git(&["add", "a.txt"]);
-    let id = w.request(Request::Status);
-    let s2 = wait(&w, &wake, id).0.result.unwrap();
-    let Reply::Status(s) = &*s2 else { panic!() };
-    assert_eq!(
-        (s.staged.len(), s.unstaged.len()),
-        (1, 0),
-        "index change seen"
-    );
-
-    f.write("b.txt", "new\n");
+    // A change of one file drops the repo-wide replies and the replies of that file only.
+    let id = w.request(blame(&Arc::from("one\nTWO\nthree\n")));
+    let kept = wait(&w, &wake, id).0.result.unwrap();
+    let id = w.request(Request::Head);
+    let head_before = wait(&w, &wake, id).0.result.unwrap();
     w.invalidate_path(&f.path("b.txt"));
-    let id = w.request(Request::Status);
-    let s3 = wait(&w, &wake, id).0.result.unwrap();
-    let Reply::Status(s) = &*s3 else { panic!() };
+    let id = w.request(Request::Head);
+    let head_after = wait(&w, &wake, id).0.result.unwrap();
     assert!(
-        s.unstaged
-            .iter()
-            .any(|e| e.path == Path::new("b.txt") && e.status == FileStatus::Untracked)
+        !Arc::ptr_eq(&head_before, &head_after),
+        "a path invalidation drops repo-wide replies"
+    );
+    let id = w.request(blame(&Arc::from("one\nTWO\nthree\n")));
+    let again = wait(&w, &wake, id).0.result.unwrap();
+    assert!(
+        Arc::ptr_eq(&kept, &again),
+        "another file's reply stays cached"
+    );
+    w.invalidate_path(&p);
+    let id = w.request(blame(&Arc::from("one\nTWO\nthree\n")));
+    let redone = wait(&w, &wake, id).0.result.unwrap();
+    assert!(
+        !Arc::ptr_eq(&kept, &redone),
+        "this file's reply was dropped"
     );
 
     // A new commit moves HEAD → head reply recomputed without an explicit invalidation.
@@ -211,10 +215,10 @@ fn cache_is_reused_and_invalidated_by_head_index_and_file_changes() {
 fn errors_are_delivered_not_panics() {
     let f = repo_with_file();
     let (w, wake) = start(f.repo());
-    let id = w.request(Request::Commit("--output=x".into()));
-    let r = wait(&w, &wake, id).0;
-    assert!(matches!(r.result, Err(GitError::NotACommit(_))));
-    let id = w.request(Request::DiffUnstaged("/etc/passwd".into()));
+    let id = w.request(Request::LineChanges {
+        path: "/etc/passwd".into(),
+        text: Arc::from("x\n"),
+    });
     assert!(matches!(
         wait(&w, &wake, id).0.result,
         Err(GitError::OutsideRepo(_))

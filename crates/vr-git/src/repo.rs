@@ -1,4 +1,4 @@
-//! Repository discovery, HEAD, upstream and status.
+//! Repository discovery, HEAD, upstream.
 
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
@@ -41,35 +41,6 @@ pub struct AheadBehind {
     pub upstream: String,
     pub ahead: u32,
     pub behind: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FileStatus {
-    Modified,
-    Added,
-    Deleted,
-    Renamed,
-    Copied,
-    TypeChanged,
-    Untracked,
-    Conflicted,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusEntry {
-    /// Repo-relative path (raw bytes kept).
-    pub path: PathBuf,
-    /// Source of a rename or copy.
-    pub orig_path: Option<PathBuf>,
-    pub status: FileStatus,
-}
-
-/// `git gui`-style lists: staged = index vs HEAD; unstaged = worktree vs index, plus untracked
-/// and conflicted files.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Status {
-    pub staged: Vec<StatusEntry>,
-    pub unstaged: Vec<StatusEntry>,
 }
 
 /// One index entry of a path.
@@ -141,19 +112,6 @@ impl Repo {
         }))
     }
 
-    /// The same repo with a runner of its own: its shutdown and process registry are not
-    /// shared with this handle's clones (a reader's worker drop must not kill a write).
-    pub(crate) fn with_own_runner(&self) -> Result<Repo> {
-        let git = Git::new(self.git.opts().clone())?;
-        git.watch_config(&self.git_dir, &self.common_dir);
-        Ok(Repo {
-            workdir: self.workdir.clone(),
-            git_dir: self.git_dir.clone(),
-            common_dir: self.common_dir.clone(),
-            git,
-        })
-    }
-
     /// The work tree root (canonical).
     pub fn workdir(&self) -> &Path {
         &self.workdir
@@ -198,13 +156,8 @@ impl Repo {
         Ok(rel)
     }
 
-    pub(crate) fn run(&self, args: &[&OsStr], user: bool) -> Result<Vec<u8>> {
-        let lim = if user {
-            self.git.user()
-        } else {
-            self.git.auto()
-        };
-        self.git.run_ok(&self.workdir, args, None, lim)
+    pub(crate) fn run(&self, args: &[&OsStr]) -> Result<Vec<u8>> {
+        self.git.run_ok(&self.workdir, args, None, self.git.auto())
     }
 
     pub(crate) fn run_code(&self, args: &[&OsStr]) -> Result<crate::cmd::Output> {
@@ -224,10 +177,7 @@ impl Repo {
             return Ok(Head::Branch { name, oid });
         }
         let oid = oid.ok_or_else(|| parse_err("rev-parse", "detached HEAD without a commit"))?;
-        let short = self.run(
-            &["rev-parse", "--short", "--verify", "-q", "HEAD"].map(os),
-            false,
-        )?;
+        let short = self.run(&["rev-parse", "--short", "--verify", "-q", "HEAD"].map(os))?;
         Ok(Head::Detached {
             oid,
             short: lossy(short.trim_ascii_end()),
@@ -284,88 +234,15 @@ impl Repo {
         }
     }
 
-    /// What a commit would record now: the index against HEAD as `git diff --cached --raw`
-    /// lists it (modes, full object ids, paths; an unborn branch compares with the empty
-    /// tree). Two equal answers mean the same staged content, so a UI can tell whether what it
-    /// showed is still what a commit takes (SEC-18). Opaque; compare only.
-    pub fn staged_fingerprint(&self) -> Result<Vec<u8>> {
-        let args = [
-            "diff",
-            "--cached",
-            "--raw",
-            "-z",
-            "--no-renames",
-            "--no-abbrev",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--ignore-submodules=none",
-        ]
-        .map(os);
-        self.run(&args, false)
-    }
-
-    /// Staged and unstaged changes (`git status --porcelain=v2 -z`, untracked files listed one by one).
-    pub fn status(&self) -> Result<Status> {
-        let args = [
-            "status",
-            "--porcelain=v2",
-            "-z",
-            "--untracked-files=all",
-            "--find-renames",
-            "--ignored=no",
-            "--ignore-submodules=dirty",
-        ]
-        .map(os);
-        let out = self.run(&args, false)?;
-        parse_status(&out)
-    }
-
-    /// The commit `rev` names (a SHA, branch, tag, `HEAD~2`, ...), as a full object id. Anything
-    /// that is not a commit — including option-like text such as `--output=x` — is refused.
-    pub fn resolve_commit(&self, rev: &str) -> Result<String> {
-        if rev.is_empty() || rev.contains('\0') {
-            return Err(GitError::NotACommit(rev.to_string()));
-        }
-        // A message search (`:/<regex>`) takes the rest as the regex, so a `^{commit}` suffix
-        // would become part of it: resolve it bare, then check the object it found.
-        let refused = || GitError::NotACommit(rev.to_string());
-        if rev.starts_with(":/") {
-            let oid = self.verify_rev(rev)?.ok_or_else(refused)?;
-            return match self.verify_rev(&format!("{oid}^{{commit}}"))? {
-                Some(c) if c == oid => Ok(oid),
-                _ => Err(refused()),
-            };
-        }
-        self.verify_rev(&format!("{rev}^{{commit}}"))?
-            .ok_or_else(refused)
-    }
-
-    /// `rev-parse --verify` of `spec` (never read as an option): the full object id, or `None`
-    /// when it names nothing.
-    fn verify_rev(&self, spec: &str) -> Result<Option<String>> {
-        let out = self.run_code(&[
-            os("rev-parse"),
-            os("--verify"),
-            os("-q"),
-            os("--end-of-options"),
-            os(spec),
-        ])?;
-        let oid = lossy(out.stdout.trim_ascii_end());
-        Ok((out.code == 0 && is_oid(&oid)).then_some(oid))
-    }
-
     /// Index entries of exactly `rel` (several stages when conflicted).
     pub(crate) fn index_entries(&self, rel: &Path) -> Result<Vec<IndexEntry>> {
-        let out = self.run(
-            &[
-                os("ls-files"),
-                os("-z"),
-                os("--stage"),
-                os("--"),
-                rel.as_os_str(),
-            ],
-            false,
-        )?;
+        let out = self.run(&[
+            os("ls-files"),
+            os("-z"),
+            os("--stage"),
+            os("--"),
+            rel.as_os_str(),
+        ])?;
         let mut v = Vec::new();
         for rec in fields(&out) {
             // "<mode> <oid> <stage>\t<path>"
@@ -413,92 +290,4 @@ fn canonical_lenient(path: &Path) -> PathBuf {
             .join(name),
         _ => path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
     }
-}
-
-fn kind(c: u8) -> Option<FileStatus> {
-    Some(match c {
-        b'M' => FileStatus::Modified,
-        b'A' => FileStatus::Added,
-        b'D' => FileStatus::Deleted,
-        b'R' => FileStatus::Renamed,
-        b'C' => FileStatus::Copied,
-        b'T' => FileStatus::TypeChanged,
-        _ => return None,
-    })
-}
-
-pub(crate) fn parse_status(out: &[u8]) -> Result<Status> {
-    let mut st = Status::default();
-    let recs = fields(out);
-    let mut i = 0;
-    while i < recs.len() {
-        let rec = recs[i];
-        i += 1;
-        let bad = || parse_err("status", lossy(rec));
-        match rec.first() {
-            Some(b'1') | Some(b'2') => {
-                // 1 XY sub mH mI mW hH hI path | 2 XY sub mH mI mW hH hI Xscore path\0orig
-                let n = if rec[0] == b'1' { 8 } else { 9 };
-                let parts: Vec<&[u8]> = rec.splitn(n + 1, |&b| b == b' ').collect();
-                if parts.len() != n + 1 || parts[1].len() != 2 {
-                    return Err(bad());
-                }
-                let path = path_from(parts[n]);
-                let orig = if rec[0] == b'2' {
-                    let o = recs.get(i).ok_or_else(bad)?;
-                    i += 1;
-                    Some(path_from(o))
-                } else {
-                    None
-                };
-                let (x, y) = (parts[1][0], parts[1][1]);
-                if let Some(k) = kind(x) {
-                    let orig_path = if matches!(k, FileStatus::Renamed | FileStatus::Copied) {
-                        orig.clone()
-                    } else {
-                        None
-                    };
-                    st.staged.push(StatusEntry {
-                        path: path.clone(),
-                        orig_path,
-                        status: k,
-                    });
-                }
-                if let Some(k) = kind(y) {
-                    let orig_path = if matches!(k, FileStatus::Renamed | FileStatus::Copied) {
-                        orig
-                    } else {
-                        None
-                    };
-                    st.unstaged.push(StatusEntry {
-                        path,
-                        orig_path,
-                        status: k,
-                    });
-                }
-            }
-            Some(b'u') => {
-                let parts: Vec<&[u8]> = rec.splitn(11, |&b| b == b' ').collect();
-                if parts.len() != 11 {
-                    return Err(bad());
-                }
-                st.unstaged.push(StatusEntry {
-                    path: path_from(parts[10]),
-                    orig_path: None,
-                    status: FileStatus::Conflicted,
-                });
-            }
-            Some(b'?') => {
-                let path = rec.get(2..).ok_or_else(bad)?;
-                st.unstaged.push(StatusEntry {
-                    path: path_from(path),
-                    orig_path: None,
-                    status: FileStatus::Untracked,
-                });
-            }
-            Some(b'#') | Some(b'!') => {}
-            _ => return Err(bad()),
-        }
-    }
-    Ok(st)
 }

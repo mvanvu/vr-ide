@@ -325,62 +325,6 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         "Show the key table (read-only tab)",
         keys,
     ),
-    cmd(
-        "git blame line",
-        "",
-        NO_ARG,
-        "Show or hide the cursor line's blame, for this session",
-        git_blame_line,
-    ),
-    cmd(
-        "git",
-        "[root]",
-        ArgKind::Root,
-        "Git popup: changes, stage, discard, commit, push (default: the active file's repo)",
-        git_open,
-    ),
-    cmd(
-        "git log",
-        "",
-        NO_ARG,
-        "Git popup, History tab: the repo's commits (enter shows one)",
-        git_log,
-    ),
-    cmd(
-        "git log file",
-        "",
-        NO_ARG,
-        "Git popup, History tab: the active file's commits, following renames",
-        git_log_file,
-    ),
-    cmd(
-        "git blame",
-        "",
-        NO_ARG,
-        "Git popup, Blame tab: author and age of each line of the active file",
-        git_blame,
-    ),
-    cmd(
-        "git show",
-        "<commit>",
-        ArgKind::Text,
-        "Git popup: one commit's details and diff (an id, branch, tag or HEAD~2)",
-        git_show,
-    ),
-    cmd(
-        "git push",
-        "",
-        NO_ARG,
-        "Push the current branch in the background (the target is shown first)",
-        git_push,
-    ),
-    cmd(
-        "git pull",
-        "",
-        NO_ARG,
-        "Pull in the background (conflicts are resolved in the terminal)",
-        git_pull,
-    ),
     cmd("help", "", NO_ARG, "List the slash commands", help),
     cmd("q", "", NO_ARG, "Quit (asks about unsaved files)", quit),
     cmd(
@@ -1050,49 +994,6 @@ fn hidden(app: &mut App, _: &str) -> Result<(), String> {
 fn ignored(app: &mut App, _: &str) -> Result<(), String> {
     app.run_command("explorer.toggle_ignored", CmdArgs::None);
     Ok(())
-}
-
-/// Inline blame of the cursor line on or off for this session (M7-4a), as `/theme` and
-/// `/hidden` do; `git_inline_blame` in settings.toml keeps it.
-fn git_blame_line(app: &mut App, _: &str) -> Result<(), String> {
-    let on = !app.settings.git_inline_blame;
-    app.settings.git_inline_blame = on;
-    let state = if on { "on" } else { "off" };
-    app.info(format!(
-        "inline blame {state} for this session (settings.toml `git_inline_blame` keeps it)"
-    ));
-    app.dirty = true;
-    Ok(())
-}
-
-/// `/git [root]` (M7-3): a root by name only, never a path (SEC-17).
-fn git_open(app: &mut App, arg: &str) -> Result<(), String> {
-    crate::git_popup::open(app, arg)
-}
-
-/// `/git log`, `/git log file`, `/git blame`, `/git show <commit>` (M7-4b).
-fn git_log(app: &mut App, _: &str) -> Result<(), String> {
-    crate::git_history::log(app, false)
-}
-
-fn git_log_file(app: &mut App, _: &str) -> Result<(), String> {
-    crate::git_history::log(app, true)
-}
-
-fn git_blame(app: &mut App, _: &str) -> Result<(), String> {
-    crate::git_history::blame(app)
-}
-
-fn git_show(app: &mut App, rev: &str) -> Result<(), String> {
-    crate::git_history::show(app, rev)
-}
-
-fn git_push(app: &mut App, _: &str) -> Result<(), String> {
-    crate::git_popup::push(app)
-}
-
-fn git_pull(app: &mut App, _: &str) -> Result<(), String> {
-    crate::git_popup::pull(app)
 }
 
 fn help(app: &mut App, _: &str) -> Result<(), String> {
