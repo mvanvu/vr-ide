@@ -25,6 +25,13 @@ pub fn capture(app: &App) -> AiSection {
                 account: s.account.clone().unwrap_or_default(),
                 folder: s.root.clone(),
                 label: s.name.clone().unwrap_or_default(),
+                // Not the id of a run that was started by it and ended without a report: the
+                // tool did not find that conversation.
+                session_id: s
+                    .session_id()
+                    .filter(|_| s.running() || !s.switch.unconfirmed)
+                    .unwrap_or_default()
+                    .to_string(),
             })
             .collect(),
     }
@@ -58,7 +65,8 @@ pub fn report(app: &mut App) {
     }
 }
 
-/// Reopens the saved sessions, each with its tool's continue arguments (D7) and without sending
+/// Reopens the saved sessions, each on its own conversation when its id was kept (SEC-31), else
+/// with its tool's continue arguments (D7), and without sending
 /// it any input. A session whose tool is no longer in `ai_tools` (by name) or not on `PATH`,
 /// whose folder is not an existing workspace folder, or whose account cannot be used now is not
 /// reopened — never on another account (SEC-8, SEC-18) — and gets one error notice. The keys
@@ -83,9 +91,11 @@ pub fn restore(app: &mut App, state: &AiSection) {
                 let name = Some(s.label.as_str())
                     .filter(|l| !l.is_empty())
                     .and_then(|n| super::clean_name(n).ok());
-                if let Err(e) =
-                    super::spawn_session(app, &tool, account, spawn::again_mode(&tool), &root, name)
-                {
+                // SEC-31: the tab's own conversation when its id was kept (checked again where
+                // the arguments are built), else the continue arguments as before.
+                let id = Some(s.session_id.as_str()).filter(|id| !id.is_empty());
+                let start = spawn::again(&tool, id);
+                if let Err(e) = super::spawn_started(app, &tool, account, start, &root, name) {
                     app.error(format!("Not reopened: {} ({e})", s.tool));
                 }
             }

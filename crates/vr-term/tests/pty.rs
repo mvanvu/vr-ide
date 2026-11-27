@@ -313,6 +313,30 @@ fn a_child_ignoring_sighup_is_killed_after_the_grace_period() {
 }
 
 #[test]
+fn hang_up_and_force_kill_signal_the_group_without_waiting() {
+    let (term, wake) = spawn("trap '' HUP; echo ignoring; while :; do sleep 0.1; done");
+    wait_for(&term, &wake, T, |g| has_text(g, "ignoring"));
+    let pid = term.pid().unwrap();
+    let t0 = Instant::now();
+    assert!(term.hang_up(), "running: signalled");
+    assert!(t0.elapsed() < KILL_GRACE, "no wait");
+    assert_eq!(
+        term.wait_exit(KILL_GRACE),
+        TermStatus::Running,
+        "a hang-up alone leaves a child that ignores it"
+    );
+    assert!(term.force_kill());
+    assert_eq!(term.wait_exit(T), TermStatus::Exited(128 + 9));
+    assert_eq!(wait_group_gone(pid, T), vec![], "the whole group is gone");
+    assert!(!term.hang_up() && !term.force_kill(), "exited: no signal");
+
+    let (term, wake) = spawn("sleep 100 & echo started; wait");
+    wait_for(&term, &wake, T, |g| has_text(g, "started"));
+    assert!(term.hang_up());
+    assert_eq!(term.wait_exit(T), TermStatus::Exited(128 + 1));
+}
+
+#[test]
 fn replies_to_queries_from_a_program_that_never_reads_stay_under_the_input_cap() {
     // 750 000 device-attribute queries ask for ~3.7 MB of replies; the program never reads.
     // Raw mode, as full-screen programs use: the tty's input buffer then fills and holds the

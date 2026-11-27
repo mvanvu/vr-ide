@@ -267,6 +267,10 @@ pub(crate) fn background_pass(app: &mut App, now: Instant) {
     if crate::ai::limits::check(app, now) {
         app.dirty = true;
     }
+    // A limit event moves a session to another account; a switch under way goes on (AC-6).
+    if crate::ai::switch::tick(app, now) {
+        app.dirty = true;
+    }
 }
 
 /// Runs until a command sets `app.quit`. Draws only when something changed.

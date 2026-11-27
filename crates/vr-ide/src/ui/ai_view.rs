@@ -216,6 +216,9 @@ struct Item {
     active: bool,
     /// The usage suffix (` 63%`) and whether it warns (AC-4).
     usage: Option<(String, bool)>,
+    /// Auto-switch is off for a session that could switch (AC-7): the label is followed by
+    /// [`ai::switch::OFF_MARK`], which gives way together with the usage suffix.
+    off: bool,
 }
 
 /// The text of one tab at fit level `level` (ui-spec S1): 0 full; 1 inactive tabs drop the
@@ -248,6 +251,9 @@ fn tab_text(it: &Item, level: u8, with_usage: bool) -> TabText {
     }
     s.push(' ');
     s.push_str(&label);
+    if it.off && with_usage && !label.is_empty() {
+        s.push_str(ai::switch::OFF_MARK);
+    }
     if let Some((suffix, _)) = suffix {
         if warns {
             let pct = suffix.trim_start();
@@ -319,6 +325,7 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
                 .usage
                 .as_ref()
                 .and_then(ai::usage::usage_suffix),
+            off: !ai::switch::off_mark(&p.sessions[i]).is_empty(),
         })
         .collect();
     if p.picker.is_some() {
@@ -332,6 +339,7 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
             mark: false,
             active: p.picker_active(),
             usage: None,
+            off: false,
         });
     }
     let plus_w = if p.picker.is_none() {

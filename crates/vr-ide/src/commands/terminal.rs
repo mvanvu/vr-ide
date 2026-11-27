@@ -318,6 +318,21 @@ impl TermTab {
         drop_later(old);
     }
 
+    /// Hangs the program's process group up without waiting ([`Terminal::hang_up`]): the tab
+    /// keeps showing it until it has exited.
+    pub(crate) fn hang_up(&self) {
+        if let Some(t) = &self.term {
+            t.hang_up();
+        }
+    }
+
+    /// Kills the program's process group without waiting ([`Terminal::force_kill`]).
+    pub(crate) fn force_kill(&self) {
+        if let Some(t) = &self.term {
+            t.force_kill();
+        }
+    }
+
     /// Ends the program off the UI thread (its process group is hung up).
     pub(crate) fn close_later(self) {
         drop_later(self.term);

@@ -495,6 +495,19 @@ impl Terminal {
         }
     }
 
+    /// Sends SIGHUP to the child's process group and returns at once: the caller watches
+    /// [`Terminal::status`] and decides how long the child gets (a restart that must not overlap
+    /// the old run). False once the child has exited.
+    pub fn hang_up(&self) -> bool {
+        self.signal_group(rustix::process::Signal::HUP)
+    }
+
+    /// Sends SIGKILL to the child's process group and returns at once (for a child that outlived
+    /// its time after [`Terminal::hang_up`]). False once the child has exited.
+    pub fn force_kill(&self) -> bool {
+        self.signal_group(rustix::process::Signal::KILL)
+    }
+
     /// Signals the child's process group while the child is unreaped; false once it has exited.
     fn signal_group(&self, signal: rustix::process::Signal) -> bool {
         // The waiter reaps under this lock, so while it reads Running the pid cannot have been

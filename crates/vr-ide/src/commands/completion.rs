@@ -396,6 +396,24 @@ fn find(app: &mut App, input: &str) -> Option<Found> {
             Some(found(cands, word, Note::Keys))
         }
         ("ai", _) => {
+            if let Some(("autoswitch", rest)) = arg.split_once(' ') {
+                let word = rest.trim_start();
+                if word.contains(char::is_whitespace) {
+                    return None;
+                }
+                let lead = &input[..input.len() - word.len()];
+                let cands = ["on", "off"]
+                    .into_iter()
+                    .filter(|w| w.starts_with(word))
+                    .map(|w| Cand {
+                        fill: format!("{lead}{w}"),
+                        label: w.to_string(),
+                        kind: CandKind::Other,
+                        source: "",
+                    })
+                    .collect();
+                return Some(found(cands, word, Note::Keys));
+            }
             if let Some((tool, rest)) = arg.split_once(' ') {
                 // `/ai <tool> @…`: the accounts added under that tool (D11), `@default` first;
                 // names come from the validated listing only.

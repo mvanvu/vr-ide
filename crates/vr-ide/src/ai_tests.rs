@@ -16,7 +16,7 @@ use crate::app_tests::test_app;
 use crate::commands::CmdArgs;
 use crate::session::{AiSection, AiSession};
 
-const WAIT: Duration = Duration::from_secs(10);
+pub(crate) const WAIT: Duration = Duration::from_secs(10);
 
 /// Prints its arguments and folder, then echoes what it is sent (an agent waiting for input).
 const ECHO_AGENT: &str = "#!/bin/sh\nprintf ARGV:; printf '%s|' \"$@\"; echo; printf 'CWD:%s\\n' \"$PWD\"; \
@@ -24,14 +24,14 @@ const ECHO_AGENT: &str = "#!/bin/sh\nprintf ARGV:; printf '%s|' \"$@\"; echo; pr
 /// Prints its arguments and exits.
 const QUICK_AGENT: &str = "#!/bin/sh\nprintf RAN:; printf '%s|' \"$@\"; echo\n";
 
-fn script(dir: &Path, name: &str, text: &str) -> PathBuf {
+pub(crate) fn script(dir: &Path, name: &str, text: &str) -> PathBuf {
     let p = dir.join(name);
     std::fs::write(&p, text).unwrap();
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
     p
 }
 
-fn tool(name: &str, command: &Path, resumes: bool) -> AiTool {
+pub(crate) fn tool(name: &str, command: &Path, resumes: bool) -> AiTool {
     AiTool {
         name: name.into(),
         command: command.display().to_string(),
@@ -51,7 +51,7 @@ fn tool(name: &str, command: &Path, resumes: bool) -> AiTool {
 
 /// A project with `claude` (resumes) and `gemini` (does not) as echo agents, and `aider`
 /// missing.
-fn ai_app() -> (tempfile::TempDir, App) {
+pub(crate) fn ai_app() -> (tempfile::TempDir, App) {
     let dir = tempfile::tempdir().unwrap();
     let bin = dir.path().join(".bin");
     std::fs::create_dir(&bin).unwrap();
@@ -69,11 +69,11 @@ fn key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     app.handle_key(KeyEvent::new(code, mods));
 }
 
-fn press(app: &mut App, code: KeyCode) {
+pub(crate) fn press(app: &mut App, code: KeyCode) {
     key(app, code, KeyModifiers::NONE);
 }
 
-fn wait_for(app: &App, i: usize, want: impl Fn(&str) -> bool) -> String {
+pub(crate) fn wait_for(app: &App, i: usize, want: impl Fn(&str) -> bool) -> String {
     let deadline = Instant::now() + WAIT;
     loop {
         let text = app.ai.sessions[i].tab.screen_text();
@@ -85,7 +85,7 @@ fn wait_for(app: &App, i: usize, want: impl Fn(&str) -> bool) -> String {
     }
 }
 
-fn wait_exit(app: &App, i: usize) {
+pub(crate) fn wait_exit(app: &App, i: usize) {
     let deadline = Instant::now() + WAIT;
     while app.ai.sessions[i].running() {
         assert!(Instant::now() < deadline, "agent did not exit");
@@ -93,7 +93,7 @@ fn wait_exit(app: &App, i: usize) {
     }
 }
 
-fn canonical(dir: &tempfile::TempDir) -> PathBuf {
+pub(crate) fn canonical(dir: &tempfile::TempDir) -> PathBuf {
     dir.path().canonicalize().unwrap()
 }
 
@@ -382,6 +382,7 @@ fn restore_reopens_with_continue_args_and_refuses_the_rest() {
         account: account.into(),
         folder: folder.to_path_buf(),
         label: label.into(),
+        ..Default::default()
     };
     let state = AiSection {
         shown: true,
@@ -717,7 +718,7 @@ fn notify_app() -> (tempfile::TempDir, App) {
     (d, app)
 }
 
-fn say(app: &App, i: usize, line: &str) {
+pub(crate) fn say(app: &App, i: usize, line: &str) {
     app.ai.sessions[i]
         .tab
         .write(format!("{line}\n").as_bytes())
@@ -1049,7 +1050,7 @@ fn usage_app() -> (tempfile::TempDir, App, PathBuf) {
 }
 
 /// One pass of the event loop at `now`.
-fn pass(app: &mut App, now: Instant) {
+pub(crate) fn pass(app: &mut App, now: Instant) {
     crate::event_loop::background_pass(app, now);
 }
 

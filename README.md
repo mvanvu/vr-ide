@@ -443,7 +443,7 @@ each tool's accounts under it.
   folder is open to others (vr-ide does not change its permissions: run `chmod 700` on it).
   It is tried again on the next start. Removing an account removes only the link.
 - A folder that is a symlink, belongs to another user, or is open to others is refused or made
-  private (0700) before use. vr-ide does not switch accounts on its own.
+  private (0700) before use. vr-ide switches accounts on its own only at a usage limit (below).
 
 #### Usage
 
@@ -461,6 +461,43 @@ into `+N`; a tab at 90 % or more then shows `!` after its number (`2!`), in the 
 - When the tool shows its limit message, one notice says so, with the reset time when shown.
 
 Other tools (codex, gemini, ...) show no usage.
+
+#### Switching accounts at a limit
+
+When a claude session shows its limit message, vr-ide moves it to another account: it ends
+claude, waits until it is gone, starts it again in the same tab on the next account with
+`--resume <conversation id>`, and types one line (`ai_auto_switch_prompt`, default `Continue where
+you left off.`) and Enter once claude's input box is back. A notice says so and stays until
+dismissed: `switched claude from work to personal (work limited until 15:00)`. Reaching 100 %
+alone switches nothing; only the limit message does.
+
+- The next account is the one after the current in the picker's order (`default`, then the
+  names), wrapping. Skipped: accounts limited until a later time, accounts whose history is not
+  shared, and accounts vr-ide has not yet seen working — an account counts as working once
+  claude has run on it in vr-ide and reported its usage, so sign in and use each account once.
+  An account that shows the login screen is taken as not working and the next one is tried.
+- Nothing is switched, and a notice says why, when the conversation id is not known yet (claude
+  reports it with its usage), or no account is left: `all claude accounts are limited until
+  15:00` (the earliest reset). The session stays as it is.
+- The line is typed only into claude's idle input box: not into a trust, login or permission
+  question, and not when you typed, pasted or clicked in the session after the limit. If the
+  box does not appear within 30 seconds: `claude@personal is waiting: type to continue`.
+- At most three switches per session in 30 minutes; then auto-switch turns itself off for that
+  session, with a notice. A limit in the first minute on the new account counts only once
+  claude has reported from it.
+- Off: `ai_auto_switch = false` in `settings.toml` for new sessions, or `/ai autoswitch off`
+  (`on`) for the active one; its tab then shows `⊘` after the label (`2 claude@work ⊘ 63%`).
+- A resumed conversation shows its last lines again; an old limit message among them counts
+  only after you (or the typed line) sent a non-empty line to that run; with "Choose earlier" the Enter
+  that picks the conversation in its list does not count.
+
+Enter on an exited claude session, and reopening a `--session` window, also resume the tab's own
+conversation by its id when claude reported one (the id is kept in the session file); without
+an id they use the continue arguments, which with a shared history pick the folder's most
+recent conversation of any account and tab. If claude does not find the conversation, the next
+Enter falls back to the continue arguments.
+
+Codex and the other tools get the limit notice only; they are not switched.
 
 #### Agent notifications
 

@@ -123,13 +123,13 @@ struct Found<'a> {
 // ---- screens ------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-enum Tool {
+pub(super) enum Tool {
     Claude,
     Codex,
 }
 
 impl Tool {
-    fn of(name: &str) -> Option<Tool> {
+    pub(super) fn of(name: &str) -> Option<Tool> {
         match name {
             "claude" => Some(Tool::Claude),
             "codex" => Some(Tool::Codex),
@@ -261,10 +261,10 @@ fn codex_limit(text: &str) -> Option<Found<'_>> {
 
 const RULES: &[char] = &['─', '━', '═', '╌', '┄'];
 const MARKS: &[char] = &['⎿', '■'];
-const PROMPTS: &[char] = &['>', '❯', '›'];
+pub(super) const PROMPTS: &[char] = &['>', '❯', '›'];
 
 /// A horizontal rule, or the top / bottom of a rounded or square box.
-fn is_rule(row: &str) -> bool {
+pub(super) fn is_rule(row: &str) -> bool {
     let t = row.trim();
     let inner = t
         .strip_prefix(['╭', '╰', '┌', '└'])
@@ -274,7 +274,7 @@ fn is_rule(row: &str) -> bool {
 }
 
 /// The text of a row without the tool's markers, and the column it starts at (characters).
-fn strip(row: &str) -> (usize, &str) {
+pub(super) fn strip(row: &str) -> (usize, &str) {
     let mut col = indent(row);
     let mut t = row.trim();
     // A box border counts only on both sides: a bar on the left alone is a quote.
@@ -298,20 +298,20 @@ fn indent(row: &str) -> usize {
     row.chars().take_while(|c| c.is_whitespace()).count()
 }
 
-fn is_prompt(text: &str) -> bool {
+pub(super) fn is_prompt(text: &str) -> bool {
     text.strip_prefix(PROMPTS)
         .is_some_and(|r| r.is_empty() || r.starts_with(' '))
 }
 
 /// The rows of one screen and which of them are the input box.
-struct Screen<'a> {
-    rows: &'a [&'a str],
+pub(super) struct Screen<'a> {
+    pub(super) rows: &'a [&'a str],
     cols: usize,
     input: Vec<bool>,
 }
 
 impl<'a> Screen<'a> {
-    fn new(rows: &'a [&'a str], cols: usize) -> Screen<'a> {
+    pub(super) fn new(rows: &'a [&'a str], cols: usize) -> Screen<'a> {
         let mut input = vec![false; rows.len()];
         let rules: Vec<usize> = (0..rows.len()).filter(|&r| is_rule(rows[r])).collect();
         if let [.., top, bottom] = rules[..] {
@@ -335,12 +335,12 @@ impl<'a> Screen<'a> {
         Screen { rows, cols, input }
     }
 
-    fn blank(&self, r: usize) -> bool {
+    pub(super) fn blank(&self, r: usize) -> bool {
         self.rows[r].trim().is_empty()
     }
 
     /// The first row of the last `n` non-empty ones.
-    fn window_start(&self, n: usize) -> usize {
+    pub(super) fn window_start(&self, n: usize) -> usize {
         let mut seen = 0;
         for r in (0..self.rows.len()).rev() {
             if !self.blank(r) {
@@ -458,7 +458,7 @@ pub fn login_screen(tool: &str, screen: &str) -> bool {
 /// above the input box, and not something the user `typed`. The typed prompt row keeps its
 /// marker, so it never equals the message; a login screen may be drawn in a box, so box rows are
 /// not left out.
-fn login_in(kind: Tool, screen: &Screen<'_>, typed: &str) -> bool {
+pub(super) fn login_in(kind: Tool, screen: &Screen<'_>, typed: &str) -> bool {
     let first = screen.window_start(WINDOW);
     (first..screen.rows.len())
         .rev()
@@ -918,6 +918,12 @@ pub struct Watch {
     /// The latest of what the user typed this run (at most [`TYPED_MAX`] characters, lines split
     /// by `\n`): a program echoing it must not pass for the tool's message.
     pub(crate) typed_text: String,
+    /// The run resumed an earlier conversation and shows its tail again: a limit line there is
+    /// the earlier run's, not an event, until a line was sent to this run.
+    pub(crate) resumed: bool,
+    /// The run opened on the tool's own list of conversations: the first line sent picks one
+    /// (its tail is shown after it), so it does not yet end [`Watch::resumed`].
+    pub(crate) picking: bool,
 }
 
 /// Shows how much the user typed, never what: it may be a pasted secret.
@@ -932,6 +938,8 @@ impl std::fmt::Debug for Watch {
             .field("works_marked", &self.works_marked)
             .field("clear_checked", &self.clear_checked)
             .field("login_marked", &self.login_marked)
+            .field("resumed", &self.resumed)
+            .field("picking", &self.picking)
             .field(
                 "typed_text",
                 &format_args!("<{} chars>", self.typed_text.chars().count()),
@@ -944,6 +952,19 @@ impl Watch {
     /// The program printed (called from [`super::refresh`]).
     pub(crate) fn output(&mut self) {
         self.output = true;
+    }
+
+    /// The pass that saw the program's last output; `None`: it has not printed.
+    pub(crate) fn last_output(&self) -> Option<Instant> {
+        self.output_at
+    }
+
+    /// Nothing was printed for [`QUIET`] before `now` (as of the last [`check`]).
+    pub(crate) fn quiet(&self, now: Instant) -> bool {
+        !self.output
+            && self
+                .output_at
+                .is_none_or(|t| now.saturating_duration_since(t) >= QUIET)
     }
 
     /// Keys or a paste sent to the program, as the bytes sent: its text is kept, escape
@@ -972,7 +993,19 @@ impl Watch {
                 '\u{7f}' | '\u{8}' => {
                     self.typed_text.pop();
                 }
-                '\r' | '\n' => self.typed_text.push('\n'),
+                '\r' | '\n' => {
+                    let line = self.typed_text.rsplit('\n').next().unwrap_or("");
+                    let empty = line.trim().is_empty();
+                    self.typed_text.push('\n');
+                    // A line was sent: what the tool prints next is this run's, unless the line
+                    // picked the conversation in the tool's list. The tool ignores an empty
+                    // line, so outside the list one is no line sent.
+                    if self.picking {
+                        self.picking = false;
+                    } else if !empty {
+                        self.resumed = false;
+                    }
+                }
                 c if c.is_control() => {}
                 c => self.typed_text.push(c),
             }
@@ -1089,7 +1122,8 @@ fn act(app: &mut App, i: usize, found: Seen, now: Instant) -> bool {
             });
         }
     }
-    let Some(hit) = found.hit else {
+    // A resumed conversation's tail, shown again, is not this run's limit.
+    let Some(hit) = found.hit.filter(|_| !s.limit_watch.resumed) else {
         // The user's input was answered and the limit line is gone: a later one is a new event.
         if s.limit_seen && s.limit_watch.typed {
             s.limit_seen = false;

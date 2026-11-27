@@ -184,3 +184,48 @@ Temporary `qc_t4.rs` + `mod qc_t4;` (removed; copy `qa-artifacts/T4/qc_t4_rechec
 - T5 limit notice: `ai_limit_counts_after_a_quiet_second_with_one_notice_per_event` passes, asserting `claude hit its usage limit (resets 15:00)`. PASS
 
 Rule check T4 re-check: D39 `N!` marker PASS; fit/+N PASS; T5 notice text unchanged PASS.
+
+## QC T6
+Engine: cargo test (real spawn path, fake `claude` shell agents, temp state dirs; no browser; claude/codex never run). Harness: temporary `crates/vr-ide/src/qc_t6.rs` + `mod qc_t6;` in lib.rs, both removed (copy: qa-artifacts/T6/qc_t6.rs.txt; `git diff --stat` before/after identical, 22 files, untracked list unchanged). Accounts via `accounts::create`, marked working by state file; "new account has reported" simulated with `limit_watch.works_marked = true` in case 8 (as dev tests do).
+Command: `run-heavy.sh cargo test -p vr-ide --lib qc_t6 -- --nocapture --test-threads=1` -> run 1: 6 pass, 3 fail (all three harness bugs: a missing state key index, a wait loop without clock advance, a restart that exited unreported so the id was rightly dropped per D43); run 2 after fixing the harness: `9 passed; 0 failed` (qc_run2.log, first run qc_run.log).
+
+- C1 work -> personal: log `start work, got work limit, start personal, got personal Continue where you left off.`; pids file `work 2398343 cfg=.state/accounts/work | personal 2398351 cfg=.state/accounts/personal`; old pid alive=false; `--resume|<ID>|` asserted in argv (no `--continue`); continue prompt echoed once; notices `claude@work hit its usage limit (resets 15:00)`, `switched claude from work to personal (work limited until 15:00)`; label `claude@personal`; state `claude/personal works=true; claude/work works=true limited_until=1795878000`. PASS
+- C2 two tabs same folder (ID / ID2), tab b limited: b -> personal with `--resume|ID2|` only; tab a pid unchanged and alive, still `work`, screen has no `--resume`/`GOT:`; only b got a prompt. PASS
+- C3 user typed after the limit: switch to personal happened, log has no `Continue`, notices only the limit and `switched ...`; no "type to continue" notice (even after +31 s). See note N1.
+- C4 personal limited (+600 s), default not working: notice `all claude accounts are limited until 18:08`; pid unchanged, running, account work, log `start work, got work limit`. PASS
+- C5 `/ai autoswitch off`: notice `auto-switch off for claude@work`, limit notice only, pid same; tab bar row ` 1 claude@work ⊘ x`. Setting ai_auto_switch=false: same row and limit notice only, no switch. PASS
+- C6 personal shows `Select login method:`: personal marked not working (entry not worked in state), notice `claude@personal is not logged in; trying the next account`, then `switched claude from personal to third`, argv `ACCT:third`; log has no `got personal`; one prompt typed into third. PASS
+- C7 target with trust screen (`Quick safety check ...` + `Accessing workspace:`): log `start work, got work limit, start personal` (nothing typed), one notice `claude@personal is waiting: type to continue`. PASS
+- C8 four limit events: starts 4 (work, a, b, c); event 4 on c: no switch, `auto_switch=false`, mark ` ⊘`, one notice `claude@c: 3 account switches in 30 minutes; auto-switch is off for this session`. PASS
+- C9 restart (Enter on exited) with id: `RAN:--base|--resume|0f8e2c1a-...|`, no `--continue`. session.toml section from a live session: `session_id = "0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b"`; restore of that section: `ARGV:--base|--resume|0f8e2c1a-...|`. PASS
+
+Notes
+- N1 (brief vs implementation): the brief expects a "type to continue" notice in case 3 (user typed). The implementation is silent when the user typed; spec AC-6 and threat model SEC-30 (c) only require no prompt, and the notice is required for (e) 30 s timeout and dialogs (D44, D47), which C7 confirms. Not counted as a defect; leader to confirm.
+- Unverified (dev disclosed, unchanged): real claude idle-box layout and replayed limit line on `--resume` are assumptions; fails safe.
+- Dev suite not rerun by me; dev's final-run.log shows 261 related tests ok.
+
+## Rule check T6
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-6 | PASS | C1, C2, C3 |
+| AC-7 | PASS | C4, C5, C6 (no id covered by dev `no_session_id_notifies_only`, not rerun) |
+| SEC-28 (old run gone, hold/lock) | PASS | C1 old pid dead before new start (log order, /proc); dev kill/hold tests not rerun |
+| SEC-29 (3 per 30 min, login retry) | PASS | C8, C6 |
+| SEC-30 (prompt only to ready box, not after typing) | PASS | C3, C7 (two dialogs), C1 once |
+| SEC-31 (resume by id) | PASS | C9, C2 |
+| BASE-14/15/17 | PASS | background run, nothing killed by me, temp module + mod line removed, diff stat same |
+
+## QC T6 re-check
+Result: BLOCKED (no change to /home/rainy/DEV/vr-ide; nothing written there, nothing run).
+Case to check: `StartMode::Resume` start on personal (picker, Down/Up + Enter, replayed tail ends on a limit line -> no state, no notice, no switch; after a real user line and a fresh limit line -> normal event).
+Why a standalone harness cannot do it: the limit/switch machinery is driven only from `event_loop::background_pass(app, now)` (`pub(crate)`, called from `run`), which calls `ai::limits::check` and `ai::switch::tick` (both `pub(crate)`). `ai::spawn_session` (needed for `StartMode::Resume`) is also `pub(crate)`; the public `ai::open_tool` only starts `StartMode::New`. The only public entry that runs the passes is `event_loop::run`, which polls real terminal input and the real clock, so a quiet second cannot be given by the test and keys cannot be injected without a pty driver around it. The test helpers (`ai_tests::{ai_app, pass, wait_for, ...}`) are `pub(crate)` inside the `#[cfg(test)]` modules.
+Needed to proceed: either a temporary `#[cfg(test)] mod` line + file in crates/vr-ide/src (allowed once the reviewer's re-check of the tree is finished), or a pty-driven run of `vr-ide` itself with a fake claude (heavier, real-time waits).
+
+## QC T6 re-check (replaced the BLOCKED note above)
+Engine: cargo test with a temporary in-crate harness (`crates/vr-ide/src/qc_t6.rs` + one `mod qc_t6;` line in lib.rs), current tree after fix round 2. Both removed; `git diff --stat` (24 files, 570 insertions, 50 deletions) and `git status --short` identical before/after. Files I wrote in the project: crates/vr-ide/src/qc_t6.rs (removed), the lib.rs mod line (removed), qa-artifacts/T6/{head.rs, tail.rs, qc_t6.rs.txt, qc_t6_choose_earlier.rs.txt, qc_run*.log, qc_recheck2.log, ds_/st_ before/after txt, diffstat_*.txt, untracked_before.txt}, this report.
+Command: `run-heavy.sh cargo test -p vr-ide --lib qc_t6 -- --nocapture --test-threads=1` -> `1 passed; 0 failed`.
+Case: Resume start (StartMode::Resume) on personal, fake claude shows a list; keys Down, Up, Enter (agent got `[ESC[B ESC[A]`), then replayed tail ending on the 5-hour limit line.
+- After pick, 3 quiet seconds: limit_seen=false, notices=[], state personal works=true limited_until=None. PASS
+- After a second empty Enter (+3 quiet seconds): same: no notice, nothing recorded, account personal, log `start personal, got personal [ESC[B ESC[A], got personal []`. PASS
+- Then a real line `real` and fresh limit line: notices `claude@personal hit its usage limit (resets 15:00)`, `switched claude from personal to other (personal limited until 15:00)`; state personal limited_until=1795878000; old pid 2469639 -> new pid 2469644, argv ACCT:other. PASS
+Rule check T6 re-check: AC-6 PASS, AC-7 PASS (no event on replay), SEC-29 PASS (no event from a replayed tail), BASE-14/15/17 PASS.

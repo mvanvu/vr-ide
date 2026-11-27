@@ -684,3 +684,31 @@ fn ai_usage_label_sizes() {
     let bar = crate::ui::ai_view::tab_bar(&app, area.width);
     assert_eq!(bar.tabs.iter().find(|t| t.index == 0).unwrap().label, " 1 ");
 }
+
+/// AC-7: a session with auto-switch off carries the mark after its label, before the usage; a
+/// tool that never switches carries none; the plain label stays plain.
+#[test]
+fn label_marks_auto_switch_off() {
+    let mut app = panel_app(3);
+    app.ai.sessions[1].attention = None;
+    app.ai.active = 1;
+    app.ai.sessions[1].usage = usage(63.0, None);
+    app.ai.sessions[1].auto_switch = false;
+    app.ai.sessions[2].auto_switch = false;
+    let bar = crate::ui::ai_view::tab_bar(&app, 120);
+    let tab = |i: usize| {
+        bar.tabs
+            .iter()
+            .find(|t| t.index == i)
+            .unwrap()
+            .label
+            .clone()
+    };
+    assert_eq!(tab(1), " 2 claude@work ⊘ 63% x ");
+    assert!(!tab(0).contains('⊘'), "on: no mark");
+    assert!(!tab(2).contains('⊘'), "codex does not switch: no mark");
+    assert_eq!(app.ai.label(1), "claude@work");
+    for w in [120, 80, 40, 30, 25, 20, 16] {
+        bar_fits(&mut app, w);
+    }
+}

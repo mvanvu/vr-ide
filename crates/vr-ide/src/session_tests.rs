@@ -664,6 +664,7 @@ fn the_ai_section_is_kept_for_the_ai_panel() {
             account: "work".into(),
             folder: t.api.clone(),
             label: "fix".into(),
+            ..Default::default()
         }]
     );
     assert!(session::take_restored_ai(&mut app).is_none(), "given once");
@@ -897,5 +898,37 @@ fn edit_mode_is_kept_through_the_running_terminals_question() {
     answer_open_dialog(&mut app, 0);
     let body = quit_through_the_loop(&mut app);
     assert!(body.contains("edit = true"), "{body}");
+    close(app);
+}
+
+/// SEC-31, SEC-24: a tab's conversation id is kept only as a canonical lowercase UUID; anything
+/// else in the file is dropped on load (the tab itself stays), and an empty one is not written.
+#[test]
+fn the_ai_session_id_is_kept_only_as_a_canonical_uuid() {
+    const ID: &str = "0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b";
+    let t = tree();
+    let api = t.api.display();
+    let entry = |id: &str| {
+        format!(
+            "[[ai.sessions]]\ntool = \"claude\"\naccount = \"\"\nfolder = \"{api}\"\nlabel = \"\"\nsession_id = \"{id}\"\n"
+        )
+    };
+    let body = format!(
+        "roots = [\"{api}\"]\n[ai]\nshown = true\n{}{}{}{}",
+        entry(ID),
+        entry("--dangerously-skip-permissions"),
+        entry("0F8E2C1A-7B3D-4E5F-9A1B-2C3D4E5F6A7B"),
+        entry("abc-123"),
+    );
+    write_session(&t.state, &body);
+    let mut app = launch(&t.state, &t.home);
+    let ai = session::take_restored_ai(&mut app).unwrap();
+    let ids: Vec<&str> = ai.sessions.iter().map(|s| s.session_id.as_str()).collect();
+    assert_eq!(ids, [ID, "", "", ""]);
+    session::save_on_quit(&mut app);
+    let saved = std::fs::read_to_string(t.state.join(SESSION_FILE)).unwrap();
+    assert_eq!(saved.matches("session_id").count(), 1, "{saved}");
+    assert!(saved.contains(&format!("session_id = \"{ID}\"")), "{saved}");
+    assert!(!saved.contains("dangerously"), "{saved}");
     close(app);
 }

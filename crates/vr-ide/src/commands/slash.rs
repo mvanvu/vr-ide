@@ -235,7 +235,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         "ai",
         "[<tool> [@account]]",
         ArgKind::OptionalText,
-        "Start an AI tool of ai_tools (e.g. claude) in the AI panel (none: pick one); /ai rename <name>; /ai usage",
+        "Start an AI tool of ai_tools in the AI panel (none: pick one); /ai rename <name>, usage, autoswitch on/off",
         ai,
     ),
     cmd(
@@ -973,6 +973,11 @@ fn ai(app: &mut App, arg: &str) -> Result<(), String> {
         && (rest.is_empty() || rest.starts_with(' '))
     {
         return crate::ai::rename(app, rest);
+    }
+    if let Some(rest) = arg.strip_prefix("autoswitch")
+        && (rest.is_empty() || rest.starts_with(' '))
+    {
+        return crate::ai::switch::command(app, rest);
     }
     if let Some(rest) = arg.strip_prefix("usage")
         && (rest.is_empty() || rest.starts_with(' '))

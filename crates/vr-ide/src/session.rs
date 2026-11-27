@@ -125,7 +125,8 @@ pub struct AiSection {
     pub sessions: Vec<AiSession>,
 }
 
-/// One agent tab: the configured tool's name, the account name, its folder and its label.
+/// One agent tab: the configured tool's name, the account name, its folder and its label, and
+/// the id of its conversation when the tool reported one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiSession {
@@ -133,6 +134,10 @@ pub struct AiSession {
     pub account: String,
     pub folder: PathBuf,
     pub label: String,
+    /// The conversation the tab resumes (SEC-31): a canonical lowercase UUID, else empty — an
+    /// id that is anything else is dropped on load (SEC-24).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub session_id: String,
 }
 
 /// The home folder (`$HOME` when absolute), where `--session` opens without a session.
@@ -806,6 +811,11 @@ fn sanitize_ai(mut ai: AiSection) -> AiSection {
             && plain_absolute(&a.folder)
     });
     ai.sessions.truncate(MAX_AI_SESSIONS);
+    for a in &mut ai.sessions {
+        if !crate::ai::usage::valid_session_id(&a.session_id) {
+            a.session_id.clear();
+        }
+    }
     ai.width = ai.width.map(|v| v.clamp(10, 90));
     ai
 }

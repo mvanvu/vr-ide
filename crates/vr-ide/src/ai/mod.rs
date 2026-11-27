@@ -15,6 +15,7 @@ pub mod picker;
 pub mod restore;
 pub mod review;
 pub mod spawn;
+pub mod switch;
 pub mod usage;
 
 use std::ffi::OsString;
@@ -140,6 +141,11 @@ pub struct AiSession {
     /// The usage windows already warned about at 90 % (AC-4); kept across a restart on the
     /// same account, whose windows go on.
     pub(crate) high_warned: usage::Warned,
+    /// A limit screen moves this session to another account (AC-6): the setting
+    /// `ai_auto_switch` when it started, then `/ai autoswitch on|off`.
+    pub auto_switch: bool,
+    /// The switch in progress and what bounds the next one (SEC-28, SEC-29, SEC-30).
+    pub(crate) switch: switch::State,
 }
 
 impl AiSession {
@@ -174,11 +180,33 @@ impl AiSession {
             limit_seen: false,
             limit_watch: Default::default(),
             high_warned: Default::default(),
+            auto_switch: true,
+            switch: Default::default(),
         }
     }
 
     pub fn running(&self) -> bool {
         self.tab.running()
+    }
+
+    /// The conversation id its tool last reported, when it may be passed on (SEC-24).
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        self.usage
+            .as_ref()
+            .and_then(|u| u.session_id.as_deref())
+            .filter(|id| usage::valid_session_id(id))
+    }
+
+    /// A run was put in the tab with `start`: a start by id keeps that id until the run reports
+    /// its own, and is unconfirmed until then; a run on an earlier conversation shows its tail
+    /// again, so a limit line there is not this run's until something was sent to it.
+    pub(crate) fn started(&mut self, start: spawn::Start<'_>) {
+        if let spawn::Start::Id(id) = start {
+            self.usage.get_or_insert_with(Default::default).session_id = Some(id.to_string());
+        }
+        self.switch.unconfirmed = matches!(start, spawn::Start::Id(_));
+        self.limit_watch.resumed = start.mode() != StartMode::New;
+        self.limit_watch.picking = start.mode() == StartMode::Resume;
     }
 }
 
@@ -711,6 +739,20 @@ pub(crate) fn spawn_session(
     root: &Path,
     name: Option<String>,
 ) -> Result<(), String> {
+    spawn_started(app, tool, account, spawn::Start::Mode(mode), root, name)
+}
+
+/// [`spawn_session`] for any start: a picker mode, or one known conversation (a restored tab
+/// whose id the session file kept, SEC-31).
+pub(crate) fn spawn_started(
+    app: &mut App,
+    tool: &AiTool,
+    account: Option<String>,
+    start: spawn::Start<'_>,
+    root: &Path,
+    name: Option<String>,
+) -> Result<(), String> {
+    let mode = start.mode();
     // Before the hold: a first migration needs the account to itself (SEC-20).
     let shared = share_history(app, &tool.name, account.as_deref());
     // The hold comes first: the folder checks in `start_program` then see what a removal left.
@@ -724,7 +766,7 @@ pub(crate) fn spawn_session(
     // The tracker's start time must precede the program's first write (SEC-9).
     let tracker = review::start(app, root);
     let (tab_term, program, output, usage_files) =
-        start_program(app, tool, account.as_deref(), mode, root)?;
+        start_program(app, tool, account.as_deref(), start, root)?;
     let mut session = AiSession::new(
         TermTab::new(tab_term, program, output),
         &tool.name,
@@ -738,6 +780,8 @@ pub(crate) fn spawn_session(
     session.changes = tracker;
     session.usage_file = usage_files.as_ref().map(|f| f.report.clone());
     session.usage_files = usage_files;
+    session.auto_switch = app.settings.ai_auto_switch;
+    session.started(start);
     app.ai.sessions.push(session);
     app.dirty = true;
     Ok(())
@@ -784,16 +828,20 @@ fn start_program(
     app: &mut App,
     tool: &AiTool,
     account: Option<&str>,
-    mode: StartMode,
+    start: spawn::Start<'_>,
     root: &Path,
 ) -> Result<Started, String> {
     let path = std::env::var_os("PATH");
     let program = spawn::resolve(&tool.command, path.as_deref())
         .ok_or_else(|| format!("{} not on PATH (ai_tools in settings)", tool.name))?;
-    let mut args: Vec<OsString> = spawn::args(tool, mode)
-        .into_iter()
-        .map(OsString::from)
-        .collect();
+    let words = match start {
+        spawn::Start::Mode(mode) => spawn::args(tool, mode),
+        // SEC-24: the id is checked again where the arguments are built.
+        spawn::Start::Id(id) => {
+            spawn::args_by_id(tool, id).ok_or("the session id cannot be used")?
+        }
+    };
+    let mut args: Vec<OsString> = words.into_iter().map(OsString::from).collect();
     // SEC-22: two argv elements, before the tool's own arguments.
     let usage_files = usage_files(app, tool);
     if let Some(f) = &usage_files {
@@ -875,11 +923,13 @@ pub(crate) fn read_usage(app: &mut App, now: std::time::Instant) -> bool {
         };
         p.usage_reads += 1;
         // A bad or missing report is ignored, without a notice (SEC-25).
-        if let Some(u) = read
-            && s.usage.as_ref() != Some(&u)
-        {
-            s.usage = Some(u);
-            reported.push(i);
+        if let Some(u) = read {
+            // The run reports: a conversation resumed by id was found.
+            s.switch.unconfirmed = false;
+            if s.usage.as_ref() != Some(&u) {
+                s.usage = Some(u);
+                reported.push(i);
+            }
         }
     }
     // Whether the account works and is limited (SEC-27).
@@ -966,23 +1016,53 @@ fn picker_enter(app: &mut App) {
 /// Enter on an exited session: its tool again in the same tab, with the continue arguments
 /// when the tool has them.
 fn restart(app: &mut App) {
-    let Some(s) = app.ai.active_session() else {
+    let Some(s) = app.ai.active_session_mut() else {
         return;
     };
+    // A switch owns the tab until its new run is in it (SEC-28).
+    if s.switch.busy() {
+        return;
+    }
+    // A run started by id that ended without a report did not find the conversation: the id
+    // is given up, so this start is not the same failure again.
+    if s.switch.unconfirmed
+        && let Some(u) = &mut s.usage
+    {
+        u.session_id = None;
+    }
     let (name, account, root) = (s.tool.clone(), s.account.clone(), s.root.clone());
+    let id = s.session_id().map(str::to_string);
+    let unheld = account.is_some() && s.account_lock.is_none();
     // A new run: what the folder holds now is its starting point.
     if let Some(c) = &s.changes {
         c.resume();
     }
+    // A failed switch let the account go (SEC-28): no run on it without the hold.
+    let lock = match (&account, app.ai.state_dir.as_deref()) {
+        (Some(a), Some(state)) if unheld => match accounts::hold(state, a) {
+            Ok(lock) => Some(lock),
+            Err(e) => {
+                app.error(format!("AI: account {a}: {e}"));
+                return;
+            }
+        },
+        _ => None,
+    };
     let result = find_tool(app, &name).and_then(|tool| {
-        let mode = spawn::again_mode(&tool);
-        start_program(app, &tool, account.as_deref(), mode, &root).map(|r| (r, mode))
+        // SEC-31: the known conversation, not the folder's latest one.
+        let start = spawn::again(&tool, id.as_deref());
+        start_program(app, &tool, account.as_deref(), start, &root)
+            .map(|r| (r, start.mode(), matches!(start, spawn::Start::Id(_))))
     });
     match result {
-        Ok(((t, program, output, usage_files), mode)) => {
+        Ok(((t, program, output, usage_files), mode, by_id)) => {
             if let Some(s) = app.ai.active_session_mut() {
+                // The run before has exited: nothing overlaps (SEC-28).
                 s.tab.replace(t, program, output);
                 s.mode = mode;
+                if lock.is_some() {
+                    s.account_lock = lock;
+                }
                 // The last run's files go; the usage it reported stays until a new report, but
                 // a New run is another conversation: the old id must not be resumed for it.
                 if mode == StartMode::New
@@ -995,6 +1075,10 @@ fn restart(app: &mut App) {
                 s.usage_poll = Default::default();
                 s.limit_seen = false;
                 s.limit_watch.restarted();
+                s.started(match id.as_deref() {
+                    Some(id) if by_id => spawn::Start::Id(id),
+                    _ => spawn::Start::Mode(mode),
+                });
             }
             app.dirty = true;
         }
@@ -1337,6 +1421,11 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         app.dirty = true;
         return true;
     }
+    // Typed while a switch replaces the run: the user took over, whichever run got the key
+    // (SEC-30).
+    if s.switch.busy() {
+        s.switch.typed = true;
+    }
     if !s.running() {
         let closes = chord
             .as_ref()
@@ -1424,6 +1513,9 @@ pub fn paste(app: &mut App, text: &str) {
         return;
     };
     s.tab.refresh();
+    if s.switch.busy() {
+        s.switch.typed = true;
+    }
     if !s.running() {
         return;
     }
@@ -1437,6 +1529,7 @@ pub fn paste(app: &mut App, text: &str) {
 fn send_typed(app: &mut App, bytes: &[u8]) {
     if let Some(s) = app.ai.active_session_mut() {
         s.limit_watch.typed_input(bytes);
+        s.switch.typed = true;
     }
     send(app, bytes);
 }
@@ -1686,6 +1779,12 @@ fn forward_mouse(app: &mut App, ev: &MouseEvent, col: u16, row: u16) {
         },
     };
     let bytes = encode_mouse(m, s.tab.grid.modes);
+    // A mouse report is input too: no continue prompt is typed over it (SEC-30).
+    if !bytes.is_empty()
+        && let Some(s) = app.ai.active_session_mut()
+    {
+        s.switch.typed = true;
+    }
     send(app, &bytes);
 }
 

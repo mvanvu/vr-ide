@@ -9,7 +9,7 @@ The list shows the matching slash commands with their arguments and a short desc
   for `/ssh` the files of `-i`, `-F`, `-E`, `-S` and `-o IdentityFile=` (relative to the
   workspace folder of the active file, as ssh resolves them) and, in the destination position,
   the recent targets and the hosts of `~/.ssh/config`; the tool names of `/ai` (setting
-  `ai_tools`); the theme names, the workspace folders of
+  `ai_tools`) and `on` / `off` after `/ai autoswitch`; the theme names, the workspace folders of
   `/ws remove`, the numbers of `/ws recent` and `/recent`, the values of `/indent` and `/eol`,
   the language ids of `/lang`, and for `/set` the setting names (with their value now), then
   `true` / `false` or the theme names. Hidden files are offered only when what you typed starts
@@ -36,7 +36,8 @@ it holds the terminal (an AI tool, an editor, a password prompt), it opens a new
 runs the command there, with a notice. `/ai <tool>` always starts a new session in the AI panel,
 never in a terminal; `/ai` alone opens the tool picker there, as `ctrl+f12` does. `/ai usage`
 shows the active session's account with its 5-hour and weekly usage and their reset times (claude
-only; see the README's AI panel usage section).
+only; see the README's AI panel usage section). `/ai autoswitch off` (or `on`) turns the automatic
+account switch at a usage limit off for the active session; its tab shows `⊘` while it is off.
 
 `/ws open <folder>` switches the window to that folder alone, `/ws open <file>.vr-workspace` to the
 folders the file lists; any other file is refused. With terminals or AI sessions open (running or
@@ -143,7 +144,7 @@ protocol does not send are marked).
 | `/term right` | Terminal panel on the right, for this session |
 | `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
-| `/ai [<tool> [@account]]` | Start an AI tool of ai_tools (e.g. claude) in the AI panel (none: pick one); /ai rename <name>; /ai usage |
+| `/ai [<tool> [@account]]` | Start an AI tool of ai_tools in the AI panel (none: pick one); /ai rename <name>, usage, autoswitch on/off |
 | `/ssh [ssh args]` | Open an SSH session, args as after ssh (none: list hosts) |
 | `/ws add <folder>` | Add a folder to the workspace |
 | `/ws remove [root]` | Remove a workspace folder (default: the active file's) |

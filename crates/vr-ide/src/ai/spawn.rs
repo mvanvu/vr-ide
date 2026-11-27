@@ -66,6 +66,61 @@ pub fn again_mode(tool: &AiTool) -> StartMode {
     }
 }
 
+/// What a start runs: one of the picker's modes, or one known conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start<'a> {
+    Mode(StartMode),
+    /// The conversation with this id ([`args_by_id`]); the session counts as continued.
+    Id(&'a str),
+}
+
+impl Start<'_> {
+    pub fn mode(self) -> StartMode {
+        match self {
+            Start::Mode(m) => m,
+            Start::Id(_) => StartMode::Continue,
+        }
+    }
+}
+
+/// The words `tool` resumes one conversation by its id with (the id follows as its own
+/// argument). Fixed per tool like the account variables, never from settings: claude only.
+pub fn resume_words(tool: &str) -> Option<&'static [&'static str]> {
+    match tool {
+        "claude" => Some(&["--resume"]),
+        _ => None,
+    }
+}
+
+/// The arguments resuming conversation `id` (SEC-24, SEC-31): the tool's `args`, its resume
+/// words, the id — each its own argument, never with `continue_args`. `None` unless the id is a
+/// canonical lowercase UUID (it could read as an option otherwise) and the tool resumes by id.
+pub fn args_by_id(tool: &AiTool, id: &str) -> Option<Vec<String>> {
+    let words = resume_words(&tool.name)?;
+    if !super::usage::valid_session_id(id) {
+        return None;
+    }
+    Some(
+        tool.args
+            .iter()
+            .cloned()
+            .chain(words.iter().map(|w| w.to_string()))
+            .chain([id.to_string()])
+            .collect(),
+    )
+}
+
+/// How a restored or exited session starts again (SEC-31): by its id when one is known and
+/// usable, in place of the continue arguments, which with a shared history would pick the
+/// folder's latest conversation of any tab and account; else [`again_mode`].
+pub fn again<'a>(tool: &AiTool, id: Option<&'a str>) -> Start<'a> {
+    let mode = again_mode(tool);
+    match id {
+        Some(id) if mode == StartMode::Continue && args_by_id(tool, id).is_some() => Start::Id(id),
+        _ => Start::Mode(mode),
+    }
+}
+
 /// The start as a line for the screen (`claude --continue`); a word with a space or a quote is
 /// shown quoted. Display only: nothing ever runs this text.
 pub fn command_line(tool: &AiTool, mode: StartMode) -> String {
@@ -215,5 +270,42 @@ mod tests {
             internal_vars(vars.into_iter()),
             [OsString::from("VR_IDE_LOG"), OsString::from("VR_IDE_")]
         );
+    }
+
+    /// SEC-24, SEC-31: only a canonical lowercase UUID becomes an argument, as its own word
+    /// after the tool's fixed resume word, never beside the continue arguments.
+    #[test]
+    fn resume_by_id_takes_only_a_canonical_uuid() {
+        const ID: &str = "0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b";
+        let mut claude = tool();
+        claude.name = "claude".into();
+        assert_eq!(
+            args_by_id(&claude, ID).unwrap(),
+            ["--model", "o4 mini", "--resume", ID]
+        );
+        assert_eq!(again(&claude, Some(ID)), Start::Id(ID));
+        assert_eq!(again(&claude, None), Start::Mode(StartMode::Continue));
+        for bad in [
+            "--dangerously-skip-permissions",
+            "-x",
+            "abc-123",
+            "",
+            "0F8E2C1A-7B3D-4E5F-9A1B-2C3D4E5F6A7B",
+            "0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b\n",
+            " 0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b",
+        ] {
+            assert_eq!(args_by_id(&claude, bad), None, "{bad:?}");
+            assert_eq!(
+                again(&claude, Some(bad)),
+                Start::Mode(StartMode::Continue),
+                "{bad:?}"
+            );
+        }
+        // A tool without resume-by-id words (codex here) and one that cannot continue keep
+        // their mode.
+        assert_eq!(args_by_id(&tool(), ID), None);
+        assert_eq!(again(&tool(), Some(ID)), Start::Mode(StartMode::Continue));
+        claude.continue_args.clear();
+        assert_eq!(again(&claude, Some(ID)), Start::Mode(StartMode::New));
     }
 }

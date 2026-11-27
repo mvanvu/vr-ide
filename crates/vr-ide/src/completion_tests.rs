@@ -418,6 +418,24 @@ fn ai_completes_the_accounts_of_the_tool() {
     }
 }
 
+/// `/ai autoswitch ` completes `on` and `off`; a third word completes nothing.
+#[test]
+fn ai_autoswitch_completes_on_and_off() {
+    let mut f = Fx::new("vr-ide");
+    let app = &mut f.app;
+    slash(app, "/ai autoswitch of");
+    key(app, KeyCode::Tab);
+    assert_eq!(input(app), "/ai autoswitch off");
+    crate::slash_tests::set(app, "/ai autoswitch ");
+    key(app, KeyCode::Tab);
+    key(app, KeyCode::Tab);
+    assert_eq!(titles(app), ["on", "off"]);
+    let none = "/ai autoswitch on x";
+    crate::slash_tests::set(app, none);
+    key(app, KeyCode::Tab);
+    assert_eq!(input(app), none);
+}
+
 #[test]
 fn existing_palette_keys_still_work() {
     let mut f = Fx::new("vr-ide");
