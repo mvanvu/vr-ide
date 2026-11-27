@@ -33,8 +33,9 @@ use std::path::PathBuf;
 ///
 /// The texts carry repository paths and git's own words, which a hostile repository controls.
 /// `Display` passes the path-bearing variants (`OutsideRepo`, `NotACommit` and `Io`) through
-/// [`sanitize_line`]. Even so, the UI runs every error text through [`sanitize_line`] at display time, including `Failed` from a read and any field it reads
-/// directly from a variant: no caller relies on the producer having done it.
+/// [`sanitize_line`]. Even so, the UI runs every error text through [`sanitize_line`] at display
+/// time, including `Failed` from a read and any field it reads directly from a variant: no caller
+/// relies on the producer having done it.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GitError {
     #[error("git executable not found in PATH")]
