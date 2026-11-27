@@ -304,13 +304,12 @@ fn render_grid(
     close_key: &str,
     theme: &Theme,
 ) -> Option<(u16, u16)> {
-    let palette = theme.ansi_palette();
     let depth = ColorDepth::detect();
     let blank = Cell {
         ch: " ".into(),
         ..Cell::default()
     };
-    buf.set_style(area, cell_style(&blank, palette, depth));
+    buf.set_style(area, theme_cell_style(&blank, theme, depth));
     let tab = panel.active_tab()?;
     let g = &tab.grid;
     let (w, h) = (usize::from(area.width), usize::from(area.height));
@@ -321,9 +320,9 @@ fn render_grid(
                 continue;
             };
             let x = area.x + c as u16;
-            let mut style = cell_style(cell, palette, depth);
+            let mut style = theme_cell_style(cell, theme, depth);
             if panel.selection.is_some_and(|s| s.contains(r, c)) {
-                style = style.patch(theme.selection);
+                style = style.bg(theme.terminal_selection);
             }
             // The spacer of a wide character is covered by it; a wide character that would
             // stick out of the panel is drawn as a blank.
@@ -416,19 +415,40 @@ pub fn render_status(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     }
 }
 
-/// Style of one terminal cell: ANSI 0–15 and the default colours through the theme's palette
-/// (the terminal's own colours without one), 256-colour values as they are, true-colour values
-/// at the depth of vr-ide's own terminal.
-pub fn cell_style(cell: &Cell, palette: Option<&AnsiPalette>, depth: ColorDepth) -> Style {
+/// Style of one terminal cell: ANSI 0-15 and the default colours through the theme (FR-26:
+/// default-coloured cells take `terminal_fg` / `terminal_bg` in every theme, `dark` and `light`
+/// included), 256-colour values as they are, true-colour values at the depth of vr-ide's own
+/// terminal. Every terminal view (the panel, the SSH full screen) draws through this.
+pub fn theme_cell_style(cell: &Cell, theme: &Theme, depth: ColorDepth) -> Style {
+    style_with(
+        cell,
+        theme.ansi_palette(),
+        (theme.terminal_fg, theme.terminal_bg),
+        depth,
+    )
+}
+
+/// Palette-only variant for unit tests of the colour mapping; not for drawing.
+#[cfg(test)]
+pub(crate) fn cell_style(cell: &Cell, palette: Option<&AnsiPalette>, depth: ColorDepth) -> Style {
+    let defaults = palette.map_or((Color::Reset, Color::Reset), |p| (p.fg, p.bg));
+    style_with(cell, palette, defaults, depth)
+}
+
+fn style_with(
+    cell: &Cell,
+    palette: Option<&AnsiPalette>,
+    (default_fg, default_bg): (Color, Color),
+    depth: ColorDepth,
+) -> Style {
     let resolve = |c: TermColor, fg: bool| match (c, palette) {
-        (TermColor::Default, Some(p)) => {
+        (TermColor::Default, _) => {
             if fg {
-                p.fg
+                default_fg
             } else {
-                p.bg
+                default_bg
             }
         }
-        (TermColor::Default, None) => Color::Reset,
         (TermColor::Indexed(i), Some(p)) if i < 16 => p.colors[usize::from(i)],
         (TermColor::Indexed(i), _) => Color::Indexed(i),
         (TermColor::Rgb(r, g, b), _) => {
