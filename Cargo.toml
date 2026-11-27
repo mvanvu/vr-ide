@@ -33,6 +33,7 @@ directories = "6.0.0"
 insta = "1.49.0"
 tempfile = "3.27.0"
 similar = "3.2.1"
+serde_json = "1.0.154"
 
 # Syntax highlighting (M4). One tree-sitter version; every grammar is ABI 13..=15 compatible with it.
 tree-sitter = "=0.27.2"

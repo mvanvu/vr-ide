@@ -118,6 +118,15 @@ fn inherited(var: &str) -> String {
     )
 }
 
+/// The `--settings` file a claude session was started with (T3).
+fn settings_of(app: &App, i: usize) -> String {
+    let report = app.ai.sessions[i]
+        .usage_file
+        .as_ref()
+        .expect("claude usage file");
+    report.with_extension("json").display().to_string()
+}
+
 fn notices(app: &App) -> Vec<String> {
     app.notices.iter().map(|n| n.text.clone()).collect()
 }
@@ -214,7 +223,12 @@ fn add_account_creates_the_folder_and_starts_on_it() {
     assert_eq!(e.app.ai.label(0), "claude@personal");
     assert_eq!(ccd(&e.app, 0), format!("{}|", folder.display()));
     let text = wait_for(&e.app, 0, |s| s.contains("ARGV:"));
-    assert!(text.contains("ARGV:|\n"), "New: {text}");
+    // claude gets its statusLine settings (T3) before its own (here no) arguments.
+    assert!(
+        text.replace('\n', "")
+            .contains(&format!("ARGV:--settings|{}|CCD:", settings_of(&e.app, 0))),
+        "New: {text}"
+    );
     assert!(
         notices(&e.app)
             .contains(&"Account personal created; sign in with /login in its tab".to_string()),
@@ -435,7 +449,13 @@ fn restore_reopens_on_the_same_account_or_not_at_all() {
     );
     assert_eq!(ccd(&e.app, 2), format!("{}|", alt.display()));
     let text = wait_for(&e.app, 0, |s| s.contains("ARGV:"));
-    assert!(text.contains("ARGV:--continue|"), "{text}");
+    assert!(
+        text.replace('\n', "").contains(&format!(
+            "ARGV:--settings|{}|--continue|",
+            settings_of(&e.app, 0)
+        )),
+        "{text}"
+    );
     assert_eq!(
         std::fs::metadata(&work).unwrap().mode() & 0o777,
         0o700,

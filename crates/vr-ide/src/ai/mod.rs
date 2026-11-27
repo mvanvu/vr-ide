@@ -14,6 +14,7 @@ pub mod picker;
 pub mod restore;
 pub mod review;
 pub mod spawn;
+pub mod usage;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -122,6 +123,14 @@ pub struct AiSession {
     /// whose history entry links there; false for a tool without one, or when a warning said
     /// why not.
     pub shared: bool,
+    /// The statusLine report of a claude session (AC-3, SEC-22); `None`: none asked for.
+    pub usage_file: Option<PathBuf>,
+    /// What its last valid report said.
+    pub usage: Option<usage::Usage>,
+    /// When the report was last looked at (SEC-25, SEC-39).
+    pub(crate) usage_poll: usage::Poll,
+    /// The settings and report files of the current run; dropping them removes both.
+    pub(crate) usage_files: Option<usage::SessionFiles>,
 }
 
 impl AiSession {
@@ -149,6 +158,10 @@ impl AiSession {
             changes_version: None,
             notify: Default::default(),
             shared: false,
+            usage_file: None,
+            usage: None,
+            usage_poll: Default::default(),
+            usage_files: None,
         }
     }
 
@@ -198,6 +211,15 @@ pub struct AiPanel {
     /// The shared history folder of each tool that has one (AC-2, SEC-21), set at startup by
     /// [`history::configure`]; empty: no account shares history (tests that do not set it).
     pub history_dirs: std::collections::BTreeMap<String, PathBuf>,
+    /// The program claude's statusLine runs (`vr-ide --ai-statusline`); `None`: this executable.
+    /// Tests point it at a stand-in, the unit-test binary not being vr-ide.
+    pub usage_exe: Option<PathBuf>,
+    /// Old windows' usage files were swept (once, before the first claude session).
+    pub(crate) usage_swept: bool,
+    /// The "usage not available" notice was shown (once per run).
+    pub(crate) usage_warned: bool,
+    /// Report reads so far (SEC-39 test seam).
+    pub usage_reads: u64,
 }
 
 impl AiPanel {
@@ -223,6 +245,10 @@ impl AiPanel {
             list_rows: 0,
             state_dir: None,
             history_dirs: Default::default(),
+            usage_exe: None,
+            usage_swept: false,
+            usage_warned: false,
+            usage_reads: 0,
         }
     }
 
@@ -685,7 +711,8 @@ pub(crate) fn spawn_session(
     };
     // The tracker's start time must precede the program's first write (SEC-9).
     let tracker = review::start(app, root);
-    let (tab_term, program, output) = start_program(app, tool, account.as_deref(), mode, root)?;
+    let (tab_term, program, output, usage_files) =
+        start_program(app, tool, account.as_deref(), mode, root)?;
     let mut session = AiSession::new(
         TermTab::new(tab_term, program, output),
         &tool.name,
@@ -697,6 +724,8 @@ pub(crate) fn spawn_session(
     session.shared = shared;
     session.name = name;
     session.changes = tracker;
+    session.usage_file = usage_files.as_ref().map(|f| f.report.clone());
+    session.usage_files = usage_files;
     app.ai.sessions.push(session);
     app.dirty = true;
     Ok(())
@@ -731,20 +760,39 @@ fn share_history(app: &mut App, tool: &str, account: Option<&str>) -> bool {
     }
 }
 
+/// The program, its tab output flag, and the usage files of a claude session (AC-3).
+type Started = (
+    vr_term::Terminal,
+    PathBuf,
+    Arc<AtomicBool>,
+    Option<usage::SessionFiles>,
+);
+
 fn start_program(
-    app: &App,
+    app: &mut App,
     tool: &AiTool,
     account: Option<&str>,
     mode: StartMode,
     root: &Path,
-) -> Result<(vr_term::Terminal, PathBuf, Arc<AtomicBool>), String> {
+) -> Result<Started, String> {
     let path = std::env::var_os("PATH");
     let program = spawn::resolve(&tool.command, path.as_deref())
         .ok_or_else(|| format!("{} not on PATH (ai_tools in settings)", tool.name))?;
-    let args: Vec<OsString> = spawn::args(tool, mode)
+    let mut args: Vec<OsString> = spawn::args(tool, mode)
         .into_iter()
         .map(OsString::from)
         .collect();
+    // SEC-22: two argv elements, before the tool's own arguments.
+    let usage_files = usage_files(app, tool);
+    if let Some(f) = &usage_files {
+        args.splice(
+            0..0,
+            [
+                OsString::from("--settings"),
+                f.settings.clone().into_os_string(),
+            ],
+        );
+    }
     let mut env = Vec::new();
     if let Some(p) = &path {
         env.push((OsString::from("PATH"), spawn::absolute_path(p)));
@@ -769,7 +817,60 @@ fn start_program(
     let size = grid_size(app);
     let t = term::spawn_sized(app, &output, &program, args, root, extras, env, size)
         .map_err(|e| e.to_string())?;
-    Ok((t, program, output))
+    Ok((t, program, output, usage_files))
+}
+
+/// AC-3, SEC-22: claude with a state folder reports through the statusLine helper; the first
+/// one of a run sweeps what ended windows left. A path the helper cannot be named by gives one
+/// notice per run and a start without it.
+fn usage_files(app: &mut App, tool: &AiTool) -> Option<usage::SessionFiles> {
+    if tool.name != "claude" {
+        return None;
+    }
+    let state = app.ai.state_dir.clone()?;
+    if !app.ai.usage_swept {
+        app.ai.usage_swept = true;
+        usage::sweep(&state);
+    }
+    let exe = match app.ai.usage_exe.clone() {
+        Some(e) => Ok(e),
+        None => std::env::current_exe().map_err(|_| "vr-ide path unusable"),
+    };
+    match exe.and_then(|e| usage::prepare(&state, &e)) {
+        Ok(files) => Some(files),
+        Err(why) => {
+            if !app.ai.usage_warned {
+                app.ai.usage_warned = true;
+                app.warn(format!("claude usage not available ({why})"));
+            }
+            None
+        }
+    }
+}
+
+/// Reads the reports that changed, on every loop pass (claude may report while silent or while
+/// the panel is hidden; SEC-25 / SEC-39 bound it: an `lstat` per session at most every 250 ms, a
+/// read at most once a second); true when a session's usage changed.
+pub(crate) fn read_usage(app: &mut App, now: std::time::Instant) -> bool {
+    let p = &mut app.ai;
+    let mut changed = false;
+    for s in &mut p.sessions {
+        let Some(path) = &s.usage_file else {
+            continue;
+        };
+        let Some(read) = s.usage_poll.check(path, now) else {
+            continue;
+        };
+        p.usage_reads += 1;
+        // A bad or missing report is ignored, without a notice (SEC-25).
+        if let Some(u) = read
+            && s.usage.as_ref() != Some(&u)
+        {
+            s.usage = Some(u);
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// The session grid's size: the panel's last frame, else where the next frame puts it.
@@ -860,10 +961,20 @@ fn restart(app: &mut App) {
         start_program(app, &tool, account.as_deref(), mode, &root).map(|r| (r, mode))
     });
     match result {
-        Ok(((t, program, output), mode)) => {
+        Ok(((t, program, output, usage_files), mode)) => {
             if let Some(s) = app.ai.active_session_mut() {
                 s.tab.replace(t, program, output);
                 s.mode = mode;
+                // The last run's files go; the usage it reported stays until a new report, but
+                // a New run is another conversation: the old id must not be resumed for it.
+                if mode == StartMode::New
+                    && let Some(u) = &mut s.usage
+                {
+                    u.session_id = None;
+                }
+                s.usage_file = usage_files.as_ref().map(|f| f.report.clone());
+                s.usage_files = usage_files;
+                s.usage_poll = Default::default();
             }
             app.dirty = true;
         }

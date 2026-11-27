@@ -14,3 +14,9 @@ Taken by the leader while the user is away (presence: away since 22:24). Recomme
 - D10 (T2): the link target is the canonical shared path; an existing link is accepted only when byte-equal to it (SEC-19). If the user later moves `~/.claude` behind a symlink, accounts report "links elsewhere" until relinked by hand. confirm-on-return.
 - D11 (T2): the shared folder is computed once at startup (`history::configure`) from vr-ide's own `$HOME`/`CLAUDE_CONFIG_DIR`/`CODEX_HOME`; no `$HOME` → nothing shared, no warning.
 - D12 (T2): a named account is linked on every session start (spawn_session), not in `accounts::create`; `restart` does not retry.
+- D13 (T3, 23:09): the usage report keeps the status JSON shape with only the kept fields; vr-ide reads it with the same parser (every field re-checked on read).
+- D14 (T3, 23:09): `--settings <file>` goes before the tool's own args, only for the tool named claude and only with a state folder.
+- D15 (T3, 23:09): stale usage files are swept at the first claude start of a run (not in App::load); the helper writes only while the session's settings file exists; a path with a backslash gets no `--settings` and one notice.
+- D16 (T3 R1, 23:17): usage reports are read on every event-loop pass (`event_loop::background_pass`): checked at most every 250 ms, read at most once a second per session.
+- D17 (T3 R1, 23:17): the usage-file sweep needs both a pid not alive here and files untouched for over a day; accepted cost: a window in another container/host idle > 1 day can lose its files and shows no usage until it restarts.
+- D18 (T3 R1, 23:17): a New-mode restart forgets the session id (keeps the account's window numbers); Continue keeps it until the new run reports.

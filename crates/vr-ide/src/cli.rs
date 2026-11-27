@@ -76,6 +76,17 @@ pub fn desktop_action(args: &[OsString]) -> Result<Option<DesktopAction>, CliErr
     }
 }
 
+/// The statusLine helper (SEC-23): `vr-ide --ai-statusline <report>`, run by claude.
+pub const AI_STATUSLINE_FLAG: &str = "--ai-statusline";
+
+/// The helper's report path, only for exactly the two arguments `--ai-statusline <path>`.
+pub fn ai_statusline(args: &[OsString]) -> Option<PathBuf> {
+    match args {
+        [flag, report] if flag == AI_STATUSLINE_FLAG => Some(PathBuf::from(report)),
+        _ => None,
+    }
+}
+
 /// Resolves launch arguments (without argv[0]) against `cwd`.
 pub fn resolve(args: &[OsString], cwd: &Path) -> Result<Launch, CliError> {
     if args.iter().any(|a| a == SESSION_FLAG) {
@@ -330,6 +341,24 @@ mod tests {
             vec![os("--install-desktop"), os("--uninstall-desktop")],
         ] {
             assert!(matches!(desktop_action(&args), Err(CliError::TooManyArgs)));
+        }
+    }
+
+    #[test]
+    fn ai_statusline_flag_alone_with_one_arg() {
+        assert_eq!(
+            ai_statusline(&[os("--ai-statusline"), os("/s/ai-usage/1-1-x.report")]),
+            Some(PathBuf::from("/s/ai-usage/1-1-x.report"))
+        );
+        for args in [
+            vec![],
+            vec![os("--ai-statusline")],
+            vec![os("--ai-statusline"), os("a"), os("b")],
+            vec![os("a"), os("--ai-statusline")],
+            vec![os("--session"), os("--ai-statusline")],
+            vec![os("--ai-statusline=a"), os("b")],
+        ] {
+            assert_eq!(ai_statusline(&args), None, "{args:?}");
         }
     }
 

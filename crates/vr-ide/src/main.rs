@@ -38,6 +38,10 @@ fn restore_terminal() {
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    // claude's statusLine helper (SEC-23): before the panic hook, session, config and terminal.
+    if let Some(report) = cli::ai_statusline(&args) {
+        std::process::exit(vr_ide::ai::usage::run_helper(&report));
+    }
     match cli::desktop_action(&args) {
         Ok(Some(action)) => {
             let result = match action {

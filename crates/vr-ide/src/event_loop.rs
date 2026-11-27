@@ -238,6 +238,33 @@ fn set_title(last: &mut Option<String>, app: &App) {
     }
 }
 
+/// What one pass of the loop does before it draws: watcher, index, search and workspace jobs,
+/// timers, highlighters, terminal output, AI usage reports. Sets `app.dirty` when something must
+/// be redrawn.
+pub(crate) fn background_pass(app: &mut App, now: Instant) {
+    app.drain_fs_events();
+    app.drain_index();
+    app.drain_search();
+    app.drain_ws_job();
+    app.tick(now);
+    // A highlighter's worker published spans (or gave up) since the last pass.
+    if app.syntax.take_wake() {
+        app.dirty = true;
+    }
+    // A terminal printed, changed its title or exited since the last pass.
+    if app.terminal.take_wake() {
+        // Terminals and AI sessions share the wake flag (one PTY machinery).
+        let terminals = crate::commands::terminal::refresh(app);
+        if crate::ai::refresh(app) || terminals {
+            app.dirty = true;
+        }
+    }
+    // claude's usage reports come without output or a wake (a hidden panel, an idle agent).
+    if crate::ai::read_usage(app, now) {
+        app.dirty = true;
+    }
+}
+
 /// Runs until a command sets `app.quit`. Draws only when something changed.
 pub fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Result<()>
 where
@@ -246,23 +273,7 @@ where
     let mut bar = None;
     let mut title = Some(app.title());
     loop {
-        app.drain_fs_events();
-        app.drain_index();
-        app.drain_search();
-        app.drain_ws_job();
-        app.tick(Instant::now());
-        // A highlighter's worker published spans (or gave up) since the last pass.
-        if app.syntax.take_wake() {
-            app.dirty = true;
-        }
-        // A terminal printed, changed its title or exited since the last pass.
-        if app.terminal.take_wake() {
-            // Terminals and AI sessions share the wake flag (one PTY machinery).
-            let terminals = crate::commands::terminal::refresh(app);
-            if crate::ai::refresh(app) || terminals {
-                app.dirty = true;
-            }
-        }
+        background_pass(app, Instant::now());
         if app.dirty {
             draw_frame(terminal, app, &recovery::GLOBAL, ui::render)?;
             set_cursor_shape(&mut bar, cursor_style(app));

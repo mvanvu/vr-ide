@@ -1011,3 +1011,231 @@ fn reopening_the_open_folder_asks_nothing() {
         crate::slash_tests::notices(&app)
     );
 }
+
+// ---- usage report (AC-3, SEC-22, SEC-25, SEC-39) ----------------------------------------------
+
+const USAGE_ID: &str = "0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b";
+
+/// A claude that does what claude does with `--settings`: runs the statusLine command through
+/// `sh` with the status JSON on stdin, then prints its arguments and waits.
+const STATUS_AGENT: &str = r#"#!/bin/sh
+[ "$1" = --settings ] || { echo NOSETTINGS; printf ARGV:; printf '%s|' "$@"; echo; exec cat; }
+cmd=$(sed -n 's/.*"command":"\([^"]*\)".*/\1/p' "$2")
+printf '%s' 'STATUS' | sh -c "$cmd"
+echo; printf ARGV:; printf '%s|' "$@"; echo; exec cat
+"#;
+
+/// Stands in for `vr-ide --ai-statusline <report>`: the unit-test binary is not vr-ide (the real
+/// helper runs in tests/statusline_helper.rs). Keeps the JSON as the report, prints a line.
+const STAND_IN_HELPER: &str =
+    "#!/bin/sh\n[ \"$1\" = --ai-statusline ] && cat > \"$2\" && printf 'HELPER-LINE'\n";
+
+fn usage_app() -> (tempfile::TempDir, App, PathBuf) {
+    let (d, mut app) = ai_app();
+    let state = d.path().join(".state");
+    std::fs::create_dir(&state).unwrap();
+    app.ai.state_dir = Some(state);
+    let bin = d.path().join(".bin");
+    let helper = script(&bin, "helper", STAND_IN_HELPER);
+    app.ai.usage_exe = Some(helper.clone());
+    let now = crate::ai::usage::now_secs();
+    let status = format!(
+        r#"{{"session_id":"{USAGE_ID}","model":{{"display_name":"Opus 5.5"}},"rate_limits":{{"five_hour":{{"used_percentage":63,"resets_at":{}}}}}}}"#,
+        now + 3600
+    );
+    let fake = script(&bin, "claude", &STATUS_AGENT.replace("STATUS", &status));
+    app.settings.ai_tools[0] = tool("claude", &fake, true);
+    (d, app, helper)
+}
+
+/// One pass of the event loop at `now`.
+fn pass(app: &mut App, now: Instant) {
+    crate::event_loop::background_pass(app, now);
+}
+
+fn start(app: &mut App, d: &tempfile::TempDir, i: usize) {
+    let t = app.settings.ai_tools[i].clone();
+    crate::ai::spawn_session(app, &t, None, StartMode::New, &canonical(d), None).unwrap();
+}
+
+#[test]
+fn claude_session_reads_usage_report() {
+    let (d, mut app, helper) = usage_app();
+    start(&mut app, &d, 0);
+    let text = wait_for(&app, 0, |s| s.contains("ARGV:"));
+    assert!(text.contains("HELPER-LINE"), "{text}");
+    let report = app.ai.sessions[0].usage_file.clone().expect("report path");
+    let settings = report.with_extension("json");
+    // The screen wraps the long line.
+    assert!(
+        text.replace('\n', "")
+            .contains(&format!("ARGV:--settings|{}|--base|", settings.display())),
+        "{text}"
+    );
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(std::fs::metadata(&settings).unwrap().mode() & 0o777, 0o600);
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+    assert_eq!(
+        json["statusLine"]["command"],
+        format!(
+            "'{}' --ai-statusline '{}'",
+            helper.display(),
+            report.display()
+        )
+    );
+
+    let t0 = Instant::now();
+    app.dirty = false;
+    pass(&mut app, t0);
+    assert!(app.dirty, "a new report redraws");
+    let u = app.ai.sessions[0].usage.clone().expect("usage read");
+    assert_eq!(u.five_hour.unwrap().used_percentage, 63.0);
+    assert_eq!(u.session_id.as_deref(), Some(USAGE_ID));
+    assert_eq!(u.model.as_deref(), Some("Opus 5.5"));
+
+    // Loop passes without a new report do not read it again (SEC-39).
+    let reads = app.ai.usage_reads;
+    assert_eq!(reads, 1);
+    for i in 1..=20 {
+        pass(&mut app, t0 + Duration::from_millis(300 * i));
+    }
+    assert_eq!(app.ai.usage_reads, reads);
+
+    // Closing the session removes both files (SEC-22).
+    crate::ai::close(&mut app, 0);
+    assert!(!report.exists() && !settings.exists());
+}
+
+/// Only claude gets `--settings`, and only with a state folder; an unusable helper path gives
+/// one notice per run and a plain start.
+#[test]
+fn usage_settings_only_for_claude_with_a_usable_path() {
+    let (d, mut app, _) = usage_app();
+    start(&mut app, &d, 1);
+    let text = wait_for(&app, 0, |s| s.contains("ARGV:"));
+    assert!(text.contains("ARGV:--base|"), "gemini: {text}");
+    assert!(app.ai.sessions[0].usage_file.is_none());
+
+    let odd = d.path().join("vr\nide");
+    std::fs::write(&odd, "").unwrap();
+    app.ai.usage_exe = Some(odd);
+    start(&mut app, &d, 0);
+    start(&mut app, &d, 0);
+    for i in [1, 2] {
+        let text = wait_for(&app, i, |s| s.contains("ARGV:"));
+        assert!(text.contains("NOSETTINGS"), "{text}");
+        assert!(app.ai.sessions[i].usage_file.is_none());
+    }
+    let said: Vec<&str> = app
+        .notices
+        .iter()
+        .map(|n| n.text.as_str())
+        .filter(|t| t.contains("usage"))
+        .collect();
+    assert_eq!(said, ["claude usage not available (vr-ide path unusable)"]);
+}
+
+/// Finding R1-1: the loop reads a new report whether or not the panel shows or the program
+/// prints, including one written just after a read and followed by silence.
+#[test]
+fn usage_is_read_without_output_or_a_shown_panel() {
+    let (d, mut app, _) = usage_app();
+    start(&mut app, &d, 0);
+    wait_for(&app, 0, |s| s.contains("ARGV:"));
+    assert!(!app.ai.visible);
+    let t0 = Instant::now();
+    pass(&mut app, t0);
+    let report = app.ai.sessions[0].usage_file.clone().unwrap();
+    let mut u = app.ai.sessions[0].usage.clone().expect("first report");
+    // The agent is now silent: a report it wrote 200 ms after that read (no PTY output).
+    u.five_hour.as_mut().unwrap().used_percentage = 80.0;
+    crate::ai::usage::write_report(&report, &u).unwrap();
+    app.dirty = false;
+    pass(&mut app, t0 + Duration::from_millis(500));
+    assert_eq!(
+        app.ai.sessions[0]
+            .usage
+            .as_ref()
+            .unwrap()
+            .five_hour
+            .unwrap()
+            .used_percentage,
+        63.0,
+        "at most one read a second"
+    );
+    pass(&mut app, t0 + Duration::from_millis(1100));
+    assert_eq!(
+        app.ai.sessions[0]
+            .usage
+            .as_ref()
+            .unwrap()
+            .five_hour
+            .unwrap()
+            .used_percentage,
+        80.0
+    );
+    assert!(app.dirty);
+}
+
+/// Reports its run number: a new session id and 60 + n percent each start; then exits.
+const RUN_AGENT: &str = r#"#!/bin/sh
+cmd=$(sed -n 's/.*"command":"\([^"]*\)".*/\1/p' "$2")
+n=$(cat "$0.count" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$0.count"
+printf '{"session_id":"0f8e2c1a-7b3d-4e5f-9a1b-00000000000%s","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":RESET}}}' $n $((60+n)) | sh -c "$cmd"
+echo; printf ARGV:; printf '%s|' "$@"; echo DONE
+"#;
+
+const RUN_ID: &str = "0f8e2c1a-7b3d-4e5f-9a1b-00000000000";
+
+/// Findings R1-2 and R1-5 (BASE-23: the restart path): Enter on an exited claude replaces its
+/// settings and report, reads the new run's report; a New-mode start forgets the old id at once,
+/// a Continue start keeps it until the new run reports.
+#[test]
+fn restart_replaces_usage_files_and_forgets_a_new_runs_old_id() {
+    for continues in [true, false] {
+        let (d, mut app, _) = usage_app();
+        let reset = crate::ai::usage::now_secs() + 3600;
+        let bin = d.path().join(".bin");
+        let agent = script(
+            &bin,
+            "runs",
+            &RUN_AGENT.replace("RESET", &reset.to_string()),
+        );
+        app.settings.ai_tools[0] = tool("claude", &agent, continues);
+        start(&mut app, &d, 0);
+        wait_exit(&app, 0);
+        wait_for(&app, 0, |s| s.contains("DONE"));
+        let t0 = Instant::now();
+        pass(&mut app, t0);
+        let usage = |app: &App| app.ai.sessions[0].usage.clone().unwrap();
+        assert_eq!(usage(&app).session_id, Some(format!("{RUN_ID}1")));
+        let old_report = app.ai.sessions[0].usage_file.clone().unwrap();
+        let old_settings = old_report.with_extension("json");
+
+        app.ai.visible = true;
+        app.ai.active = 0;
+        app.focus = Focus::Ai;
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            !old_report.exists() && !old_settings.exists(),
+            "old files gone"
+        );
+        let report = app.ai.sessions[0].usage_file.clone().unwrap();
+        assert_ne!(report, old_report);
+        let held = usage(&app).session_id;
+        if continues {
+            assert_eq!(held, Some(format!("{RUN_ID}1")), "Continue keeps the id");
+        } else {
+            assert_eq!(held, None, "a New run is another conversation");
+            assert_eq!(usage(&app).five_hour.unwrap().used_percentage, 61.0);
+        }
+        wait_exit(&app, 0);
+        wait_for(&app, 0, |s| s.contains("DONE"));
+        pass(&mut app, t0 + Duration::from_millis(300));
+        assert_eq!(usage(&app).session_id, Some(format!("{RUN_ID}2")));
+        assert_eq!(usage(&app).five_hour.unwrap().used_percentage, 62.0);
+        crate::ai::close(&mut app, 0);
+        assert!(!report.exists() && !report.with_extension("json").exists());
+    }
+}
