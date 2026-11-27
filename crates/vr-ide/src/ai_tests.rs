@@ -536,6 +536,46 @@ fn the_panel_round_trips_through_the_session_file() {
     quit_window(app);
 }
 
+/// Two `--session` windows (the launcher clicked twice): only the one that keeps the session
+/// resumes the saved agents; the second starts none, so no conversation runs twice.
+#[test]
+fn a_second_session_window_resumes_no_agent() {
+    let t = session_dirs();
+    let mut app = session_window(&t.state, &t.home, &t.tools);
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    crate::session::save_on_quit(&mut app);
+    quit_window(app);
+
+    let keeper = session_window(&t.state, &t.home, &t.tools);
+    assert_eq!(keeper.ai.sessions.len(), 1);
+    let claude = wait_for(&keeper, 0, |s| s.contains("VRIDE:"));
+    assert!(claude.contains("ARGV:--base|--continue|"), "{claude}");
+
+    let mut second = session_window(&t.state, &t.home, &t.tools);
+    assert!(second.ai.sessions.is_empty(), "nothing resumed twice");
+    assert!(!second.ai.visible);
+    let notices: Vec<&str> = second.notices.iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(
+        notices,
+        [
+            "Another vr-ide --session window keeps the session; this one is not saved",
+            "AI sessions not reopened: they run in the other vr-ide --session window",
+        ]
+    );
+    // Agents opened by hand in the second window still work; the file is not touched.
+    crate::ai::open_tool(&mut second, "gemini").unwrap();
+    crate::session::save_on_quit(&mut second);
+    quit_window(second);
+    let mut keeper = keeper;
+    crate::session::save_on_quit(&mut keeper);
+    let body = std::fs::read_to_string(crate::session::file_for_tests(&keeper)).unwrap();
+    assert!(
+        body.contains("tool = \"claude\"") && !body.contains("gemini"),
+        "{body}"
+    );
+    quit_window(keeper);
+}
+
 /// A session that cannot be reopened is left out of the file from then on; the others stay.
 #[test]
 fn a_refused_session_is_not_written_back() {

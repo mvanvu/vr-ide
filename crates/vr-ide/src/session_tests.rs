@@ -441,6 +441,74 @@ fn tabs_outside_the_roots_or_not_regular_files_are_skipped() {
     close(app);
 }
 
+/// Only the saving window gets the AI section: a second window must not resume the agents the
+/// first one runs (same folder, same account), and says why once.
+#[test]
+fn a_second_session_window_gets_no_ai_section() {
+    let t = tree();
+    let api = t.api.display();
+    write_session(
+        &t.state,
+        &format!(
+            "roots = [\"{api}\"]\n[ai]\nshown = true\n\
+             [[ai.sessions]]\ntool = \"claude\"\naccount = \"work\"\nfolder = \"{api}\"\nlabel = \"fix\"\n"
+        ),
+    );
+    let mut first = launch(&t.state, &t.home);
+    let mut second = launch(&t.state, &t.home);
+    assert!(session::take_restored_ai(&mut second).is_none());
+    assert_eq!(
+        texts(&second),
+        [
+            "Another vr-ide --session window keeps the session; this one is not saved",
+            "AI sessions not reopened: they run in the other vr-ide --session window",
+        ]
+    );
+    assert_eq!(
+        second.workspace.paths(),
+        std::slice::from_ref(&t.api),
+        "files still come back"
+    );
+    close(second);
+    assert_eq!(
+        session::take_restored_ai(&mut first)
+            .unwrap()
+            .sessions
+            .len(),
+        1
+    );
+    assert!(texts(&first).is_empty(), "{:?}", texts(&first));
+    close(first);
+}
+
+/// A window that cannot take the lock does not save, so it resumes no agent either.
+#[test]
+fn a_window_that_cannot_lock_gets_no_ai_section() {
+    let t = tree();
+    let api = t.api.display();
+    write_session(
+        &t.state,
+        &format!(
+            "roots = [\"{api}\"]\n[ai]\n\
+             [[ai.sessions]]\ntool = \"claude\"\nfolder = \"{api}\"\n"
+        ),
+    );
+    std::fs::create_dir(t.state.join(session::LOCK_FILE)).unwrap();
+    let mut app = launch(&t.state, &t.home);
+    assert!(session::take_restored_ai(&mut app).is_none());
+    let notices = texts(&app);
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(
+        notices[0].starts_with("Session not saved: cannot lock"),
+        "{notices:?}"
+    );
+    assert_eq!(
+        notices[1],
+        "AI sessions not reopened: this window does not keep the session"
+    );
+    close(app);
+}
+
 #[test]
 fn a_second_session_window_runs_without_saving() {
     let t = tree();

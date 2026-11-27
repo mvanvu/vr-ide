@@ -71,7 +71,7 @@ fn ai_changes_list_and_diff() {
     assert!(editor.starts_with(" ± session.rs x"), "{editor}");
     let head: String = row(&t, 1).chars().skip(30).take(54).collect();
     assert!(head.starts_with(" M session.rs  +9 -3"), "{head}");
-    assert!(head.ends_with("f5 keep  shift+f5 revert"), "{head}");
+    assert!(head.ends_with("f5 keep  shift+f5 revert "), "{head}");
     let status = row(&t, 39);
     assert!(
         status.starts_with(" DIFF  crates/vr-ide/src/session.rs · claude · since 14:32"),
@@ -193,7 +193,7 @@ fn ai_changes_without_an_earlier_version() {
         "{head}"
     );
     assert!(
-        head.ends_with("f5 keep") && !head.contains("revert"),
+        head.ends_with("f5 keep ") && !head.contains("revert"),
         "{head}"
     );
     let text: String = (2..8).map(|y| row(&t, y)).collect();
@@ -509,4 +509,18 @@ fn ai_changes_banners_keep_the_hint_and_the_margin() {
     let panel = |y: u16| row(&t, y).chars().skip(49).collect::<String>();
     assert_eq!(panel(2), " ! Incomplete: watcher rescan  ");
     assert_eq!(panel(3), "   at 14:32 · enter hides      ");
+}
+
+/// The diff header keeps one free cell before the panel's right edge, like the other rows.
+#[test]
+fn ai_diff_header_keeps_a_right_margin() {
+    let mut fx = reviewing();
+    fx.app.explorer.visible = true;
+    key(&mut fx.app, KeyCode::Enter);
+    let t = draw(&mut fx.app, 120, 40);
+    let line = (0..40)
+        .map(|y| row(&t, y))
+        .find(|l| l.contains("f5 keep"))
+        .expect("header row");
+    assert!(line.contains("shift+f5 revert │"), "{line:?}");
 }
