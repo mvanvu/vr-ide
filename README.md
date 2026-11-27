@@ -457,7 +457,10 @@ names the file it was kept in. The version Revert replaces is not deleted either
 trash as `<name>.vr-ide-reverted-…` (one trash entry per Revert), so a program that still had the
 file open and writes a moment later writes into that trash copy, not into nothing. Where there is
 no trash for the folder, that version stays next to the file under that name and the notice says
-where. The trash works by path, so a file written to in the instant it is
+where. On file systems without an atomic exchange of two files (NFS, sshfs and other FUSE mounts)
+the replaced version gets a second name before it is replaced (a copy where there are no hard
+links) and goes to the trash the same way; where neither is possible Revert is refused and the
+file stays as it is. The trash works by path, so a file written to in the instant it is
 moved there still goes to the trash; the notice then says the trash holds a version you were not
 shown. `f5` / `shift+f5` act only in that list or on a diff tab; in a focused session they go to
 the agent.
@@ -470,10 +473,11 @@ listed, marked `no earlier` / `too large` / `limit`: Keep only. The list says wh
 incomplete: while the folder is still being scanned after the session started (a folder not
 reached yet is not watched), when the file watcher lost events, and when the folder has more
 files or folders than vr-ide follows (200 000 files). Two notices stay until you press `enter`
-on them: `Scan stopped early` when the program exited before the scan had been everywhere (what
-it changed in the folders not reached is not listed), and `Deletions during the scan may be
-missing` when a folder's entries changed after the session started and before the scan reached
-it (a file deleted in that time left no trace). A file you save in vr-ide's editor and the agent
+on them: `Incomplete: scan stopped early` when the program exited before the scan had been
+everywhere (what it changed in the folders not reached is not listed), and `Incomplete: files
+deleted during scan` when a folder's entries changed, or the folder itself went away, after the
+session started and before the scan reached it (a file deleted in that time left no trace). A
+file you save in vr-ide's editor and the agent
 then rewrites at once is listed `no earlier`: the copy from before your save is not offered, so
 Revert cannot undo your save. Copies live in `~/.local/state/vr-ide/ai/` (folder `0700`, files `0600`, also for
 secret files such as `.env`) until Keep, Revert or the session's tab closes; what a crash leaves

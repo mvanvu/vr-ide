@@ -287,14 +287,16 @@ pub fn exchange_files(_a: &Path, _b: &Path) -> io::Result<()> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
+/// `a` becomes `b` unless something is at `b` (`AlreadyExists`); `InvalidInput` /
+/// `Unsupported` where the file system cannot do that atomically.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn rename_noreplace(a: &Path, b: &Path) -> io::Result<()> {
+pub fn rename_noreplace(a: &Path, b: &Path) -> io::Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     renameat_with(CWD, a, CWD, b, RenameFlags::NOREPLACE).map_err(io::Error::from)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn rename_noreplace(_a: &Path, _b: &Path) -> io::Result<()> {
+pub fn rename_noreplace(_a: &Path, _b: &Path) -> io::Result<()> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
@@ -312,6 +314,16 @@ fn keep(tmp: &Path, target: &Path, what: &'static str, cause: io::Error) -> Outc
     }
 }
 
+/// The start of `name` that leaves room for a suffix under NAME_MAX (255 bytes): what a
+/// sibling name such as `<name>.vr-ide-conflict-PID-N` begins with.
+pub fn name_stem(name: &str) -> &str {
+    let mut cut = name.len().min(200);
+    while !name.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &name[..cut]
+}
+
 /// Moves `tmp` to a visible `<name>.vr-ide-conflict-PID-N` next to `target` without ever
 /// replacing an existing file (no-replace rename, else hard link + unlink of the temp name),
 /// and returns where it now is. If that fails, `tmp` stays where it is and its own path is
@@ -324,15 +336,11 @@ fn keep_conflict(tmp: &Path, target: &Path) -> PathBuf {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    // Keep the name under NAME_MAX (255 bytes) with room for the suffix.
-    let mut cut = name.len().min(200);
-    while !name.is_char_boundary(cut) {
-        cut -= 1;
-    }
+    let stem = name_stem(&name);
     for _ in 0..100 {
         let kept = dir.join(format!(
             "{}.vr-ide-conflict-{}-{}",
-            &name[..cut],
+            stem,
             std::process::id(),
             CONFLICT_SEQ.fetch_add(1, Ordering::Relaxed)
         ));

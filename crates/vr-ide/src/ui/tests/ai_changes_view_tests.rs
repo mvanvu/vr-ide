@@ -169,8 +169,8 @@ fn ai_changes_without_an_earlier_version() {
     insta::assert_snapshot!("ai_changes_limits_120x40", t.backend());
     let panel = |y: u16| row(&t, y).chars().skip(85).collect::<String>();
     assert_eq!(panel(1), " Changes · claude · 6 files     f6 ");
-    assert_eq!(panel(2), " ! List may be incomplete (watcher ");
-    assert_eq!(panel(3), "   rescan at 14:32) · enter hides  ");
+    assert_eq!(panel(2), " ! Incomplete: watcher rescan      ");
+    assert_eq!(panel(3), "   at 14:32 · enter hides          ");
     let rows: Vec<String> = (4..10).map(panel).collect();
     assert!(
         rows.iter()
@@ -407,27 +407,28 @@ fn ai_changes_scan_gap_notices() {
         (
             Incomplete::Unwalked,
             [
-                " ! Scan stopped early: changes ",
-                "   may be missing · enter hides",
+                " ! Incomplete: scan stopped    ",
+                "   early · enter hides         ",
             ],
             [
-                " ! Scan stopped early: changes may ",
-                "   be missing · enter hides        ",
+                " ! Incomplete: scan stopped        ",
+                "   early · enter hides             ",
             ],
         ),
         (
             Incomplete::WalkedLate,
             [
-                " ! Deletions during the scan   ",
-                "   may be missing · enter hides",
+                " ! Incomplete: files deleted   ",
+                "   during scan · enter hides   ",
             ],
             [
-                " ! Deletions during the scan may   ",
-                "   be missing · enter hides        ",
+                " ! Incomplete: files deleted       ",
+                "   during scan · enter hides       ",
             ],
         ),
     ];
     for (why, narrow, wide) in cases {
+        fx.changes().dismiss_banner();
         fx.changes().set_incomplete(why);
         review::refresh(&mut fx.app);
         fx.app.explorer.visible = false;
@@ -443,4 +444,69 @@ fn ai_changes_scan_gap_notices() {
     key(&mut fx.app, KeyCode::Enter);
     let t = draw(&mut fx.app, 120, 40);
     assert_eq!(panel(&t, 2, 85), " M session.rs …es/vr-ide/src +9 -3 ");
+}
+
+/// D22: every notice that Enter hides says so within its two lines at 80x24 and 120x40, and
+/// keeps the panel's last cell free like the rows below it.
+#[test]
+fn ai_changes_banners_keep_the_hint_and_the_margin() {
+    use crate::ai::changes::Incomplete;
+    let mut fx = changed();
+    press(&mut fx.app, "f6");
+    let timed = [
+        Incomplete::Watcher,
+        Incomplete::Rescan,
+        Incomplete::WatchLimit,
+        Incomplete::RecordLimit,
+        Incomplete::WalkLimit,
+    ];
+    let mut cases: Vec<(Incomplete, String)> = timed
+        .iter()
+        .map(|w| {
+            let text = format!("! Incomplete: {} at 14:32 · enter hides", w.text());
+            (*w, text)
+        })
+        .collect();
+    cases.push((
+        Incomplete::Unwalked,
+        "! Incomplete: scan stopped early · enter hides".into(),
+    ));
+    cases.push((
+        Incomplete::WalkedLate,
+        "! Incomplete: files deleted during scan · enter hides".into(),
+    ));
+    for (why, text) in cases {
+        fx.changes().dismiss_banner();
+        fx.changes().set_incomplete(why);
+        fix_times(&mut fx);
+        for (explorer, w, h, skip) in [(false, 80, 24, 49), (true, 120, 40, 85)] {
+            fx.app.explorer.visible = explorer;
+            let t = draw(&mut fx.app, w, h);
+            let rows: Vec<String> = (2..5)
+                .map(|y| row(&t, y).chars().skip(skip).collect())
+                .collect();
+            let at = format!("{why:?} at {w}x{h}: {rows:?}");
+            assert!(
+                rows[0].starts_with(" ! ") && rows[1].starts_with("   "),
+                "{at}"
+            );
+            assert!(!rows[1].starts_with("    "), "{at}");
+            assert!(rows[0].ends_with(' ') && rows[1].ends_with(' '), "{at}");
+            assert_eq!(
+                format!("{} {}", rows[0].trim(), rows[1].trim()),
+                text,
+                "{at}"
+            );
+            assert!(rows[2].starts_with(" M session.rs"), "{at}");
+        }
+    }
+    // The time and the hint are not torn apart (design QA's example).
+    fx.changes().dismiss_banner();
+    fx.changes().set_incomplete(Incomplete::Rescan);
+    fix_times(&mut fx);
+    fx.app.explorer.visible = false;
+    let t = draw(&mut fx.app, 80, 24);
+    let panel = |y: u16| row(&t, y).chars().skip(49).collect::<String>();
+    assert_eq!(panel(2), " ! Incomplete: watcher rescan  ");
+    assert_eq!(panel(3), "   at 14:32 · enter hides      ");
 }

@@ -1911,3 +1911,203 @@ fn sec9_the_version_before_an_own_save_is_not_what_revert_writes_back() {
     assert_eq!(fx.revert(&c, "b.txt").unwrap(), Reverted::Restored);
     assert_eq!(fs::read(&q).unwrap(), b"old b\n");
 }
+
+// ---- fix round 3 ------------------------------------------------------------------------------
+
+/// SEC-13: a folder the walk had on its list is removed (or moved away) before the walk gets
+/// there. Its files were never known, so nothing lists them: the list must say so.
+#[test]
+fn sec13_a_folder_gone_before_the_walk_reached_it_marks_the_list() {
+    for moved in [false, true] {
+        let fx = Fx::new();
+        fx.write("sub/a.rs", "x");
+        std::thread::sleep(MARGIN * 2);
+        let c = Changes::manual(fx.config(Fx::limits())).unwrap();
+        // The root is listed, `sub` waits its turn.
+        c.scan_some(2);
+        let sub = fx.root.join("sub");
+        if moved {
+            fs::rename(&sub, fx.outside.join("sub")).unwrap();
+        } else {
+            fs::remove_dir_all(&sub).unwrap();
+        }
+        c.feed(FsEvent::Removed(sub));
+        c.scan();
+        assert_eq!(c.count(), 0, "nothing tells which files were there");
+        assert_eq!(why(&c), Some(Incomplete::WalkedLate), "moved: {moved}");
+    }
+}
+
+/// One notice at a time: the wider one stays.
+#[test]
+fn sec13_a_later_narrower_notice_does_not_replace_the_wider_one() {
+    let fx = Fx::new();
+    let c = fx.started(Fx::limits());
+    c.set_incomplete(Incomplete::Unwalked);
+    c.set_incomplete(Incomplete::WalkedLate);
+    assert_eq!(why(&c), Some(Incomplete::Unwalked));
+    c.dismiss_banner();
+    c.set_incomplete(Incomplete::WalkedLate);
+    assert_eq!(why(&c), Some(Incomplete::WalkedLate));
+    c.set_incomplete(Incomplete::Unwalked);
+    assert_eq!(why(&c), Some(Incomplete::Unwalked));
+}
+
+/// SEC-9 / D21: a second save that replaces nothing (the agent wrote in between) must not
+/// take away what the first save left behind.
+#[test]
+fn sec9_a_second_save_that_wrote_nothing_keeps_the_first_saves_mark() {
+    let fx = Fx::new();
+    let p = fx.write("a.txt", "old\n");
+    let own = vr_core::OwnWrites::default();
+    let mut cfg = fx.config(Fx::limits());
+    cfg.own = Some(own.clone());
+    std::thread::sleep(MARGIN * 2);
+    let c = Changes::manual(cfg).unwrap();
+    c.scan();
+    let mut doc = vr_core::Document::open(&p, u64::MAX).unwrap();
+    doc.set_own_writes(own.clone());
+    doc.buffer = vr_core::Buffer::from_str("mine\n");
+    c.own_save(&p, true);
+    doc.save().unwrap();
+    fs::write(&p, "agent\n").unwrap();
+    // ctrl+s again before the tracker looked: refused, the file changed on disk.
+    c.own_save(&p, true);
+    assert!(matches!(doc.save(), Err(vr_core::DocError::ChangedOnDisk)));
+    c.own_save(&p, false);
+    c.feed(FsEvent::Modified(p.clone()));
+    let records = c.records();
+    let r = rec(&records, "a.txt");
+    assert_eq!(
+        (r.kind, r.missing),
+        (Kind::Modified, Some(NoEarlier::NotSeen))
+    );
+    assert!(!r.can_revert());
+}
+
+fn agent_changed(c: &Changes, p: &Path) -> Seen {
+    fs::write(p, "agent 1\n").unwrap();
+    c.feed(FsEvent::Modified(p.to_path_buf()));
+    c.diff(Path::new(p.file_name().unwrap())).unwrap().seen
+}
+
+/// D18 / D20 where the file system has no atomic exchange (NFS, sshfs): the replaced version
+/// still goes to the trash, as the dialog says.
+#[test]
+fn sec12_without_exchange_the_replaced_version_still_goes_to_the_trash() {
+    use std::io::Write;
+    let fx = Fx::new();
+    let p = fx.write("a.txt", "old\n");
+    let c = fx.started(Fx::limits());
+    let rel = Path::new("a.txt");
+    // By a second name of the same file: a late write through an old handle is in it.
+    seam::file_system_lacks(seam::Lacks {
+        exchange: true,
+        ..Default::default()
+    });
+    let seen = agent_changed(&c, &p);
+    let mut late = fs::OpenOptions::new().write(true).open(&p).unwrap();
+    let got = c.revert(rel, &seen, &fx.trash, &mut |_| {});
+    assert_eq!(got.unwrap(), Reverted::Restored);
+    late.write_all(b"late 22\n").unwrap();
+    assert_eq!(fs::read(&p).unwrap(), b"old\n");
+    let trashed = fx.trash.trashed();
+    assert_eq!(trashed.len(), 1);
+    let name = trashed[0].file_name().unwrap().to_string_lossy();
+    assert!(name.starts_with("a.txt.vr-ide-reverted-"), "{name}");
+    assert_eq!(fs::read(fx.trash_dir.join("0")).unwrap(), b"late 22\n");
+    assert_eq!(late.metadata().unwrap().nlink(), 1, "never unlinked");
+    // Without hard links either (vfat): a copy of what was shown.
+    seam::file_system_lacks(seam::Lacks {
+        exchange: true,
+        links: true,
+        ..Default::default()
+    });
+    let seen = agent_changed(&c, &p);
+    let got = c.revert(rel, &seen, &fx.trash, &mut |_| {});
+    assert_eq!(got.unwrap(), Reverted::Restored);
+    assert_eq!(fs::read(&p).unwrap(), b"old\n");
+    assert_eq!(fs::read(fx.trash_dir.join("1")).unwrap(), b"agent 1\n");
+    // The file changed before the rename: nothing replaced, nothing trashed, nothing left.
+    let seen = agent_changed(&c, &p);
+    let got = c.revert(rel, &seen, &fx.trash, &mut |step| {
+        if step == Step::BeforeSwap {
+            fs::write(&p, "agent 2\n").unwrap();
+        }
+    });
+    assert!(matches!(got, Err(RevertError::Changed)), "{got:?}");
+    assert_eq!(fs::read(&p).unwrap(), b"agent 2\n");
+    assert_eq!(fx.trash.trashed().len(), 2);
+    // No way to keep it: the Revert is refused, the file stays as it is.
+    seam::file_system_lacks(seam::Lacks {
+        exchange: true,
+        links: true,
+        copies: true,
+    });
+    let seen = c.diff(rel).unwrap().seen;
+    let got = c.revert(rel, &seen, &fx.trash, &mut |_| {});
+    assert!(
+        matches!(&got, Err(RevertError::Failed(e)) if e.contains("cannot be kept")),
+        "{got:?}"
+    );
+    assert_eq!(fs::read(&p).unwrap(), b"agent 2\n");
+    assert_eq!(c.count(), 1);
+    assert_eq!(fx.trash.trashed().len(), 2);
+    assert_eq!(
+        strays(&fx.root, std::slice::from_ref(&p)),
+        Vec::<PathBuf>::new()
+    );
+    seam::file_system_lacks(seam::Lacks::default());
+}
+
+/// Only the files this vr-ide put aside are its own: the same kind of name made by the agent
+/// is a change like any other.
+#[test]
+fn a_name_like_a_put_aside_version_made_by_the_agent_is_listed() {
+    let fx = Fx::new();
+    let c = fx.started(Fx::limits());
+    let n = fx.write("notes.vr-ide-reverted-x", "1\n");
+    c.feed(FsEvent::Created(n));
+    let m = fx.write("a.txt.vr-ide-reverted-1-2/in.txt", "1\n");
+    c.feed(FsEvent::Created(m.parent().unwrap().to_path_buf()));
+    c.feed(FsEvent::Created(m));
+    let mut rels: Vec<String> = c
+        .records()
+        .iter()
+        .map(|r| r.rel.display().to_string())
+        .collect();
+    rels.sort();
+    assert_eq!(
+        rels,
+        [
+            "a.txt.vr-ide-reverted-1-2/in.txt",
+            "notes.vr-ide-reverted-x"
+        ]
+    );
+}
+
+/// A leftover under the next name (a crash, the same PID after a reboot) is not replaced and
+/// does not make the Revert delete the version: the next free name is taken.
+#[test]
+fn sec12_a_taken_aside_name_is_passed_over() {
+    let fx = Fx::new();
+    let p = fx.write("a.txt", "old\n");
+    let c = fx.started(Fx::limits());
+    let seen = agent_changed(&c, &p);
+    let first = Changes::next_aside();
+    let stale: Vec<PathBuf> = (first..first + 40)
+        .map(|n| {
+            fx.write(
+                &format!("a.txt.vr-ide-reverted-{}-{n}", std::process::id()),
+                "stale\n",
+            )
+        })
+        .collect();
+    let got = c.revert(Path::new("a.txt"), &seen, &fx.trash, &mut |_| {});
+    assert_eq!(got.unwrap(), Reverted::Restored);
+    assert_eq!(fx.trash.trashed().len(), 1, "the replaced version");
+    assert_eq!(fs::read(fx.trash_dir.join("0")).unwrap(), b"agent 1\n");
+    for s in &stale {
+        assert_eq!(fs::read(s).unwrap(), b"stale\n");
+    }
+}

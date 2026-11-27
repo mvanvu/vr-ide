@@ -21,6 +21,25 @@ const FOLDER_MIN: usize = 10;
 /// Narrower than this, the diff header leaves the keys to the status bar.
 const HEAD_KEYS_MIN: u16 = 50;
 
+/// A space the banner's text is not broken at.
+const GLUE: char = '\u{a0}';
+
+/// The banner's text in lines for a panel `width` cells wide: one cell free on both sides,
+/// lines after the first two cells further in.
+fn banner_lines(text: &str, width: u16) -> Vec<String> {
+    let wrap = crate::ui::dialog::wrap;
+    let first = wrap(text, width.saturating_sub(2))
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let rest = text[first.len()..].trim_start();
+    let mut lines = vec![first];
+    if !rest.is_empty() {
+        lines.extend(wrap(rest, width.saturating_sub(4)));
+    }
+    lines.iter().map(|l| l.replace(GLUE, " ")).collect()
+}
+
 fn width_of(s: &str) -> usize {
     Span::raw(s).width()
 }
@@ -249,23 +268,23 @@ pub fn render_list(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) -
         })
     };
     if let Some(b) = s.banner.filter(|_| y + BANNER_LINES <= bottom) {
+        // Short enough for the hint to stay within the two lines at 80 columns; the last word,
+        // the time and the hint are not broken apart, so a line never starts with the separator.
+        let hint = format!("·{GLUE}enter{GLUE}hides");
         let text = match b.why {
             // Ends with the walk, not by a key.
             Incomplete::Scanning => format!("! List may be incomplete ({})", b.why.text()),
-            // What a walk did not see in time; both fit the two lines at 80 columns.
-            Incomplete::Unwalked => {
-                "! Scan stopped early: changes may be missing · enter hides".to_string()
-            }
-            Incomplete::WalkedLate => {
-                "! Deletions during the scan may be missing · enter hides".to_string()
+            // What a walk did not see in time.
+            Incomplete::Unwalked | Incomplete::WalkedLate => {
+                format!("! Incomplete: {}{GLUE}{hint}", b.why.text())
             }
             _ => format!(
-                "! List may be incomplete ({} at {}) · enter hides",
+                "! Incomplete: {} at{GLUE}{}{GLUE}{hint}",
                 b.why.text(),
                 clock(b.at)
             ),
         };
-        let mut lines = crate::ui::dialog::wrap(&text, area.width.saturating_sub(2));
+        let mut lines = banner_lines(&text, area.width);
         lines.truncate(usize::from(BANNER_LINES));
         for (i, text) in lines.iter().enumerate() {
             let style = picked(0).map_or(theme.warning, |p| theme.warning.patch(bg_of(p)));

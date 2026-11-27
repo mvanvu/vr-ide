@@ -227,7 +227,7 @@ impl Incomplete {
             Incomplete::WalkLimit => "too many files",
             Incomplete::Scanning => "still scanning the folder",
             Incomplete::Unwalked => "scan stopped early",
-            Incomplete::WalkedLate => "deletions during the scan",
+            Incomplete::WalkedLate => "files deleted during scan",
         }
     }
 }
@@ -512,6 +512,12 @@ struct State {
     /// Files (root-relative) the editor is saving or has saved, until the save's event shows
     /// the file to be that save, or something else.
     saving: HashSet<PathBuf>,
+    /// The file of the editor's latest save, and whether that save set its mark in `saving`
+    /// (a save that replaces nothing takes back only its own mark).
+    last_save: Option<(PathBuf, bool)>,
+    /// Files (root-relative) this tracker's Reverts put next to a path on their way to the
+    /// trash, and those the trash did not take: vr-ide's own, never a change of the agent.
+    aside: HashSet<PathBuf>,
 }
 
 struct Shared {
@@ -680,14 +686,16 @@ impl State {
             return true;
         }
         let abs = self.root.join(rel);
-        let reverted = rel
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy().contains(REVERTED_MARK));
-        reverted || vr_core::is_save_temp(&abs) || self.excluded.iter().any(|x| abs.starts_with(x))
+        self.aside.contains(rel)
+            || vr_core::is_save_temp(&abs)
+            || self.excluded.iter().any(|x| abs.starts_with(x))
     }
 
     fn note(&mut self, why: Incomplete) {
-        if self.banner.is_none_or(|b| b.why != why) {
+        // One notice at a time: missed deletions are part of what `Unwalked` already says.
+        let covered = why == Incomplete::WalkedLate
+            && self.banner.is_some_and(|b| b.why == Incomplete::Unwalked);
+        if !covered && self.banner.is_none_or(|b| b.why != why) {
             self.banner = Some(Banner {
                 why,
                 at: SystemTime::now(),
@@ -1121,7 +1129,16 @@ impl Engine {
                 };
                 left = left.saturating_sub(1);
                 let watched = self.shared.lock().dirs.contains(&rel);
+                // A folder that waited its turn and is gone now (removed or moved away):
+                // the files it held were never known, so nothing lists them (SEC-13).
+                let gone = |shared: &Shared| {
+                    shared.lock().note(Incomplete::WalkedLate);
+                    shared.bump();
+                };
                 if !self.watch(&rel) {
+                    if !fs::symlink_metadata(root.join(&rel)).is_ok_and(|m| m.is_dir()) {
+                        gone(&self.shared);
+                    }
                     continue;
                 }
                 if !watched && self.changed_unwatched(&root.join(&rel)) {
@@ -1130,7 +1147,15 @@ impl Engine {
                 }
                 match fs::read_dir(root.join(&rel)) {
                     Ok(rd) => scan.entries = Some((rel, rd)),
-                    Err(_) => continue,
+                    Err(e) => {
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                        ) {
+                            gone(&self.shared);
+                        }
+                        continue;
+                    }
                 }
             }
             let Some((dir, rd)) = &mut scan.entries else {
@@ -2053,33 +2078,96 @@ pub enum KeepError {
     Failed(String),
 }
 
-/// The name a replaced version of `name` has on its way to the trash.
-fn reverted_name(name: &std::ffi::OsStr) -> String {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
+/// Counts the names of this process's put-aside files.
+static ASIDE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// How a file came to its name next to the path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Aside {
+    /// The replaced version, taken out of the path.
+    Old,
+    /// Our own file, taken back out of the path.
+    Ours,
+    /// A second name, or a copy, of the file that is still at the path.
+    Twin,
+}
+
+/// The `n`th name a replaced version of `name` has on its way to the trash.
+fn reverted_name(name: &std::ffi::OsStr, n: u64) -> String {
     let name = name.to_string_lossy();
-    // Under NAME_MAX (255 bytes) with room for the suffix.
-    let mut cut = name.len().min(200);
-    while !name.is_char_boundary(cut) {
-        cut -= 1;
-    }
     format!(
-        "{}{REVERTED_MARK}{}-{}",
-        &name[..cut],
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
+        "{}{REVERTED_MARK}{}-{n}",
+        safe_replace::name_stem(&name),
+        std::process::id()
     )
 }
 
-/// `a` becomes `b` unless something is at `b`.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn rename_noreplace(a: &Path, b: &Path) -> io::Result<()> {
-    use rustix::fs::{CWD, RenameFlags, renameat_with};
-    renameat_with(CWD, a, CWD, b, RenameFlags::NOREPLACE).map_err(io::Error::from)
+/// Gives the file at `target` a second name `at`, or puts a copy of it there where the file
+/// system has no hard links; never over an existing file (`AlreadyExists`). What ends up at
+/// `at` is the version `seen`, or nothing is left there and the error is `InvalidData`.
+fn twin(target: &Path, at: &Path, seen: &Seen) -> io::Result<()> {
+    #[cfg(test)]
+    let lacks = seam::lacks();
+    #[cfg(not(test))]
+    let lacks = Lacks::default();
+    let checked = |made: io::Result<()>| {
+        made?;
+        if holds(at, seen).unwrap_or(false) {
+            return Ok(());
+        }
+        let _ = fs::remove_file(at);
+        Err(io::Error::from(io::ErrorKind::InvalidData))
+    };
+    let linked = if lacks.links {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    } else {
+        fs::hard_link(target, at)
+    };
+    match linked {
+        Ok(()) => return checked(Ok(())),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(e),
+        Err(_) => {}
+    }
+    if lacks.copies {
+        return Err(io::Error::other("no room for a copy"));
+    }
+    let Some((mut from, meta)) = open_regular(target)? else {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    };
+    let mut to = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(at)?;
+    let copied = (|| {
+        io::copy(&mut from, &mut to)?;
+        to.set_permissions(fs::Permissions::from_mode(meta.mode() & 0o777))?;
+        to.sync_all()
+    })();
+    if copied.is_err() {
+        let _ = fs::remove_file(at);
+    }
+    checked(copied)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn rename_noreplace(_a: &Path, _b: &Path) -> io::Result<()> {
-    Err(io::Error::from(io::ErrorKind::Unsupported))
+/// What the folder's file system cannot do (tests take abilities away).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Lacks {
+    /// `renameat2(RENAME_EXCHANGE)` (NFS, sshfs and other FUSE file systems).
+    pub exchange: bool,
+    /// Hard links (vfat, exFAT).
+    pub links: bool,
+    /// Room for a copy.
+    pub copies: bool,
+}
+
+/// `safe_replace::exchange_files`; tests take it away to stand for a file system without it.
+fn exchange(a: &Path, b: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if seam::lacks().exchange {
+        return Err(io::Error::from(io::ErrorKind::Unsupported));
+    }
+    safe_replace::exchange_files(a, b)
 }
 
 /// Puts `tmp` at `path` in exchange for the link (or other non-file) `seen` describes; when
@@ -2190,6 +2278,8 @@ impl Changes {
                 banner: None,
                 index_dirty: false,
                 saving: HashSet::new(),
+                last_save: None,
+                aside: HashSet::new(),
             }),
             version: AtomicU64::new(0),
             wake: cfg.wake,
@@ -2231,6 +2321,20 @@ impl Changes {
         e.sync_epoch();
         while !e.scan_step(SCAN_STEP) {}
         e.settle();
+    }
+
+    /// The start-up walk for `budget` entries (folders taken up and entries listed).
+    #[cfg(test)]
+    pub fn scan_some(&self, budget: usize) {
+        let mut e = self.engine.as_ref().expect("manual").borrow_mut();
+        e.sync_epoch();
+        e.scan_step(budget);
+    }
+
+    /// The counter of the next name a replaced version is put aside under.
+    #[cfg(test)]
+    pub fn next_aside() -> u64 {
+        ASIDE_SEQ.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -2294,10 +2398,20 @@ impl Changes {
             return;
         };
         let mut st = self.shared.lock();
-        if !begins {
+        if begins {
+            let marked = st.running
+                && st.record_at(rel).is_none()
+                && st.known.contains_key(rel)
+                && st.saving.insert(rel.to_path_buf());
+            st.last_save = Some((rel.to_path_buf(), marked));
+        } else if st
+            .last_save
+            .take()
+            .is_some_and(|(p, marked)| marked && p == rel)
+        {
+            // An earlier save's mark stays: that save did write, and its event may not have
+            // been looked at yet.
             st.saving.remove(rel);
-        } else if st.running && st.record_at(rel).is_none() && st.known.contains_key(rel) {
-            st.saving.insert(rel.to_path_buf());
         }
     }
 
@@ -2615,7 +2729,44 @@ impl Changes {
         }
         let (len, hash) = (bytes.len() as u64, content_hash(&bytes));
         let mut outside = false;
-        let (aside_name, mut aside) = (reverted_name(name), false);
+        // A file that was at the path is not deleted (D18, D20): the replaced version, or
+        // our own file when it is taken back out because the path had changed. A program
+        // that opened it there can still write through that handle after the file passed
+        // its check, and no check sees that write. So the file gets a name of its own right
+        // where the protocol would delete it (the delete then finds nothing) and goes to the
+        // trash below, late writes included.
+        let aside: std::cell::RefCell<Option<(Aside, String)>> = Default::default();
+        let changed_meanwhile = std::cell::Cell::new(false);
+        // Under the next free `<name>.vr-ide-reverted-PID-N`, by `how` (which never replaces
+        // a file); the tracker knows the name as its own before the file is there.
+        let put_aside = |kind: Aside, how: &dyn Fn(&Path) -> io::Result<()>| -> io::Result<()> {
+            let mut last = io::Error::from(io::ErrorKind::AlreadyExists);
+            for _ in 0..100 {
+                let n = ASIDE_SEQ.fetch_add(1, Ordering::Relaxed);
+                let aside_name = reverted_name(name, n);
+                let aside_rel = rel.with_file_name(&aside_name);
+                self.shared.lock().aside.insert(aside_rel.clone());
+                match how(&anchor.path(aside_name.as_ref())) {
+                    Ok(()) => {
+                        *aside.borrow_mut() = Some((kind, aside_name));
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        self.shared.lock().aside.remove(&aside_rel);
+                        if e.kind() != io::ErrorKind::AlreadyExists {
+                            return Err(e);
+                        }
+                        last = e;
+                    }
+                }
+            }
+            Err(last)
+        };
+        // The file is out of the folder (or never came to be): its name is no longer ours.
+        let forget = |aside_name: &str| {
+            let aside_rel = rel.with_file_name(aside_name);
+            self.shared.lock().aside.remove(&aside_rel);
+        };
         let link_like = seen.0.is_some_and(|s| s.stamp.mode & 0o170000 != 0o100000);
         let done = if link_like {
             // A link (or another non-file) is at the path: nothing can be written into it, so
@@ -2644,19 +2795,41 @@ impl Changes {
                 Ok(Outcome::Changed)
             }
         } else {
-            // A file that was at the path is not deleted (D18): the replaced version, or our
-            // own file when it is taken back out because the path had changed. A program
-            // that opened it there can still write through that handle after the file passed
-            // its check, and no check sees that write: so the file gets a name of its own
-            // right where the protocol would delete it (the delete then finds nothing), and
-            // goes to the trash below, late writes included. Where the rename is refused the
-            // protocol deletes it as every save does.
+            // Where the rename is refused the protocol deletes the file as every save does.
             let mut seam = |step: Step| {
                 seam(step);
-                if matches!(step, Step::BeforeDeleteOld | Step::BeforeDeleteOurs)
-                    && rename_noreplace(&tmp, &anchor.path(aside_name.as_ref())).is_ok()
-                {
-                    aside = true;
+                let kind = match step {
+                    Step::BeforeDeleteOld => Aside::Old,
+                    Step::BeforeDeleteOurs => Aside::Ours,
+                    _ => return,
+                };
+                let _ = put_aside(kind, &|at| safe_replace::rename_noreplace(&tmp, at));
+            };
+            // Without an atomic exchange (NFS, sshfs, FUSE) safe_replace renames our file
+            // over the path and the replaced file is gone with that rename. Before it gets
+            // there the file is given a second name (a copy where there are no hard links);
+            // a file system that allows neither gets no Revert, since nothing would be left
+            // of the text the dialog said goes to the trash.
+            let mut swap = |a: &Path, b: &Path| -> io::Result<()> {
+                let swapped = exchange(a, b);
+                let unsupported = swapped.as_ref().is_err_and(|e| {
+                    matches!(
+                        e.kind(),
+                        io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported
+                    )
+                });
+                if !unsupported || aside.borrow().is_some() {
+                    return swapped;
+                }
+                match put_aside(Aside::Twin, &|at| twin(b, at, seen)) {
+                    Ok(()) => swapped,
+                    Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                        changed_meanwhile.set(true);
+                        Err(e)
+                    }
+                    Err(e) => Err(io::Error::other(format!(
+                        "the replaced version cannot be kept on this file system ({e})"
+                    ))),
                 }
             };
             safe_replace::replace_if_unchanged(
@@ -2677,25 +2850,39 @@ impl Changes {
                             && state_of(p)?.is_some_and(|s| s.hash == hash))
                     },
                 },
-                &mut safe_replace::exchange_files,
+                &mut swap,
                 &mut seam,
             )
+        };
+        let aside = aside.into_inner();
+        // A second name (or copy) of a file that stayed at the path is only taken away.
+        let drop_twin = |aside: &Option<(Aside, String)>| {
+            if let Some((Aside::Twin, aside_name)) = aside {
+                let _ = fs::remove_file(anchor.path(aside_name.as_ref()));
+                forget(aside_name);
+            }
         };
         match done {
             Err(e) => {
                 let _ = fs::remove_file(&tmp);
+                drop_twin(&aside);
+                if changed_meanwhile.get() {
+                    return Err(RevertError::Changed);
+                }
                 Err(fail(e))
             }
             Ok(Outcome::Changed) => {
-                if aside {
+                drop_twin(&aside);
+                if let Some((Aside::Ours, aside_name)) = &aside {
                     // Our own file, with the earlier version's bytes and whatever was
                     // written into it while it was at the path. Not taken by the trash, it
                     // is deleted as before: nothing of ours stays in the user's folder.
                     let at = anchor.path(aside_name.as_ref());
-                    let _ = trash.trash(&[anchor.real_now().join(&aside_name)]);
+                    let _ = trash.trash(&[anchor.real_now().join(aside_name)]);
                     if fs::symlink_metadata(&at).is_ok() {
                         let _ = fs::remove_file(&at);
                     }
+                    forget(aside_name);
                 }
                 Err(if outside {
                     RevertError::Outside
@@ -2715,15 +2902,16 @@ impl Changes {
             Ok(Outcome::Replaced) => {
                 // By its real path, as the trash works; a trash that did not take it leaves
                 // it under its name, and the answer says where.
-                let kept = aside
-                    .then(|| {
-                        let real = anchor.real_now().join(&aside_name);
-                        let _ = trash.trash(std::slice::from_ref(&real));
-                        fs::symlink_metadata(anchor.path(aside_name.as_ref()))
-                            .is_ok()
-                            .then_some(real)
-                    })
-                    .flatten();
+                let kept = aside.and_then(|(_, aside_name)| {
+                    let real = anchor.real_now().join(&aside_name);
+                    let _ = trash.trash(std::slice::from_ref(&real));
+                    if fs::symlink_metadata(anchor.path(aside_name.as_ref())).is_ok() {
+                        // It stays in the folder as vr-ide's own file for this session.
+                        return Some(real);
+                    }
+                    forget(&aside_name);
+                    None
+                });
                 let _ = anchor.dir.sync_all();
                 let stamp = file.metadata().ok().map(|m| Stamp::of(&m));
                 let mut st = self.shared.lock();
@@ -2803,5 +2991,21 @@ pub mod seam {
         if let Some(f) = BEFORE_READ.with(|s| s.borrow_mut().take()) {
             f();
         }
+    }
+
+    pub use super::Lacks;
+
+    thread_local! {
+        static LACKS: std::cell::Cell<Lacks> = const {
+            std::cell::Cell::new(Lacks { exchange: false, links: false, copies: false })
+        };
+    }
+
+    pub fn file_system_lacks(l: Lacks) {
+        LACKS.with(|c| c.set(l));
+    }
+
+    pub(super) fn lacks() -> Lacks {
+        LACKS.with(|c| c.get())
     }
 }
