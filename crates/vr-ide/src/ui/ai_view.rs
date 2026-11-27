@@ -19,6 +19,8 @@ pub const PLUS_WIDTH: u16 = 3;
 const CLOSE: &str = "x ";
 /// The attention mark (D9) after a label.
 const MARK: &str = "◆ ";
+/// After the number of a tab whose account is at 90 % or more while its percent is not shown.
+const WARN_MARK: &str = "!";
 /// Picker rows start on this line of the grid area (a blank line, the title, a blank line).
 pub const PICKER_ROWS_AT: usize = 3;
 
@@ -178,6 +180,9 @@ pub struct BarTab {
     pub close: Option<u16>,
     folder: Option<(u16, u16)>,
     mark: Option<u16>,
+    /// What is drawn in the warning colour (offset, width): the usage percent at 90 % or more,
+    /// or the `!` after the number of such a tab whose percent is not shown.
+    warn: Option<(u16, u16)>,
 }
 
 /// The tab bar laid out for a width; rendering and the mouse hit test use it.
@@ -191,8 +196,15 @@ pub struct TabBar {
     pub changes: Option<(String, u16)>,
 }
 
-/// A tab's text, its folder (offset, width), its mark's offset and its 'x''s offset.
-type TabText = (String, Option<(u16, u16)>, Option<u16>, Option<u16>);
+/// A tab's text, its folder (offset, width), its mark's offset, its 'x''s offset and the part
+/// in the warning colour (offset, width).
+struct TabText {
+    text: String,
+    folder: Option<(u16, u16)>,
+    mark: Option<u16>,
+    close: Option<u16>,
+    warn: Option<(u16, u16)>,
+}
 
 struct Item {
     index: usize,
@@ -202,12 +214,15 @@ struct Item {
     folder: Option<String>,
     mark: bool,
     active: bool,
+    /// The usage suffix (` 63%`) and whether it warns (AC-4).
+    usage: Option<(String, bool)>,
 }
 
 /// The text of one tab at fit level `level` (ui-spec S1): 0 full; 1 inactive tabs drop the
 /// folder; 2 the active tab drops its 'x' and folder, inactive tabs show what tells them apart;
-/// 3 inactive tabs show their number only.
-fn tab_text(it: &Item, level: u8) -> TabText {
+/// 3 inactive tabs show their number only. `with_usage` false: no usage suffix (the last resort
+/// before the active tab would push the `+` out).
+fn tab_text(it: &Item, level: u8, with_usage: bool) -> TabText {
     let label = match (it.active, level) {
         (false, 3) => String::new(),
         (false, 2) => it.short.clone(),
@@ -217,8 +232,29 @@ fn tab_text(it: &Item, level: u8) -> TabText {
         .folder
         .as_ref()
         .filter(|_| level == 0 || (it.active && level < 2));
-    let mut s = format!(" {} ", it.num);
+    let warns = it.usage.as_ref().is_some_and(|(_, w)| *w);
+    // The suffix follows any label that is shown, the short one included (it tells an account
+    // near its limit apart); its leading space is not painted. Without it, a `!` after the
+    // number carries the warning, so it is never told by colour alone (D39).
+    let suffix = it
+        .usage
+        .as_ref()
+        .filter(|_| with_usage && !label.is_empty());
+    let mut s = format!(" {}", it.num);
+    let mut warn = None;
+    if suffix.is_none() && warns {
+        warn = Some((width_of(&s) as u16, 1));
+        s.push_str(WARN_MARK);
+    }
+    s.push(' ');
     s.push_str(&label);
+    if let Some((suffix, _)) = suffix {
+        if warns {
+            let pct = suffix.trim_start();
+            warn = Some((width_of(&s) as u16 + 1, width_of(pct) as u16));
+        }
+        s.push_str(suffix);
+    }
     let mut folder_at = None;
     if let Some(f) = folder {
         s.push(' ');
@@ -238,7 +274,13 @@ fn tab_text(it: &Item, level: u8) -> TabText {
         close = Some(width_of(&s) as u16);
         s.push_str(CLOSE);
     }
-    (s, folder_at, mark_at, close)
+    TabText {
+        text: s,
+        folder: folder_at,
+        mark: mark_at,
+        close,
+        warn,
+    }
 }
 
 pub fn tab_bar(app: &App, width: u16) -> TabBar {
@@ -257,6 +299,7 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
                 close: None,
                 folder: None,
                 mark: None,
+                warn: None,
             }],
             more: None,
             plus: None,
@@ -272,6 +315,10 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
             folder: p.folder(i),
             mark: p.sessions[i].attention.is_some(),
             active: i == p.active && !p.picker_active(),
+            usage: p.sessions[i]
+                .usage
+                .as_ref()
+                .and_then(ai::usage::usage_suffix),
         })
         .collect();
     if p.picker.is_some() {
@@ -284,6 +331,7 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
             folder: None,
             mark: false,
             active: p.picker_active(),
+            usage: None,
         });
     }
     let plus_w = if p.picker.is_none() {
@@ -292,36 +340,35 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
         0
     };
     let avail = width.saturating_sub(plus_w);
-    let texts = |level: u8, keep: &[bool]| {
-        items
-            .iter()
-            .zip(keep)
-            .filter(|(_, k)| **k)
-            .map(|(it, _)| (it.index, tab_text(it, level)))
-            .collect::<Vec<_>>()
-    };
-    let total = |t: &[(usize, TabText)]| t.iter().map(|(_, (s, ..))| width_of(s)).sum::<usize>();
+    let total = |t: &[(usize, TabText)]| t.iter().map(|(_, t)| width_of(&t.text)).sum::<usize>();
     let all = vec![true; items.len()];
     // The change count keeps its place only while the labels are whole (fit steps 0 and 1).
     let badge = changes_badge(app);
     let badge_w = badge.as_deref().map_or(0, |b| width_of(b) + 1);
-    let mut show_badge = false;
-    let mut chosen = None;
-    for level in 0..=3u8 {
-        let t = texts(level, &all);
-        let room = if level < 2 {
-            avail.saturating_sub(badge_w)
-        } else {
-            avail
+    // The fit steps with or without the usage suffixes: the tabs, `+N`, whether the badge
+    // shows, and whether it all fits.
+    let fit = |with_usage: bool| {
+        let texts = |level: u8, keep: &[bool]| {
+            items
+                .iter()
+                .zip(keep)
+                .filter(|(_, k)| **k)
+                .map(|(it, _)| (it.index, tab_text(it, level, with_usage)))
+                .collect::<Vec<_>>()
         };
-        if total(&t) <= room {
-            show_badge = level < 2;
-            chosen = Some((t, None));
-            break;
+        for level in 0..=3u8 {
+            let t = texts(level, &all);
+            let room = if level < 2 {
+                avail.saturating_sub(badge_w)
+            } else {
+                avail
+            };
+            if total(&t) <= room {
+                return (t, None, level < 2, true);
+            }
         }
-    }
-    // Level 4: the last inactive, unmarked tabs go into `+N`; the active and marked tabs stay.
-    let (tabs, more) = chosen.unwrap_or_else(|| {
+        // Level 4: the last inactive, unmarked tabs go into `+N`; the active and marked tabs
+        // stay.
         let mut keep = all.clone();
         let mut hidden = 0usize;
         loop {
@@ -337,24 +384,34 @@ pub fn tab_bar(app: &App, width: u16) -> TabBar {
                     keep[j] = false;
                     hidden += 1;
                 }
-                _ => return (t, more),
+                _ => return (t, more, false, w <= avail),
             }
         }
-    });
+    };
+    // The suffixes give way before a tab goes into `+N` or the `+` is pushed out.
+    let mut fitted = fit(true);
+    if fitted.1.is_some() || !fitted.3 {
+        let plain = fit(false);
+        if plain.0.len() > fitted.0.len() || !fitted.3 {
+            fitted = plain;
+        }
+    }
+    let (tabs, more, show_badge, _) = fitted;
     let mut x = 0u16;
     let tabs: Vec<BarTab> = tabs
         .into_iter()
-        .map(|(index, (label, folder, mark, close))| {
-            let w = width_of(&label) as u16;
-            let close = close.filter(|c| usize::from(x + c) < width);
+        .map(|(index, t)| {
+            let w = width_of(&t.text) as u16;
+            let close = t.close.filter(|c| usize::from(x + c) < width);
             let t = BarTab {
                 index,
-                label,
+                label: t.text,
                 x,
                 width: w,
                 close,
-                folder,
-                mark,
+                folder: t.folder,
+                mark: t.mark,
+                warn: t.warn,
             };
             x += w;
             t
@@ -414,6 +471,9 @@ fn render_tab_bar(buf: &mut Buffer, row: Rect, p: &AiPanel, bar: &TabBar, theme:
         }
         if let Some(at) = t.mark {
             paint(buf, at, 1, theme.attention);
+        }
+        if let (Some((at, w)), Some(fg)) = (t.warn, theme.warning.fg) {
+            paint(buf, at, w, Style::default().fg(fg));
         }
         if let (Some(at), Some(fg)) = (t.close, theme.dim.fg) {
             paint(buf, at, 1, Style::default().fg(fg));

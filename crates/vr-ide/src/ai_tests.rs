@@ -1477,3 +1477,146 @@ fn ai_limit_login_line_after_a_report_keeps_the_account_working() {
     pass(&mut app, t0 + Duration::from_secs(2));
     assert!(crate::ai::limits::load_state(&state)["claude/default"].works);
 }
+
+// ---- usage display (AC-4) ---------------------------------------------------------------------
+
+fn usage_notices(app: &App) -> Vec<String> {
+    app.notices
+        .iter()
+        .map(|n| n.text.clone())
+        .filter(|t| t.contains("% of its"))
+        .collect()
+}
+
+fn windows(five: (f64, i64), weekly: (f64, i64)) -> crate::ai::usage::Usage {
+    let w = |(p, r): (f64, i64)| crate::ai::usage::Window {
+        used_percentage: p,
+        resets_at: Some(r),
+    };
+    crate::ai::usage::Usage {
+        session_id: Some(USAGE_ID.into()),
+        five_hour: Some(w(five)),
+        seven_day: Some(w(weekly)),
+        model: None,
+    }
+}
+
+/// One warning when a window reaches 90 %; later reports of the same window add none; a new
+/// window (another reset time) or the other window warns again.
+#[test]
+fn notice_once_at_90_percent() {
+    let (d, mut app, _) = usage_app();
+    start(&mut app, &d, 0);
+    wait_for(&app, 0, |s| s.contains("ARGV:"));
+    let report = app.ai.sessions[0].usage_file.clone().unwrap();
+    let now = crate::ai::usage::now_secs();
+    let (reset, week) = (now + 3600, now + 3 * 86_400);
+    let clock = |t: i64| crate::ai::usage::reset_clock(t, now, crate::ai::limits::Zone::local());
+    let t0 = Instant::now();
+    let at = |s: u64| t0 + Duration::from_secs(s);
+    pass(&mut app, at(0));
+    assert_eq!(
+        app.ai.sessions[0]
+            .usage
+            .as_ref()
+            .unwrap()
+            .five_hour
+            .unwrap()
+            .used_percentage,
+        63.0
+    );
+    assert!(usage_notices(&app).is_empty(), "63 %: no notice");
+    let report_at = |app: &mut App, u: crate::ai::usage::Usage, s: u64| {
+        crate::ai::usage::write_report(&report, &u).unwrap();
+        pass(app, at(s));
+    };
+    report_at(&mut app, windows((91.0, reset), (20.0, week)), 2);
+    let first = format!(
+        "claude used 91% of its 5-hour limit (resets {})",
+        clock(reset)
+    );
+    assert_eq!(usage_notices(&app), std::slice::from_ref(&first));
+    report_at(&mut app, windows((95.0, reset), (20.0, week)), 4);
+    report_at(&mut app, windows((89.0, reset), (20.0, week)), 6);
+    report_at(&mut app, windows((92.0, reset), (20.0, week)), 8);
+    assert_eq!(
+        usage_notices(&app),
+        std::slice::from_ref(&first),
+        "same window: once"
+    );
+    report_at(
+        &mut app,
+        windows((90.0, reset + 5 * 3600), (93.0, week)),
+        10,
+    );
+    assert_eq!(
+        usage_notices(&app),
+        [
+            first,
+            format!(
+                "claude used 90% of its 5-hour limit (resets {})",
+                clock(reset + 5 * 3600)
+            ),
+            format!(
+                "claude used 93% of its weekly limit (resets {})",
+                clock(week)
+            ),
+        ]
+    );
+}
+
+#[test]
+fn ai_usage_command_lists_windows() {
+    let (d, mut app, _) = usage_app();
+    start(&mut app, &d, 0);
+    let now = crate::ai::usage::now_secs();
+    let (reset, week) = (now + 3600, now + 3 * 86_400);
+    app.ai.sessions[0].account = Some("work".into());
+    app.ai.sessions[0].usage = Some(windows((63.0, reset), (41.0, week)));
+    crate::slash_tests::slash(&mut app, "/ai usage");
+    crate::slash_tests::key(&mut app, KeyCode::Enter);
+    assert_eq!(crate::slash_tests::error(&app), None);
+    let hhmm = |t: i64| {
+        format!(
+            "{:02}:{:02}",
+            t.rem_euclid(86_400) / 3600,
+            t.rem_euclid(3600) / 60
+        )
+    };
+    let said = crate::slash_tests::notices(&app);
+    let want = format!(
+        "claude@work: 5-hour 63% (resets {}) · weekly 41% (resets ",
+        hhmm(reset)
+    );
+    assert!(said.contains(&want), "{said}");
+    assert!(said.contains(&format!(" {})", hhmm(week))), "{said}");
+    assert_eq!(app.ai.sessions.len(), 1, "no session started");
+}
+
+#[test]
+fn ai_usage_without_data() {
+    let (d, mut app) = ai_app();
+    crate::slash_tests::slash(&mut app, "/ai usage");
+    crate::slash_tests::key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        crate::slash_tests::error(&app).as_deref(),
+        Some("/ai usage: no AI session is active")
+    );
+    crate::slash_tests::key(&mut app, KeyCode::Esc);
+    start(&mut app, &d, 0);
+    crate::slash_tests::slash(&mut app, "/ai usage");
+    crate::slash_tests::key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        crate::slash_tests::error(&app).as_deref(),
+        Some("/ai usage: no usage reported yet for claude")
+    );
+    // `/ai usage x` is not a tool name either.
+    crate::slash_tests::key(&mut app, KeyCode::Esc);
+    crate::slash_tests::slash(&mut app, "/ai usage now");
+    crate::slash_tests::key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        crate::slash_tests::error(&app).as_deref(),
+        Some("/ai usage takes no argument")
+    );
+    assert_eq!(app.ai.sessions.len(), 1);
+}

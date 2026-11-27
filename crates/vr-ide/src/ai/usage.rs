@@ -239,6 +239,182 @@ pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// Year, month, day of a day count since 1970-01-01 (H. Hinnant's `civil_from_days`).
+pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + i64::from(month <= 2), month, day)
+}
+
+// ---- display (AC-4) -------------------------------------------------------------------------
+
+/// From this percent a window is nearly used up: warning colour in the tab, one notice.
+pub const WARN_PERCENT: f64 = 90.0;
+
+const MONTH_NAMES: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// The whole-number part, so a shown `90%` always comes with the warning.
+fn shown(pct: f64) -> u32 {
+    // Finite and within 0..=1000 by `parse_window`.
+    pct.floor() as u32
+}
+
+/// The higher of the two windows (5-hour on a tie) and whether it is the weekly one.
+fn highest(u: &Usage) -> Option<(f64, bool)> {
+    match (u.five_hour, u.seven_day) {
+        (Some(f), Some(w)) if w.used_percentage > f.used_percentage => {
+            Some((w.used_percentage, true))
+        }
+        (Some(f), _) => Some((f.used_percentage, false)),
+        (None, Some(w)) => Some((w.used_percentage, true)),
+        (None, None) => None,
+    }
+}
+
+/// The tab label's suffix: ` 63%` (5-hour window), ` 91%w` when the weekly one is higher, and
+/// whether it is at [`WARN_PERCENT`] or more. `None` while no window is known.
+pub fn usage_suffix(u: &Usage) -> Option<(String, bool)> {
+    let (pct, weekly) = highest(u)?;
+    let mark = if weekly { "w" } else { "" };
+    Some((format!(" {}%{mark}", shown(pct)), pct >= WARN_PERCENT))
+}
+
+/// A reset time as local time (D26, D30): `15:00`, or `Dec 3 15:00` a day or more away; with
+/// ` UTC` when the local zone could not be read.
+pub fn reset_clock(at: i64, now: i64, zone: &super::limits::Zone) -> String {
+    let local = at + zone.offset(at);
+    let hm = local.rem_euclid(86_400);
+    let mut clock = format!("{:02}:{:02}", hm / 3600, hm % 3600 / 60);
+    if !zone.known {
+        clock.push_str(" UTC");
+    }
+    if at - now < 86_400 {
+        return clock;
+    }
+    let (_, month, day) = civil_from_days(local.div_euclid(86_400));
+    let name = usize::try_from(month - 1)
+        .ok()
+        .and_then(|m| MONTH_NAMES.get(m))
+        .unwrap_or(&"");
+    format!("{name} {day} {clock}")
+}
+
+/// `claude@work`, or the tool alone on its default account; never screen text.
+pub fn account_name(tool: &str, account: Option<&str>) -> String {
+    account.map_or_else(|| tool.to_string(), |a| format!("{tool}@{a}"))
+}
+
+/// What `/ai usage` says: `claude@work: 5-hour 63% (resets 15:00) · weekly 41% (resets Dec 3
+/// 15:00)`; a window the tool did not report says so.
+pub fn usage_text(who: &str, u: &Usage, now: i64, zone: &super::limits::Zone) -> String {
+    let parts: Vec<String> = [("5-hour", u.five_hour), ("weekly", u.seven_day)]
+        .into_iter()
+        .map(|(name, w)| match w {
+            Some(w) => {
+                let reset = w
+                    .resets_at
+                    .map(|t| format!(" (resets {})", reset_clock(t, now, zone)))
+                    .unwrap_or_default();
+                format!("{name} {}%{reset}", shown(w.used_percentage))
+            }
+            None => format!("{name} not reported"),
+        })
+        .collect();
+    format!("{who}: {}", parts.join(" · "))
+}
+
+/// `/ai usage`: the active session's windows, reset times and account, as an info notice.
+pub fn show(app: &mut crate::app::App, rest: &str) -> Result<(), String> {
+    if !rest.trim().is_empty() {
+        return Err("/ai usage takes no argument".into());
+    }
+    let s = app
+        .ai
+        .active_session()
+        .ok_or("/ai usage: no AI session is active")?;
+    let who = account_name(&s.tool, s.account.as_deref());
+    let u = s
+        .usage
+        .as_ref()
+        .filter(|u| u.five_hour.is_some() || u.seven_day.is_some())
+        .ok_or_else(|| format!("/ai usage: no usage reported yet for {who}"))?;
+    let text = usage_text(&who, u, now_secs(), super::limits::Zone::local());
+    app.info(text);
+    Ok(())
+}
+
+/// The windows a session already warned about (AC-4): per window, the reset time of the one
+/// warned last (`Some(None)`: warned, its reset not known).
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Warned([Option<Option<i64>>; 2]);
+
+impl Warned {
+    /// True when window `k` ending at `resets_at` was not warned about yet; records it. A
+    /// report without a reset time is taken as the window already seen.
+    fn first(&mut self, k: usize, resets_at: Option<i64>) -> bool {
+        match self.0[k] {
+            Some(seen) if seen.is_none() || resets_at.is_none() || seen == resets_at => {
+                if seen.is_none() {
+                    self.0[k] = Some(resets_at);
+                }
+                false
+            }
+            _ => {
+                self.0[k] = Some(resets_at);
+                true
+            }
+        }
+    }
+}
+
+/// After a new report of session `i`: one warning per window that reached [`WARN_PERCENT`],
+/// once per window (a new reset time is a new window).
+pub(crate) fn warn_high(app: &mut crate::app::App, i: usize, now: i64) {
+    let Some(s) = app.ai.sessions.get_mut(i) else {
+        return;
+    };
+    let Some(u) = &s.usage else {
+        return;
+    };
+    let who = account_name(&s.tool, s.account.as_deref());
+    let mut texts = Vec::new();
+    for (k, (name, w)) in [("5-hour", u.five_hour), ("weekly", u.seven_day)]
+        .into_iter()
+        .enumerate()
+    {
+        let Some(w) = w.filter(|w| w.used_percentage >= WARN_PERCENT) else {
+            continue;
+        };
+        if !s.high_warned.first(k, w.resets_at) {
+            continue;
+        }
+        let reset = w
+            .resets_at
+            .map(|t| {
+                format!(
+                    " (resets {})",
+                    reset_clock(t, now, super::limits::Zone::local())
+                )
+            })
+            .unwrap_or_default();
+        texts.push(format!(
+            "{who} used {}% of its {name} limit{reset}",
+            shown(w.used_percentage)
+        ));
+    }
+    for t in texts {
+        app.warn(t);
+    }
+}
+
 /// The line the helper prints for claude: `Opus 5.5 · 5h 63%`, from the kept fields only.
 pub fn status_line(u: &Usage) -> String {
     let mut parts = Vec::new();

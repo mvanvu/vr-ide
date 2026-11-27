@@ -1,0 +1,16 @@
+---
+source: crates/vr-ide/src/ui/tests/ai_view_tests.rs
+expression: t.backend()
+---
+" 1 claude 63%  2 claude@work 95% x    + "
+"> restore has to skip tabs whose        "
+"  file is gone, with one notice         "
+"                                        "
+"● Read(src/session.rs)                  "
+"  └ 64 lines                            "
+"● Update(src/session.rs)                "
+"  └ +12 -3                              "
+"                                        "
+"                                        "
+"                                        "
+" A  claude@work          2/2 · f12 hide "

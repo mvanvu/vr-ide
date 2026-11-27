@@ -443,7 +443,24 @@ each tool's accounts under it.
   folder is open to others (vr-ide does not change its permissions: run `chmod 700` on it).
   It is tried again on the next start. Removing an account removes only the link.
 - A folder that is a symlink, belongs to another user, or is open to others is refused or made
-  private (0700) before use. No usage tracking and no switching on its own.
+  private (0700) before use. vr-ide does not switch accounts on its own.
+
+#### Usage
+
+A claude session shows how much of its account's usage limit is used, as claude reports it to its
+status line (vr-ide starts claude with `--settings` naming vr-ide itself as the status-line
+helper; nothing is read over the network or from claude's files). The tab reads
+`2 claude@work 63%`: the 5-hour window, or the weekly one as `91%w` when that is the higher, in the
+warning colour from 90 %. When the tab bar runs short the percent goes before any tab is folded
+into `+N`; a tab at 90 % or more then shows `!` after its number (`2!`), in the warning colour.
+
+- Reaching 90 % of a window gives one notice per window, e.g. `claude@work used 91% of its 5-hour
+  limit (resets 15:00)`.
+- `/ai usage` lists the active session's account with both windows and their reset times, in
+  local time (`Dec 3 15:00` when a day or more away).
+- When the tool shows its limit message, one notice says so, with the reset time when shown.
+
+Other tools (codex, gemini, ...) show no usage.
 
 #### Agent notifications
 

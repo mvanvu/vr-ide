@@ -549,3 +549,81 @@ fn report_never_outlives_its_session() {
         0
     );
 }
+
+// ---- display (AC-4) -------------------------------------------------------------------------
+
+fn window(pct: f64, resets_at: Option<i64>) -> Option<Window> {
+    Some(Window {
+        used_percentage: pct,
+        resets_at,
+    })
+}
+
+#[test]
+fn usage_suffix_takes_the_higher_window() {
+    let mut u = Usage::default();
+    assert_eq!(usage_suffix(&u), None, "no window known");
+    u.five_hour = window(63.0, None);
+    assert_eq!(usage_suffix(&u), Some((" 63%".into(), false)));
+    u.seven_day = window(63.0, None);
+    assert_eq!(
+        usage_suffix(&u),
+        Some((" 63%".into(), false)),
+        "a tie: 5-hour"
+    );
+    u.seven_day = window(91.0, None);
+    assert_eq!(usage_suffix(&u), Some((" 91%w".into(), true)));
+    u.five_hour = None;
+    u.seven_day = window(20.0, None);
+    assert_eq!(
+        usage_suffix(&u),
+        Some((" 20%w".into(), false)),
+        "weekly only"
+    );
+    // Shown whole-number part, so the number never says 90 without the warning.
+    u.seven_day = window(89.6, None);
+    assert_eq!(usage_suffix(&u), Some((" 89%w".into(), false)));
+    u.seven_day = window(90.0, None);
+    assert_eq!(usage_suffix(&u), Some((" 90%w".into(), true)));
+    u.seven_day = window(130.0, None);
+    assert_eq!(
+        usage_suffix(&u),
+        Some((" 130%w".into(), true)),
+        "extra usage"
+    );
+}
+
+/// D26: `HH:MM` within a day, `Mon D HH:MM` beyond; ` UTC` when the zone is unknown; local
+/// time with the zone's offset at the reset instant.
+#[test]
+fn ai_usage_reset_clock_formats() {
+    let utc = crate::ai::limits::Zone::fixed("UTC", 0);
+    assert_eq!(reset_clock(NOW + 3600, NOW, &utc), "15:13");
+    assert_eq!(reset_clock(NOW + 3 * 86_400, NOW, &utc), "Sep 24 14:13");
+    let berlin = crate::ai::limits::Zone::fixed("Europe/Berlin", 7200);
+    assert_eq!(reset_clock(NOW + 3600, NOW, &berlin), "17:13");
+    let unknown = crate::ai::limits::Zone::unknown();
+    assert_eq!(reset_clock(NOW + 3600, NOW, &unknown), "15:13 UTC");
+}
+
+#[test]
+fn ai_usage_text_lists_both_windows() {
+    let utc = crate::ai::limits::Zone::fixed("UTC", 0);
+    let u = Usage {
+        five_hour: window(63.0, Some(NOW + 3600)),
+        seven_day: window(41.0, Some(NOW + 3 * 86_400)),
+        ..Usage::default()
+    };
+    assert_eq!(
+        usage_text("claude@work", &u, NOW, &utc),
+        "claude@work: 5-hour 63% (resets 15:13) · weekly 41% (resets Sep 24 14:13)"
+    );
+    let u = Usage {
+        five_hour: window(63.0, None),
+        ..Usage::default()
+    };
+    assert_eq!(
+        usage_text("claude", &u, NOW, &utc),
+        "claude: 5-hour 63% · weekly not reported"
+    );
+}

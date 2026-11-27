@@ -150,3 +150,37 @@ Harness: temporary module `crates/vr-ide/src/qc_t5_tests.rs` plus one `mod` line
 | SEC-26 | pass | no panic on non-ASCII reset text; typed/pasted limit text gives no notice and no state |
 | SEC-27 | pass | no state written for any spoof case |
 | BASE-17 | pass | temp module and lib.rs line removed |
+
+## QC T4
+Engine: cargo test (TUI, TestBackend buffer + cell styles; no browser). Harness: temporary `crates/vr-ide/src/qc_t4.rs` + `mod qc_t4;` in lib.rs, both removed afterwards (copy: qa-artifacts/T4/qc_t4.rs.txt, log: qa-artifacts/T4/qc_run.log). Real `spawn_session` (fake claude script, temp state dir), report files written by hand, `background_pass`. `git diff --stat` before 683 insertions / after 686 (lib.rs and src not in the delta; the +3 are leader workspace .md edits made meanwhile); qc_t4 absent from `git status`.
+Command: `run-heavy.sh cargo test -p vr-ide --lib qc_t4 -- --nocapture --test-threads=1` -> 5 passed, 0 failed.
+
+- Case 1 (63 %/41 %): row ` 1 claude 63% x ... +`; no `w`, no notice, 63% cell fg (255,46,151) != warning (255,157,60). PASS
+- Case 2 (40 %/91 %): ` 1 claude 91%w x`, painted warning; one notice `claude used 91% of its weekly limit (resets Nov 30 17:17)`. PASS
+- Case 3: 89 -> none; 90 -> one (`used 90% of its 5-hour limit (resets 18:17)`); 95, 95 -> still one; new resets_at 91 % -> second notice; 97 % same new window -> still 2. PASS
+- Case 4: no data -> `/ai usage: no usage reported yet for claude`; with data -> `claude: 5-hour 63% (resets 18:17) · weekly 41% (resets Nov 30 17:17)`; `/ai usage now` -> `/ai usage takes no argument`. PASS
+- Case 5 (six sessions): rows
+  - 40x12 active=1: ` 1 claude 63%  2  3  4  5  6          + `
+  - 40x12 active=6: ` 1  2  3  4  5  6 claude·6 70%        + `
+  - 80x24 (panel 31 cols): ` 1 claude  2  3  4  5  6     + ` (suffixes dropped, no +N); 120x40: ` 1 claude 63%  2  3  4  5  6                 + `
+  - tabs end inside the bar and `+` stays past them at 40/30/80/120. PASS
+- Case 6 (themes, 91%w vs 63% / label): synthwave fg (255,157,60) vs (255,46,151)/(185,166,230); dracula (255,184,108) vs (189,147,249)/(154,168,212); dark Yellow vs White/Gray; light Indexed(130) vs Black/DarkGray. Warning differs from normal in all four themes, both tab states. PASS
+
+Not re-checked by me (covered by dev test `ai_usage_label_sizes`, 80x24): warning colour on a number-only tab at 40x12 with six sessions; at 40x12 here the 95 % tab 2 shows `2` (suffix dropped) and I did not read its cell style.
+
+## Rule check T4
+| Rule | Result | Evidence |
+|---|---|---|
+| AC-4 tab label percent `63%` / `91%w` when weekly higher | PASS | cases 1, 2 |
+| warning style at >= 90 % | PASS | case 6, four themes |
+| 90 % notice once per window | PASS | case 3 |
+| `/ai usage` both windows, reset times, account | PASS | case 4 (`claude@work` form covered by dev `ai_usage_command_lists_windows`) |
+| Fit 80x24 / 120x40 / 40x12, suffixes drop first (D35) | PASS | case 5 |
+| Four themes | PASS | case 6 |
+
+## QC T4 re-check
+Temporary `qc_t4.rs` + `mod qc_t4;` (removed; copy `qa-artifacts/T4/qc_t4_recheck.rs.txt`, log `qc_recheck.log`; lib.rs has no diff, no qc_t4 in git status). Command: `run-heavy.sh cargo test -p vr-ide --lib -- qc_t4_recheck ai_limit_counts_after --nocapture --test-threads=1` -> 2 passed.
+- Six sessions, tab 2 inactive at 95 %, 40x12 and 80x24, active tab 1 and 6, four themes: tab 2 label ` 2! `, `more` = None (nothing folded), all six tabs kept, row ends with `+`. Rows: 40x12 ` 1 claude 63%  2!  3  4  5  6         + `; 80x24 ` ... │ 1 claude  2!  3  4  5  6    + `. The `2` cell is not warning colour, the `!` cell fg == theme.warning.fg in synthwave, dracula, dark, light. PASS
+- T5 limit notice: `ai_limit_counts_after_a_quiet_second_with_one_notice_per_event` passes, asserting `claude hit its usage limit (resets 15:00)`. PASS
+
+Rule check T4 re-check: D39 `N!` marker PASS; fit/+N PASS; T5 notice text unchanged PASS.

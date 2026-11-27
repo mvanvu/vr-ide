@@ -65,7 +65,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value};
 
 use super::accounts;
-use super::usage::{self, Usage, days_from_civil};
+use super::usage::{self, Usage, civil_from_days, days_from_civil};
 use crate::app::App;
 use crate::ui::ai_changes::parse_tzif;
 
@@ -662,19 +662,6 @@ fn clock(s: &str) -> Option<i64> {
     Some(h * 3600 + m * 60)
 }
 
-/// Year, month, day of a day count since 1970-01-01 (H. Hinnant's `civil_from_days`).
-fn civil(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    (yoe + era * 400 + i64::from(month <= 2), month, day)
-}
-
 fn day_of(s: &str) -> Option<i64> {
     let s = s.trim_end_matches(',');
     let s = ["st", "nd", "rd", "th"]
@@ -736,7 +723,7 @@ fn local_time(text: &str, now: i64, zone: &Zone) -> Option<i64> {
             }
             let secs = clock(&rest.join(" "))?;
             let month = m as i64 + 1;
-            let this_year = civil(local_now.div_euclid(86_400)).0;
+            let this_year = civil_from_days(local_now.div_euclid(86_400)).0;
             let at = |y: i64| days_from_civil(y, month, day) * 86_400 + secs;
             match year {
                 Some(y) => at(y),
@@ -1010,30 +997,6 @@ impl Watch {
     }
 }
 
-/// `claude@work`: the tool and the validated account name, never screen text.
-fn account_label(tool: &str, account: Option<&str>) -> String {
-    account.map_or_else(|| tool.to_string(), |a| format!("{tool}@{a}"))
-}
-
-/// The local time of a reset for a notice: `15:00`, or `Dec 3 15:00` beyond a day; with ` UTC`
-/// when the local zone could not be read.
-fn reset_text(at: i64, now: i64) -> String {
-    let zone = Zone::local();
-    let local = at + zone.offset(at);
-    let hm = local.rem_euclid(86_400);
-    let mut clock = format!("{:02}:{:02}", hm / 3600, hm % 3600 / 60);
-    if !zone.known {
-        clock.push_str(" UTC");
-    }
-    if at - now < 86_400 {
-        return clock;
-    }
-    let (_, month, day) = civil(local.div_euclid(86_400));
-    let name = MONTHS[(month - 1) as usize];
-    let name = format!("{}{}", name[..1].to_ascii_uppercase(), &name[1..]);
-    format!("{name} {day} {clock}")
-}
-
 /// The latest reset of a window the report shows full, within [now, now + 8 days].
 fn report_reset(u: Option<&Usage>, now: i64) -> Option<i64> {
     let u = u?;
@@ -1157,11 +1120,11 @@ fn act(app: &mut App, i: usize, found: Seen, now: Instant) -> bool {
         return false;
     }
     s.limit_watch.notice_at = Some(now);
-    let label = account_label(&s.tool, s.account.as_deref());
+    let label = usage::account_name(&s.tool, s.account.as_deref());
     let text = match resets {
         Some(t) => format!(
             "{label} hit its usage limit (resets {})",
-            reset_text(t, secs)
+            usage::reset_clock(t, secs, Zone::local())
         ),
         None => format!("{label} hit its usage limit"),
     };

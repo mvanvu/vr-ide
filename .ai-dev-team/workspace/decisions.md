@@ -34,3 +34,10 @@ Taken by the leader while the user is away (presence: away since 22:24). Recomme
 - D30 (T5 R1): screen reset times are believed only in vr-ide's own zone (TZ, else /etc/localtime); otherwise the report's reset is used; the notice shows " UTC" when the zone is unknown.
 - D31 (T5 R1): login lines follow the limit rules (window, last content, not typed); rows inside a box still count.
 - D32 (T5 R1): a clock time that passed < 1 h ago counts as passed (no limited_until from the screen).
+- D33 (T4): the usage suffix is added in the AI tab bar only; `AiPanel::label` / `short_label` stay plain (notices, diff tab names, review and status bar read them).
+- D34 (T4): the percent is rounded down, so a shown 90% always carries the warning style.
+- D35 (T4): suffixes are dropped before any tab folds into +N or the + is lost; a tab at ≥ 90 % then shows its number in the warning colour.
+- D36 (T4): 90 % notice (warning): "claude@work used 91% of its 5-hour limit (resets 15:00)", once per session per window (window = reset time), kept across a restart on the same account; T6 resets `high_warned` on an account switch.
+- D37 (T4): `/ai usage` info notice "claude@work: 5-hour 63% (resets 15:00) · weekly 41% (resets Dec 3 15:00)"; errors stay in the palette.
+- D38 (T4 review, leader): limits.rs is no longer locked (T5 committed): the T4 fix round makes limits.rs call usage::reset_clock / civil_from_days / account_name and deletes the copies.
+- D39 (T4 review, UI trade-off, leader while away): at the narrowest fit a tab at ≥ 90 % shows its number plus a one-cell `!` (e.g. ` 2! `), not colour alone; cost 1 column per warning tab. confirm-on-return.

@@ -518,3 +518,169 @@ fn ai_picker_title_keeps_the_folder_name() {
     assert!(narrow.ends_with("DEV/vr-ide"), "{narrow:?}");
     assert!(narrow.starts_with("New session in …"), "{narrow:?}");
 }
+
+// ---- usage in the tab label (AC-4) ------------------------------------------------------------
+
+fn usage(five: f64, weekly: Option<f64>) -> Option<crate::ai::usage::Usage> {
+    let w = |p: f64| crate::ai::usage::Window {
+        used_percentage: p,
+        resets_at: None,
+    };
+    Some(crate::ai::usage::Usage {
+        five_hour: Some(w(five)),
+        seven_day: weekly.map(w),
+        ..Default::default()
+    })
+}
+
+/// `1 claude 63%`, `2 claude@work 95%`: the second one active.
+fn usage_app() -> App {
+    let mut app = panel_app(2);
+    app.ai.sessions[1].attention = None;
+    app.ai.sessions[0].usage = usage(63.0, Some(20.0));
+    app.ai.sessions[1].usage = usage(95.0, None);
+    app.ai.active = 1;
+    app
+}
+
+/// Every drawn tab ends inside the bar, and the usage suffixes hide no tab and no `+` the plain
+/// labels keep.
+fn bar_fits(app: &mut App, width: u16) {
+    let bar = crate::ui::ai_view::tab_bar(app, width);
+    let saved: Vec<_> = app.ai.sessions.iter_mut().map(|s| s.usage.take()).collect();
+    let plain = crate::ui::ai_view::tab_bar(app, width);
+    for (s, u) in app.ai.sessions.iter_mut().zip(saved) {
+        s.usage = u;
+    }
+    let labels =
+        |b: &crate::ui::ai_view::TabBar| b.tabs.iter().map(|t| t.label.clone()).collect::<Vec<_>>();
+    let end = bar.tabs.iter().map(|t| t.x + t.width).max().unwrap();
+    assert!(end <= width, "{width}: tabs end at {end}");
+    assert!(
+        bar.tabs.iter().any(|t| t.index == app.ai.active),
+        "{width}: active kept"
+    );
+    // The percents hide nothing; only a `!` mark (one column per tab at 90 % or more, D39)
+    // may cost a tab or the `+`.
+    let marks = labels(&bar).iter().filter(|l| l.contains('!')).count();
+    assert!(
+        bar.tabs.len() + marks >= plain.tabs.len(),
+        "{width}: {:?} vs {:?}",
+        labels(&bar),
+        labels(&plain)
+    );
+    if marks == 0 {
+        assert_eq!(
+            bar.plus.is_some(),
+            plain.plus.is_some(),
+            "{width}: {:?}",
+            labels(&bar)
+        );
+    }
+    assert!(
+        bar.plus.is_none_or(|p| p >= end),
+        "{width}: + over the tabs"
+    );
+}
+
+#[test]
+fn label_shows_usage_suffix() {
+    let mut app = usage_app();
+    app.ai.sessions[1].usage = usage(63.0, Some(41.0));
+    let bar = crate::ui::ai_view::tab_bar(&app, 120);
+    let tab = |i: usize| {
+        bar.tabs
+            .iter()
+            .find(|t| t.index == i)
+            .unwrap()
+            .label
+            .clone()
+    };
+    assert_eq!(tab(1), " 2 claude@work 63% x ");
+    assert_eq!(tab(0), " 1 claude 63% ");
+    // The label itself (notices, the status bar, diff tab names) keeps its plain form.
+    assert_eq!(app.ai.label(1), "claude@work");
+    app.ai.sessions[0].usage = None;
+    let bar = crate::ui::ai_view::tab_bar(&app, 120);
+    assert_eq!(bar.tabs[0].label, " 1 claude ", "no report: no suffix");
+    for w in [120, 80, 40, 30, 25, 20, 16] {
+        bar_fits(&mut app, w);
+    }
+}
+
+/// The weekly window when it is the higher one, in the warning colour of every theme (only the
+/// percent; the rest of the tab keeps its own style).
+#[test]
+fn label_weekly_when_higher() {
+    let mut app = usage_app();
+    app.ai.sessions[1].usage = usage(40.0, Some(91.0));
+    for name in crate::commands::slash::THEMES {
+        app.settings.theme = (*name).to_string();
+        let theme = Theme::from_name(name);
+        let warning = theme.warning.fg.expect("warning colour");
+        let t = draw(&mut app, 120, 40);
+        let bar = row(&t, 0);
+        let at = bar.find("91%w").unwrap_or_else(|| panic!("{name}: {bar}"));
+        let x0 = bar[..at].chars().count() as u16;
+        let buf = t.backend().buffer();
+        for x in x0..x0 + 4 {
+            assert_eq!(buf[(x, 0)].fg, warning, "{name}: percent cell {x}");
+            assert_eq!(
+                buf[(x, 0)].bg,
+                theme.tab_active.bg.unwrap_or(buf[(x, 0)].bg)
+            );
+        }
+        assert_ne!(
+            Some(warning),
+            theme.tab_active.bg,
+            "{name}: readable on the tab"
+        );
+        let label = bar.find("claude@work").unwrap();
+        let lx = bar[..label].chars().count() as u16;
+        assert_ne!(
+            buf[(lx, 0)].fg,
+            warning,
+            "{name}: the name keeps its colour"
+        );
+        // 63 % on the other tab: no warning.
+        let other = bar.find("63%").unwrap();
+        let ox = bar[..other].chars().count() as u16;
+        assert_ne!(buf[(ox, 0)].fg, warning, "{name}: 63% is not a warning");
+    }
+}
+
+/// The profile sizes with a 63 % and a 95 % session; at 40 columns the inactive tab shows its
+/// number only, in the warning colour when its account is at 90 % or more.
+#[test]
+fn ai_usage_label_sizes() {
+    let mut app = usage_app();
+    snap("ai_usage", &mut app, &[(120, 40), (80, 24), (40, 12)]);
+    for w in [120, 80, 40] {
+        bar_fits(&mut app, w);
+    }
+    // The 95 % tab inactive at a narrow width: its number gets a `!` in the warning colour
+    // (D39: not colour alone).
+    app.ai.active = 0;
+    let theme = Theme::from_name(&app.settings.theme);
+    app.ai
+        .sessions
+        .push(session("codex", None, ROOT, TermStatus::Running));
+    app.ai
+        .sessions
+        .push(session("claude", None, ROOT, TermStatus::Running));
+    let term = draw(&mut app, 80, 24);
+    let area = app.layout.ai;
+    let bar = crate::ui::ai_view::tab_bar(&app, area.width);
+    let t = bar.tabs.iter().find(|t| t.index == 1).expect("kept");
+    assert_eq!(t.label, " 2! ", "{}", row(&term, area.y));
+    let buf = term.backend().buffer();
+    let x = area.x + t.x + 2;
+    assert_eq!(buf[(x, area.y)].symbol(), "!");
+    assert_eq!(buf[(x, area.y)].fg, theme.warning.fg.unwrap());
+    let calm = bar.tabs.iter().find(|t| t.index == 2).expect("kept");
+    assert_eq!(calm.label, " 3 ", "no report: no mark");
+    // 63 %: a number-only tab without the mark.
+    app.ai.active = 1;
+    let bar = crate::ui::ai_view::tab_bar(&app, area.width);
+    assert_eq!(bar.tabs.iter().find(|t| t.index == 0).unwrap().label, " 1 ");
+}

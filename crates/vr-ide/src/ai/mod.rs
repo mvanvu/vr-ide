@@ -137,6 +137,9 @@ pub struct AiSession {
     pub limit_seen: bool,
     /// When its screen is read for limit and login messages.
     pub(crate) limit_watch: limits::Watch,
+    /// The usage windows already warned about at 90 % (AC-4); kept across a restart on the
+    /// same account, whose windows go on.
+    pub(crate) high_warned: usage::Warned,
 }
 
 impl AiSession {
@@ -170,6 +173,7 @@ impl AiSession {
             usage_files: None,
             limit_seen: false,
             limit_watch: Default::default(),
+            high_warned: Default::default(),
         }
     }
 
@@ -879,8 +883,10 @@ pub(crate) fn read_usage(app: &mut App, now: std::time::Instant) -> bool {
         }
     }
     // Whether the account works and is limited (SEC-27).
+    let secs = usage::now_secs();
     for &i in &reported {
         limits::on_report(app, i);
+        usage::warn_high(app, i, secs);
     }
     !reported.is_empty()
 }

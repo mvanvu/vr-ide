@@ -34,7 +34,9 @@ its own), so a missing program shows that shell's error. `/run` uses the active 
 shell is waiting for a command; when there is none, its shell has exited or a program started from
 it holds the terminal (an AI tool, an editor, a password prompt), it opens a new terminal tab and
 runs the command there, with a notice. `/ai <tool>` always starts a new session in the AI panel,
-never in a terminal; `/ai` alone opens the tool picker there, as `ctrl+f12` does.
+never in a terminal; `/ai` alone opens the tool picker there, as `ctrl+f12` does. `/ai usage`
+shows the active session's account with its 5-hour and weekly usage and their reset times (claude
+only; see the README's AI panel usage section).
 
 `/ws open <folder>` switches the window to that folder alone, `/ws open <file>.vr-workspace` to the
 folders the file lists; any other file is refused. With terminals or AI sessions open (running or
@@ -141,7 +143,7 @@ protocol does not send are marked).
 | `/term right` | Terminal panel on the right, for this session |
 | `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
-| `/ai [<tool> [@account]]` | Start an AI tool of ai_tools (e.g. claude) in the AI panel (none: pick one); /ai rename <name> |
+| `/ai [<tool> [@account]]` | Start an AI tool of ai_tools (e.g. claude) in the AI panel (none: pick one); /ai rename <name>; /ai usage |
 | `/ssh [ssh args]` | Open an SSH session, args as after ssh (none: list hosts) |
 | `/ws add <folder>` | Add a folder to the workspace |
 | `/ws remove [root]` | Remove a workspace folder (default: the active file's) |

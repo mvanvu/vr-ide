@@ -10,7 +10,7 @@ Spec: `.ai-dev-team/workspace/01_spec.md` · Plan: `.ai-dev-team/workspace/02_pl
 | T2b | SEC-38 for shells, ssh and /run (drop inherited CLAUDE_CONFIG_DIR/CODEX_HOME into accounts/),  | be | T2 | security | SEC-38 | commands/terminal.rs, commands/ssh.rs, commands/run (where /run spawns) | `cargo test -p vr-ide` | done (review APPROVE + QP1 re-check, QC_PASS; committed on run5-T2b, merge after T3) | 0 |
 | T3 | Claude usage report (statusLine helper) | be | TM, T2 | security | AC-3, SEC-n | crates/vr-ide/src/ai/usage.rs (new), cli.rs, main.rs, ai/mod.rs, Cargo.toml, crates/vr-ide/Cargo.toml, Cargo.lock | `cargo test -p vr-ide` | done (review APPROVE r1, QC_PASS + re-check) | 1 |
 | T5 | Limit/login detection, per-account state (sets `works` on usage reports) | be | T3 | security | AC-5, SEC-n | crates/vr-ide/src/ai/limits.rs (new), ai/mod.rs | `cargo test -p vr-ide` | done (review APPROVE r1 + QP1, QC_PASS + re-check) | 1 |
-| T4 | Usage display (label, 90 % notice, `/ai usage`) | fe | T3, T5 | ui | AC-4 | ai/mod.rs (label), ui/ai_view.rs, ai/usage.rs, commands/slash.rs, docs/commands.md, README.md | `cargo test -p vr-ide` | todo | 0 |
+| T4 | Usage display (label, 90 % notice, `/ai usage`) | fe | T3, T5 | ui | AC-4 | ai/mod.rs (label), ui/ai_view.rs, ai/usage.rs, commands/slash.rs, docs/commands.md, README.md | `cargo test -p vr-ide` | done (review APPROVE r1, QC_PASS + re-check) | 1 |
 | T6 | Auto-switch | be | T1, T2, T4, T5 | security | AC-6, AC-7, SEC-n | crates/vr-ide/src/ai/switch.rs (new), ai/mod.rs, commands/slash.rs, docs/commands.md, README.md | `cargo test -p vr-ide` | todo | 0 |
 | T7 | Codex limits | be | T6 | security | AC-8 | ai/usage.rs, ai/mod.rs, ai/switch.rs, README.md | `cargo test -p vr-ide` | todo | 0 |
 | T8 | Login window inside vr-ide | be | T7, apt deps (user) | security | AC-9, SEC-n | crates/vr-ide/src/ai/login.rs (new), cli.rs, main.rs, ai/mod.rs, ai/accounts.rs, crates/vr-ide/Cargo.toml, Cargo.lock, README.md | `cargo test -p vr-ide`, `--no-default-features` | todo | 0 |
@@ -57,3 +57,9 @@ Spec: `.ai-dev-team/workspace/01_spec.md` · Plan: `.ai-dev-team/workspace/02_pl
 - 00:01 verdict gate T5 QC re-check ✓ QC_PASS (crash replay: no panic; F1 typed/pasted at column 0: no notice). codex keeps the notice without a time when the reset is unparsable (genuine head) — accepted. Quick pass 1 (2 minors) → T5 R1 developer; re-check by the T5 reviewer.
 - 00:03 T5 QP1 DONE (2/2 red→green, guard clean). Re-check by the T5 reviewer.
 - 00:03 verdict gate T5 QP1 re-check ✓ APPROVE. T5 done. Next: T4.
+- 00:15 T4 DONE gate ✓ (compliance per ID 49 pass / 44 n-a; guard clean; 3 new snapshots, none changed). D33–D37. Follow-ups: duplicate clock helpers usage::reset_clock vs limits::reset_text (dedupe when limits.rs is next owned — T6/T7); T6 must reset high_warned on a switch. Review sonnet (code + design QA on snapshots) + QC sonnet.
+- 00:16 verdict gate T4 review ✓ REQUEST_CHANGES (sonnet; major BASE-16 duplicate clock/civil/account helpers vs limits.rs; minor colour-only warning at narrowest fit → D39 `!`). Fix round waits for QC T4.
+- 00:17 verdict gate T4 QC ✓ QC_PASS (5 harness cases, 4 themes, six-session fit). Fix round 1 → T4 developer (dedupe with limits.rs per D38; `!` marker per D39). Re-check: reviewer; qc for the narrow-fit `!` render.
+- 00:20 T4 R1 DONE (2/2; related 224 pass; guard clean; no snapshot changed). Re-check: T4 reviewer + QC (narrow-fit `!`).
+- 00:20 verdict gate T4 R1 re-check ✓ APPROVE (sonnet; 2/2 closed). Waiting: QC T4 re-check.
+- 00:21 verdict gate T4 QC re-check ✓ QC_PASS (N! in 4 themes, T5 notice unchanged). T4 done. Next: T6 — developer on fable (fable-policy auto, case 3: high-risk + complex: process restarts, account locks, several modules), reviewer opus.
