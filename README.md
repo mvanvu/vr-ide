@@ -431,6 +431,17 @@ each tool's accounts under it.
 - Remove: `del` on the account in the picker. It asks first, and is refused while a session on it
   is open. The folder is deleted for good (not to the trash); the sign-in stays valid at the
   provider, so run `/logout` in a session on that account first if you want it ended.
+- History is shared, logins are not: every account of a tool sees the conversations of the
+  default account and of each other (`/resume` lists them all). vr-ide makes the account's
+  history entry (`projects` for claude, `sessions` for codex) a link to the default account's
+  history folder, `${CLAUDE_CONFIG_DIR:-~/.claude}/projects` or `${CODEX_HOME:-~/.codex}/sessions`
+  as vr-ide itself was started. An account that already has history gets it moved into that
+  folder once, when a session starts on it and no other session uses it; nothing is ever
+  replaced. The account stays "not shared" (a warning says why, its files stay where they are)
+  when its entry is a link elsewhere or a file, a file exists on both sides, it
+  holds links or special files, the two folders are on different file systems, or the shared
+  folder is open to others (vr-ide does not change its permissions: run `chmod 700` on it).
+  It is tried again on the next start. Removing an account removes only the link.
 - A folder that is a symlink, belongs to another user, or is open to others is refused or made
   private (0700) before use. No usage tracking and no switching on its own.
 

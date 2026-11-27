@@ -1,7 +1,9 @@
 //! Accounts per agent session (D11): one config folder per account,
 //! `<state_dir>/accounts/<name>/` (0700), handed to the tool through its own variable
 //! (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) in that session's environment only. The tool writes its
-//! login there; vr-ide never opens, lists or copies anything inside an account folder.
+//! login there; vr-ide never opens, lists or copies anything inside an account folder, except
+//! the one history entry [`super::history`] links to the tool's shared history (SEC-19, the
+//! amended SEC-16).
 //!
 //! Every name goes through [`validate`] (SEC-15); every folder is checked by [`secure`] before
 //! it is used (SEC-16); removal is [`remove`] (SEC-17). Which tool an account belongs to (ui-spec
@@ -264,7 +266,32 @@ thread_local! {
 
 /// Takes the hold on account `name` before its session starts. Refused while a removal has it.
 pub fn hold(state: &Path, name: &str) -> Result<AccountLock, String> {
-    use rustix::fs::{AtFlags, FlockOperation};
+    take_hold(
+        state,
+        name,
+        rustix::fs::FlockOperation::NonBlockingLockShared,
+        "account is busy (being removed or set up)",
+    )
+}
+
+/// The exclusive hold for changing the account's history entry (SEC-20): refused at once while
+/// a session in any window (or a removal) holds the account.
+pub fn hold_exclusive(state: &Path, name: &str) -> Result<AccountLock, String> {
+    take_hold(
+        state,
+        name,
+        rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        "in use",
+    )
+}
+
+fn take_hold(
+    state: &Path,
+    name: &str,
+    op: rustix::fs::FlockOperation,
+    busy: &str,
+) -> Result<AccountLock, String> {
+    use rustix::fs::AtFlags;
     let name = validate(name).map_err(|_| "account name invalid".to_string())?;
     let dir = open_accounts(state)?;
     let missing = rustix::fs::statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW).is_err();
@@ -276,8 +303,7 @@ pub fn hold(state: &Path, name: &str) -> Result<AccountLock, String> {
     if let Some(f) = BEFORE_HOLD_LOCK.with(|h| h.borrow_mut().take()) {
         f();
     }
-    rustix::fs::flock(&fd, FlockOperation::NonBlockingLockShared)
-        .map_err(|_| "account is being removed".to_string())?;
+    rustix::fs::flock(&fd, op).map_err(|_| busy.to_string())?;
     let lock = AccountLock(fd);
     // A removal between the open and the lock deleted the folder and unlinked this lock file:
     // the hold is on nothing, so the session must not start.
@@ -773,6 +799,23 @@ mod fix_tests {
         remove(state, "work").unwrap();
         assert!(!work.exists());
         child.join().unwrap();
+    }
+
+    /// SEC-20: while another window sets up the account's history (exclusive hold), a session
+    /// start is refused with that reason, not as a removal.
+    #[test]
+    fn a_hold_during_set_up_says_busy() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path();
+        create(state, "claude", "work").unwrap();
+        let setting_up = hold_exclusive(state, "work").unwrap();
+        assert_eq!(
+            hold(state, "work").unwrap_err(),
+            "account is busy (being removed or set up)"
+        );
+        assert_eq!(hold_exclusive(state, "work").unwrap_err(), "in use");
+        drop(setting_up);
+        hold(state, "work").unwrap();
     }
 
     /// D17: a removal that runs between `hold` opening the lock file and locking it wins: the

@@ -511,3 +511,52 @@ fn an_open_session_holds_its_account_for_other_windows() {
     assert!(alt.is_dir());
     drop(other);
 }
+
+/// AC-2: a session on a named claude account starts with its history linked to the tool's
+/// shared folder (an old real folder merged into it); one whose entry cannot be linked starts
+/// unshared with one warning and its entry untouched; the default session is on the shared
+/// folder itself; a tool without a shared folder is not shared.
+#[test]
+fn named_sessions_share_the_tools_history() {
+    let mut e = setup();
+    let work = accounts::create(&e.state, "claude", "work").unwrap();
+    let alt = accounts::create(&e.state, "claude", "alt").unwrap();
+    let shared = e.state.parent().unwrap().join("home/.claude/projects");
+    e.app
+        .ai
+        .history_dirs
+        .insert("claude".into(), shared.clone());
+    std::fs::create_dir_all(work.join("projects/-p")).unwrap();
+    std::fs::write(work.join("projects/-p/a.jsonl"), "A").unwrap();
+    std::fs::write(alt.join("projects"), "file").unwrap();
+    crate::ai::open_tool(&mut e.app, "claude @work").unwrap();
+    crate::ai::open_tool(&mut e.app, "claude @alt").unwrap();
+    crate::ai::open_tool(&mut e.app, "claude").unwrap();
+    crate::ai::open_tool(&mut e.app, "codex").unwrap();
+    assert_eq!(
+        std::fs::read_link(work.join("projects")).unwrap(),
+        std::fs::canonicalize(&shared).unwrap()
+    );
+    assert_eq!(
+        std::fs::read_to_string(shared.join("-p/a.jsonl")).unwrap(),
+        "A"
+    );
+    assert_eq!(
+        std::fs::read_to_string(alt.join("projects")).unwrap(),
+        "file"
+    );
+    let flags: Vec<bool> = e.app.ai.sessions.iter().map(|s| s.shared).collect();
+    assert_eq!(flags, [true, false, true, false]);
+    let warned: Vec<String> = notices(&e.app)
+        .into_iter()
+        .filter(|n| n.contains("history"))
+        .collect();
+    assert_eq!(
+        warned,
+        ["claude@alt: history not shared (history entry is not a folder; left as it is)"]
+    );
+    // A second session on the linked account keeps the link.
+    crate::ai::open_tool(&mut e.app, "claude @work").unwrap();
+    assert!(e.app.ai.sessions[4].shared);
+    assert_eq!(ccd(&e.app, 4), format!("{}|", work.display()));
+}

@@ -9,6 +9,7 @@ pub mod attention;
 pub mod changes;
 #[cfg(test)]
 mod changes_tests;
+pub mod history;
 pub mod picker;
 pub mod restore;
 pub mod review;
@@ -117,6 +118,10 @@ pub struct AiSession {
     pub(crate) changes_version: Option<u64>,
     /// Rate limit and text of the current notice (SEC-14).
     pub notify: attention::NotifyState,
+    /// Its history is the tool's shared one (AC-2): the default account, or a named account
+    /// whose history entry links there; false for a tool without one, or when a warning said
+    /// why not.
+    pub shared: bool,
 }
 
 impl AiSession {
@@ -143,6 +148,7 @@ impl AiSession {
             banner: None,
             changes_version: None,
             notify: Default::default(),
+            shared: false,
         }
     }
 
@@ -189,6 +195,9 @@ pub struct AiPanel {
     /// The state folder holding `accounts/` (D11); `None`: no account can be used (tests that
     /// do not set one never touch the real state folder).
     pub state_dir: Option<PathBuf>,
+    /// The shared history folder of each tool that has one (AC-2, SEC-21), set at startup by
+    /// [`history::configure`]; empty: no account shares history (tests that do not set it).
+    pub history_dirs: std::collections::BTreeMap<String, PathBuf>,
 }
 
 impl AiPanel {
@@ -213,6 +222,7 @@ impl AiPanel {
             diff: None,
             list_rows: 0,
             state_dir: None,
+            history_dirs: Default::default(),
         }
     }
 
@@ -663,6 +673,8 @@ pub(crate) fn spawn_session(
     root: &Path,
     name: Option<String>,
 ) -> Result<(), String> {
+    // Before the hold: a first migration needs the account to itself (SEC-20).
+    let shared = share_history(app, &tool.name, account.as_deref());
     // The hold comes first: the folder checks in `start_program` then see what a removal left.
     let account_lock = match (&account, app.ai.state_dir.as_deref()) {
         (None, _) => None,
@@ -682,11 +694,41 @@ pub(crate) fn spawn_session(
         mode,
     );
     session.account_lock = account_lock;
+    session.shared = shared;
     session.name = name;
     session.changes = tracker;
     app.ai.sessions.push(session);
     app.dirty = true;
     Ok(())
+}
+
+/// AC-2: a named claude / codex account's history entry is linked to the tool's shared folder
+/// before its session starts ([`history::ensure`]); when it cannot be, the session still starts,
+/// unshared, with one warning naming the reason. The default account is the shared folder.
+fn share_history(app: &mut App, tool: &str, account: Option<&str>) -> bool {
+    let Some(shared) = app.ai.history_dirs.get(tool).cloned() else {
+        return false;
+    };
+    let Some(name) = account else {
+        return true;
+    };
+    // A missing or invalid account is reported by the hold that follows.
+    let Some(dir) = app
+        .ai
+        .state_dir
+        .as_deref()
+        .and_then(|s| accounts::path_of(s, name).ok())
+        .filter(|d| d.symlink_metadata().is_ok())
+    else {
+        return false;
+    };
+    match history::ensure(&dir, tool, &shared) {
+        history::Shared::Linked => true,
+        history::Shared::NotShared(why) => {
+            app.warn(format!("{tool}@{name}: history not shared ({why})"));
+            false
+        }
+    }
 }
 
 fn start_program(
@@ -712,9 +754,15 @@ fn start_program(
         tool,
         account,
     )?);
+    let mut env_remove = spawn::internal_vars(std::env::vars_os());
+    // SEC-38: an inherited variable pointing at one of vr-ide's accounts never reaches an agent
+    // started without that account (a named account's own variable is set after the removal).
+    if let Some(state) = app.ai.state_dir.as_deref() {
+        env_remove.extend(history::stray_vars(state, std::env::vars_os()));
+    }
     let extras = SpawnExtras {
         marker: None,
-        env_remove: spawn::internal_vars(std::env::vars_os()),
+        env_remove,
         attention: true,
     };
     let output = Arc::new(AtomicBool::new(false));

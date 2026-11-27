@@ -402,6 +402,14 @@ impl App {
         app.recent_files_file = Some(files);
         app.ssh = commands::ssh::SshState::load(&state);
         app.ai.state_dir = Some(state.clone());
+        // AC-2, D1: each tool's shared history folder, from vr-ide's own environment.
+        crate::ai::history::configure(
+            &mut app.ai,
+            &state,
+            crate::session::home_dir().as_deref(),
+            std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(),
+            std::env::var_os("CODEX_HOME").as_deref(),
+        );
         app.config_dir = Some(dir);
         (app, warnings)
     }
