@@ -279,6 +279,8 @@ pub struct TerminalPanel {
     captured: bool,
     /// The panel's edge is being dragged: its tab bar at the bottom, the separator on the right.
     resizing: bool,
+    /// The tab of terminal `i` is being dragged along the bar to a new place (FR-19).
+    tab_drag: Option<usize>,
     /// "Quit anyway" was chosen; the next quit does not ask about terminals
     /// again (one shot).
     quit_confirmed: bool,
@@ -303,6 +305,7 @@ impl TerminalPanel {
             selecting: false,
             captured: false,
             resizing: false,
+            tab_drag: None,
             quit_confirmed: false,
             wake: Arc::default(),
         }
@@ -414,6 +417,7 @@ pub fn close_tab(app: &mut App, i: usize) {
     drop_later(tab.term);
     p.selection = None;
     p.captured = false;
+    p.tab_drag = None;
     if p.tabs.is_empty() {
         p.active = 0;
         hide(app);
@@ -527,6 +531,7 @@ pub fn set_position(app: &mut App, to: TerminalPosition) {
     p.selection = None;
     p.selecting = false;
     p.resizing = false;
+    p.tab_drag = None;
     app.dirty = true;
     let mut text = format!("Terminal panel {place}");
     if to == TerminalPosition::Right && !right_now(app) {
@@ -619,6 +624,7 @@ fn hide(app: &mut App) {
     p.selecting = false;
     p.captured = false;
     p.resizing = false;
+    p.tab_drag = None;
     if app.focus == Focus::Terminal {
         super::search::focus_editor(app);
     }
@@ -1117,7 +1123,8 @@ fn term_key(key: &KeyEvent) -> Option<vr_term::KeyEvent> {
 
 // ---- mouse ----------------------------------------------------------------------------------
 
-/// Mouse on the panel: a click on a tab activates it, a drag of the tab bar resizes the panel;
+/// Mouse on the panel: a click on a tab activates it and dragging it moves it along the bar, a
+/// drag of the rest of the tab bar (at the bottom) resizes the panel;
 /// in the grid the mouse goes to the program when it asked for it (shift bypasses that, as in
 /// xterm), otherwise a drag selects and copies, the wheel scrolls back (on the alternate screen
 /// it sends arrow keys, as terminals do). Returns false for events outside the panel.
@@ -1130,6 +1137,22 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
             _ => {}
         }
         return true;
+    }
+    // A tab drag follows the mouse wherever it goes until the release, like the resize above.
+    if app.terminal.tab_drag.is_some() {
+        match ev.kind {
+            MK::Drag(MB::Left) => {
+                drag_tab_to(app, ev.column);
+                return true;
+            }
+            MK::Up(MB::Left) => {
+                app.terminal.tab_drag = None;
+                return true;
+            }
+            // The release was let go where vr-ide could not see it.
+            MK::Down(_) => app.terminal.tab_drag = None,
+            _ => {}
+        }
     }
     let grid_area = Rect::new(
         area.x,
@@ -1184,6 +1207,7 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
                     app.terminal.active = i;
                     app.terminal.selection = None;
                     app.terminal.captured = false;
+                    app.terminal.tab_drag = Some(i);
                     app.focus = Focus::Terminal;
                 }
                 // At the bottom the tab bar is the top edge; on the right the separator is.
@@ -1308,6 +1332,59 @@ fn bar_hit(app: &App, x: u16) -> Option<BarHit> {
             Some(c) if x == t.x + c => BarHit::Close(t.index),
             _ => BarHit::Tab(t.index),
         })
+}
+
+/// A dragged tab moves to the tab under screen column `column` and stays active; the terminal
+/// keeps its pty and title. It moves only once the mouse would lie on it at its new place, so a
+/// wide label dragged over a narrow one does not swap back on the next cell. Past the last drawn
+/// tab (the `+N` marker, the '+', the empty bar) it moves after that tab, or one place further
+/// when it already is that tab, which carries it past tabs hidden behind `+N`. Mirrored on the
+/// left: on the first drawn tab's leading cells (its space and number) or left of the panel, it
+/// moves one place toward the front, past tabs hidden before it (only a bar that draws the
+/// active tab alone has hidden tabs before its first drawn one).
+fn drag_tab_to(app: &mut App, column: u16) {
+    let Some(cur) = app.terminal.tab_drag else {
+        return;
+    };
+    let n = app.terminal.tabs.len();
+    if cur >= n {
+        app.terminal.tab_drag = None;
+        return;
+    }
+    let area = app.layout.terminal;
+    let bar = crate::ui::terminal_view::tab_bar(app, area.width);
+    let (Some(me), Some(last)) = (bar.tabs.iter().find(|t| t.index == cur), bar.tabs.last()) else {
+        return;
+    };
+    // Left of the panel (the separator, the editor) counts as its first column.
+    let x = column.saturating_sub(area.x);
+    let to = if x >= last.x + last.width {
+        if last.index == cur {
+            (cur + 1 < n).then_some(cur + 1)
+        } else {
+            Some(last.index)
+        }
+    } else if x < me.x + 2 && bar.tabs.first().is_some_and(|t| t.index == cur) {
+        cur.checked_sub(1)
+    } else {
+        bar.tabs
+            .iter()
+            .find(|t| x >= t.x && x < t.x + t.width)
+            .and_then(|t| match t.index.cmp(&cur) {
+                std::cmp::Ordering::Greater => (x + me.width >= t.x + t.width).then_some(t.index),
+                std::cmp::Ordering::Less => (x < t.x + me.width).then_some(t.index),
+                std::cmp::Ordering::Equal => None,
+            })
+    };
+    let Some(to) = to else {
+        return;
+    };
+    let p = &mut app.terminal;
+    let tab = p.tabs.remove(cur);
+    p.tabs.insert(to, tab);
+    p.active = to;
+    p.tab_drag = Some(to);
+    app.dirty = true;
 }
 
 /// Dragging the edge: at the bottom the panel reaches from the mouse row to its bottom; on the
