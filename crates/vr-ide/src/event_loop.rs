@@ -149,6 +149,8 @@ pub fn exit(
     let result = finish(result, app, dir);
     // A file opened just before quitting is still queued for the recent-files list.
     app.close_recent_files(Duration::from_millis(500));
+    // Before the terminals go: their shells name the folders the session keeps.
+    crate::session::save_on_quit(app);
     // Terminals get SIGHUP (SIGKILL after a grace period) and are reaped before vr-ide exits
     // (AC-14d); each wait is bounded by vr-term.
     crate::commands::terminal::shutdown(app);

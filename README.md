@@ -104,8 +104,18 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
   is resolved, so `a/../a/b` works).
 - With a file it is the nearest parent folder that contains `.git`, walking up from the file's
   folder; if there is none, the file's own folder.
-- vr-ide has no options: `vr-ide --help` or `--version` are read as paths and fail. A missing path
-  prints a message and exits with status 2.
+- vr-ide has one option, `--session` (alone); anything else, `vr-ide --help` or `--version`
+  included, is read as a path and fails. A missing path prints a message and exits with status 2.
+- `vr-ide --session` (what the desktop launcher runs) reopens the last session: the workspace
+  folders, the open file tabs (cursor, scroll, read/edit mode), the active tab, the explorer's
+  expanded folders and the terminal panel (shown, position, size); each terminal starts as a fresh
+  shell in its folder and nothing is re-run. Files are read as they are on disk now; a file that is
+  gone is skipped with one notice. With no saved session it opens your home folder. The session is
+  saved on quit and about a second after each change to `~/.local/state/vr-ide/session.toml`
+  (mode 0600; unsaved text is never stored). Only one `--session` window saves it; a second one says
+  so. An unreadable file gives one notice, opens the home folder and is kept as
+  `session.toml.bad`. Plain `vr-ide` and `vr-ide <folder|file|.vr-workspace>` never read or write
+  the session.
 - It needs an interactive terminal; it cannot run with its input or output redirected.
 
 Press `F1` to open the command palette, which lists every command with its
