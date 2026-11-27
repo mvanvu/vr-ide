@@ -252,6 +252,13 @@ pub fn render_list(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) -
         let text = match b.why {
             // Ends with the walk, not by a key.
             Incomplete::Scanning => format!("! List may be incomplete ({})", b.why.text()),
+            // What a walk did not see in time; both fit the two lines at 80 columns.
+            Incomplete::Unwalked => {
+                "! Scan stopped early: changes may be missing · enter hides".to_string()
+            }
+            Incomplete::WalkedLate => {
+                "! Deletions during the scan may be missing · enter hides".to_string()
+            }
             _ => format!(
                 "! List may be incomplete ({} at {}) · enter hides",
                 b.why.text(),

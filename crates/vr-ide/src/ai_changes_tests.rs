@@ -344,7 +344,7 @@ fn revert_asks_first_and_writes_the_earlier_version_back() {
     assert_eq!(c.title, "Revert session.rs?");
     assert_eq!(
         c.message,
-        "Writes back session.rs as it was before claude changed it (14:32). Today's text, +9 -3, is lost."
+        "Writes back session.rs as it was before claude changed it (14:32). Today's text, +9 -3, goes to the trash."
     );
     assert_eq!(
         c.note.as_deref(),
@@ -373,6 +373,11 @@ fn revert_asks_first_and_writes_the_earlier_version_back() {
         fx.notices().last().unwrap(),
         &(NoticeLevel::Info, "Reverted session.rs".to_string())
     );
+    assert_eq!(
+        fx.trashed(),
+        1,
+        "the replaced version is in the trash, not deleted"
+    );
     // A created file goes to the trash; a deleted one comes back.
     press(&mut fx.app, "shift+f5");
     let crate::ui::dialog::DialogWidget::Confirm(c) = &fx.app.dialog.as_ref().unwrap().widget
@@ -389,7 +394,8 @@ fn revert_asks_first_and_writes_the_earlier_version_back() {
     );
     confirm(&mut fx.app);
     assert!(!fx.path(TESTS_RS).exists());
-    assert_eq!(fx.trashed(), 1);
+    // With the version of session.rs the Revert above replaced (D18).
+    assert_eq!(fx.trashed(), 2);
     press(&mut fx.app, "shift+f5");
     let crate::ui::dialog::DialogWidget::Confirm(c) = &fx.app.dialog.as_ref().unwrap().widget
     else {
@@ -704,7 +710,8 @@ fn a_real_agents_changes_are_listed_kept_and_reverted() {
     press(&mut app, "shift+f5");
     confirm(&mut app);
     assert!(!root.join("made.txt").exists());
-    assert!(base.join("trash").read_dir().unwrap().count() == 1);
+    // The created file and the version of a.txt that was replaced (D18).
+    assert!(base.join("trash").read_dir().unwrap().count() == 2);
     assert!(review::select(&mut app, Path::new("gone.txt")));
     press(&mut app, "f5");
     assert!(!root.join("gone.txt").exists());
@@ -716,4 +723,54 @@ fn a_real_agents_changes_are_listed_kept_and_reverted() {
     let store = app.ai.sessions[0].changes.as_ref().unwrap().store_dir();
     crate::ai::shutdown(&mut app);
     assert!(!store.exists());
+}
+
+/// D8: a save of vr-ide's own editor is not the agent's change. When the agent writes right
+/// after it, the copy from before the save is not "the version before the agent's change":
+/// Revert must not write it back over the user's saved edit.
+#[test]
+fn an_own_save_the_agent_wrote_over_is_not_undone_by_revert() {
+    let mut fx = fixture();
+    let p = fx.path(SESSION_RS);
+    fx.app.open_path(&p).unwrap();
+    crate::app_tests::space_i(&mut fx.app);
+    key(&mut fx.app, KeyCode::Char('x'));
+    key(&mut fx.app, KeyCode::Esc);
+    press(&mut fx.app, "ctrl+s");
+    let saved = std::fs::read_to_string(&p).unwrap();
+    assert_ne!(saved, SESSION_OLD, "the editor saved");
+    // The agent writes before the save's event is looked at.
+    fx.agent_writes(SESSION_RS, SESSION_NEW);
+    assert_eq!(fx.rels(), [SESSION_RS]);
+    let r = &fx.app.ai.sessions[0].records[0];
+    assert!(
+        !r.can_revert(),
+        "the copy from before the user's save is not offered: {r:?}"
+    );
+}
+
+/// A refusal of Keep or Revert is news about the list as it is now: the newest one is the
+/// one shown, older ones do not stay in front of it. Other notices keep their place.
+#[test]
+fn a_newer_refusal_replaces_the_older_ones() {
+    let mut fx = changed();
+    fx.app.warn("something else");
+    press(&mut fx.app, "f6");
+    key(&mut fx.app, KeyCode::Enter);
+    press(&mut fx.app, "f3");
+    fx.write(SESSION_RS, &format!("{SESSION_NEW}// one\n"));
+    press(&mut fx.app, "f5");
+    fx.write(SESSION_RS, &format!("{SESSION_NEW}// two\n"));
+    press(&mut fx.app, "f5");
+    press(&mut fx.app, "shift+f5");
+    fx.write(SESSION_RS, &format!("{SESSION_NEW}// three\n"));
+    confirm(&mut fx.app);
+    let texts: Vec<String> = fx.notices().into_iter().map(|(_, t)| t).collect();
+    assert_eq!(
+        texts,
+        [
+            "something else",
+            "Not reverted: session.rs changed since shown; diff updated"
+        ]
+    );
 }

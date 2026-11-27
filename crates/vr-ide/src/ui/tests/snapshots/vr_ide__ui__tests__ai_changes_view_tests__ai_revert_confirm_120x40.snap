@@ -20,7 +20,7 @@ expression: t.backend()
 "                             │ 21 -    pub fn skip_missing(&mut self) {             │                                   "
 "                            ┌ Revert session.rs? ──────────────────────────────────────────┐                            "
 "                            │ Writes back session.rs as it was before claude changed it    │                            "
-"                            │ (14:32). Today's text, +9 -3, is lost.                       │                            "
+"                            │ (14:32). Today's text, +9 -3, goes to the trash.             │                            "
 "                            │ Edits by other programs since 14:32 count as claude's.       │                            "
 "                            │                                                              │                            "
 "                            │ [Revert] [Cancel]                                            │                            "

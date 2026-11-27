@@ -224,6 +224,12 @@ fn ai_revert_dialogs_and_refusal() {
     assert!(all.contains(" Revert session.rs? "), "{all}");
     assert!(all.contains("Edits by other programs since 14:32 count as claude's."));
     assert!(all.contains("[Revert] [Cancel]"));
+    // The same dialog is whole at 80x24.
+    let t = draw(&mut fx.app, 80, 24);
+    let all: String = (0..24).map(|y| row(&t, y) + "\n").collect();
+    assert!(all.contains("goes to the trash."), "{all}");
+    assert!(all.contains("count as claude's."), "{all}");
+    assert!(all.contains("[Revert] [Cancel]"), "{all}");
     // Refused: the file changed while the dialog was open.
     let newer = std::fs::read_to_string(fx.path(SESSION_RS)).unwrap() + "// more\n";
     fx.write(SESSION_RS, &newer);
@@ -283,6 +289,8 @@ fn ai_changes_empty_on_an_exited_session() {
 #[test]
 fn ai_changes_scanning_notice() {
     let mut fx = changed();
+    // The folders the fixture just changed are older than the new run.
+    std::thread::sleep(crate::ai_changes_tests::MARGIN * 2);
     fx.changes().resume();
     review::refresh(&mut fx.app);
     fx.app.explorer.visible = false;
@@ -383,4 +391,56 @@ fn ai_diff_lines_have_syntax_colours() {
     );
     review::close_diff(&mut fx.app);
     assert_eq!(review::diff_highlighters(&fx.app), 0);
+}
+
+/// SEC-13: a walk that was not everywhere in time leaves a notice that stays until Enter;
+/// both texts are whole at 80x24 and 120x40.
+#[test]
+fn ai_changes_scan_gap_notices() {
+    use crate::ai::changes::Incomplete;
+    let mut fx = changed();
+    press(&mut fx.app, "f6");
+    let panel = |t: &Terminal<TestBackend>, y: u16, skip: usize| -> String {
+        row(t, y).chars().skip(skip).collect()
+    };
+    let cases = [
+        (
+            Incomplete::Unwalked,
+            [
+                " ! Scan stopped early: changes ",
+                "   may be missing · enter hides",
+            ],
+            [
+                " ! Scan stopped early: changes may ",
+                "   be missing · enter hides        ",
+            ],
+        ),
+        (
+            Incomplete::WalkedLate,
+            [
+                " ! Deletions during the scan   ",
+                "   may be missing · enter hides",
+            ],
+            [
+                " ! Deletions during the scan may   ",
+                "   be missing · enter hides        ",
+            ],
+        ),
+    ];
+    for (why, narrow, wide) in cases {
+        fx.changes().set_incomplete(why);
+        review::refresh(&mut fx.app);
+        fx.app.explorer.visible = false;
+        let t = draw(&mut fx.app, 80, 24);
+        assert_eq!([panel(&t, 2, 49), panel(&t, 3, 49)], narrow);
+        assert_eq!(panel(&t, 4, 49), " M session.rs            +9 -3 ");
+        fx.app.explorer.visible = true;
+        let t = draw(&mut fx.app, 120, 40);
+        assert_eq!([panel(&t, 2, 85), panel(&t, 3, 85)], wide);
+    }
+    // Enter on it hides it.
+    key(&mut fx.app, KeyCode::Up);
+    key(&mut fx.app, KeyCode::Enter);
+    let t = draw(&mut fx.app, 120, 40);
+    assert_eq!(panel(&t, 2, 85), " M session.rs …es/vr-ide/src +9 -3 ");
 }

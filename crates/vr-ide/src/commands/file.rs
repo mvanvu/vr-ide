@@ -69,9 +69,14 @@ pub fn save_doc(app: &mut App, i: usize) -> SaveOutcome {
         .path
         .as_deref()
         .map_or_else(|| "untitled".to_string(), |p| app.display_path(p));
+    let path = app.docs[i].path.clone();
+    own_save(app, path.as_deref(), true);
     let doc = &mut app.docs[i];
     doc.buffer.break_undo_group();
     let result = doc.save();
+    if matches!(result, Err(DocError::ChangedOnDisk)) {
+        own_save(app, path.as_deref(), false);
+    }
     match result {
         Ok(saved) => {
             if let Some(p) = app.docs[i].path.clone() {
@@ -94,6 +99,14 @@ pub fn save_doc(app: &mut App, i: usize) -> SaveOutcome {
             app.error(format!("Save: {name}: {e}"));
             SaveOutcome::Failed
         }
+    }
+}
+
+/// Tells the AI sessions' change trackers about a save of the editor: before it (`begins`),
+/// and again when it replaced nothing.
+fn own_save(app: &App, path: Option<&Path>, begins: bool) {
+    if let Some(p) = path {
+        crate::ai::review::own_save(app, p, begins);
     }
 }
 
@@ -443,6 +456,7 @@ pub fn save_as_doc(
     }
     // The tab takes `target`: a running project replace must leave that file alone.
     let claim = super::search::before_tab_opens(app, target).map_err(SaveAsError::Failed)?;
+    own_save(app, Some(target), true);
     let doc = &mut app.docs[i];
     let old = doc.path.clone();
     doc.buffer.break_undo_group();
@@ -451,6 +465,9 @@ pub fn save_as_doc(
         (Some(seen), None) => doc.save_as_seen(target, seen),
         (None, _) => doc.save_as(target),
     };
+    if matches!(result, Err(DocError::ChangedOnDisk)) {
+        own_save(app, Some(target), false);
+    }
     if result.is_err()
         && let Some((gate, c)) = &claim
     {
@@ -613,12 +630,17 @@ fn keep_mine(app: &mut App, i: usize, seen: Option<&DiskVersion>) {
         let msg = format!("{name}: read again; nothing was replaced");
         return prompt_external_change_with(app, i, true, Some(msg));
     };
+    let path = app.docs[i].path.clone();
+    own_save(app, path.as_deref(), true);
     let doc = &mut app.docs[i];
     doc.buffer.break_undo_group();
     let result = match injected_commit_error() {
         Some(e) => Err(e),
         None => doc.save_overwrite_seen(seen),
     };
+    if matches!(result, Err(DocError::ChangedOnDisk)) {
+        own_save(app, path.as_deref(), false);
+    }
     match result {
         Ok(saved) => {
             if let Some(p) = app.docs[i].path.clone() {

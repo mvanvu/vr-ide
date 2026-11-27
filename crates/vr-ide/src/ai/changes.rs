@@ -68,6 +68,9 @@ const USED_NAME: &str = "used";
 /// lag: the total can be passed by that much, never without bound.
 const OTHERS_TTL: Duration = Duration::from_secs(1);
 const USED_LAG: u64 = 1 << 20;
+/// In the name a replaced version has from the Revert until it is in the trash:
+/// `<name>.vr-ide-reverted-PID-N`, the name it is found under there.
+const REVERTED_MARK: &str = ".vr-ide-reverted-";
 
 #[derive(Debug, Clone)]
 pub struct Limits {
@@ -206,6 +209,12 @@ pub enum Incomplete {
     WalkLimit,
     /// The start-up walk has not been everywhere yet.
     Scanning,
+    /// The program exited (or was started again) before the walk had been everywhere: what
+    /// it changed in the folders not reached was never seen.
+    Unwalked,
+    /// Entries of a folder changed between the session's start and the moment the walk put
+    /// its watch there: a file deleted in that time was never seen.
+    WalkedLate,
 }
 
 impl Incomplete {
@@ -217,6 +226,8 @@ impl Incomplete {
             Incomplete::RecordLimit => "file limit",
             Incomplete::WalkLimit => "too many files",
             Incomplete::Scanning => "still scanning the folder",
+            Incomplete::Unwalked => "scan stopped early",
+            Incomplete::WalkedLate => "deletions during the scan",
         }
     }
 }
@@ -498,6 +509,9 @@ struct State {
     records: Vec<Record>,
     banner: Option<Banner>,
     index_dirty: bool,
+    /// Files (root-relative) the editor is saving or has saved, until the save's event shows
+    /// the file to be that save, or something else.
+    saving: HashSet<PathBuf>,
 }
 
 struct Shared {
@@ -654,7 +668,8 @@ impl State {
         self.records.iter().position(|r| r.rel == rel)
     }
 
-    /// `.git` internals, the state / config / trash folders and vr-ide's own temp files.
+    /// `.git` internals, the state / config / trash folders, vr-ide's own temp files and the
+    /// versions a Revert replaced, on their way to the trash.
     fn skipped(&self, rel: &Path) -> bool {
         // `.Trash-<uid>` / `.Trash`: the trash of another mount.
         let internal = |c: Component| {
@@ -665,7 +680,10 @@ impl State {
             return true;
         }
         let abs = self.root.join(rel);
-        vr_core::is_save_temp(&abs) || self.excluded.iter().any(|x| abs.starts_with(x))
+        let reverted = rel
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().contains(REVERTED_MARK));
+        reverted || vr_core::is_save_temp(&abs) || self.excluded.iter().any(|x| abs.starts_with(x))
     }
 
     fn note(&mut self, why: Incomplete) {
@@ -723,6 +741,22 @@ impl State {
         }
         self.walked.clear();
         self.dirs.clear();
+        self.saving.clear();
+    }
+
+    /// The remembered state of `rel`, taken out to become a record's earlier version. When
+    /// the editor saved the file since (D8: not the agent's change) and the file is no
+    /// longer that save, the copy is from before the user's save, not from before the
+    /// agent's change: it is dropped, the change is listed without an earlier version.
+    fn take_base(&mut self, rel: &Path) -> Option<Base> {
+        let mut base = self.known.remove(rel)?;
+        if self.saving.remove(rel) {
+            if let Some(blob) = base.blob.take() {
+                self.drop_blob(&blob);
+            }
+            base.why = Some(NoEarlier::NotSeen);
+        }
+        Some(base)
     }
 
     fn save_index(&mut self) {
@@ -1086,8 +1120,13 @@ impl Engine {
                     return true;
                 };
                 left = left.saturating_sub(1);
+                let watched = self.shared.lock().dirs.contains(&rel);
                 if !self.watch(&rel) {
                     continue;
+                }
+                if !watched && self.changed_unwatched(&root.join(&rel)) {
+                    self.shared.lock().note(Incomplete::WalkedLate);
+                    self.shared.bump();
                 }
                 match fs::read_dir(root.join(&rel)) {
                     Ok(rd) => scan.entries = Some((rel, rd)),
@@ -1129,6 +1168,17 @@ impl Engine {
         }
         self.scan = Some(scan);
         false
+    }
+
+    /// Entries of `dir` came or went between the session's start and now, when its watch
+    /// begins: every such change sets the folder's own times. A file created in that time is
+    /// still found by the walk, one deleted then is in no list (SEC-13).
+    fn changed_unwatched(&self, dir: &Path) -> bool {
+        let (t0, margin) = {
+            let st = self.shared.lock();
+            (st.t0, st.limits.margin)
+        };
+        fs::symlink_metadata(dir).is_ok_and(|m| !Stamp::of(&m).predates(t0, margin))
     }
 
     fn finish_scan(&mut self) {
@@ -1423,6 +1473,7 @@ impl Engine {
             return;
         }
         if let Some(own) = own.as_ref().filter(|o| o.is_own(&abs)) {
+            self.shared.lock().saving.remove(rel);
             Engine::rebase(&self.shared, rel, Expect::Own(own));
             return;
         }
@@ -1446,7 +1497,7 @@ impl Engine {
                     }
                     return;
                 }
-                if let Some(b) = st.known.remove(rel) {
+                if let Some(b) = st.take_base(rel) {
                     st.add(rel, Kind::Modified, Some(b));
                 }
             }
@@ -1496,7 +1547,7 @@ impl Engine {
                 }
                 Kind::Deleted => {}
             }
-        } else if let Some(b) = st.known.remove(rel) {
+        } else if let Some(b) = st.take_base(rel) {
             st.add(rel, Kind::Deleted, Some(b));
         }
     }
@@ -1978,9 +2029,12 @@ impl Pin {
 }
 
 /// What a Revert did, for the notice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reverted {
     Restored,
+    /// Restored, but the version that was replaced could not be moved to the trash: it is
+    /// kept in this file next to the restored one (never deleted).
+    RestoredOldKept(PathBuf),
     Trashed,
     /// In the trash, but written to while it was moved there: the trash holds a version
     /// the diff did not show.
@@ -1997,6 +2051,35 @@ pub enum KeepError {
     /// The record is gone (kept or reverted meanwhile).
     Gone,
     Failed(String),
+}
+
+/// The name a replaced version of `name` has on its way to the trash.
+fn reverted_name(name: &std::ffi::OsStr) -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let name = name.to_string_lossy();
+    // Under NAME_MAX (255 bytes) with room for the suffix.
+    let mut cut = name.len().min(200);
+    while !name.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!(
+        "{}{REVERTED_MARK}{}-{}",
+        &name[..cut],
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// `a` becomes `b` unless something is at `b`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn rename_noreplace(a: &Path, b: &Path) -> io::Result<()> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    renameat_with(CWD, a, CWD, b, RenameFlags::NOREPLACE).map_err(io::Error::from)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn rename_noreplace(_a: &Path, _b: &Path) -> io::Result<()> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
 /// Puts `tmp` at `path` in exchange for the link (or other non-file) `seen` describes; when
@@ -2106,6 +2189,7 @@ impl Changes {
                 records: Vec::new(),
                 banner: None,
                 index_dirty: false,
+                saving: HashSet::new(),
             }),
             version: AtomicU64::new(0),
             wake: cfg.wake,
@@ -2188,6 +2272,35 @@ impl Changes {
         self.shared.bump();
     }
 
+    /// Marks the list as possibly incomplete, as the walk or the watcher would.
+    #[cfg(test)]
+    pub fn set_incomplete(&self, why: Incomplete) {
+        self.shared.lock().note(why);
+        self.shared.bump();
+    }
+
+    /// The editor is about to save `abs` (`begins`), or that save wrote nothing.
+    /// Call it right before the save, so no write of the agent can come between the save and
+    /// this knowledge: a copy taken before the save must not pass for the version before a
+    /// change the agent makes after it.
+    pub fn own_save(&self, abs: &Path, begins: bool) {
+        let root = self.shared.lock().root.clone();
+        let real = abs
+            .parent()
+            .and_then(|d| fs::canonicalize(d).ok())
+            .zip(abs.file_name())
+            .map(|(d, n)| d.join(n));
+        let Some(rel) = real.as_deref().and_then(|p| p.strip_prefix(&root).ok()) else {
+            return;
+        };
+        let mut st = self.shared.lock();
+        if !begins {
+            st.saving.remove(rel);
+        } else if st.running && st.record_at(rel).is_none() && st.known.contains_key(rel) {
+            st.saving.insert(rel.to_path_buf());
+        }
+    }
+
     /// Marks the record of `rel` as one without an earlier version, for `why`.
     #[cfg(test)]
     pub fn set_missing(&self, rel: &Path, why: NoEarlier) {
@@ -2224,9 +2337,10 @@ impl Changes {
         self.shared.lock().records.len()
     }
 
-    /// Why the list may miss changes: a cause noted by the watcher or a cap, else the
-    /// start-up walk while it runs (a folder it has not reached is not watched yet, and what
-    /// was deleted there is never seen). The walk's notice ends with the walk, not by hand.
+    /// Why the list may miss changes: a cause noted by the watcher, a cap or a walk that was
+    /// not everywhere in time, else the start-up walk while it runs (a folder it has not
+    /// reached is not watched yet). The walk's own notice ends with the walk, not by hand;
+    /// what the walk could not see by then is a noted cause and outlives it.
     pub fn banner(&self) -> Option<Banner> {
         let st = self.shared.lock();
         st.banner.or_else(|| {
@@ -2257,6 +2371,12 @@ impl Changes {
     pub fn pause(&self) {
         let mut st = self.shared.lock();
         if st.running {
+            if st.scanning {
+                // The walk stops here. What the program did in the folders it had not
+                // reached was never seen, and no later walk can tell: the list says so
+                // until the notice is dismissed (SEC-13).
+                st.note(Incomplete::Unwalked);
+            }
             st.running = false;
             st.epoch += 1;
             drop(st);
@@ -2267,6 +2387,10 @@ impl Changes {
     /// The program starts again (call before it is started): a fresh walk from now.
     pub fn resume(&self) {
         let mut st = self.shared.lock();
+        if st.running && st.scanning {
+            // The walk of the run before is cut short like by an exit.
+            st.note(Incomplete::Unwalked);
+        }
         st.running = true;
         st.t0 = SystemTime::now();
         st.epoch += 1;
@@ -2457,7 +2581,10 @@ impl Changes {
             }
             let done = match pin.after(&path, seen) {
                 Moved::No => {
-                    let text = "the trash reported success but the file is still in place";
+                    // The trash moved something else or nothing: the folder may have been
+                    // swapped for a link after its real path was read.
+                    let text = "the trash reported success but the file is still in place; \
+                                the trash may hold a different file from that path";
                     return Err(RevertError::Failed(text.into()));
                 }
                 Moved::Same => Reverted::Trashed,
@@ -2488,6 +2615,7 @@ impl Changes {
         }
         let (len, hash) = (bytes.len() as u64, content_hash(&bytes));
         let mut outside = false;
+        let (aside_name, mut aside) = (reverted_name(name), false);
         let link_like = seen.0.is_some_and(|s| s.stamp.mode & 0o170000 != 0o100000);
         let done = if link_like {
             // A link (or another non-file) is at the path: nothing can be written into it, so
@@ -2516,6 +2644,21 @@ impl Changes {
                 Ok(Outcome::Changed)
             }
         } else {
+            // A file that was at the path is not deleted (D18): the replaced version, or our
+            // own file when it is taken back out because the path had changed. A program
+            // that opened it there can still write through that handle after the file passed
+            // its check, and no check sees that write: so the file gets a name of its own
+            // right where the protocol would delete it (the delete then finds nothing), and
+            // goes to the trash below, late writes included. Where the rename is refused the
+            // protocol deletes it as every save does.
+            let mut seam = |step: Step| {
+                seam(step);
+                if matches!(step, Step::BeforeDeleteOld | Step::BeforeDeleteOurs)
+                    && rename_noreplace(&tmp, &anchor.path(aside_name.as_ref())).is_ok()
+                {
+                    aside = true;
+                }
+            };
             safe_replace::replace_if_unchanged(
                 &tmp,
                 &path,
@@ -2535,7 +2678,7 @@ impl Changes {
                     },
                 },
                 &mut safe_replace::exchange_files,
-                seam,
+                &mut seam,
             )
         };
         match done {
@@ -2543,11 +2686,23 @@ impl Changes {
                 let _ = fs::remove_file(&tmp);
                 Err(fail(e))
             }
-            Ok(Outcome::Changed) => Err(if outside {
-                RevertError::Outside
-            } else {
-                RevertError::Changed
-            }),
+            Ok(Outcome::Changed) => {
+                if aside {
+                    // Our own file, with the earlier version's bytes and whatever was
+                    // written into it while it was at the path. Not taken by the trash, it
+                    // is deleted as before: nothing of ours stays in the user's folder.
+                    let at = anchor.path(aside_name.as_ref());
+                    let _ = trash.trash(&[anchor.real_now().join(&aside_name)]);
+                    if fs::symlink_metadata(&at).is_ok() {
+                        let _ = fs::remove_file(&at);
+                    }
+                }
+                Err(if outside {
+                    RevertError::Outside
+                } else {
+                    RevertError::Changed
+                })
+            }
             Ok(Outcome::Kept { at, what, cause }) => {
                 // Named by the folder's real path: the handle's path is no use to the user.
                 let at = at
@@ -2558,6 +2713,17 @@ impl Changes {
                 ))
             }
             Ok(Outcome::Replaced) => {
+                // By its real path, as the trash works; a trash that did not take it leaves
+                // it under its name, and the answer says where.
+                let kept = aside
+                    .then(|| {
+                        let real = anchor.real_now().join(&aside_name);
+                        let _ = trash.trash(std::slice::from_ref(&real));
+                        fs::symlink_metadata(anchor.path(aside_name.as_ref()))
+                            .is_ok()
+                            .then_some(real)
+                    })
+                    .flatten();
                 let _ = anchor.dir.sync_all();
                 let stamp = file.metadata().ok().map(|m| Stamp::of(&m));
                 let mut st = self.shared.lock();
@@ -2584,7 +2750,7 @@ impl Changes {
                 st.save_index();
                 drop(st);
                 self.shared.bump();
-                Ok(Reverted::Restored)
+                Ok(kept.map_or(Reverted::Restored, Reverted::RestoredOldKept))
             }
         }
     }

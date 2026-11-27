@@ -24,6 +24,8 @@ struct Fx {
     outside: PathBuf,
     total: Arc<AtomicU64>,
     trash: FakeTrash,
+    /// Where `trash` puts what it takes, as `0`, `1`, ... in order.
+    trash_dir: PathBuf,
 }
 
 impl Fx {
@@ -35,6 +37,7 @@ impl Fx {
         fs::create_dir_all(&outside).unwrap();
         Fx {
             trash: FakeTrash::new(base.join("trash")),
+            trash_dir: base.join("trash"),
             _tmp: tmp,
             root,
             state,
@@ -585,7 +588,9 @@ fn sec12_revert_is_refused_when_the_file_changed_since_the_diff() {
         c.revert(Path::new("n.txt"), &d.seen, &fx.trash, &mut |_| {}),
         Err(RevertError::Changed)
     ));
-    assert!(n.exists() && fx.trash.trashed().is_empty());
+    // The trash holds what the Reverts above took out of the path (D18): the refused one's
+    // own file and the version that was replaced. Nothing else.
+    assert!(n.exists() && fx.trash.trashed().len() == 2);
     fs::remove_file(&p).unwrap();
     c.feed(FsEvent::Removed(p.clone()));
     let d = c.diff(rel).unwrap();
@@ -991,7 +996,9 @@ fn sec12_a_folder_at_the_path_is_never_moved_or_replaced() {
         c.revert(Path::new("n.txt"), &d.seen, &fx.trash, &mut |_| {}),
         Err(RevertError::Folder)
     ));
-    assert!(n.is_dir() && fx.trash.trashed().is_empty());
+    // The trash holds vr-ide's own file from the refused Revert above (D18), no folder.
+    let own = |t: &PathBuf| t.to_string_lossy().contains(".vr-ide-reverted-");
+    assert!(n.is_dir() && fx.trash.trashed().iter().all(own));
 }
 
 #[test]
@@ -1095,9 +1102,11 @@ fn sec12_a_created_file_written_to_while_it_is_trashed_is_reported() {
     c.feed(FsEvent::Created(k.clone()));
     let d = c.diff(Path::new("k.txt")).unwrap();
     let t = raced(Box::new(|| {}), true);
+    // Whatever the trash did move was not this file (its folder may have been swapped for a
+    // link in that instant): the message says so.
     assert!(matches!(
         c.revert(Path::new("k.txt"), &d.seen, &t, &mut |_| {}),
-        Err(RevertError::Failed(_))
+        Err(RevertError::Failed(e)) if e.contains("the trash may hold a different file")
     ));
     assert_eq!(fs::read(&k).unwrap(), b"1\n");
     assert_eq!(c.count(), 1);
@@ -1455,6 +1464,7 @@ fn race_on_a_file(style: Writer) {
         }
     };
     let (mut refused, mut swaps, mut aside, mut blind) = (0, 0, 0, 0);
+    let mut trashed = 0;
     let mut kept_all: Vec<PathBuf> = Vec::new();
     for round in 0..RACE_ROUNDS {
         let version = |k: u32| format!("r{round:03}-k{k:06}\n").into_bytes();
@@ -1487,7 +1497,40 @@ fn race_on_a_file(style: Writer) {
             .kept
             .iter()
             .any(|k| fs::read(k).is_ok_and(|b| b == last.what));
-        blind += check_round(round, style, &got, &unlinked, &last, end == last.what, kept);
+        // D18: a version a Revert takes out of the path is never unlinked. It is in the
+        // trash: the version that Revert showed, or (a writer in place only) a write through
+        // a handle opened before the swap, which landed in the trash copy instead of nowhere.
+        assert!(
+            unlinked.is_empty() && !last.unlinked(),
+            "round {round}: a Revert unlinked a version; it belongs in the trash"
+        );
+        let all = fx.trash.trashed().len();
+        let mut trash_holds_last = false;
+        for slot in trashed..all {
+            let bytes = fs::read(fx.trash_dir.join(slot.to_string())).unwrap();
+            let shown = got.replaced.is_some_and(|s| s.shows(&bytes));
+            let late = style == Writer::InPlace
+                && bytes.len() == last.what.len()
+                && bytes.starts_with(format!("r{round:03}-k").as_bytes());
+            // A refused Revert's own file, taken back out of the path.
+            let ours = bytes == PRE;
+            assert!(
+                shown || late || ours,
+                "round {round}: the trash holds {bytes:?}, which no Revert showed"
+            );
+            blind += u32::from(!shown && !ours);
+            trash_holds_last |= bytes == last.what;
+        }
+        let swapped = got.attempts.iter().filter(|a| a.swapped != 0).count();
+        assert!(
+            all - trashed >= usize::from(got.replaced.is_some()) && all - trashed <= swapped,
+            "round {round}: at most one trash entry per Revert that swapped"
+        );
+        trashed = all;
+        assert!(
+            end == last.what || kept || trash_holds_last,
+            "round {round}: the newest version is nowhere"
+        );
         assert_eq!(got.replaced.is_some(), c.count() == 0, "round {round}");
         refused += got.refused;
         swaps += got.attempts.iter().filter(|a| a.swapped != 0).count();
@@ -1503,7 +1546,7 @@ fn race_on_a_file(style: Writer) {
     }
     eprintln!(
         "{style:?} on a file: {swaps} swaps, {refused} refused, {aside} kept aside, \
-         {blind} writes no save can see"
+         {blind} late writes kept in the trash"
     );
     // At rest the earlier version comes back byte for byte.
     stage(b"at rest\n");
@@ -1659,4 +1702,212 @@ fn sec12_revert_races_a_writer_in_place_on_a_link() {
 #[test]
 fn sec12_revert_races_a_writer_by_rename_on_a_link() {
     race_on_a_link(Writer::Rename);
+}
+
+// ---- fix round 2: a walk that was not everywhere in time (SEC-13) -----------------------------
+
+#[test]
+fn sec13_a_walk_the_program_did_not_wait_for_leaves_the_list_marked() {
+    let fx = Fx::new();
+    fx.write("proj/sub/a.txt", "x");
+    std::thread::sleep(MARGIN * 2);
+    let c = Changes::manual(fx.config(Fx::limits())).unwrap();
+    // The program exits before the walk reached its folders: what it did there is unseen.
+    c.pause();
+    assert_eq!(why(&c), Some(Incomplete::Unwalked));
+    // The next run's walk does not find those changes either: the notice stays ...
+    std::thread::sleep(MARGIN * 2);
+    c.resume();
+    c.scan();
+    assert_eq!(why(&c), Some(Incomplete::Unwalked));
+    // ... until Enter.
+    c.dismiss_banner();
+    assert_eq!(c.banner(), None);
+    // After a walk that was everywhere an exit leaves nothing to say.
+    c.pause();
+    assert_eq!(c.banner(), None);
+    // Started again while the walk of the run before still ran.
+    c.resume();
+    c.resume();
+    assert_eq!(why(&c), Some(Incomplete::Unwalked));
+}
+
+#[test]
+fn sec13_a_folder_changed_before_its_watch_marks_the_list() {
+    let fx = Fx::new();
+    let gone = fx.write("late/gone.txt", "x");
+    fx.write("calm/stay.txt", "x");
+    std::thread::sleep(MARGIN * 2);
+    let c = Changes::manual(fx.config(Fx::limits())).unwrap();
+    // The program deletes a file in a folder the walk has not put its watch on yet.
+    fs::remove_file(&gone).unwrap();
+    c.scan();
+    assert_eq!(c.count(), 0, "nothing tells that the file was ever there");
+    assert_eq!(why(&c), Some(Incomplete::WalkedLate));
+    c.dismiss_banner();
+    assert_eq!(c.banner(), None);
+    // Folders nobody touched since the start say nothing.
+    c.pause();
+    std::thread::sleep(MARGIN * 2);
+    c.resume();
+    c.scan();
+    assert_eq!(c.banner(), None);
+}
+
+// ---- fix round 2: the replaced version goes to the trash (D18) --------------------------------
+
+#[test]
+fn sec12_the_replaced_version_goes_to_the_trash_with_a_late_write() {
+    use std::io::Write;
+    let fx = Fx::new();
+    let p = fx.write("a.txt", "old\n");
+    let c = fx.started(Fx::limits());
+    fs::write(&p, "agent 1\n").unwrap();
+    c.feed(FsEvent::Modified(p.clone()));
+    let d = c.diff(Path::new("a.txt")).unwrap();
+    // A program opened the file before the swap and writes after the swapped-out file passed
+    // its check: no check can see that write, so the file it lands in must not be deleted.
+    let mut late = fs::OpenOptions::new().write(true).open(&p).unwrap();
+    let got = c.revert(Path::new("a.txt"), &d.seen, &fx.trash, &mut |step| {
+        if step == Step::BeforeDeleteOld {
+            late.write_all(b"late 22\n").unwrap();
+        }
+    });
+    assert_eq!(got.unwrap(), Reverted::Restored);
+    assert_eq!(fs::read(&p).unwrap(), b"old\n");
+    assert_eq!(late.metadata().unwrap().nlink(), 1, "never unlinked");
+    let trashed = fx.trash.trashed();
+    assert_eq!(trashed.len(), 1, "one trash entry per Revert");
+    let name = trashed[0].file_name().unwrap().to_string_lossy();
+    assert!(name.starts_with("a.txt.vr-ide-reverted-"), "{name}");
+    assert_eq!(trashed[0].parent(), Some(fx.root.as_path()));
+    assert_eq!(fs::read(fx.trash_dir.join("0")).unwrap(), b"late 22\n");
+    assert_eq!(
+        strays(&fx.root, std::slice::from_ref(&p)),
+        Vec::<PathBuf>::new()
+    );
+    assert_eq!(c.count(), 0);
+}
+
+/// The other file a Revert would delete: its own, put back out of the path because the file
+/// had changed. A program that opened the path in that instant holds it too.
+#[test]
+fn sec12_a_refused_reverts_own_file_goes_to_the_trash_with_a_late_write() {
+    use std::io::Write;
+    let fx = Fx::new();
+    let p = fx.write("a.txt", "old\n");
+    let c = fx.started(Fx::limits());
+    fs::write(&p, "agent 1\n").unwrap();
+    c.feed(FsEvent::Modified(p.clone()));
+    let d = c.diff(Path::new("a.txt")).unwrap();
+    let mut late: Option<fs::File> = None;
+    let got = c.revert(
+        Path::new("a.txt"),
+        &d.seen,
+        &fx.trash,
+        &mut |step| match step {
+            Step::BeforeSwap => fs::write(&p, "agent 2\n").unwrap(),
+            Step::AfterSwap => late = Some(fs::OpenOptions::new().write(true).open(&p).unwrap()),
+            Step::BeforeDeleteOurs => late.as_mut().unwrap().write_all(b"late 22\n").unwrap(),
+            _ => {}
+        },
+    );
+    assert!(matches!(got, Err(RevertError::Changed)), "{got:?}");
+    assert_eq!(fs::read(&p).unwrap(), b"agent 2\n");
+    assert_eq!(
+        late.unwrap().metadata().unwrap().nlink(),
+        1,
+        "never unlinked"
+    );
+    assert_eq!(fx.trash.trashed().len(), 1);
+    assert_eq!(fs::read(fx.trash_dir.join("0")).unwrap(), b"late 22\n");
+    assert_eq!(
+        strays(&fx.root, std::slice::from_ref(&p)),
+        Vec::<PathBuf>::new()
+    );
+    assert_eq!(c.count(), 1);
+    // Without a trash its own file is deleted as before: nothing of vr-ide's stays behind.
+    let d = c.diff(Path::new("a.txt")).unwrap();
+    let got = c.revert(Path::new("a.txt"), &d.seen, &NoTrash, &mut |step| {
+        if step == Step::BeforeSwap {
+            fs::write(&p, "agent 3\n").unwrap();
+        }
+    });
+    assert!(matches!(got, Err(RevertError::Changed)), "{got:?}");
+    assert_eq!(
+        strays(&fx.root, std::slice::from_ref(&p)),
+        Vec::<PathBuf>::new()
+    );
+}
+
+#[test]
+fn sec12_without_a_trash_the_replaced_version_is_kept_by_name() {
+    let fx = Fx::new();
+    let p = fx.write("a.txt", "old\n");
+    let q = fx.write("b.txt", "old\n");
+    let c = fx.started(Fx::limits());
+    for f in [&p, &q] {
+        fs::write(f, "agent 1\n").unwrap();
+        c.feed(FsEvent::Modified(f.to_path_buf()));
+    }
+    let idle = RacedTrash {
+        inner: &fx.trash,
+        before: std::cell::RefCell::new(None),
+        idle: true,
+    };
+    let trashes: [(&PathBuf, &dyn vr_fs::Trash); 2] = [(&p, &NoTrash), (&q, &idle)];
+    for (f, trash) in trashes {
+        let rel = Path::new(f.file_name().unwrap());
+        let d = c.diff(rel).unwrap();
+        let got = c.revert(rel, &d.seen, trash, &mut |_| {}).unwrap();
+        let Reverted::RestoredOldKept(at) = got else {
+            panic!("{got:?}");
+        };
+        assert_eq!(fs::read(f).unwrap(), b"old\n");
+        assert_eq!(fs::read(&at).unwrap(), b"agent 1\n");
+        assert_eq!(at.parent(), Some(fx.root.as_path()));
+        // The file vr-ide left there is not a change of the agent.
+        c.feed(FsEvent::Created(at));
+    }
+    assert_eq!(c.count(), 0);
+    assert!(fx.trash.trashed().is_empty());
+}
+
+// ---- fix round 2: an own save the agent wrote over (D8, SEC-9) --------------------------------
+
+#[test]
+fn sec9_the_version_before_an_own_save_is_not_what_revert_writes_back() {
+    let fx = Fx::new();
+    let p = fx.write("a.txt", "old\n");
+    let q = fx.write("b.txt", "old b\n");
+    let own = vr_core::OwnWrites::default();
+    let mut cfg = fx.config(Fx::limits());
+    cfg.own = Some(own.clone());
+    std::thread::sleep(MARGIN * 2);
+    let c = Changes::manual(cfg).unwrap();
+    c.scan();
+    // The editor saves the file, and the agent writes before the save's event is looked at:
+    // nothing shows any more that there was a save.
+    let mut doc = vr_core::Document::open(&p, u64::MAX).unwrap();
+    doc.set_own_writes(own.clone());
+    doc.buffer = vr_core::Buffer::from_str("mine\n");
+    c.own_save(&p, true);
+    doc.save().unwrap();
+    fs::write(&p, "agent\n").unwrap();
+    c.feed(FsEvent::Modified(p.clone()));
+    let records = c.records();
+    let r = rec(&records, "a.txt");
+    assert_eq!(
+        (r.kind, r.missing),
+        (Kind::Modified, Some(NoEarlier::NotSeen)),
+        "the walk's copy is older than the user's save: writing it back would undo the save"
+    );
+    assert!(!r.can_revert());
+    // A save that wrote nothing leaves the walk's copy in use.
+    c.own_save(&q, true);
+    c.own_save(&q, false);
+    fs::write(&q, "agent\n").unwrap();
+    c.feed(FsEvent::Modified(q.clone()));
+    assert_eq!(fx.revert(&c, "b.txt").unwrap(), Reverted::Restored);
+    assert_eq!(fs::read(&q).unwrap(), b"old b\n");
 }

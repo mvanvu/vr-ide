@@ -10,7 +10,7 @@ use vr_core::FsEvent;
 use super::changes::{
     Banner, Changes, Config, Diff, KeepError, Kind, LineKind, Record, RevertError, Reverted, Seen,
 };
-use crate::app::{App, Focus, View};
+use crate::app::{App, Focus, NoticeLevel, View};
 use crate::commands::dialog::DialogAction;
 use crate::commands::file::CANCEL;
 use crate::commands::registry::{CmdArgs, CmdResult, CommandSpec};
@@ -119,6 +119,26 @@ pub fn shown_name(rel: &Path) -> String {
         |n| n.to_string_lossy().into_owned(),
     );
     crate::ui::safe_text::sanitize(&name)
+}
+
+const REFUSALS: [&str; 3] = ["Not kept: ", "Not reverted: ", "No earlier version of "];
+
+/// The notice of a Keep or Revert that did nothing. It is news about the list as it is now,
+/// so it takes the place of earlier ones of its kind: warnings stay until dismissed and are
+/// shown oldest first, and an older refusal must not sit in front of the newest one.
+fn refused(app: &mut App, level: NoticeLevel, text: String) {
+    app.notices
+        .retain(|n| !REFUSALS.iter().any(|r| n.text.starts_with(r)));
+    app.notify(level, text);
+}
+
+/// The editor is about to save `path` (`begins`), or that save wrote nothing: the sessions'
+/// trackers must not take a copy from before the save for the version before a change the
+/// agent makes right after it (D8: a save of the editor is not the agent's change).
+pub fn own_save(app: &App, path: &Path, begins: bool) {
+    for c in app.ai.sessions.iter().filter_map(|s| s.changes.as_ref()) {
+        c.own_save(path, begins);
+    }
 }
 
 /// A root-relative path as shown.
@@ -502,14 +522,16 @@ fn keep_cmd(app: &mut App, _: CmdArgs) -> CmdResult {
         Err(KeepError::Gone) => return Ok(()),
         Err(KeepError::Changed) => {
             open_diff(app, si, &rel);
-            app.warn(format!(
-                "Not kept: {name} changed since shown; diff updated"
-            ));
+            refused(
+                app,
+                NoticeLevel::Warning,
+                format!("Not kept: {name} changed since shown; diff updated"),
+            );
             refresh(app);
             return Ok(());
         }
         Err(KeepError::Failed(e)) => {
-            app.error(format!("Not kept: {name}: {e}"));
+            refused(app, NoticeLevel::Error, format!("Not kept: {name}: {e}"));
             return Ok(());
         }
     }
@@ -561,13 +583,19 @@ fn revert_cmd(app: &mut App, _: CmdArgs) -> CmdResult {
     };
     let name = shown_name(&rel);
     if !record.can_revert() {
-        app.warn(format!("No earlier version of {name} kept; Keep only"));
+        refused(
+            app,
+            NoticeLevel::Warning,
+            format!("No earlier version of {name} kept; Keep only"),
+        );
         return Ok(());
     }
     if unsaved(app, &c.root().join(&rel)) {
-        app.warn(format!(
-            "Not reverted: {name} has unsaved edits in the editor"
-        ));
+        refused(
+            app,
+            NoticeLevel::Warning,
+            format!("Not reverted: {name} has unsaved edits in the editor"),
+        );
         return Ok(());
     }
     let serial = s.serial;
@@ -582,7 +610,7 @@ fn revert_cmd(app: &mut App, _: CmdArgs) -> CmdResult {
         Kind::Modified => (
             format!(
                 "Writes back {name} as it was before {label} changed it ({at}). Today's text, \
-                 +{} -{}, is lost.",
+                 +{} -{}, goes to the trash.",
                 diff.added, diff.removed
             ),
             since,
@@ -627,9 +655,11 @@ pub fn answer_revert(app: &mut App, serial: u64, rel: &Path, seen: &Seen) {
     };
     let abs = c.root().join(rel);
     if unsaved(app, &abs) {
-        app.warn(format!(
-            "Not reverted: {name} has unsaved edits in the editor"
-        ));
+        refused(
+            app,
+            NoticeLevel::Warning,
+            format!("Not reverted: {name} has unsaved edits in the editor"),
+        );
         return;
     }
     let result = c.revert(rel, seen, &*app.trash, &mut |_| {});
@@ -641,8 +671,8 @@ pub fn answer_revert(app: &mut App, serial: u64, rel: &Path, seen: &Seen) {
             // An open tab of the file follows like after any outside change.
             for i in docs_on(app, &abs) {
                 if let Some(p) = app.docs.get(i).and_then(|d| d.path.clone()) {
-                    app.handle_fs_event(match done {
-                        Reverted::Restored => FsEvent::Modified(p),
+                    app.handle_fs_event(match &done {
+                        Reverted::Restored | Reverted::RestoredOldKept(_) => FsEvent::Modified(p),
                         Reverted::Trashed
                         | Reverted::TrashedChanged
                         | Reverted::TrashedUnchecked => FsEvent::Removed(p),
@@ -651,6 +681,11 @@ pub fn answer_revert(app: &mut App, serial: u64, rel: &Path, seen: &Seen) {
             }
             match done {
                 Reverted::Restored => app.info(format!("Reverted {name}")),
+                Reverted::RestoredOldKept(at) => app.warn(format!(
+                    "Reverted {name}; the replaced version could not be moved to the trash, kept \
+                     at {}",
+                    at.display()
+                )),
                 Reverted::Trashed => app.info(format!("Reverted {name}: moved to the trash")),
                 Reverted::TrashedChanged => app.warn(format!(
                     "Reverted {name}: it was written to while it moved to the trash; the trash \
@@ -663,22 +698,38 @@ pub fn answer_revert(app: &mut App, serial: u64, rel: &Path, seen: &Seen) {
             }
         }
         Err(RevertError::Folder) => {
-            app.warn(format!("Not reverted: a folder is now at {name}"));
+            refused(
+                app,
+                NoticeLevel::Warning,
+                format!("Not reverted: a folder is now at {name}"),
+            );
         }
         Err(RevertError::Changed) => {
             open_diff(app, si, rel);
-            app.warn(format!(
-                "Not reverted: {name} changed since shown; diff updated"
-            ));
+            refused(
+                app,
+                NoticeLevel::Warning,
+                format!("Not reverted: {name} changed since shown; diff updated"),
+            );
         }
         Err(RevertError::NoEarlier) => {
-            app.warn(format!("No earlier version of {name} kept; Keep only"));
+            refused(
+                app,
+                NoticeLevel::Warning,
+                format!("No earlier version of {name} kept; Keep only"),
+            );
         }
-        Err(RevertError::Outside) => app.error(format!(
-            "Not reverted: the folder of {name} is no longer inside the session's folder"
-        )),
+        Err(RevertError::Outside) => refused(
+            app,
+            NoticeLevel::Error,
+            format!("Not reverted: the folder of {name} is no longer inside the session's folder"),
+        ),
         Err(RevertError::Gone) => {}
-        Err(RevertError::Failed(e)) => app.error(format!("Not reverted: {name}: {e}")),
+        Err(RevertError::Failed(e)) => refused(
+            app,
+            NoticeLevel::Error,
+            format!("Not reverted: {name}: {e}"),
+        ),
     }
     refresh(app);
 }
