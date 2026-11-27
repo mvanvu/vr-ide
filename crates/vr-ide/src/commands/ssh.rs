@@ -609,8 +609,11 @@ pub fn poll(app: &mut App) -> bool {
 
 /// Puts the line first in the recent list, with the folder it ran in (and in its file, when
 /// there is one).
-fn record(app: &mut App, text: &str, base: PathBuf) {
-    let Some(entry) = Entry::new(text, Some(base)) else {
+pub(crate) fn record(app: &mut App, text: &str, base: PathBuf) {
+    let Ok(line) = Line::parse(text, None) else {
+        return;
+    };
+    let Some(entry) = Entry::new(&line.recordable_text(), Some(base)) else {
         return;
     };
     let list = &mut app.ssh.recent;

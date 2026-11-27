@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::desktop::{
-    MARKER, build_entry, install, path_note, quote_exec_arg, uninstall, validate_exe,
+    MARKER, build_entry, find_in, install, path_note, quote_exec_arg, refresh_database_with,
+    uninstall, validate_exe,
 };
 
 /// Undo value-level escaping, then split `Exec` per the Desktop Entry spec.
@@ -247,4 +248,30 @@ fn icon_is_self_contained_svg() {
     let svg = include_str!("../../../assets/vr-ide.svg");
     assert!(svg.contains("<svg") && svg.contains(MARKER));
     assert!(!svg.contains("href") && !svg.contains("<text"));
+}
+
+/// A `.` (relative) PATH entry never supplies the program: the resolved absolute path is run.
+#[test]
+fn update_desktop_database_runs_the_resolved_absolute_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let mark = tmp.path().join("ran");
+    crate::ssh_tests::write_executable(
+        &bin.join("update-desktop-database"),
+        &format!("#!/bin/sh\necho \"$0\" > {}\n", mark.display()),
+    );
+    let data = tmp.path().join("data");
+    let path = std::env::join_paths([Path::new("."), bin.as_path()]).unwrap();
+    refresh_database_with(&data, Some(&path));
+    assert_eq!(
+        std::fs::read_to_string(&mark).unwrap().trim(),
+        bin.join("update-desktop-database").to_str().unwrap()
+    );
+}
+
+#[test]
+fn update_desktop_database_ignores_a_relative_only_path() {
+    let path = std::ffi::OsString::from(".");
+    assert_eq!(find_in(Some(&path), "update-desktop-database"), None);
 }

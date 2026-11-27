@@ -218,15 +218,25 @@ pub fn data_home() -> Result<PathBuf> {
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?)
+    find_in(std::env::var_os("PATH").as_deref(), name)
+}
+
+/// The program `name` in an absolute entry of `path`; a relative entry never supplies it.
+pub(crate) fn find_in(path: Option<&std::ffi::OsStr>, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(path?)
         .filter(|d| d.is_absolute())
         .map(|d| d.join(name))
         .find(|p| p.is_file())
 }
 
 fn refresh_database(data_home: &Path) {
-    if find_in_path("update-desktop-database").is_some() {
-        let _ = std::process::Command::new("update-desktop-database")
+    refresh_database_with(data_home, std::env::var_os("PATH").as_deref());
+}
+
+/// Runs the resolved absolute path, never the bare name: the child would search `PATH` again.
+pub(crate) fn refresh_database_with(data_home: &Path, path: Option<&std::ffi::OsStr>) {
+    if let Some(prog) = find_in(path, "update-desktop-database") {
+        let _ = std::process::Command::new(prog)
             .arg(data_home.join("applications"))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

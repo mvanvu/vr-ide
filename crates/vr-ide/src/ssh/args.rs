@@ -355,6 +355,30 @@ impl Line {
         &self.text
     }
 
+    /// The text to keep in the recent list (D28): the whole line, unless its remote command holds a
+    /// word that looks like a secret; then only the options and the destination.
+    pub fn recordable_text(&self) -> String {
+        let refs: Vec<&str> = self.words.iter().map(String::as_str).collect();
+        let dest = walk(&refs).0.ok().and_then(|p| p.dest);
+        let Some(d) = dest else {
+            return self.text.clone();
+        };
+        let end = option_end(&refs, d);
+        if !secret_looking(&self.words[end..]) {
+            return self.text.clone();
+        }
+        // A leading `~/` stays bare so it still expands when the line is run again.
+        let keep = |w: &String| match w.strip_prefix("~/") {
+            Some(rest) if quote(rest) == rest => w.clone(),
+            _ => quote(w),
+        };
+        self.words[..end]
+            .iter()
+            .map(keep)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// The words, in order, as ssh gets them.
     pub fn words(&self) -> &[String] {
         &self.words
@@ -382,6 +406,44 @@ impl Line {
     pub fn local_command(&self) -> Option<String> {
         local_command_word(&self.words)
     }
+}
+
+/// Whether the remote-command words may carry a credential (D28), case-insensitive: `-p<x>`
+/// (or a bare `-p`), `-u user:pw`, `user:pw@`, or one of `password`, `passwd`, `pwd`,
+/// `token=`, `pass=`, `key=`, `auth=`, `secret`, `bearer`, `authorization`. Quoted words are
+/// checked piece by piece.
+fn secret_looking(words: &[String]) -> bool {
+    const KEYS: [&str; 10] = [
+        "password",
+        "passwd",
+        "pwd",
+        "token=",
+        "pass=",
+        "key=",
+        "auth=",
+        "secret",
+        "bearer",
+        "authorization",
+    ];
+    let pieces: Vec<String> = words
+        .iter()
+        .flat_map(|w| {
+            w.split(|c: char| c.is_whitespace() || c == '\'' || c == '"')
+                .filter(|p| !p.is_empty())
+                .map(str::to_ascii_lowercase)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    pieces.iter().enumerate().any(|(i, p)| {
+        let flag = |l: &str| p.starts_with(l) && !p.starts_with("--");
+        let user_pw = flag("-u")
+            && (p[2..].contains(':')
+                || (p.len() == 2 && pieces.get(i + 1).is_some_and(|n| n.contains(':'))));
+        let url_pw = p
+            .split_once('@')
+            .is_some_and(|(before, _)| before.contains(':'));
+        flag("-p") || user_pw || url_pw || KEYS.iter().any(|k| p.contains(k))
+    })
 }
 
 /// An old recent-list target `[user@]host:port` / `[user@][v6]:port` as an argument line.
