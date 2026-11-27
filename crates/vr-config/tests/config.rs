@@ -269,7 +269,7 @@ fn defaults_load_without_user_file() {
         assert_eq!(km.keys_for(cmd), [chord(k)], "{cmd} has one key");
     }
     // Nothing is bound that the table does not list (the terminal table repeats ctrl+`, D8, and
-    // f1, D279, and ctrl+f7, FR-17).
+    // f1, D279, and ctrl+f7 / ctrl+f8 / ctrl+f9, FR-17, FR-24).
     for (ctx, k, cmd) in km.bindings() {
         let listed = KEYSET_V2.iter().any(|&(c, key, command)| {
             Context::from_name(c) == Some(ctx) && chord(key) == *k && command == cmd
@@ -279,6 +279,8 @@ fn defaults_load_without_user_file() {
                 ("ctrl+`", "terminal.toggle"),
                 ("f1", "app.palette"),
                 ("ctrl+f7", "terminal.toggle_position"),
+                ("ctrl+f8", "terminal.grow"),
+                ("ctrl+f9", "terminal.shrink"),
             ]
             .iter()
             .any(|&(key, command)| chord(key) == *k && command == cmd);
