@@ -4,7 +4,7 @@ expression: t.backend()
 ---
 " /home/user/DEV/vr-ide                          │ 1  2 ◆  3 new                 "
 " vr-ide v0.1.0                                  │                               "
-"                                                │ New session in /home/user/DEV/"
+"                                                │ New session in …er/DEV/vr-ide "
 " CPU                                          — │                               "
 " RAM ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    — │ claude                        "
 "                                                │   default              1 open "

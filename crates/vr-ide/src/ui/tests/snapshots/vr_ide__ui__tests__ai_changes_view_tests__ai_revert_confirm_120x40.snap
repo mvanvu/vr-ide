@@ -3,7 +3,7 @@ source: crates/vr-ide/src/ui/tests/ai_changes_view_tests.rs
 expression: t.backend()
 ---
 "▾ ws                         │ ± session.rs x                                       │ 1 claude x                      + "
-"  ▸ crates                   │ M session.rs  +9 -3          f5 keep  shift+f5 revert│ Changes · claude · 3 files     f6 "
+"  ▸ crates                   │ M session.rs  +9 -3         f5 keep  shift+f5 revert │ Changes · claude · 3 files     f6 "
 "  ▸ docs                     │     @@ -9,6 +9,7 @@ pub struct Session               │ M session.rs …es/vr-ide/src +9 -3 "
 "    .env                     │  9      pub tabs: Vec<TabState>,                     │ A session_tests.rs …r-ide/src +88 "
 "                             │ 10      pub active: usize,                           │ D old-session.md docs         -40 "
