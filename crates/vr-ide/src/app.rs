@@ -238,6 +238,9 @@ pub struct App {
     pub ws_check_gate: Option<std::sync::mpsc::Receiver<()>>,
     /// Git context of the editor (M7-4a): per-root repos, gutter marks, branch, inline blame.
     pub git: crate::git::GitState,
+    /// The `--session` store (D2, D3); `None` for every other launch, which never reads or
+    /// writes the session.
+    pub session: Option<crate::session::Keeper>,
 }
 
 /// What the welcome screen shows of one root besides its name.
@@ -343,6 +346,7 @@ impl App {
             #[cfg(test)]
             ws_check_gate: None,
             git: Default::default(),
+            session: None,
         }
     }
 
@@ -1096,6 +1100,7 @@ impl App {
 
     /// Drops expired info notices and runs a find rescan whose typing pause is over.
     pub fn tick(&mut self, now: Instant) {
+        crate::session::tick(self, now);
         crate::git::tick(self, now);
         commands::find::poll(self, now);
         // The welcome screen is the only reader of the monitor: nothing is read behind a file or a panel that covers it.

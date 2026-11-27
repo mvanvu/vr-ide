@@ -15,7 +15,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use vr_ide::app::App;
-use vr_ide::{cli, clipboard, event_loop, recovery, ui};
+use vr_ide::{cli, clipboard, event_loop, recovery, session, ui};
 
 /// Set once the kitty keyboard flags were pushed, so restoring pops them (also from the
 /// panic hook).
@@ -52,7 +52,15 @@ fn main() -> Result<()> {
         workspace,
         open_files,
         notices,
+        session: keep_session,
     } = launch;
+    // `--session` only (D2): lock and read the saved session, which names the roots.
+    let (workspace, restore) = if keep_session {
+        let started = session::start(&vr_config::state_dir(), &workspace.primary().path);
+        (started.workspace, Some(started.restore))
+    } else {
+        (workspace, None)
+    };
     let (mut app, warnings) = App::load_workspace(workspace, clipboard::system());
     enable_raw_mode()?;
     let setup = execute!(
@@ -72,6 +80,9 @@ fn main() -> Result<()> {
         app.warn(n);
     }
     app.start_watcher();
+    if let Some(restore) = restore {
+        session::restore(&mut app, restore);
+    }
     for file in &open_files {
         if let Err(e) = app.open_path(file) {
             app.error(e.to_string());
