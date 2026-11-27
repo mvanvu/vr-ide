@@ -16,7 +16,6 @@ use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// The notice for a refused target. Fixed: what was typed is never echoed (it may be a
@@ -274,29 +273,11 @@ pub fn probe(ssh: &Path, target: &Target, timeout: Duration) -> Probe {
         return Probe::Failed;
     };
     let group = rustix::process::Pid::from_child(&child);
-    let Some(mut pipe) = child.stdout.take() else {
+    let Some(pipe) = child.stdout.take() else {
         return Probe::Failed;
     };
-    let (tx, rx) = mpsc::channel();
-    // When no reader can start the channel disconnects and the probe counts as failed.
-    let _ = std::thread::Builder::new()
-        .name("vr-ssh-probe-read".into())
-        .spawn(move || {
-            let mut out = Vec::new();
-            let mut buf = [0u8; 8192];
-            let complete = loop {
-                match pipe.read(&mut buf) {
-                    Ok(0) => break true,
-                    Ok(n) if out.len() + n > PROBE_OUTPUT_CAP => break false,
-                    Ok(n) => out.extend_from_slice(&buf[..n]),
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => break false,
-                }
-            };
-            let _ = tx.send(complete.then_some(out));
-        });
     let deadline = Instant::now() + timeout;
-    let output = rx.recv_timeout(timeout).ok().flatten();
+    let output = read_until(pipe, deadline);
     // A probe that closed its output but does not end is waited for until the deadline only.
     let mut exited = None;
     while output.is_some() && exited.is_none() {
@@ -315,6 +296,33 @@ pub fn probe(ssh: &Path, target: &Target, timeout: Duration) -> Probe {
     match output {
         Some(out) if status.success() => parse_probe(&out),
         _ => Probe::Failed,
+    }
+}
+
+/// All of `pipe` up to its end, or `None` past `deadline` or [`PROBE_OUTPUT_CAP`]. Each read
+/// waits in `poll` with what is left of the time, so a writer outside the killed group that
+/// keeps the pipe open (`setsid` in a `Match exec` command) cannot hold this thread: the pipe
+/// is dropped here and nothing keeps waiting on it.
+fn read_until(mut pipe: std::process::ChildStdout, deadline: Instant) -> Option<Vec<u8>> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let left = Timespec::try_from(deadline.checked_duration_since(Instant::now())?).ok()?;
+        match poll(&mut [PollFd::new(&pipe, PollFlags::IN)], Some(&left)) {
+            Ok(0) => return None,
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => return None,
+        }
+        // Readable or hung up: this read does not block.
+        match pipe.read(&mut buf) {
+            Ok(0) => return Some(out),
+            Ok(n) if out.len() + n > PROBE_OUTPUT_CAP => return None,
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
     }
 }
 

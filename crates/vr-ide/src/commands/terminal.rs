@@ -707,7 +707,7 @@ fn add_tab_in(app: &mut App, cwd: &Path) -> bool {
     let output = Arc::new(AtomicBool::new(false));
     match spawn(app, &output, cwd) {
         Ok((term, shell)) => {
-            push_tab(app, term, shell, output, None);
+            push_tab(app, term, shell, output, None, true);
             true
         }
         Err(e) => {
@@ -717,13 +717,14 @@ fn add_tab_in(app: &mut App, cwd: &Path) -> bool {
     }
 }
 
-/// Adds a tab for a started program and makes it active.
+/// Adds a tab for a started program; `activate`: it becomes the active tab.
 pub(crate) fn push_tab(
     app: &mut App,
     term: Terminal,
     shell: PathBuf,
     output: Arc<AtomicBool>,
     ssh: Option<super::ssh::Session>,
+    activate: bool,
 ) {
     let p = &mut app.terminal;
     p.tabs.push(TermTab {
@@ -736,6 +737,9 @@ pub(crate) fn push_tab(
         fake_title: String::new(),
         ssh,
     });
+    if !activate {
+        return;
+    }
     p.active = p.tabs.len() - 1;
     p.full = false;
     p.selection = None;
@@ -990,6 +994,13 @@ pub(crate) fn select_tab(app: &mut App, i: usize) {
 /// Shows the panel with the keys on its active terminal.
 pub(crate) fn reveal_panel(app: &mut App) {
     reveal(app);
+}
+
+/// Shows the panel but leaves the keys where they are.
+pub(crate) fn show_panel(app: &mut App) {
+    let focus = app.focus;
+    reveal(app);
+    app.focus = focus;
 }
 
 /// The terminal has the keys: focused, shown, no dialog or palette over it.

@@ -176,11 +176,22 @@ pub enum TermError {
 }
 
 /// What a session that is more than a plain shell adds to [`SpawnOptions`] (`Terminal::spawn_with`).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct SpawnExtras {
     /// An exact byte sequence taken out of the program's output before the emulator sees it;
     /// its first occurrence while the child runs sets `Terminal::marker_seen`.
     pub marker: Option<Vec<u8>>,
     /// Inherited variables the child must not get.
     pub env_remove: Vec<OsString>,
+}
+
+/// The marker is a secret of the session (whoever knows it can fake the event), so debug
+/// output only says whether there is one.
+impl std::fmt::Debug for SpawnExtras {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpawnExtras")
+            .field("marker", &self.marker.as_ref().map(|_| ".."))
+            .field("env_remove", &self.env_remove)
+            .finish()
+    }
 }

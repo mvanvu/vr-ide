@@ -110,6 +110,13 @@ impl SshState {
             },
             rx,
             since: Instant::now() - age,
+            keys: KeysAt {
+                input: 0,
+                focus: crate::app::Focus::Editor,
+                palette: false,
+                dialog: false,
+                active: 0,
+            },
         });
         tx
     }
@@ -127,6 +134,37 @@ struct Pending {
     launch: Launch,
     rx: Receiver<Probe>,
     since: Instant,
+    /// Where the keys were when the session was asked for.
+    keys: KeysAt,
+}
+
+/// Where the keys go at one moment. A session whose tab opens later takes the keys only when
+/// this is unchanged: whatever the user typed meanwhile was meant for something else, and the
+/// next keys must not land in ssh's password or host-key prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct KeysAt {
+    input: u64,
+    focus: crate::app::Focus,
+    palette: bool,
+    dialog: bool,
+    active: usize,
+}
+
+impl KeysAt {
+    fn now(app: &App) -> KeysAt {
+        KeysAt {
+            input: app.input_count,
+            focus: app.focus,
+            palette: app.palette.is_some(),
+            dialog: app.dialog.is_some(),
+            active: app.terminal.active,
+        }
+    }
+
+    /// Nothing happened since, and nothing is open over the window.
+    fn unchanged(&self, app: &App) -> bool {
+        *self == KeysAt::now(app) && !self.palette && !self.dialog
+    }
 }
 
 /// A probe is bounded by its timeout; one that has not answered this long after it (its
@@ -240,10 +278,11 @@ fn start(app: &mut App, target: Target, replace: Option<u64>) -> Result<(), Stri
         bin,
         replace,
     };
+    let keys = KeysAt::now(app);
     // Without full screen there is no marker to add, so the user's configuration need not be
     // asked (and `ssh -G` not run) at all.
     if !app.settings.ssh_fullscreen {
-        open(app, launch, None);
+        open(app, launch, None, keys);
         return Ok(());
     }
     let (tx, rx) = mpsc::channel();
@@ -265,9 +304,10 @@ fn start(app: &mut App, target: Target, replace: Option<u64>) -> Result<(), Stri
                 launch,
                 rx,
                 since: Instant::now(),
+                keys,
             });
         }
-        Err(_) => open(app, launch, Some(Probe::Failed)),
+        Err(_) => open(app, launch, Some(Probe::Failed), keys),
     }
     Ok(())
 }
@@ -285,7 +325,7 @@ pub fn poll(app: &mut App) -> bool {
             Err(TryRecvError::Disconnected) => Some(Probe::Failed),
         };
         if let (Some(probe), Some(p)) = (probe, app.ssh.pending.take_if(|_| probe.is_some())) {
-            open(app, p.launch, Some(probe));
+            open(app, p.launch, Some(probe), p.keys);
             changed = true;
         }
     }
@@ -349,8 +389,9 @@ fn withheld_env() -> Vec<OsString> {
 }
 
 /// Starts ssh for `launch` in a tab. `probe`: what the user's configuration said; `None` when
-/// full screen is switched off and nothing was asked.
-fn open(app: &mut App, launch: Launch, probe: Option<Probe>) {
+/// full screen is switched off and nothing was asked. `keys`: where the keys were when the
+/// session was asked for.
+fn open(app: &mut App, launch: Launch, probe: Option<Probe>, keys: KeysAt) {
     let Launch {
         target,
         bin,
@@ -423,16 +464,16 @@ fn open(app: &mut App, launch: Launch, probe: Option<Probe>) {
             terminal::replace_term(app, i, term, bin, output);
             app.terminal.tabs[i].ssh = Some(session);
         }
-        None => {
-            terminal::push_tab(app, term, bin, output, Some(session));
+        None if keys.unchanged(app) => {
+            terminal::push_tab(app, term, bin, output, Some(session), true);
             // The prompts of ssh are answered in the tab: show it, with the keys.
-            match &mut app.palette {
-                Some(p) => {
-                    p.prev_focus = crate::app::Focus::Terminal;
-                    app.terminal.visible = true;
-                }
-                None => terminal::reveal_panel(app),
-            }
+            terminal::reveal_panel(app);
+        }
+        None => {
+            // The user went on elsewhere while the probe ran: the tab waits to be chosen.
+            terminal::push_tab(app, term, bin, output, Some(session), false);
+            terminal::show_panel(app);
+            app.info(format!("SSH {target} ready — click its tab"));
         }
     }
     if let Some(why) = why_plain {

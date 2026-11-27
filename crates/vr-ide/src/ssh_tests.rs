@@ -33,6 +33,7 @@ if [ "$1" = "-G" ]; then
   case "$mode" in
     *usercmd*) echo "localcommand touch $dir/user-ran" ;;
     *ghang*) sleep 300 ;;
+    *gslow*) sleep 1 ;;
     *gfail*) exit 1 ;;
   esac
   echo "permitlocalcommand no"
@@ -451,6 +452,88 @@ fn sec_s4_a_failing_probe_opens_a_plain_tab() {
     wait(&mut f.app, "the session", |_, s| s.contains("remote$"));
     assert_eq!(f.sessions(), ["-o ControlMaster=no -- web1"]);
     assert!(!term::full_screen(&f.app));
+}
+
+// ---- a probe that answers late (`gslow`: `ssh -G` takes a second) -----------------------------
+
+/// The user goes on in the editor while the configuration is read: the session's tab opens
+/// without the keys, so nothing meant for the editor reaches ssh's password prompt.
+#[test]
+fn ac_s2_a_late_probe_answer_never_takes_keys_typed_elsewhere() {
+    let mut f = fx("gslow,password");
+    connect(&mut f.app, "web1");
+    assert!(f.app.ssh.starting() && f.app.terminal.tabs.is_empty());
+    assert_eq!(f.app.focus, Focus::Editor);
+    typ(&mut f.app, "x");
+    let screen = wait(&mut f.app, "the password prompt", |_, s| {
+        s.contains("password:")
+    });
+    assert_eq!(f.app.focus, Focus::Editor, "{screen}");
+    assert!(
+        notices(&f.app).contains("SSH web1 ready — click its tab"),
+        "{}",
+        notices(&f.app)
+    );
+    // Keys typed now stay out of the session: no login follows.
+    typ(&mut f.app, "hunter2\n");
+    std::thread::sleep(Duration::from_millis(300));
+    let screen = pump(&mut f.app);
+    assert!(
+        !session(&f.app, 0).logged_in && !screen.contains("Welcome"),
+        "{screen}"
+    );
+    assert!(!term::full_screen(&f.app));
+    // Choosing the session gives it the keys; the login then works as usual.
+    connect(&mut f.app, "web1");
+    assert_eq!(f.app.focus, Focus::Terminal);
+    typ(&mut f.app, "pw\n");
+    login_wait(&mut f);
+}
+
+/// The command window opened while the probe ran: it stays, and closing it returns to where
+/// the user was, not to the session.
+#[test]
+fn ac_s2_a_late_probe_answer_leaves_an_open_command_window_alone() {
+    let mut f = fx("gslow");
+    connect(&mut f.app, "web1");
+    key(&mut f.app, KeyCode::F(1));
+    assert_eq!(f.app.focus, Focus::Palette);
+    wait(&mut f.app, "the tab", |a, _| a.terminal.tabs.len() == 1);
+    assert_eq!(f.app.focus, Focus::Palette);
+    key(&mut f.app, KeyCode::Esc);
+    assert_eq!(f.app.focus, Focus::Editor);
+    assert!(notices(&f.app).contains("SSH web1 ready — click its tab"));
+}
+
+/// Typing in another terminal tab while the probe runs: that tab keeps the keys.
+#[test]
+fn ac_s2_a_late_probe_answer_does_not_switch_the_tab_the_user_types_in() {
+    let mut f = fx("gslow");
+    ctrl_backtick(&mut f.app);
+    assert_eq!(f.app.focus, Focus::Terminal);
+    connect(&mut f.app, "web1");
+    assert_eq!(f.app.focus, Focus::Terminal);
+    typ(&mut f.app, "echo typed-$((1+1))\n");
+    wait(&mut f.app, "the second tab", |a, _| {
+        a.terminal.tabs.len() == 2
+    });
+    assert_eq!(f.app.terminal.active, 0);
+    assert_eq!(f.app.focus, Focus::Terminal);
+    wait(&mut f.app, "the echo in the shell", |_, s| {
+        s.contains("typed-2")
+    });
+}
+
+/// Nothing happened while the probe ran: the session's tab gets the keys and goes full screen
+/// after the login.
+#[test]
+fn ac_s2_a_late_probe_answer_takes_the_keys_when_nothing_happened_meanwhile() {
+    let mut f = fx("gslow");
+    connect(&mut f.app, "web1");
+    assert!(f.app.ssh.starting());
+    login_wait(&mut f);
+    assert_eq!(f.app.focus, Focus::Terminal);
+    assert!(!notices(&f.app).contains("ready"));
 }
 
 // ---- AC-S4: keys, leaving and coming back -------------------------------------------------------

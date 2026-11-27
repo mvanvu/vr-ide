@@ -143,3 +143,23 @@ fn withheld_variables_do_not_reach_the_child() {
     let _ = wake;
     wait_until("the output", || all_text(&term).contains("P=set H=unset"));
 }
+
+/// SEC-S7: the marker holds the session's nonce; debug output of the spawn extras hides it.
+#[test]
+fn debug_output_of_the_spawn_extras_hides_the_marker() {
+    let extras = SpawnExtras {
+        marker: Some(marker(NONCE)),
+        env_remove: vec!["VR_IDE_X".into()],
+    };
+    let text = format!("{extras:?}");
+    assert!(
+        !text.contains(NONCE) && !text.contains("7717") && !text.contains("27, 93"),
+        "{text}"
+    );
+    assert!(
+        text.contains("marker") && text.contains("VR_IDE_X"),
+        "{text}"
+    );
+    let none = format!("{:?}", SpawnExtras::default());
+    assert!(none.contains("marker: None"), "{none}");
+}

@@ -200,6 +200,9 @@ fn tokens(args: &str) -> Vec<(String, bool)> {
             let end = quoted.find('"').unwrap_or(quoted.len());
             out.push((quoted[..end].to_string(), true));
             rest = quoted.get(end + 1..).unwrap_or("").trim_start();
+        } else if rest.starts_with('#') {
+            // OpenSSH 8.7+ reads the rest of the line as a comment.
+            break;
         } else {
             let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
             out.push((rest[..end].to_string(), false));

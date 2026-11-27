@@ -12,7 +12,7 @@ vr-search.workspace = true
 vr-syntax.workspace = true
 vr-term.workspace = true
 vr-git.workspace = true
-rustix = { workspace = true, features = ["process", "rand"] }
+rustix = { workspace = true, features = ["event", "process", "rand"] }
 ratatui.workspace = true
 crossterm.workspace = true
 arboard.workspace = true

@@ -1,6 +1,6 @@
 ---
 source: crates/vr-ide/src/slash_tests.rs
-assertion_line: 805
+assertion_line: 911
 expression: t.backend()
 ---
 " /home/user/DEV/shop                                                                                                    "
@@ -8,10 +8,10 @@ expression: t.backend()
 "  vr-ide v0.1.0         │> /theme pink                                                         │──────────────────────  "
 "  /home/user/DEV/shop   │ /theme: pink is not one of synthwave, dracula, dark, light           │                  58 s  "
 "                        │ /theme synthwave|dracula|dark|light  Switch the colour theme for th… │                        "
-"                        └──────────────────────────────────────────────────────────────────────┘                        "
-"  START ────────────────────────────────────────────────  │                                                             "
-"  ctrl+p  Go to file                                      │                                                             "
-"  f1      Command palette                                 │                                                             "
+"                        │ ──────────────────────────────────────────────────────────────────── │                        "
+"  START ────────────────│ /theme synthwave|dracula|dark|light  Switch the colour theme for     │                        "
+"  ctrl+p  Go to file    │ this session                                                         │                        "
+"  f1      Command palett└──────────────────────────────────────────────────────────────────────┘                        "
 "  ctrl+e  Explorer                                        │                                                             "
 "  ctrl+o  Open file                                       │                                                             "
 "  ctrl+`  Terminal                                        │ CORE —                                                      "

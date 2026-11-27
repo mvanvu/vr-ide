@@ -194,6 +194,9 @@ pub struct App {
     editor_seen: Option<usize>,
     /// Read mode got a `space` and waits for the second key (T21: `space i`, `space space`).
     pub(crate) space_pending: bool,
+    /// Keys, pastes and mouse presses handled so far: tells whether the user did anything
+    /// between two moments (an SSH session whose probe answers late takes the keys only if not).
+    pub(crate) input_count: u64,
     /// Syntax highlighting of the open documents (M4).
     pub syntax: crate::syntax::Syntax,
     /// Resource monitor of the welcome screen; samples only while that screen is shown.
@@ -315,6 +318,7 @@ impl App {
             search: Default::default(),
             editor_seen: None,
             space_pending: false,
+            input_count: 0,
             syntax: crate::syntax::Syntax::new(crate::syntax::builtin_registry()),
             monitor: Default::default(),
             recent: Vec::new(),
@@ -1219,6 +1223,7 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        self.input_count += 1;
         self.dirty = true;
         // A pending read-mode space only pairs with the next key the reading editor gets.
         if self.focus != Focus::Editor || self.edit_mode() || self.dialog.is_some() {
@@ -1330,6 +1335,7 @@ impl App {
 
     /// Bracketed paste from the terminal.
     pub fn handle_paste(&mut self, text: &str) {
+        self.input_count += 1;
         self.dirty = true;
         // A paste is not the second key of a read-mode `space` sequence.
         self.space_pending = false;
@@ -1364,6 +1370,9 @@ impl App {
     }
 
     fn route_mouse(&mut self, ev: MouseEvent) {
+        if matches!(ev.kind, MouseEventKind::Down(_)) {
+            self.input_count += 1;
+        }
         self.space_pending = false;
         // The first half of a tab double click lasts until the next mouse event other than a
         // release or a move: a drag, the wheel or a press anywhere but on a tab breaks it.

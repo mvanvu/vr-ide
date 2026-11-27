@@ -528,11 +528,13 @@ fn sec_s11_only_concrete_valid_host_tokens_are_listed() {
     let d = home_with(
         "# comment\nHost -oProxyCommand=x a*b !c \"d e\" ok\n  HostName 10.0.0.1\n\
          host=second third\n\tHOST fourth\nMatch host ok exec \"touch /tmp/never\"\n\
-         Host fifth ? * u@h h:22 %h ok\nHostName notahost\nHostKeyAlias nope\n",
+         Host fifth ? * u@h h:22 %h ok\nHostName notahost\nHostKeyAlias nope\n\
+         Host prod # main server\nHost \"#quoted\" sixth #seventh\n",
     );
+    // An unquoted token starting with `#` ends the line (OpenSSH 8.7+).
     assert_eq!(
         config::hosts(d.path()),
-        ["ok", "second", "third", "fourth", "fifth"]
+        ["ok", "second", "third", "fourth", "fifth", "prod", "sixth"]
     );
     assert!(config::hosts(&d.path().join("no-home")).is_empty());
 }
@@ -697,4 +699,56 @@ fn sec_s4_a_probe_that_closes_its_output_but_stays_is_killed_at_the_timeout() {
         assert!(Instant::now() < deadline, "left running");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Threads of this process whose name starts with `prefix`.
+fn threads_named(prefix: &str) -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.starts_with(prefix))
+        })
+        .count()
+}
+
+/// A helper that leaves the probe's session (`setsid`, as a `Match exec` command could) and
+/// keeps the output open: the probe still ends at its timeout, and no thread stays behind
+/// waiting for that output to close.
+#[test]
+fn sec_s4_a_helper_outside_the_group_that_keeps_the_output_open_leaves_no_thread() {
+    let d = tempfile::tempdir().unwrap();
+    let pid_file = d.path().join("helper.pid");
+    let ssh = script(
+        d.path(),
+        "ssh",
+        &format!(
+            "setsid sh -c 'echo $$ > {}; exec sleep 305' &\necho 'permitlocalcommand no'\nexit 0",
+            pid_file.display()
+        ),
+    );
+    let t0 = Instant::now();
+    assert_eq!(
+        probe(&ssh, &t("h"), Duration::from_millis(300)),
+        Probe::Failed
+    );
+    assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+    let leaked = threads_named("vr-ssh-probe-r");
+    // The helper is this test's own process: end it by its pid (written once it started).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let pid = loop {
+        let text = std::fs::read_to_string(&pid_file).unwrap_or_default();
+        if let Some(pid) = text
+            .trim()
+            .parse()
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+        {
+            break pid;
+        }
+        assert!(Instant::now() < deadline, "the helper never started");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+    assert_eq!(leaked, 0);
 }
