@@ -5,8 +5,6 @@ pub mod editor_view;
 pub mod explorer;
 pub mod explorer_menu;
 pub mod find_bar;
-pub mod git_history;
-pub mod git_popup;
 pub mod layout;
 pub mod palette;
 pub mod safe_text;
@@ -74,7 +72,6 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     status_bar::render(frame.buffer_mut(), layout.status, app, theme);
     // Overlays last: they draw over the editor and set the cursor.
     explorer_menu::render(frame.buffer_mut(), area, app, theme);
-    git_popup::render(frame, area, app, theme);
     if app.palette.is_some() {
         palette::render(frame, area, app, theme);
     }

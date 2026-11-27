@@ -25,17 +25,8 @@ fn read_everything(r: &Repo, file: &str) {
     let p = Path::new(file);
     let _ = r.head();
     let _ = r.ahead_behind();
-    r.status().expect("status works with the trap disarmed");
-    let _ = r.diff_unstaged(p);
-    let _ = r.diff_staged(p);
-    let _ = r.blame(p);
-    let _ = r.blame_text(p, "x\ny\n");
+    let _ = r.inline_blame(p, "x\ny\n");
     let _ = r.line_changes(p, "x\ny\n");
-    let _ = r.log(10, None);
-    let _ = r.log(10, Some(p));
-    let _ = r.commit("HEAD");
-    let _ = r.diff_commit("HEAD", None);
-    let _ = r.diff_commit("HEAD", Some(p));
 }
 
 /// Plain git with the fixture env; its exit status does not matter.
@@ -94,6 +85,7 @@ fn check_key(key: &str, attrs: Option<&str>, control: &[&[&str]]) {
     }
 }
 
+// No current read consults the fsmonitor; this guards future reads.
 #[test]
 fn core_fsmonitor_never_runs() {
     check_key("core.fsmonitor", None, &[&["status"]]);
@@ -152,6 +144,7 @@ fn core_pager_never_runs() {
     }
 }
 
+// No current read verifies signatures; this guards future reads.
 #[test]
 fn show_signature_gpg_program_never_runs() {
     for scope in [Scope::Local, Scope::Global] {
@@ -241,10 +234,11 @@ fn outer_git_env_is_ignored() {
     .unwrap()
     .unwrap();
     assert_eq!(r.workdir(), f.dir);
-    let st = r.status().unwrap();
-    assert_eq!(st.unstaged.len(), 1);
-    assert_eq!(st.unstaged[0].path, Path::new("mine.txt"));
-    assert!(r.diff_unstaged(Path::new("mine.txt")).unwrap().is_some());
+    assert!(
+        r.line_changes(Path::new("mine.txt"), "changed\n")
+            .unwrap()
+            .is_some()
+    );
     assert!(!marker.exists());
     assert!(!trace.exists());
 }
@@ -299,7 +293,7 @@ fn git_has_no_controlling_terminal() {
     )
     .unwrap()
     .unwrap();
-    r.status().unwrap();
+    r.head().unwrap();
     assert!(!marker.exists(), "git opened /dev/tty");
 }
 
@@ -321,7 +315,7 @@ fn hung_git_is_killed_with_its_children_at_the_timeout() {
     f.commit_all("c");
     let pidfile = f.tmp.path().join("sleep.pid");
     let body = format!(
-        "case \"$*\" in *status*) sleep 30 & echo $! > '{}'; wait;; esac",
+        "case \"$*\" in *symbolic-ref*) sleep 30 & echo $! > '{}'; wait;; esac",
         pidfile.display()
     );
     let dir = shim_dir(&f, &body);
@@ -332,7 +326,7 @@ fn hung_git_is_killed_with_its_children_at_the_timeout() {
     };
     let r = Repo::discover_with(&f.dir, opts).unwrap().unwrap();
     let t = Instant::now();
-    let res = r.status();
+    let res = r.head();
     assert!(matches!(res, Err(GitError::Timeout(_))), "{res:?}");
     assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
     let pid: u32 = std::fs::read_to_string(&pidfile)
@@ -373,7 +367,7 @@ fn git_in_the_repo_is_never_run_from_a_relative_path_entry() {
     )
     .unwrap()
     .unwrap();
-    r.status().unwrap();
+    r.head().unwrap();
     assert!(!marker.exists());
 }
 
@@ -449,7 +443,7 @@ fn reads_write_nothing_under_dot_git_and_respect_index_lock() {
     let lock = f.dir.join(".git/index.lock");
     std::fs::write(&lock, "").unwrap();
     read_everything(&r, "a.txt");
-    assert!(r.status().is_ok());
+    assert!(r.head().is_ok());
     assert!(lock.exists());
 }
 
@@ -465,15 +459,11 @@ fn file_over_the_cap_is_too_large() {
     };
     let r = Repo::discover_with(&f.dir, opts).unwrap().unwrap();
     assert!(matches!(
-        r.diff_unstaged(Path::new("big.txt")),
-        Err(GitError::TooLarge { .. })
-    ));
-    assert!(matches!(
         r.line_changes(Path::new("big.txt"), &"x\n".repeat(10_000)),
         Err(GitError::TooLarge { .. })
     ));
     assert!(matches!(
-        r.blame_text(Path::new("big.txt"), &"x\n".repeat(10_000)),
+        r.inline_blame(Path::new("big.txt"), &"x\n".repeat(10_000)),
         Err(GitError::TooLarge { .. })
     ));
 }
@@ -501,10 +491,12 @@ fn partial_clone_never_fetches_lazily() {
         ],
     );
     let packs = || listing(&clone.join(".git/objects"));
+    // The index lists the blobs the clone never downloaded.
+    f.git_in(&clone, &["read-tree", "HEAD"]);
     let before = packs();
     let r = Repo::discover_with(&clone, f.options()).unwrap().unwrap();
     let t = Instant::now();
-    let res = r.diff_commit("HEAD", None);
+    let res = r.line_changes(Path::new("a.txt"), "x\n");
     assert!(res.is_err(), "missing blobs must not be fetched: {res:?}");
     assert!(t.elapsed() < Duration::from_secs(5));
     assert_eq!(packs(), before, "no objects were fetched");
@@ -513,8 +505,9 @@ fn partial_clone_never_fetches_lazily() {
 /// Everything the parsers produce for a repo with renames, odd names and history.
 fn snapshot(r: &Repo) -> String {
     let p = Path::new("dir/b c.txt");
+    let buffer = std::fs::read_to_string(r.workdir().join(p)).unwrap();
     // git stamps uncommitted lines with the current time.
-    let mut blame = r.blame(p).unwrap();
+    let mut blame = r.inline_blame(p, &buffer).unwrap();
     for c in blame
         .iter_mut()
         .flat_map(|b| b.commits.iter_mut())
@@ -523,16 +516,11 @@ fn snapshot(r: &Repo) -> String {
         c.author.time = 0;
     }
     format!(
-        "{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}",
+        "{:?}\n{:?}\n{:?}\n{:?}",
         r.head().unwrap(),
-        r.status().unwrap(),
-        r.diff_unstaged(p).unwrap(),
-        r.diff_staged(Path::new("renamed.txt")).unwrap(),
+        r.ahead_behind().unwrap(),
+        r.line_changes(p, &buffer).unwrap(),
         blame,
-        r.log(10, Some(p)).unwrap(),
-        r.log(10, None).unwrap(),
-        r.commit("HEAD").unwrap(),
-        r.diff_commit("HEAD", None).unwrap(),
     )
 }
 
@@ -595,6 +583,7 @@ fn filter_smudge_never_runs() {
     );
 }
 
+// vr-git runs no `status`, so nothing reads submodule state today: this guards future reads.
 #[test]
 fn submodule_local_filter_never_runs() {
     let sub = Fixture::new();
@@ -633,7 +622,15 @@ fn submodule_local_filter_never_runs() {
             .unwrap();
     };
     dirty();
-    plain(&f, &["status"]);
+    // Status inside the submodule itself always rehashes the file with stale stat info; the
+    // superproject's status only sometimes descends into it, which made this control flaky.
+    let _ = Command::new("git")
+        .current_dir(f.path("sub"))
+        .env_clear()
+        .envs(f.env())
+        .args(["status"])
+        .output()
+        .unwrap();
     assert!(
         marker.exists(),
         "control: plain git status runs the submodule's filter"
@@ -645,9 +642,6 @@ fn submodule_local_filter_never_runs() {
         read_everything(&r, p);
         assert!(!marker.exists(), "submodule filter ran during reads of {p}");
     }
-    dirty();
-    let _ = r.diff_unstaged(Path::new("sub"));
-    assert!(!marker.exists(), "submodule filter ran during diff-files");
 }
 
 /// A partial clone whose promisor remote is an `ext::` command allowed by repo config.
@@ -691,6 +685,9 @@ fn lazy_fetch_cannot_run_a_transport_command_even_without_no_lazy_fetch() {
         .unwrap();
     assert!(marker.exists(), "control: plain git runs the ext:: remote");
     std::fs::remove_file(&marker).unwrap();
+    // The index lists the blobs the clone never downloaded.
+    f.git_in(&clone, &["read-tree", "HEAD"]);
+    let _ = std::fs::remove_file(&marker);
     // Second layer: a git without GIT_NO_LAZY_FETCH (older than 2.39.4 / unpatched 2.40-2.45).
     let dir = shim_dir(&f, "unset GIT_NO_LAZY_FETCH");
     let opts = [
@@ -702,10 +699,8 @@ fn lazy_fetch_cannot_run_a_transport_command_even_without_no_lazy_fetch() {
     ];
     for (i, opts) in opts.into_iter().enumerate() {
         let r = Repo::discover_with(&clone, opts).unwrap().unwrap();
-        let _ = r.diff_commit("HEAD", None);
-        let _ = r.diff_commit("HEAD", Some(Path::new("a.txt")));
-        let _ = r.blame(Path::new("a.txt"));
-        let _ = r.log(10, Some(Path::new("a.txt")));
+        let _ = r.line_changes(Path::new("a.txt"), "x\n");
+        let _ = r.inline_blame(Path::new("a.txt"), "x\n");
         assert!(
             !marker.exists(),
             "read {i} ran the promisor remote's command"
@@ -713,28 +708,11 @@ fn lazy_fetch_cannot_run_a_transport_command_even_without_no_lazy_fetch() {
     }
 }
 
-#[test]
-fn blame_of_a_staged_file_over_the_cap_is_too_large() {
-    let f = Fixture::new();
-    f.write("a.txt", "a\n");
-    f.commit_all("c");
-    f.write("new.txt", "x\n");
-    f.git(&["add", "new.txt"]);
-    f.write("new.txt", "x\n".repeat(10_000));
-    let opts = Options {
-        max_file: 4096,
-        ..f.options()
-    };
-    let r = Repo::discover_with(&f.dir, opts).unwrap().unwrap();
-    let res = r.blame(Path::new("new.txt"));
-    assert!(matches!(res, Err(GitError::TooLarge { .. })), "{res:?}");
-}
-
-/// A git whose `status` starts a 30 s sleep and records its pid.
-fn hanging_status(f: &Fixture) -> (Options, PathBuf) {
+/// A git whose `symbolic-ref` (the first command of `head`) starts a 30 s sleep and records its pid.
+fn hanging_head(f: &Fixture) -> (Options, PathBuf) {
     let pidfile = f.tmp.path().join("sleep.pid");
     let body = format!(
-        "case \"$*\" in *status*) sleep 30 & echo $! > '{}.tmp'; mv '{0}.tmp' '{0}'; wait;; esac",
+        "case \"$*\" in *symbolic-ref*) sleep 30 & echo $! > '{}.tmp'; mv '{0}.tmp' '{0}'; wait;; esac",
         pidfile.display()
     );
     let dir = shim_dir(f, &body);
@@ -771,10 +749,10 @@ fn gone_soon(pid: u32) -> bool {
 fn shutdown_kills_a_running_read_and_refuses_new_ones() {
     let f = Fixture::new();
     f.commit_all("c");
-    let (opts, pidfile) = hanging_status(&f);
+    let (opts, pidfile) = hanging_head(&f);
     let r = Repo::discover_with(&f.dir, opts).unwrap().unwrap();
     let r2 = r.clone();
-    let reader = std::thread::spawn(move || r2.status());
+    let reader = std::thread::spawn(move || r2.head());
     let pid = started_pid(&pidfile);
     let t = Instant::now();
     r.shutdown();
@@ -789,17 +767,17 @@ fn shutdown_kills_a_running_read_and_refuses_new_ones() {
 fn dropping_the_worker_kills_its_running_git() {
     let f = Fixture::new();
     f.commit_all("c");
-    let (opts, pidfile) = hanging_status(&f);
+    let (opts, pidfile) = hanging_head(&f);
     let r = Repo::discover_with(&f.dir, opts).unwrap().unwrap();
     let w = GitWorker::start(r, || {});
-    w.request(Request::Status);
+    w.request(Request::Head);
     let pid = started_pid(&pidfile);
     drop(w);
     assert!(gone_soon(pid), "child sleep {pid} survived the worker");
 }
 
 #[test]
-fn inline_blame_uses_the_automatic_timeout() {
+fn inline_blame_times_out_at_the_automatic_timeout() {
     let f = Fixture::new();
     f.write("a.txt", "one\n");
     f.commit_all("c");
@@ -807,7 +785,6 @@ fn inline_blame_uses_the_automatic_timeout() {
     let opts = Options {
         env: Some(env_with_path(&f, &dir)),
         timeout: Duration::from_millis(300),
-        user_timeout: Duration::from_secs(30),
         ..Options::default()
     };
     let r = Repo::discover_with(&f.dir, opts).unwrap().unwrap();

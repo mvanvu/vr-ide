@@ -245,8 +245,8 @@ pub struct TerminalPanel {
     resizing: bool,
     /// The tab of terminal `i` is being dragged along the bar to a new place (FR-19).
     tab_drag: Option<usize>,
-    /// "Quit anyway" was chosen; the next quit does not ask about terminals or a running git
-    /// write again (one shot).
+    /// "Quit anyway" was chosen; the next quit does not ask about terminals
+    /// again (one shot).
     quit_confirmed: bool,
     /// Set by any terminal's `Notify`.
     wake: Arc<AtomicBool>,
@@ -1306,7 +1306,10 @@ fn bar_hit(app: &App, x: u16) -> Option<BarHit> {
 /// keeps its pty and title. It moves only once the mouse would lie on it at its new place, so a
 /// wide label dragged over a narrow one does not swap back on the next cell. Past the last drawn
 /// tab (the `+N` marker, the '+', the empty bar) it moves after that tab, or one place further
-/// when it already is that tab, which carries it past tabs hidden behind `+N`.
+/// when it already is that tab, which carries it past tabs hidden behind `+N`. Mirrored on the
+/// left: on the first drawn tab's leading cells (its space and number) or left of the panel, it
+/// moves one place toward the front, past tabs hidden before it (only a bar that draws the
+/// active tab alone has hidden tabs before its first drawn one).
 fn drag_tab_to(app: &mut App, column: u16) {
     let Some(cur) = app.terminal.tab_drag else {
         return;
@@ -1329,6 +1332,8 @@ fn drag_tab_to(app: &mut App, column: u16) {
         } else {
             Some(last.index)
         }
+    } else if x < me.x + 2 && bar.tabs.first().is_some_and(|t| t.index == cur) {
+        cur.checked_sub(1)
     } else {
         bar.tabs
             .iter()
@@ -1421,9 +1426,8 @@ pub fn selected_text(grid: &Grid, sel: Selection) -> String {
 
 // ---- quit -----------------------------------------------------------------------------------
 
-/// Quit while terminals run, or while the Git popup runs a push, pull or commit (D309), asks
-/// first in one question: "N terminals still running" / "A git push is running" — Quit
-/// anyway / Cancel, Cancel selected (AC-14d). True when quitting may go on.
+/// Quit while terminals run, asks first: Quit anyway / Cancel, Cancel
+/// selected (AC-14d). True when quitting may go on.
 pub fn quit_allowed(app: &mut App) -> bool {
     quit_allowed_for(app, DialogAction::QuitTerminals)
 }
@@ -1434,23 +1438,11 @@ pub fn quit_allowed_for(app: &mut App, action: DialogAction) -> bool {
         return true;
     }
     let n = app.terminal.running();
-    let git = crate::git_popup::running_write(app);
     let mut parts = Vec::new();
     match n {
         0 => {}
         1 => parts.push("1 terminal still running; quitting ends it.".to_string()),
         n => parts.push(format!("{n} terminals still running; quitting ends them.")),
-    }
-    if let Some(w) = git {
-        let what = if w.label == w.op {
-            String::new()
-        } else {
-            format!(" ({})", w.label)
-        };
-        parts.push(format!(
-            "A git {} is running{what}; quitting cancels it.",
-            w.op
-        ));
     }
     if parts.is_empty() {
         return true;
@@ -1462,8 +1454,8 @@ pub fn quit_allowed_for(app: &mut App, action: DialogAction) -> bool {
     false
 }
 
-/// Quit anyway was chosen: the next quit does not ask about the terminals or a running git
-/// write again (one shot).
+/// Quit anyway was chosen: the next quit does not ask about the terminals
+/// again (one shot).
 pub fn confirm_quit(app: &mut App) {
     app.terminal.quit_confirmed = true;
 }

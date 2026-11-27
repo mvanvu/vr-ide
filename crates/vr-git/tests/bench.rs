@@ -132,33 +132,17 @@ fn timed<T>(label: &str, f: impl FnOnce() -> T) -> (T, Duration) {
 #[ignore]
 fn bench_ac16e() {
     let (_keep, dir, opts) = fixture();
-    std::fs::write(dir.join("d7/f7001.txt"), "changed\n").unwrap();
     let repo = Repo::discover_with(&dir, opts).unwrap().unwrap();
 
-    let (st, _) = timed("status, 50k files", || repo.status().unwrap());
-    assert_eq!(st.unstaged.len(), 1);
-    let (log, d_log) = timed("log --follow, 5k-commit file", || {
-        repo.log(10_000, Some(Path::new("src/hot.txt"))).unwrap()
-    });
-    assert_eq!(log.len(), COMMITS);
-    assert_eq!(
-        log.last().unwrap().path.as_deref(),
-        Some(Path::new("old/hot.txt"))
-    );
-    let (_, d_log_page) = timed("log --follow, first 200", || {
-        repo.log(200, Some(Path::new("src/hot.txt"))).unwrap()
-    });
-    let (b, d_typical) = timed("blame 5k lines, 500 commits", || {
-        repo.blame(Path::new("src/typical.txt")).unwrap().unwrap()
-    });
-    assert_eq!(b.lines.len(), LINES);
-    let (b, d_hot) = timed("blame 5k lines, 5k commits + rename", || {
-        repo.blame(Path::new("src/hot.txt")).unwrap().unwrap()
-    });
-    assert_eq!(b.lines.len(), LINES);
     let text = std::fs::read_to_string(dir.join("src/typical.txt"))
         .unwrap()
         .replace("line_42()", "line_42_edited()");
+    let (b, d_blame) = timed("inline blame 5k lines, 500 commits", || {
+        repo.inline_blame(Path::new("src/typical.txt"), &text)
+            .unwrap()
+            .unwrap()
+    });
+    assert_eq!(b.lines.len(), LINES);
     let (marks, d_gutter) = timed("line_changes 5k lines", || {
         repo.line_changes(Path::new("src/typical.txt"), &text)
             .unwrap()
@@ -174,11 +158,9 @@ fn bench_ac16e() {
     let mut worst = Duration::ZERO;
     let mut ids = Vec::new();
     for req in [
-        Request::Status,
-        Request::Blame(dir.join("src/typical.txt")),
-        Request::Log {
-            limit: 10_000,
-            path: Some(dir.join("src/hot.txt")),
+        Request::InlineBlame {
+            path: dir.join("src/typical.txt"),
+            text: Arc::from(text.as_str()),
         },
         Request::LineChanges {
             path: dir.join("src/typical.txt"),
@@ -211,12 +193,10 @@ fn bench_ac16e() {
         rx.recv_timeout(Duration::from_secs(60))
             .expect("worker answered");
     }
-    println!("worker answered all four in {:?}", t.elapsed());
-    println!(
-        "RESULT log_all={d_log:?} log_200={d_log_page:?} blame_typical={d_typical:?} blame_hot={d_hot:?} gutter={d_gutter:?}"
-    );
+    println!("worker answered both in {:?}", t.elapsed());
+    println!("RESULT blame_typical={d_blame:?} gutter={d_gutter:?}");
     assert!(
-        d_typical < Duration::from_secs(1),
+        d_blame < Duration::from_secs(1),
         "AC-16e blame of a 5000-line file"
     );
 }

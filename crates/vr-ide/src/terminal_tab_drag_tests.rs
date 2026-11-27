@@ -308,3 +308,43 @@ fn an_overflowing_bar_carries_the_tab_past_hidden_ones() {
     assert_eq!(app.terminal.tabs[0].title(), first, "{:?}", titles(&app));
     assert_eq!(active_title(&app), first);
 }
+
+/// A narrow panel on the right draws only the active tab, with the others hidden before it:
+/// dragging it left onto the panel's edge and over the editor walks it toward the front, one
+/// place per cell, as `+N` does to the right.
+#[test]
+fn a_lone_drawn_tab_walks_left_past_hidden_ones() {
+    let names: Vec<String> = (1..=6)
+        .map(|i| format!("user@host: ~/DEV/a-much-longer-title-{i}"))
+        .collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut app = tabs_app(&refs);
+    app.terminal.position = TerminalPosition::Right;
+    app.terminal.active = 5;
+    draw(&mut app, 80, 24);
+    assert!(app.layout.terminal_sep.width > 0, "panel is on the right");
+    let bar = tab_bar(&app, app.layout.terminal.width);
+    assert_eq!(bar.tabs.len(), 1, "one tab drawn");
+    assert!(bar.more.is_some(), "the others are hidden");
+    let y = app.layout.terminal.y;
+    let from = label_col(&app, 5);
+    let edge = app.layout.terminal.x;
+    // Onto the label's number without leaving the panel: one place toward the front.
+    drag(&mut app, from, edge + 1, y);
+    assert_eq!(app.terminal.active, 4, "{:?}", titles(&app));
+    assert_eq!(active_title(&app), names[5]);
+    draw(&mut app, 80, 24);
+    let from = label_col(&app, 4);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), from, y);
+    let mut x = from;
+    while x > edge - 8 {
+        x -= 1;
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, y);
+        draw(&mut app, 80, 24);
+    }
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+    assert_eq!(active_title(&app), names[5]);
+    assert_eq!(app.terminal.active, 0, "{:?}", titles(&app));
+    // The others keep their order.
+    assert_eq!(titles(&app)[1..], names[..5]);
+}

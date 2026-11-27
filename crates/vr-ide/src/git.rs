@@ -269,24 +269,11 @@ impl GitState {
     }
 
     /// The repo of root `root`, for reads only: it shares the worker's runner, so removing the
-    /// root, replacing the workspace or exiting kills whatever it runs. Writes (M7-3's popup)
-    /// use `vr_git::Writer::open` with a runner of their own, never this clone (D304).
+    /// root, replacing the workspace or exiting kills whatever it runs.
     pub fn repo_of_root(&self, root: &Path) -> Option<Repo> {
         let r = self.roots.iter().find(|r| r.path == root)?;
         match r.state {
             RootState::Repo { serial, .. } => self.entry(serial).map(|e| e.repo.clone()),
-            _ => None,
-        }
-    }
-
-    /// The repo of root `root` and, when it was found above the root, its `~` path (D298), for
-    /// the Git popup. The popup writes through its own `vr_git::Writer` (D304).
-    pub fn repo_info_of_root(&self, root: &Path) -> Option<(Repo, Option<String>)> {
-        let r = self.roots.iter().find(|r| r.path == root)?;
-        match &r.state {
-            RootState::Repo { serial, parent } => self
-                .entry(*serial)
-                .map(|e| (e.repo.clone(), parent.clone())),
             _ => None,
         }
     }
@@ -727,9 +714,6 @@ pub fn on_fs_event(app: &mut App, ev: &FsEvent) {
             git.forget_path(p);
         }
     }
-    for p in &paths {
-        crate::git_popup::on_change(app, p);
-    }
 }
 
 /// `<root>/.git` appeared, went away or was renamed (`git init`, `git clone .`, `rm -rf
@@ -818,41 +802,14 @@ fn drain_git_events(app: &mut App) {
             }
         }
     }
-    let mut workdirs = Vec::new();
     for serial in changed {
         if let Some(e) = git.entry(serial) {
             e.worker.invalidate();
-            workdirs.push(e.repo.workdir().to_path_buf());
         }
         git.forget_repo(serial);
         git.request(serial, Request::Head, Pending::Head);
         git.request(serial, Request::AheadBehind, Pending::AheadBehind);
     }
-    // The Git popup on that repo scans again too.
-    for wd in workdirs {
-        crate::git_popup::on_change(app, &wd);
-    }
-}
-
-/// The Git popup wrote to the repo at `workdir`: gutter marks, blame and the status bar's
-/// branch are asked again (the `.git` watcher may see it later or, on some filesystems, not).
-pub fn repo_written(app: &mut App, workdir: &Path) {
-    let git = &mut app.git;
-    let serials: Vec<u64> = git
-        .repos
-        .iter()
-        .filter(|e| e.repo.workdir() == workdir)
-        .map(|e| e.serial)
-        .collect();
-    for serial in serials {
-        if let Some(e) = git.entry(serial) {
-            e.worker.invalidate();
-        }
-        git.forget_repo(serial);
-        git.request(serial, Request::Head, Pending::Head);
-        git.request(serial, Request::AheadBehind, Pending::AheadBehind);
-    }
-    app.dirty = true;
 }
 
 fn event_under(ev: &FsEvent, dir: &Path) -> bool {
@@ -1176,21 +1133,6 @@ pub fn status_label(app: &App) -> Option<StatusLabel> {
         short.push_str(" · parent repo");
     }
     Some(StatusLabel { full, short })
-}
-
-/// [`status_label`] followed by the Git popup's running push, pull or commit while the popup
-/// is hidden (D309: nothing else would say it runs).
-pub fn status_bar_label(app: &App) -> Option<StatusLabel> {
-    let job = crate::git_popup::status_segment(app);
-    match (status_label(app), job) {
-        (Some(l), None) => Some(l),
-        (Some(l), Some((full, short))) => Some(StatusLabel {
-            full: format!("{} · {full}", l.full),
-            short: format!("{} · {short}", l.short),
-        }),
-        (None, Some((full, short))) => Some(StatusLabel { full, short }),
-        (None, None) => None,
-    }
 }
 
 /// `s` cut to `max` chars with an ellipsis.

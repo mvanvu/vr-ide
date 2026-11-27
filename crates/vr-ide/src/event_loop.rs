@@ -152,8 +152,6 @@ pub fn exit(
     // Terminals get SIGHUP (SIGKILL after a grace period) and are reaped before vr-ide exits
     // (AC-14d); each wait is bounded by vr-term.
     crate::commands::terminal::shutdown(app);
-    // The Git popup's running write gets a moment; push/pull and commit hooks are cancelled.
-    crate::git_popup::shutdown(app);
     // A git read stuck on a slow disk must not outlive vr-ide (SEC-1).
     crate::git::shutdown(app);
     // After the recovery write: printing can block on a full stderr.
