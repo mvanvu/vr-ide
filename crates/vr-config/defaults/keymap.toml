@@ -120,3 +120,5 @@
 # back, ctrl+shift+v pastes.
 "ctrl+`" = "terminal.toggle"
 "f1" = "app.palette"
+# The panel position key works from a focused terminal too (it never reaches the program).
+"ctrl+f7" = "terminal.toggle_position"
