@@ -437,13 +437,85 @@ pub fn create(state: &Path, tool: &str, name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The web sign-in data of an account being removed (SEC-37): `<state>/ai-login/` opened
+/// without following a link, and the lock of each login window the account can have, held
+/// exclusively until the data is gone.
+struct LoginData {
+    dir: OwnedFd,
+    locks: Vec<(&'static str, AccountLock)>,
+}
+
+/// Takes the login-window locks of account `name` before anything is deleted: a window that is
+/// open refuses the whole removal. `None`: there is no `ai-login/`, so nothing to remove (and
+/// nothing is created).
+fn hold_login_data(state: &Path, name: &str) -> Result<Option<LoginData>, String> {
+    use rustix::fs::{FlockOperation, Mode, OFlags};
+    use rustix::io::Errno;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let dir = match rustix::fs::open(state.join(super::login::DIR), flags, Mode::empty()) {
+        Ok(dir) => dir,
+        Err(Errno::NOENT) => return Ok(None),
+        Err(Errno::LOOP | Errno::NOTDIR) => {
+            return Err("login folder is not a real folder".into());
+        }
+        Err(e) => return Err(format!("login folder unusable ({e})")),
+    };
+    let mut locks = Vec::new();
+    for tool in super::login::TOOLS {
+        let flags = OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let mode = Mode::RUSR | Mode::WUSR;
+        let fd = rustix::fs::openat(&dir, format!("{tool}-{name}.lock"), flags, mode)
+            .map_err(|e| format!("cannot lock the login window ({e})"))?;
+        rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive)
+            .map_err(|_| "its login window is open".to_string())?;
+        locks.push((tool, AccountLock(fd)));
+    }
+    Ok(Some(LoginData { dir, locks }))
+}
+
+/// Deletes what [`hold_login_data`] holds: each web data folder level by level without entering
+/// a link (a link in its place is unlinked, its target untouched), the account's launcher and
+/// the lock files. Never to the trash: the cookies must not survive elsewhere.
+fn remove_login_data(data: LoginData, name: &str) -> std::io::Result<()> {
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+    use rustix::io::Errno;
+    let LoginData { dir, locks } = data;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let bin = rustix::fs::openat(&dir, super::login::BIN_DIR, flags, Mode::empty()).ok();
+    for (tool, lock) in locks {
+        let slot = format!("{tool}-{name}");
+        match rustix::fs::statat(&dir, slot.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+            Err(Errno::NOENT) => {}
+            Err(e) => return Err(e.into()),
+            Ok(st) if FileType::from_raw_mode(st.st_mode) == FileType::Directory => {
+                let c = std::ffi::CString::new(slot.as_str()).expect("validated: no NUL");
+                remove_tree_at(dir.as_fd(), &c)?;
+            }
+            Ok(_) => rustix::fs::unlinkat(&dir, slot.as_str(), AtFlags::empty())?,
+        }
+        if let Some(bin) = &bin {
+            let launcher = format!("{}{tool}.{name}", super::login::LAUNCHER_PREFIX);
+            match rustix::fs::unlinkat(bin, launcher, AtFlags::empty()) {
+                Ok(()) | Err(Errno::NOENT) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let _ = rustix::fs::unlinkat(&dir, format!("{slot}.lock"), AtFlags::empty());
+        drop(lock);
+    }
+    Ok(())
+}
+
 /// Deletes account `name` for good (SEC-17): the name is validated again; `accounts/` is opened
 /// without following a link and everything happens relative to that descriptor, so a link
 /// swapped in cannot redirect the delete; a symlinked account is unlinked (its target
 /// untouched), a folder is removed level by level without entering links. No trash: the token
-/// files must not survive elsewhere. Nothing outside `accounts/<name>` (and its lock file) is
-/// touched. Refused while a session holds the account in any window (D17); the caller has asked
-/// and checked its own sessions.
+/// files must not survive elsewhere. With the account go its web sign-in data, launcher and
+/// window lock under `ai-login/` (SEC-37), by the same rules; nothing else outside
+/// `accounts/<name>` (and its lock file) is touched: the account's history entry is a link that
+/// is unlinked, the shared history it points at stays. Refused, before anything is deleted,
+/// while a session holds the account in any window (D17) or its login window is open; the
+/// caller has asked and checked its own sessions.
 pub fn remove(state: &Path, name: &str) -> Result<(), String> {
     use rustix::fs::{AtFlags, FileType, FlockOperation};
     let name = validate(name).map_err(|e| e.message().to_string())?;
@@ -455,6 +527,12 @@ pub fn remove(state: &Path, name: &str) -> Result<(), String> {
     rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive)
         .map_err(|_| "in use in another window".to_string())?;
     let lock = AccountLock(lock);
+    let web = hold_login_data(state, name)?;
+    // The web data first: a failure here leaves the account folder and the record intact.
+    if let Some(web) = web {
+        remove_login_data(web, name)
+            .map_err(|e| format!("cannot remove the web sign-in data ({e})"))?;
+    }
     let removed: std::io::Result<()> =
         match rustix::fs::statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW) {
             Err(rustix::io::Errno::NOENT) => Ok(()),
@@ -861,5 +939,164 @@ mod fix_tests {
         remove(state, "work").unwrap();
         assert!(!work.exists());
         assert!(outside.path().join("work/keep").exists());
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    use crate::ai::login;
+
+    fn web_data(state: &Path, name: &str) -> PathBuf {
+        let dir = login::data_dir(state, "claude", Some(name)).unwrap();
+        std::fs::create_dir(dir.join("cookies")).unwrap();
+        std::fs::write(dir.join("cookies/Cookies"), "session").unwrap();
+        dir
+    }
+
+    fn launcher(state: &Path, name: &str) -> PathBuf {
+        let bin = state.join("ai-login/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let link = bin.join(format!("vr-ide-login.claude.{name}"));
+        std::os::unix::fs::symlink("/usr/bin/true", &link).unwrap();
+        link
+    }
+
+    /// SEC-37, AC-9: removing an account removes its web data, lock and launcher, and nothing
+    /// of another account.
+    #[test]
+    fn remove_account_removes_login_data() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path();
+        create(state, "claude", "work").unwrap();
+        create(state, "claude", "alt").unwrap();
+        let (work, alt) = (web_data(state, "work"), web_data(state, "alt"));
+        let default = login::data_dir(state, "claude", None).unwrap();
+        let (work_link, alt_link) = (launcher(state, "work"), launcher(state, "alt"));
+        drop(login::lock(state, "claude", "work").unwrap());
+        assert!(state.join("ai-login/claude-work.lock").exists());
+        remove(state, "work").unwrap();
+        assert!(!work.exists(), "web data gone");
+        assert!(
+            !state.join("ai-login/claude-work.lock").exists(),
+            "lock gone"
+        );
+        assert!(
+            std::fs::symlink_metadata(&work_link).is_err(),
+            "launcher gone"
+        );
+        assert!(alt.join("cookies/Cookies").exists() && default.is_dir());
+        assert!(std::fs::symlink_metadata(&alt_link).is_ok());
+        assert!(std::path::Path::new("/usr/bin/true").exists());
+        // An account that never had a window, and a state folder without `ai-login/`.
+        create(state, "codex", "cx").unwrap();
+        remove(state, "cx").unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        create(bare.path(), "claude", "work").unwrap();
+        remove(bare.path(), "work").unwrap();
+        assert!(
+            !bare.path().join("ai-login").exists(),
+            "nothing made by a removal"
+        );
+    }
+
+    /// A web data folder that cannot be deleted fails the removal and the picker's record keeps
+    /// pointing at an account whose folder is still there.
+    #[test]
+    fn a_failed_web_data_removal_keeps_the_account_listed() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path();
+        let folder = create(state, "claude", "work").unwrap();
+        std::fs::write(folder.join(".credentials.json"), "t").unwrap();
+        let data = web_data(state, "work");
+        let locked = data.join("cookies");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let err = remove(state, "work").unwrap_err();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(err.contains("web sign-in data"), "{err}");
+        assert_eq!(for_tool(state, "claude"), ["work"], "still listed");
+        assert!(folder.join(".credentials.json").exists(), "account kept");
+        remove(state, "work").unwrap();
+        assert!(for_tool(state, "claude").is_empty() && !data.exists());
+    }
+
+    /// SEC-37: while the account's login window is open nothing at all is removed.
+    #[test]
+    fn remove_is_refused_while_the_login_window_is_open() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path();
+        let folder = create(state, "claude", "work").unwrap();
+        std::fs::write(folder.join(".credentials.json"), "t").unwrap();
+        let data = web_data(state, "work");
+        let window = login::lock(state, "claude", "work").unwrap();
+        assert_eq!(
+            remove(state, "work").unwrap_err(),
+            "its login window is open"
+        );
+        assert!(
+            folder.join(".credentials.json").exists(),
+            "account untouched"
+        );
+        assert!(data.join("cookies/Cookies").exists());
+        assert_eq!(for_tool(state, "claude"), ["work"]);
+        assert!(
+            hold(state, "work").is_ok(),
+            "the account's own lock was let go"
+        );
+        drop(window);
+        remove(state, "work").unwrap();
+        assert!(!folder.exists() && !data.exists());
+        // A window that starts after the removal holds a lock that exists.
+        create(state, "claude", "work").unwrap();
+        let again = login::lock(state, "claude", "work").unwrap();
+        assert!(state.join("ai-login/claude-work.lock").exists());
+        drop(again);
+    }
+
+    /// SEC-37, T-47: links in the web data's place are unlinked, never entered; a swapped
+    /// `ai-login/` stops the removal of web data without touching what it points at.
+    #[test]
+    fn remove_never_follows_links_in_the_login_data() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep"), "x").unwrap();
+        create(state, "claude", "work").unwrap();
+        std::fs::create_dir(state.join("ai-login")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), state.join("ai-login/claude-work")).unwrap();
+        remove(state, "work").unwrap();
+        assert!(std::fs::symlink_metadata(state.join("ai-login/claude-work")).is_err());
+        assert!(outside.path().join("keep").exists(), "target intact");
+        // A link inside the web data.
+        create(state, "claude", "work").unwrap();
+        let data = web_data(state, "work");
+        std::os::unix::fs::symlink(outside.path(), data.join("link")).unwrap();
+        remove(state, "work").unwrap();
+        assert!(!data.exists() && outside.path().join("keep").exists());
+        // `ai-login/` itself swapped for a link.
+        create(state, "claude", "work").unwrap();
+        std::fs::create_dir(outside.path().join("claude-work")).unwrap();
+        std::fs::write(outside.path().join("claude-work/keep"), "x").unwrap();
+        std::fs::rename(state.join("ai-login"), state.join("moved")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), state.join("ai-login")).unwrap();
+        assert!(remove(state, "work").is_err());
+        assert!(outside.path().join("claude-work/keep").exists());
+        assert!(
+            state.join("accounts/work").is_dir(),
+            "refused before anything went"
+        );
+        // The account's history link is unlinked, the shared folder stays (SEC-37).
+        std::fs::remove_file(state.join("ai-login")).unwrap();
+        let shared = outside.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::write(shared.join("conversation.jsonl"), "{}").unwrap();
+        std::os::unix::fs::symlink(&shared, state.join("accounts/work/projects")).unwrap();
+        remove(state, "work").unwrap();
+        assert!(!state.join("accounts/work").exists());
+        assert!(
+            shared.join("conversation.jsonl").exists(),
+            "shared history intact"
+        );
     }
 }

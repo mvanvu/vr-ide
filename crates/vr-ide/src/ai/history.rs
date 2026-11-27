@@ -85,16 +85,21 @@ pub fn dirs(
 
 /// The inherited `CLAUDE_CONFIG_DIR` / `CODEX_HOME` that point into vr-ide's own account
 /// folders (SEC-38, T-48): a child started without an account must not run on one of them.
+/// Likewise an inherited `BROWSER` that is an account's login launcher: it belongs to the one
+/// claude session it was made for (which sets its own after the removal).
 pub fn stray_vars(state: &Path, vars: impl Iterator<Item = (OsString, OsString)>) -> Vec<OsString> {
     let ours = [accounts::var_for("claude"), accounts::var_for("codex")];
     vars.filter(|(k, v)| {
-        ours.iter().flatten().any(|o| k == o)
+        let account = ours.iter().flatten().any(|o| k == o)
             && Path::new(v).is_absolute()
-            && points_into_accounts(state, Path::new(v))
+            && points_into_accounts(state, Path::new(v));
+        account || (k == BROWSER && super::login::is_helper_browser(v))
     })
     .map(|(k, _)| k)
     .collect()
 }
+
+const BROWSER: &str = "BROWSER";
 
 /// One startup warning per [`stray_vars`] entry: the value is ignored for vr-ide's children.
 pub fn stray_warnings(
@@ -103,10 +108,19 @@ pub fn stray_warnings(
 ) -> Vec<vr_config::ConfigWarning> {
     stray_vars(state, vars)
         .into_iter()
-        .map(|k| vr_config::ConfigWarning::InvalidValue {
-            file: state.to_path_buf(),
-            key: k.to_string_lossy().into_owned(),
-            message: "inherited value points into vr-ide's account folders; it is ignored for the terminals, ssh sessions and agents vr-ide starts".into(),
+        .map(|k| {
+            let what = if k == BROWSER {
+                "is a vr-ide login launcher"
+            } else {
+                "points into vr-ide's account folders"
+            };
+            vr_config::ConfigWarning::InvalidValue {
+                file: state.to_path_buf(),
+                key: k.to_string_lossy().into_owned(),
+                message: format!(
+                    "inherited value {what}; it is ignored for the terminals, ssh sessions and agents vr-ide starts"
+                ),
+            }
         })
         .collect()
 }
@@ -990,6 +1004,50 @@ mod tests {
         assert!(text.contains("CLAUDE_CONFIG_DIR"), "{text}");
         assert!(text.contains("ignored"), "{text}");
         assert!(stray_warnings(&f.state, std::iter::empty()).is_empty());
+    }
+
+    /// SEC-38 (D63): an inherited `BROWSER` that is a login launcher of ours belongs to one
+    /// claude session; it is dropped for every other child, with its own warning. The user's
+    /// own `BROWSER` stays.
+    #[test]
+    fn an_inherited_login_launcher_is_a_stray_browser() {
+        let f = fx("claude");
+        let var = |v: &str| vec![(OsString::from("BROWSER"), OsString::from(v))];
+        for ours in [
+            "/s/ai-login/bin/vr-ide-login.claude.work",
+            "/usr/bin/vr-ide --login-window claude work",
+        ] {
+            assert_eq!(
+                stray_vars(&f.state, var(ours).into_iter()),
+                [OsString::from("BROWSER")],
+                "{ours}"
+            );
+        }
+        for theirs in ["firefox", "/usr/bin/xdg-open", ""] {
+            assert!(
+                stray_vars(&f.state, var(theirs).into_iter()).is_empty(),
+                "{theirs}"
+            );
+        }
+        let other = vec![(
+            OsString::from("EDITOR"),
+            OsString::from("/s/ai-login/bin/vr-ide-login.claude.work"),
+        )];
+        assert!(stray_vars(&f.state, other.into_iter()).is_empty());
+        let w = stray_warnings(
+            &f.state,
+            var("/s/ai-login/bin/vr-ide-login.claude.work").into_iter(),
+        );
+        assert_eq!(w.len(), 1);
+        let text = w[0].to_string();
+        assert!(
+            text.contains("BROWSER") && text.contains("login launcher"),
+            "{text}"
+        );
+        assert!(
+            text.contains("ignored") && !text.contains("account folders"),
+            "{text}"
+        );
     }
 
     /// SEC-10: the shared folders are excluded from AI change recording.

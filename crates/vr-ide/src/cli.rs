@@ -101,6 +101,79 @@ pub fn ai_codex_notify(args: &[OsString]) -> Option<(PathBuf, OsString)> {
     }
 }
 
+/// The login window process (SEC-34): `vr-ide --login-window <tool> <account> <url>`, started
+/// by the launcher below, never by claude itself.
+pub const LOGIN_WINDOW_FLAG: &str = "--login-window";
+
+/// Tool, account and URL, only for exactly the four arguments `--login-window <tool> <account>
+/// <url>` with a tool that has a login window and `default` or a valid account name.
+pub fn login_window(args: &[OsString]) -> Option<(String, String, String)> {
+    use crate::ai::login;
+    let [flag, tool, account, url] = args else {
+        return None;
+    };
+    let (tool, account, url) = (tool.to_str()?, account.to_str()?, url.to_str()?);
+    let valid = flag == LOGIN_WINDOW_FLAG && login::tool_ok(tool) && login::account_ok(account);
+    valid.then(|| (tool.to_string(), account.to_string(), url.to_string()))
+}
+
+/// A call through an account's launcher (D63): what claude's `$BROWSER <url>` becomes.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LoginLauncher {
+    /// The state folder the launcher lies in.
+    pub state: PathBuf,
+    pub tool: String,
+    pub account: String,
+    /// The one argument: a URL, or whatever a program below claude wants opened.
+    pub target: OsString,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum LauncherCall {
+    /// Not started under a launcher name.
+    No,
+    /// A launcher name in any other than the one accepted form: the caller exits; a launcher
+    /// never starts the editor.
+    Refused,
+    Run(LoginLauncher),
+}
+
+/// claude runs `$BROWSER` as one program with the URL as its only argument, so the tool and
+/// account are in the program's name: `<state>/ai-login/bin/vr-ide-login.<tool>.<account>`,
+/// an absolute path, plus exactly one argument.
+pub fn login_launcher(argv0: &std::ffi::OsStr, args: &[OsString]) -> LauncherCall {
+    use crate::ai::login;
+    let path = Path::new(argv0);
+    let Some(rest) = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix(login::LAUNCHER_PREFIX))
+    else {
+        return LauncherCall::No;
+    };
+    let named =
+        |dir: Option<&Path>, name: &str| dir.and_then(Path::file_name) == Some(name.as_ref());
+    let bin = path.parent();
+    let root = bin.and_then(Path::parent);
+    let state = root.and_then(Path::parent);
+    let account = rest
+        .split_once('.')
+        .filter(|(tool, account)| login::tool_ok(tool) && login::account_ok(account));
+    match (state, account, args) {
+        (Some(state), Some((tool, account)), [target])
+            if path.is_absolute() && named(bin, login::BIN_DIR) && named(root, login::DIR) =>
+        {
+            LauncherCall::Run(LoginLauncher {
+                state: state.to_path_buf(),
+                tool: tool.to_string(),
+                account: account.to_string(),
+                target: target.clone(),
+            })
+        }
+        _ => LauncherCall::Refused,
+    }
+}
+
 /// Resolves launch arguments (without argv[0]) against `cwd`.
 pub fn resolve(args: &[OsString], cwd: &Path) -> Result<Launch, CliError> {
     if args.iter().any(|a| a == SESSION_FLAG) {
@@ -398,6 +471,122 @@ mod tests {
         }
         // Never the statusLine helper's form either.
         assert_eq!(ai_statusline(&[os("--ai-codex-notify"), os("/r")]), None);
+    }
+
+    /// SEC-34: the window process is exactly `--login-window <tool> <account> <url>`.
+    #[test]
+    fn login_window_flag_form() {
+        let url = "https://claude.ai/oauth/authorize?x=1";
+        let call = |words: &[&str]| login_window(&words.iter().map(|w| os(w)).collect::<Vec<_>>());
+        assert_eq!(
+            call(&["--login-window", "claude", "work", url]),
+            Some(("claude".into(), "work".into(), url.into()))
+        );
+        assert_eq!(
+            call(&["--login-window", "claude", "default", url]).map(|c| c.1),
+            Some("default".into())
+        );
+        for words in [
+            &[][..],
+            &["--login-window"],
+            &["--login-window", "claude", "work"],
+            &["--login-window", "claude", "work", url, "x"],
+            &["claude", "--login-window", "work", url],
+            &["--login-window", "claude", "../x", url],
+            &["--login-window", "claude", "", url],
+            &["--login-window", "claude", "a b", url],
+            &["--login-window", "claude", "Work", url],
+            &["--login-window", "codex", "work", url],
+            &["--login-window", "../claude", "work", url],
+            &["--ai-statusline", "claude", "work", url],
+        ] {
+            assert_eq!(call(words), None, "{words:?}");
+        }
+        // The other helpers never take its form, nor it theirs.
+        let args: Vec<_> = ["--login-window", "claude", "work", url].map(os).into();
+        assert_eq!(ai_statusline(&args), None);
+        assert_eq!(ai_codex_notify(&args), None);
+        assert_eq!(call(&["--ai-codex-notify", "/r", "{}"]), None);
+    }
+
+    /// D63: claude runs `$BROWSER <url>` as one program, so the launcher is known by its name
+    /// and takes exactly one argument; under that name vr-ide never starts as the editor.
+    #[test]
+    fn login_launcher_name_form() {
+        let url = os("https://claude.ai/oauth/authorize?x=1");
+        let call = |argv0: &str, args: &[OsString]| login_launcher(argv0.as_ref(), args);
+        assert_eq!(
+            call(
+                "/s t/ai-login/bin/vr-ide-login.claude.work",
+                std::slice::from_ref(&url)
+            ),
+            LauncherCall::Run(LoginLauncher {
+                state: PathBuf::from("/s t"),
+                tool: "claude".into(),
+                account: "work".into(),
+                target: url.clone(),
+            })
+        );
+        assert!(matches!(
+            call("/s/ai-login/bin/vr-ide-login.claude.default", &[os("/tmp/a.html")]),
+            LauncherCall::Run(l) if l.account == "default" && l.target == "/tmp/a.html"
+        ));
+        for argv0 in [
+            "vr-ide",
+            "/usr/bin/vr-ide",
+            "",
+            "/s/ai-login/bin/vr-ide",
+            "vr-ide-login",
+        ] {
+            assert_eq!(
+                call(argv0, std::slice::from_ref(&url)),
+                LauncherCall::No,
+                "{argv0}"
+            );
+            assert_eq!(call(argv0, &[]), LauncherCall::No, "{argv0}");
+        }
+        let two = [url.clone(), os("x")];
+        for (argv0, args) in [
+            ("/s/ai-login/bin/vr-ide-login.claude.work", &[][..]),
+            ("/s/ai-login/bin/vr-ide-login.claude.work", &two[..]),
+            (
+                "/s/ai-login/bin/vr-ide-login.codex.work",
+                std::slice::from_ref(&url),
+            ),
+            (
+                "/s/ai-login/bin/vr-ide-login.claude.Work",
+                std::slice::from_ref(&url),
+            ),
+            (
+                "/s/ai-login/bin/vr-ide-login.claude.a.b",
+                std::slice::from_ref(&url),
+            ),
+            (
+                "/s/ai-login/bin/vr-ide-login.claude.",
+                std::slice::from_ref(&url),
+            ),
+            (
+                "/s/ai-login/bin/vr-ide-login.claude",
+                std::slice::from_ref(&url),
+            ),
+            ("/s/ai-login/bin/vr-ide-login.", std::slice::from_ref(&url)),
+            (
+                "/s/ai-login/vr-ide-login.claude.work",
+                std::slice::from_ref(&url),
+            ),
+            (
+                "/s/other/bin/vr-ide-login.claude.work",
+                std::slice::from_ref(&url),
+            ),
+            ("/bin/vr-ide-login.claude.work", std::slice::from_ref(&url)),
+            (
+                "ai-login/bin/vr-ide-login.claude.work",
+                std::slice::from_ref(&url),
+            ),
+            ("vr-ide-login.claude.work", std::slice::from_ref(&url)),
+        ] {
+            assert_eq!(call(argv0, args), LauncherCall::Refused, "{argv0} {args:?}");
+        }
     }
 
     #[cfg(unix)]

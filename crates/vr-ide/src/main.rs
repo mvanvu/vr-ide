@@ -37,7 +37,30 @@ fn restore_terminal() {
 }
 
 fn main() -> Result<()> {
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let mut argv = std::env::args_os();
+    let argv0 = argv.next().unwrap_or_default();
+    let args: Vec<_> = argv.collect();
+    // An account's login launcher (claude's `$BROWSER`, SEC-34): known by its own name, before
+    // everything else; under that name the editor never starts.
+    match cli::login_launcher(&argv0, &args) {
+        cli::LauncherCall::No => {}
+        cli::LauncherCall::Refused => {
+            eprintln!("vr-ide: a login launcher takes exactly one argument");
+            std::process::exit(2);
+        }
+        cli::LauncherCall::Run(l) => {
+            let code = vr_ide::ai::login::run_launcher(&l.state, &l.tool, &l.account, &l.target);
+            std::process::exit(code);
+        }
+    }
+    // The login window process the launcher starts: the same place, before any terminal setup.
+    if let Some((tool, account, url)) = cli::login_window(&args) {
+        std::process::exit(vr_ide::ai::login::run_helper(&tool, &account, &url));
+    }
+    if args.first().is_some_and(|a| a == cli::LOGIN_WINDOW_FLAG) {
+        eprintln!("usage: vr-ide --login-window <tool> <account> <url>");
+        std::process::exit(2);
+    }
     // claude's statusLine helper (SEC-23): before the panic hook, session, config and terminal.
     if let Some(report) = cli::ai_statusline(&args) {
         std::process::exit(vr_ide::ai::usage::run_helper(&report));

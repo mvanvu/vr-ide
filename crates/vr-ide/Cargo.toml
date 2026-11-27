@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["login-window"]
+# The AI login window (`ai::login`): an embedded web view; Linux needs libwebkit2gtk-4.1.
+login-window = ["dep:wry", "dep:tao"]
+
 [dependencies]
 vr-core.workspace = true
 vr-config.workspace = true
@@ -24,6 +29,9 @@ ignore.workspace = true
 toml.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+url.workspace = true
+wry = { workspace = true, optional = true }
+tao = { workspace = true, optional = true }
 
 [dev-dependencies]
 vr-core = { workspace = true, features = ["test-util"] }

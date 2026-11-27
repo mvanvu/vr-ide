@@ -11,6 +11,7 @@ pub mod changes;
 mod changes_tests;
 pub mod history;
 pub mod limits;
+pub mod login;
 pub mod picker;
 pub mod restore;
 pub mod review;
@@ -273,6 +274,10 @@ pub struct AiPanel {
     pub(crate) usage_swept: bool,
     /// The "usage not available" notice was shown (once per run).
     pub(crate) usage_warned: bool,
+    /// A display for the login window: `None` asks the environment; tests set it.
+    pub login_display: Option<bool>,
+    /// The "login window not available" notice was shown (once per run).
+    pub(crate) login_warned: bool,
     /// Report reads so far (SEC-39 test seam).
     pub usage_reads: u64,
 }
@@ -303,6 +308,8 @@ impl AiPanel {
             usage_exe: None,
             usage_swept: false,
             usage_warned: false,
+            login_display: None,
+            login_warned: false,
             usage_reads: 0,
         }
     }
@@ -871,6 +878,8 @@ fn start_program(
         tool,
         account,
     )?);
+    // SEC-33: this spawn's environment only; set after the removals below.
+    env.extend(login_browser(app, tool, account));
     let mut env_remove = spawn::internal_vars(std::env::vars_os());
     // SEC-38: an inherited variable pointing at one of vr-ide's accounts never reaches an agent
     // started without that account (a named account's own variable is set after the removal).
@@ -887,6 +896,58 @@ fn start_program(
     let t = term::spawn_sized(app, &output, &program, args, root, extras, env, size)
         .map_err(|e| e.to_string())?;
     Ok((t, program, output, usage_files))
+}
+
+/// AC-9, SEC-33: `BROWSER` for a claude session, its account's login launcher, so that claude's
+/// sign-in page opens in vr-ide's login window. Nothing for another tool, without a state
+/// folder, in a build without the window, or without a display (claude then shows the URL and
+/// asks for the code, as it does on its own). A vr-ide or state path that cannot stand in
+/// `BROWSER` gives one notice per run and a start without it.
+fn login_browser(
+    app: &mut App,
+    tool: &AiTool,
+    account: Option<&str>,
+) -> Option<(OsString, OsString)> {
+    if !login::ENABLED || !login::tool_ok(&tool.name) {
+        return None;
+    }
+    let state = app.ai.state_dir.clone()?;
+    if !app
+        .ai
+        .login_display
+        .unwrap_or_else(login::display_available)
+    {
+        return None;
+    }
+    let exe = match app.ai.usage_exe.clone() {
+        Some(e) => Ok(e),
+        None => std::env::current_exe().map_err(|_| "vr-ide path unusable"),
+    };
+    match exe.and_then(|e| login::browser_env(&state, &e, &tool.name, account)) {
+        Ok(launcher) => Some((OsString::from("BROWSER"), launcher)),
+        Err(why) => {
+            if !app.ai.login_warned {
+                app.ai.login_warned = true;
+                app.warn(format!("{} login window not available ({why})", tool.name));
+            }
+            None
+        }
+    }
+}
+
+/// What the "account created" notice adds when the sign-in cannot use the login window here.
+fn login_hint(app: &App, tool: &str) -> &'static str {
+    let window = login::ENABLED
+        && login::tool_ok(tool)
+        && !app
+            .ai
+            .login_display
+            .unwrap_or_else(login::display_available);
+    if window {
+        " (no display for the login window: open the URL it shows and paste the code)"
+    } else {
+        ""
+    }
 }
 
 /// AC-3, SEC-22: claude with a state folder reports through the statusLine helper, codex
@@ -1197,8 +1258,9 @@ fn add_account(app: &mut App) {
             app.ai.picker = None;
             app.ai.active = app.ai.sessions.len() - 1;
             reveal(app);
+            let hint = login_hint(app, &tool);
             app.info(format!(
-                "Account {name} created; sign in with /login in its tab"
+                "Account {name} created; sign in with /login in its tab{hint}"
             ));
         }
         Err(e) => {
@@ -1264,8 +1326,22 @@ fn ask_remove_account(app: &mut App) {
         return;
     };
     let shown = crate::git::home_relative(&path);
+    let web = if login::tool_ok(&tool) {
+        ", and the web sign-in vr-ide's login window kept for it"
+    } else {
+        ""
+    };
+    // The history entry itself, never what is behind it: a link is the shared history.
+    let history = match history::entry(&tool).map(|e| path.join(e).symlink_metadata()) {
+        Some(Ok(m)) if m.file_type().is_symlink() => {
+            "The shared conversation history stays; only this account's link to it goes.\n"
+        }
+        Some(Ok(_)) => "Its conversation history is not shared and is deleted too.\n",
+        _ => "",
+    };
     let message = format!(
-        "Deletes {shown}/ for good: its {tool} login, settings and history.\n\
+        "Deletes {shown}/ for good: its {tool} login and settings{web}.\n\
+         {history}\
          The sign-in stays valid at the provider; to end it, run /logout in a session on \
          {name} first.\n\
          Other accounts and {tool}'s own config stay."

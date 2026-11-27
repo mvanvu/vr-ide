@@ -371,15 +371,42 @@ fn remove_account_asks_refuses_while_in_use_and_deletes_only_it() {
     for want in [
         "Remove account work?",
         "accounts/work/",
-        "for good: its claude login, settings and history.",
+        "for good: its claude login and settings, and the web sign-in vr-ide's login window kept for it.",
         "run /logout in a session on work first.",
         "Other accounts and claude's own config stay.",
     ] {
         assert!(text.contains(want), "{want}: {text}");
     }
+    // An account without a history entry: the dialog says nothing about history.
+    assert!(!text.contains("history"), "{text}");
     press(&mut e.app, KeyCode::Enter);
     assert!(e.app.dialog.is_none());
     assert!(work.is_dir(), "Cancel keeps it");
+    // Shared history (the entry is a link): only the link goes, and the dialog says so.
+    let shared = tempfile::tempdir().unwrap();
+    std::fs::write(shared.path().join("conversation.jsonl"), "{}").unwrap();
+    std::os::unix::fs::symlink(shared.path(), work.join("projects")).unwrap();
+    press(&mut e.app, KeyCode::Delete);
+    let text = format!("{:?}", e.app.dialog.as_ref().expect("asks").widget);
+    assert!(
+        text.contains(
+            "The shared conversation history stays; only this account's link to it goes."
+        ),
+        "{text}"
+    );
+    press(&mut e.app, KeyCode::Enter);
+    // History that could not be shared (a real folder) goes with the account.
+    std::fs::create_dir(alt.join("projects")).unwrap();
+    select(&mut e.app, "claude", Some("alt"));
+    press(&mut e.app, KeyCode::Delete);
+    let text = format!("{:?}", e.app.dialog.as_ref().expect("asks").widget);
+    assert!(
+        text.contains("Its conversation history is not shared and is deleted too."),
+        "{text}"
+    );
+    press(&mut e.app, KeyCode::Enter);
+    assert!(alt.join("projects").is_dir(), "Cancel keeps it");
+    std::fs::remove_dir(alt.join("projects")).unwrap();
     // Remove.
     select(&mut e.app, "claude", Some("work"));
     press(&mut e.app, KeyCode::Delete);
@@ -389,6 +416,10 @@ fn remove_account_asks_refuses_while_in_use_and_deletes_only_it() {
     assert!(alt.is_dir(), "sibling stays");
     assert!(e.state.join("accounts").is_dir());
     assert_eq!(notices(&e.app).last().unwrap(), "Account work removed");
+    assert!(
+        shared.path().join("conversation.jsonl").exists(),
+        "the shared history stays"
+    );
     let rows = &e.app.ai.picker.as_ref().unwrap().rows;
     assert!(
         !rows

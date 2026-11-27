@@ -1622,3 +1622,114 @@ fn ai_usage_without_data() {
     );
     assert_eq!(app.ai.sessions.len(), 1);
 }
+
+// ---- login window (AC-9, SEC-33, SEC-38) ------------------------------------------------------
+
+/// Prints the `BROWSER` it was started with, as claude would read it.
+const BROWSER_AGENT: &str = "#!/bin/sh\nprintf 'BROWSER=[%s]\\n' \"${BROWSER-unset}\"\nexec cat\n";
+
+fn login_app() -> (tempfile::TempDir, App, PathBuf) {
+    let (d, mut app, helper) = usage_app();
+    let fake = script(&d.path().join(".bin"), "browser-agent", BROWSER_AGENT);
+    app.settings.ai_tools[0] = tool("claude", &fake, true);
+    app.settings.ai_tools[1] = tool("gemini", &fake, false);
+    app.ai.login_display = Some(true);
+    (d, app, helper)
+}
+
+/// What session `i` got as `BROWSER` (the screen wraps a long path).
+fn browser_of(app: &App, i: usize) -> String {
+    let text = wait_for(app, i, |s| s.contains("BROWSER=[") && s.contains(']'));
+    let flat = text.replace('\n', "");
+    let rest = flat.split_once("BROWSER=[").unwrap().1;
+    rest.split_once(']').unwrap().0.to_string()
+}
+
+fn login_notices(app: &App) -> Vec<&str> {
+    app.notices
+        .iter()
+        .map(|n| n.text.as_str())
+        .filter(|t| t.contains("login window"))
+        .collect()
+}
+
+/// SEC-33 (D63): a claude session gets `BROWSER` = its account's launcher, a link to vr-ide by
+/// absolute path; no other tool does, and vr-ide's own environment is never changed.
+#[test]
+fn claude_gets_browser_env() {
+    use crate::ai::login;
+    let (d, mut app, helper) = login_app();
+    let state = app.ai.state_dir.clone().unwrap();
+    let inherited = std::env::var("BROWSER").unwrap_or_else(|_| "unset".into());
+    crate::ai::accounts::create(&state, "claude", "work").unwrap();
+    let claude = app.settings.ai_tools[0].clone();
+    let root = canonical(&d);
+    crate::ai::spawn_session(
+        &mut app,
+        &claude,
+        Some("work".into()),
+        StartMode::New,
+        &root,
+        None,
+    )
+    .unwrap();
+    start(&mut app, &d, 0);
+    start(&mut app, &d, 1);
+    let (work, default, gemini) = (
+        browser_of(&app, 0),
+        browser_of(&app, 1),
+        browser_of(&app, 2),
+    );
+    assert_eq!(gemini, inherited, "only claude gets the launcher");
+    assert_eq!(
+        std::env::var("BROWSER").unwrap_or_else(|_| "unset".into()),
+        inherited,
+        "never set in vr-ide's own environment"
+    );
+    if !login::ENABLED {
+        assert_eq!((work, default), (inherited.clone(), inherited));
+        return;
+    }
+    let bin = state.join("ai-login/bin");
+    assert_eq!(PathBuf::from(&work), bin.join("vr-ide-login.claude.work"));
+    assert_eq!(
+        PathBuf::from(&default),
+        bin.join("vr-ide-login.claude.default")
+    );
+    assert!(Path::new(&work).is_absolute());
+    for link in [&work, &default] {
+        assert_eq!(std::fs::read_link(link).unwrap(), helper, "{link}");
+    }
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(std::fs::metadata(&bin).unwrap().mode() & 0o777, 0o700);
+    assert!(login_notices(&app).is_empty(), "{:?}", login_notices(&app));
+
+    // Without a display claude keeps its own way of showing the URL: no launcher, no notice.
+    app.ai.login_display = Some(false);
+    start(&mut app, &d, 0);
+    assert_eq!(browser_of(&app, 3), inherited);
+    assert!(login_notices(&app).is_empty());
+}
+
+/// SEC-33: a vr-ide path that programs reading `BROWSER` could split (`a b`, `a:b`) is never
+/// put there; one notice per run says why.
+#[test]
+fn an_unusable_vr_ide_path_gives_no_browser_and_one_notice() {
+    if !crate::ai::login::ENABLED {
+        return;
+    }
+    let (d, mut app, _) = login_app();
+    let inherited = std::env::var("BROWSER").unwrap_or_else(|_| "unset".into());
+    for (i, odd) in ["a b", "a:b"].into_iter().enumerate() {
+        let dir = d.path().join(odd);
+        std::fs::create_dir(&dir).unwrap();
+        app.ai.usage_exe = Some(script(&dir, "vr-ide", STAND_IN_HELPER));
+        start(&mut app, &d, 0);
+        assert_eq!(browser_of(&app, i), inherited, "{odd}");
+    }
+    assert_eq!(
+        login_notices(&app),
+        ["claude login window not available (vr-ide path unusable)"]
+    );
+    assert!(!app.ai.state_dir.clone().unwrap().join("ai-login").exists());
+}

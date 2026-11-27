@@ -377,3 +377,6 @@ network. Fd-based means `openat`/`mkdirat`/`renameat2`/`unlinkat`/`symlinkat` on
 - **C8** "Known to work" accounts may still show claude's folder-trust dialog in a new folder (trust lives
   in the per-account config); the spec's "ready" signal must exclude dialogs (SEC-30), else the typed
   prompt + Enter trusts the folder.
+
+## Amendment (run 5, T8, D63/D64)
+claude 2.1.332 invokes `$BROWSER` as one program path with the URL as its only argument (execFile, no word splitting). SEC-33: the BROWSER value is the per-account launcher symlink path (whole path checked against `[A-Za-z0-9/._+-]`). SEC-34: the form claude produces is argv[0] = `vr-ide-login.<tool>.<account>` + exactly one URL argument; the explicit `--login-window <tool> <account> <url>` form is used only by vr-ide itself for the detached window. SEC-38: an inherited BROWSER whose file name starts with `vr-ide-login.` or that contains `--login-window` is dropped. The xdg-open hand-off for non-login URLs runs with BROWSER removed.

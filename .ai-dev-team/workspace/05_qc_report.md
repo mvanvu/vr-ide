@@ -253,3 +253,45 @@ Observation (not a defect against the rules): real binary with wrong arg counts 
 | SEC-23 | pass | case 5: only exact form, only own report under ai-usage with live marker, mode 0600, payload cap |
 | BASE-50 | pass | harness + mod line removed; status/stat identical |
 Project files written: crates/vr-ide/src/qc_t7_tests.rs (deleted), one `mod` line in crates/vr-ide/src/ai_switch_tests.rs (removed). Artifacts only under qa-artifacts/T7/.
+
+## QC T8
+Engines: real binary `target/debug/vr-ide` (built once via run-heavy), fake `xdg-open`/`open` (records argv + env BROWSER) first on PATH, state/HOME under `qa-artifacts/T8/qc/` (removed afterwards). No Lightpanda/browser/window used; claude/codex never run. Launcher = symlink `<state>/ai-login/bin/vr-ide-login.claude.work` -> the exe, called with `BROWSER=/bin/false` in the environment, DISPLAY and WAYLAND_DISPLAY unset (and, for the second round, `DISPLAY=:99`, a display that does not exist).
+
+| # | Case | Result |
+|---|---|---|
+| 1a | launcher, one claude start URL (`https://claude.ai/oauth/authorize?redirect_uri=http://localhost:1234/callback&x=1`), no display | exit 1, no stderr text, opener log not created, state tree afterwards = only the launcher link (no `claude-work/`, no lock) -> pass |
+| 1b | launcher with 0 args / 2 args | stderr `vr-ide: a login launcher takes exactly one argument`, exit 2, opener not called, nothing written -> pass |
+| 2a | `https://github.com/login/device` | exit 0; fake got `ARGC=1 ARG=[https://github.com/login/device] BROWSER=<unset>` (was `/bin/false` in) -> pass |
+| 2b | `-https://x.example/--version`, `--help`, `-oProxyCommand=x` | exit 0; fake got ARGC=1 with that exact string, **no `--` separator** -> a real xdg-open would read it as an option. FAIL vs the brief's "not passed as an option" (see defect Q1) |
+| 3 | refusals, both with no display and with `DISPLAY=:99`: `https://claude.ai.evil.com/oauth/authorize`, `http://claude.ai/...`, `https://user@claude.ai/...`, `javascript:alert(1)`, `file:///etc/passwd`, `https://clаude.ai/...` (Cyrillic а), `https://xn--clude-9nf.ai/...`, `https://evil.com/oauth/authorize`, start URL with two `redirect_uri` | all: exit 0, handed unchanged to the fake opener (ARGC=1, BROWSER unset), no window attempt, nothing written. Matches D6/D64/D66 (a non-allowed URL is not a login start, so it goes to the system opener, never to the window). Pass |
+| 4 | `vr-ide --login-window` with 0, 1, 2 and 4 args; bad tool `../x`, bad account `../../etc` | all: `vr-ide: path does not exist: <cwd>/--login-window`, exit 2, nothing written. Refused, but through the generic "unknown path" error, not a login-specific message (cosmetic, note Q2). Exactly 3 args + valid URL, no display: `vr-ide: login window not opened (no display)`, exit 1, nothing written -> pass |
+| 5 | account removal | not reachable from the CLI (no remove flag in `cli.rs`) and `remove` is not public, so no black-box run. Ran the 3 developer tests by name once as the closest evidence: `remove_account_removes_login_data`, `remove_is_refused_while_the_login_window_is_open`, `remove_never_follows_links_in_the_login_data` -> 3 passed. Read their bodies: they assert the web data dir, lock and launcher link are gone, other accounts untouched, symlinked `claude-work`, in-data links and a swapped `ai-login/` are never followed. Pass (code path) |
+
+Fake opener log (all lines, same shape): `ARGC=1`, `ARG=[<url>]`, `BROWSER=<unset>`.
+
+Defects
+- Q1 (low): `login::opener_command` does `c.arg(target).env_remove("BROWSER")` with no `--` before the target (login.rs line ~398). An argument that starts with `-` (`--help`, `-o...`) reaches the system opener as an option. The caller is the agent that already controls the command line, so the impact is small, but the brief asked for it not to be an option and D6's "unchanged, one argument" does not conflict with adding `--` (xdg-open, open and `cmd /c start` differ: check each; `xdg-open -- url` is accepted by the script). Repro: run the launcher with `--help`, read the fake's argv. Expected: either `--` first or refusal; actual: `ARG=[--help]`.
+- Q2 (cosmetic): `--login-window` with the wrong number of arguments says `path does not exist: .../--login-window`.
+
+Unverified (needs the user's manual check): everything with a real window: the window opening and titles, per-account clean/remembered sign-in, window closes on success, allowlist redirect/`window.open` blocking (SEC-36), page-level `blocked <host>`, the "window is up" byte hand-off and its ~5 s wait, the data under `~/.local/state/vr-ide/ai-login/` having 0700/0600 modes and nothing under `~/.local/share` or `~/.cache`, the remove dialog text; handover steps 1-8.
+
+Project files written: none (only `$TEAM_WS/05_qc_report.md` and the transient `qa-artifacts/T8/qc/`, removed).
+
+## Rule check T8
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-9 | partial: pass at the launcher/CLI, window parts unverified | cases 1-5 above; no-display exit 1 and the URL/paste fallback is claude's own (BROWSER handed over only with a display, D69, not testable from outside) |
+| SEC-33 | pass (observable part) | fake opener got no `BROWSER` (case 2a, 3) |
+| SEC-34 | pass | exactly one argument (1b), refused counts (4), nothing started or written |
+| SEC-35 | pass (launcher side) | lookalike/userinfo/http/scheme URLs never reach a window (3) |
+| SEC-36 | unverified | needs the window |
+| SEC-37 | pass (code path) | case 5 tests; modes unverified live |
+| SEC-38 | not exercised from outside (history seam is unit-tested by the developer) |
+| BASE-50 | pass | no repo file edited |
+| BASE-14/15/17 | pass | nothing left running; no pkill; no DB |
+
+## QC T8 re-check
+Rebuilt once via run-heavy; same fake opener, no display, `BROWSER=/bin/false` in.
+- Q1: launcher with `--help`, `-oProxyCommand=x`, `-https://x/--version`, `-`: exit 1 each, fake opener log empty (never called). `https://github.com/login/device`: exit 0, `ARGC=1 ARG=[https://github.com/login/device] BROWSER=<unset>`. Pass.
+- Q2: `vr-ide --login-window` with 0/1/2/4 args: `usage: vr-ide --login-window <tool> <account> <url>`, exit 2, state tree afterwards = only the launcher link. Pass.
+Project files written: none (qa-artifacts/T8/qc removed).

@@ -31,6 +31,16 @@ Contents: [Requirements](#requirements) · [Install](#install) · [Quick start](
 
   Check with `cargo --version`.
 - **git** to fetch the source.
+- **WebKitGTK 4.1 and GTK 3** (development packages to build, the libraries to run), for the
+  [login window](#login-window) of the AI panel. On Debian / Ubuntu:
+
+  ```
+  sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
+  ```
+
+  Without them, build without the login window: add `--no-default-features` to the `cargo`
+  commands below. claude then opens its sign-in page in your own browser, as it does outside
+  vr-ide.
 - **A terminal** with keyboard-enhancement support (the kitty keyboard protocol: kitty, WezTerm,
   foot, Ghostty, recent Alacritty and others) is not required: every default key works without it.
   See [Terminal notes](#terminal-notes).
@@ -429,8 +439,12 @@ each tool's accounts under it.
   a restored session reopens on the same account, or not at all (a notice) when its folder is
   missing or not safe — never on `default`.
 - Remove: `del` on the account in the picker. It asks first, and is refused while a session on it
-  is open. The folder is deleted for good (not to the trash); the sign-in stays valid at the
-  provider, so run `/logout` in a session on that account first if you want it ended.
+  is open or its login window is showing. The folder is deleted for good (not to the trash):
+  the tool's login and settings, and with it the web sign-in the [login window](#login-window)
+  kept for the account. Conversation history is shared and stays: only the account's link to it
+  is removed (history that could not be shared, see below, lies in the folder and goes with it;
+  the question says which applies). The sign-in stays valid at the provider, so run `/logout`
+  in a session on that account first if you want it ended.
 - History is shared, logins are not: every account of a tool sees the conversations of the
   default account and of each other (`/resume` lists them all). vr-ide makes the account's
   history entry (`projects` for claude, `sessions` for codex) a link to the default account's
@@ -444,6 +458,45 @@ each tool's accounts under it.
   It is tried again on the next start. Removing an account removes only the link.
 - A folder that is a symlink, belongs to another user, or is open to others is refused or made
   private (0700) before use. vr-ide switches accounts on its own only at a usage limit (below).
+
+#### Login window
+
+When claude asks you to sign in (`/login`, or the first start on a new account), its sign-in page
+opens in a small vr-ide window titled with the account (`vr-ide login - claude@work`), not in
+your browser. Each account has its own web data (cookies, storage, cache) in
+`~/.local/state/vr-ide/ai-login/claude-<account>/` (private, 0700), so the browser's own claude
+login and the other accounts never get in the way, and signing the same account in again later
+is quick. When you approve, the window closes and claude continues.
+
+- How it works: vr-ide starts each claude session with `BROWSER` set to a launcher of that
+  account, `~/.local/state/vr-ide/ai-login/bin/vr-ide-login.claude.<account>`, a link to the
+  vr-ide program (claude runs `$BROWSER <url>` as one program, claude 2.1.332). Only that claude
+  session gets it; terminals, ssh sessions and other agents do not.
+- The window loads only `https://claude.ai`, `claude.com`, `platform.claude.com`,
+  `*.anthropic.com`, the sign-in pages of Google (`accounts.google.com`) and Apple
+  (`appleid.apple.com`), and claude's own `http://localhost:<port>` callback. Any other page is
+  not loaded; the window title then says `blocked <scheme>://<host>`. Downloads, pop-up windows
+  and camera / microphone / location requests are refused. Sign-in by e-mail code works; a
+  sign-in link from an e-mail opens in your browser, not in this window, so use the code. If a
+  provider refuses to sign in inside an embedded window, close it: claude shows the URL to open
+  in your browser and asks for the code.
+- Everything else that claude or a program under it opens (a documentation link, `gh auth
+  login`, an MCP server's sign-in, a local dev server) goes to your normal browser through
+  `xdg-open`, as without vr-ide.
+- One window per account. If `/login` is run again while that account's window is still open,
+  no second window opens: close the open one first, then run `/login` again (the open window
+  belongs to the earlier sign-in and its code no longer reaches claude). It closes itself after
+  15 minutes. Closing it by hand is fine: claude
+  still shows the URL and the "paste code" prompt.
+- No display (an SSH session, no `DISPLAY` / `WAYLAND_DISPLAY`), a build without the window, or
+  a vr-ide or state folder path with characters other than `A-Z a-z 0-9 / . _ + -`: no launcher
+  is set and claude signs in its own way (it prints the URL; open it anywhere and paste the
+  code). For the path case a notice says so once.
+- The web sign-in is as private as the account folder: any program running as you could read
+  either. Removing the account deletes its web data here; it stays valid at the provider.
+- A program running as you could open this window for an account with a real claude sign-in URL
+  of its own; the window always names the account in its title: approve only a sign-in you
+  started.
 
 #### Usage
 
