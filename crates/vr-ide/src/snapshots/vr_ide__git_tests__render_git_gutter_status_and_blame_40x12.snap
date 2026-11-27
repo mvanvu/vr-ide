@@ -2,7 +2,7 @@
 source: crates/vr-ide/src/git_tests.rs
 expression: t.backend()
 ---
-" lib.rs                                 "
+" lib.rs x                               "
 "  1 fn one() {}  Ann Author, 2 hours ago"
 "  2▎fn two(x: u8) {}                    "
 "  3▁fn three() {}                       "

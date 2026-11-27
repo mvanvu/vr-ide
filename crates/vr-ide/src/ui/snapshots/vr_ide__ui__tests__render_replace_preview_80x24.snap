@@ -2,7 +2,7 @@
 source: crates/vr-ide/src/ui/mod.rs
 expression: t.backend()
 ---
-"▾ shop             │ README.md                                                  "
+"▾ shop             │ README.md x                                                "
 "  ▸ src            │ Project  total               Space toggles, Enter replaces "
 "    README.md      │Replace sum                                    enter preview"
 "                   │[x] README.md                                              1"

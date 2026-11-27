@@ -145,7 +145,7 @@ the list is in [docs/commands.md](docs/commands.md).
 | Save | `ctrl+s` |
 | Save As (a new file name, relative to the project root) | palette: Save As |
 | Reload the file from disk | palette: Reload File from Disk |
-| Close the tab | `ctrl+w` |
+| Close the tab | `ctrl+w`, or left click the `x` at the end of its label (any tab, without switching to it) |
 | Next / previous tab | `f9` / `shift+f9` |
 | Command palette | `F1` |
 

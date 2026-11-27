@@ -1083,3 +1083,210 @@ fn a_tab_scrolled_by_the_first_press_still_takes_the_second() {
     let cur = &app.explorer.rows[app.explorer.cursor];
     assert_eq!(cur.path, roots[0].join(&names[k]));
 }
+
+// ---- editor tabs: the x close button (FR-30) ------------------------------------------------
+
+fn bar_text(app: &mut App, w: u16) -> String {
+    let term = draw(app, w, 30);
+    let t = app.layout.tabs;
+    let buf = term.backend().buffer();
+    (t.x..t.x + t.width)
+        .map(|x| buf[(x, t.y)].symbol().to_string())
+        .collect()
+}
+
+/// Left press + release at tab-bar offset `off`.
+fn bar_click(app: &mut App, off: u16) {
+    let t = app.layout.tabs;
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_mouse_at(
+            MouseEvent {
+                kind,
+                column: t.x + off,
+                row: t.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            Instant::now(),
+        );
+    }
+}
+
+/// Offset of the x of the tab of document `i`, as the layout reports it.
+fn close_x(app: &App, i: usize) -> u16 {
+    crate::ui::tabs::close_offset(app, i, app.layout.tabs.width).expect("x is drawn")
+}
+
+#[test]
+fn every_editor_tab_ends_with_an_x() {
+    let (_d, _r, mut app) = two_tabs();
+    let text = bar_text(&mut app, 100);
+    assert!(text.matches('x').count() >= 2, "{text:?}");
+    assert!(text.contains("a.rs x "), "{text:?}");
+    assert!(text.contains("b.ts x "), "{text:?}");
+}
+
+#[test]
+fn x_on_an_inactive_clean_tab_closes_only_it_without_switching() {
+    let (_d, _r, mut app) = two_tabs();
+    assert_eq!(app.active, 1);
+    draw(&mut app, 100, 30);
+    let x = close_x(&app, 0);
+    bar_click(&mut app, x);
+    assert_eq!(app.docs.len(), 1);
+    assert!(app.docs[0].path.as_ref().unwrap().ends_with("b.ts"));
+    assert_eq!(app.active, 0);
+    assert!(app.dialog.is_none());
+}
+
+#[test]
+fn x_on_the_active_tab_closes_it_like_ctrl_w() {
+    let (_d, _r, mut app) = two_tabs();
+    draw(&mut app, 100, 30);
+    let x = close_x(&app, 1);
+    bar_click(&mut app, x);
+    assert_eq!(app.docs.len(), 1);
+    assert!(app.docs[0].path.as_ref().unwrap().ends_with("a.rs"));
+}
+
+#[test]
+fn x_on_a_dirty_tab_opens_the_unsaved_dialog_and_cancel_keeps_it() {
+    let (_d, _r, mut app) = two_tabs();
+    app.set_active(0);
+    app.docs[0].buffer.insert_text("z");
+    assert!(app.docs[0].is_modified());
+    app.set_active(1);
+    draw(&mut app, 100, 30);
+    let x = close_x(&app, 0);
+    bar_click(&mut app, x);
+    assert!(app.dialog.is_some(), "the unsaved dialog opens");
+    assert_eq!(app.docs.len(), 2);
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.dialog.is_none());
+    assert_eq!(app.docs.len(), 2);
+}
+
+#[test]
+fn click_on_the_label_switches_and_never_closes() {
+    let (_d, _r, mut app) = two_tabs();
+    draw(&mut app, 100, 30);
+    let (_, x, _) = crate::ui::tabs::positions(&app, app.layout.tabs.width)[0];
+    bar_click(&mut app, x + 1);
+    assert_eq!((app.docs.len(), app.active), (2, 0));
+    // The cell after the x is the label's padding: it switches too.
+    let x1 = close_x(&app, 1);
+    bar_click(&mut app, x1 + 1);
+    assert_eq!((app.docs.len(), app.active), (2, 1));
+}
+
+#[test]
+fn the_active_tab_x_stays_reachable_when_the_bar_overflows() {
+    let names: Vec<String> = (0..12)
+        .map(|i| format!("a_rather_long_file_name_{i:02}.txt"))
+        .collect();
+    let files: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "x\n")).collect();
+    let (_d, roots) = folders(&[("p", &files)]);
+    for width in [40u16, 80, 120] {
+        let mut app = ws_app(&roots);
+        for n in &names {
+            app.open_path(&roots[0].join(n)).unwrap();
+        }
+        app.explorer.visible = false;
+        app.set_active(5);
+        draw(&mut app, width, 30);
+        let bar = app.layout.tabs.width;
+        let x = crate::ui::tabs::close_offset(&app, 5, bar).expect("active x reachable");
+        assert!(x < bar, "{width}");
+        let n = app.docs.len();
+        bar_click(&mut app, x);
+        assert_eq!(app.docs.len(), n - 1, "{width}");
+    }
+}
+
+#[test]
+fn the_double_click_still_reveals_with_the_x_in_place() {
+    let (_d, roots, mut app) = two_tabs();
+    let t0 = Instant::now();
+    tab_click(&mut app, 0, t0);
+    assert!(!app.explorer.visible, "hidden before the second press");
+    tab_click(&mut app, 0, t0 + Duration::from_millis(200));
+    assert!(app.explorer.visible);
+    assert_eq!(app.focus, Focus::Explorer);
+    assert_eq!(app.docs.len(), 2, "the double click closes nothing");
+    let cur = &app.explorer.rows[app.explorer.cursor];
+    assert_eq!(cur.path, roots[0].join("src/a.rs"));
+}
+
+/// Dirties tab 0 of `two_tabs`, makes tab 1 active and clicks tab 0's x.
+fn click_x_of_dirty_inactive_tab(app: &mut App) {
+    app.set_active(0);
+    app.docs[0].buffer.insert_text("z");
+    assert!(app.docs[0].is_modified());
+    app.set_active(1);
+    draw(app, 100, 30);
+    let x = close_x(app, 0);
+    bar_click(app, x);
+    assert!(app.dialog.is_some(), "the unsaved dialog opens");
+    assert_eq!((app.docs.len(), app.active), (2, 1), "nothing changes yet");
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+#[test]
+fn x_on_a_dirty_inactive_tab_with_discard_closes_only_it_and_keeps_a_copy() {
+    let (_d, roots, mut app) = two_tabs();
+    let state = tempfile::tempdir().unwrap();
+    let recovery = state.path().join("recovery");
+    app.recovery_dir = Some(recovery.clone());
+    let a = roots[0].join("src/a.rs");
+    let b_before = app.docs[1].buffer.text().to_string();
+    click_x_of_dirty_inactive_tab(&mut app);
+    // Buttons: Save, Discard, Cancel.
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.dialog.is_none());
+    assert_eq!(app.docs.len(), 1);
+    assert!(app.docs[0].path.as_ref().unwrap().ends_with("b.ts"));
+    assert_eq!(app.active, 0);
+    assert_eq!(app.docs[0].buffer.text().to_string(), b_before);
+    assert!(!app.docs[0].is_modified());
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n", "not saved");
+    let copies: usize = walk_files(&recovery);
+    assert_eq!(copies, 1, "one recovery copy");
+}
+
+fn walk_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| {
+                    if e.path().is_dir() {
+                        walk_files(&e.path())
+                    } else {
+                        1
+                    }
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+#[test]
+fn x_on_a_dirty_inactive_tab_with_save_writes_that_file_and_leaves_the_other_tab() {
+    let (_d, roots, mut app) = two_tabs();
+    let a = roots[0].join("src/a.rs");
+    let b = roots[1].join("src/deep/b.ts");
+    click_x_of_dirty_inactive_tab(&mut app);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.dialog.is_none());
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "za\n");
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "b\n");
+    assert_eq!(app.docs.len(), 1);
+    assert!(app.docs[0].path.as_ref().unwrap().ends_with("b.ts"));
+    assert_eq!(app.active, 0);
+    assert!(!app.docs[0].is_modified());
+}
