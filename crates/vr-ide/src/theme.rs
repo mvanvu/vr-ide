@@ -166,13 +166,13 @@ impl Theme {
             explorer_kinds: explorer::ansi(
                 [
                     Color::Indexed(75),
-                    Color::Indexed(203),
+                    Color::Indexed(210),
                     Color::LightGreen,
                     Color::Yellow,
                     Color::LightCyan,
-                    Color::LightMagenta,
+                    Color::Indexed(213),
                     Color::Indexed(208),
-                    Color::Indexed(246),
+                    Color::Indexed(248),
                     Color::Indexed(250),
                 ],
                 true,
@@ -884,6 +884,10 @@ mod tests {
                     let r = contrast(xterm_rgb(f), b);
                     assert!(r >= 4.5, "{name} {k:?} {f:?} on {b:?} is {r:.2}");
                 }
+                // Kinds stay on the unfocused cursor row and multi-selected rows (AC-F5).
+                let sel = t.selection.bg.expect("selection bg");
+                let r = contrast(xterm_rgb(f), xterm_rgb(sel));
+                assert!(r >= 3.0, "{name} {k:?} {f:?} on the selection is {r:.2}");
             }
         }
     }
