@@ -10,11 +10,13 @@ pub mod cli;
 pub mod clipboard;
 pub mod commands;
 mod config_reload;
+pub mod desktop;
 pub mod event_loop;
 pub mod git;
 pub mod monitor;
 mod recent_files;
 pub mod recovery;
+pub mod session;
 pub mod ssh;
 pub mod syntax;
 pub mod theme;
@@ -29,6 +31,8 @@ mod app_tests;
 mod blame_column_tests;
 #[cfg(test)]
 mod config_reload_tests;
+#[cfg(test)]
+mod desktop_tests;
 #[cfg(test)]
 mod dialog_tests;
 #[cfg(test)]
@@ -45,6 +49,8 @@ mod language_snapshot_tests;
 mod mode_tests;
 #[cfg(test)]
 mod search_tests;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod slash2_tests;
 #[cfg(test)]

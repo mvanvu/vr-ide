@@ -55,6 +55,8 @@ ai_width_percent = 40
 #   resume_args    added for "Choose earlier": the tool shows its own list of conversations
 # A tool without continue_args and resume_args offers only "New". vr-ide never reads the
 # tools' own history files.
+# Legacy key: ai_presets is read as ai_tools; set only one of the two. Entries carried over
+# from ai_presets need continue_args / resume_args to offer Continue last / Choose earlier.
 [[ai_tools]]
 name = "claude"
 command = "claude"
