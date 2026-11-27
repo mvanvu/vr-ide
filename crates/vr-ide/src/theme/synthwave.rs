@@ -122,6 +122,16 @@ pub(super) fn build(depth: ColorDepth) -> Theme {
         git_modified: Style::default().fg(cyan),
         git_deleted: Style::default().fg(red),
         git_blame: Style::default().fg(dim).add_modifier(Modifier::ITALIC),
+        explorer_kinds: super::explorer::fitted(
+            depth,
+            [
+                0xc77dff, 0xff7edb, 0x72f1b8, 0xff9d3c, 0xffe66d, 0x82aaff, 0xff6e7f, 0xa9a9b6,
+                0xb9a6e6,
+            ],
+            Style::default().fg(fg),
+            bg,
+            line,
+        ),
         ansi: Some(super::ansi::palette(
             depth,
             fg,

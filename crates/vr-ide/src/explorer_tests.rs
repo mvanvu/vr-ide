@@ -1817,3 +1817,32 @@ fn ctrl_e_works_wherever_ctrl_b_does() {
         }
     }
 }
+
+#[test]
+fn explorer_names_take_their_kind_colour() {
+    let (_d, mut app) = project();
+    let theme = crate::theme::Theme::dracula_with(crate::theme::ColorDepth::TrueColor);
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 12)).unwrap();
+    t.draw(|f| crate::ui::render_with(f, &mut app, &theme))
+        .unwrap();
+    let area = app.explorer.area;
+    let buf = t.backend().buffer().clone();
+    let fg_of = |name: &str| {
+        let i = app
+            .explorer
+            .rows
+            .iter()
+            .position(|r| r.name() == name)
+            .unwrap();
+        let y = area.y + (i - app.explorer.top) as u16;
+        let x = area.x + 2 * app.explorer.rows[i].depth as u16 + 2;
+        buf[(x, y)].fg
+    };
+    let want = |k| theme.explorer(k).fg.unwrap();
+    assert_eq!(fg_of("src"), want(crate::theme::ExplorerKind::Folder));
+    assert_eq!(
+        fg_of("composer.json"),
+        want(crate::theme::ExplorerKind::Config)
+    );
+    assert_eq!(fg_of("README.md"), want(crate::theme::ExplorerKind::Docs));
+}

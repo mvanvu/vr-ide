@@ -83,6 +83,9 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
 
 - The explorer starts hidden: `ctrl+e` shows it with the keys in the tree (arrows move, `enter`
   opens) and hides it again.
+- The explorer colours names by kind from the theme: folders in one colour, files by group (source
+  code by language family, config/data, docs, images/media, archives/binaries, lock/generated;
+  dotfiles dimmed and italic).
 - A file opens in **read mode** (status bar `READ`): you can move, select, copy, find and save, but
   typing does nothing. Press `space` then `i` to edit (`EDIT`) and `esc` to go back to reading;
   `space` `space` opens the command palette and `tab` moves the focus to the next part. A new file
