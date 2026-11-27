@@ -22,7 +22,7 @@ mod worker;
 
 pub use blame::{Blame, BlameCommit, BlameLine, Signature};
 pub use cmd::Options;
-pub use diff::{ChangeKind, LineChange};
+pub use diff::{ChangeKind, LineChange, equal_lines};
 pub use repo::{AheadBehind, Head, Repo};
 pub use sanitize::sanitize_line;
 pub use worker::{GitWorker, Reply, Request, Response};

@@ -246,12 +246,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         app.welcome_hits = super::welcome::render(frame.buffer_mut(), area, app, theme);
         return;
     }
+    crate::git::sync_annotations(app);
     let active = app.active;
     let doc = &app.docs[active];
     let rope = doc.buffer.text();
     let tw = doc.buffer.options().tab_width.max(1);
     let gutter = gutter_width(rope).min(area.width);
-    let text_w = usize::from(area.width - gutter);
+    // The blame column (FR-27) sits left of the line numbers when it is on and fits.
+    let blame_w = crate::git::blame_width(app, area.width, gutter);
+    let text_w = usize::from(area.width - gutter - blame_w);
     let rows = usize::from(area.height);
     let ranges: Vec<(usize, usize)> = doc
         .buffer
@@ -294,7 +297,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let (top, left) = (view.top, view.left);
 
     let buf = frame.buffer_mut();
-    let x0 = area.x + gutter;
+    let gx = area.x + blame_w;
+    let x0 = gx + gutter;
     let selected = |abs: usize| ranges.iter().any(|&(f, t)| abs >= f && abs < t);
     // Find bar matches (sorted, non-overlapping): a binary search per drawn cell.
     let matches: &[(usize, usize)] = if app.find.open {
@@ -315,6 +319,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         .unwrap_or_default();
     // Already sanitized (SEC-15) and only for the cursor line once the cursor rests.
     let blame = crate::git::inline_text(app).filter(|_| gutter > 1);
+    let labels = if blame_w > 0 {
+        crate::git::blame_labels(app, top, rows, blame_w)
+    } else {
+        Vec::new()
+    };
     for row in 0..rows {
         let ln = top + row;
         if ln > last_line {
@@ -329,7 +338,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             theme.gutter
         };
         let num = format!("{:>w$} ", ln + 1, w = usize::from(gutter.saturating_sub(1)));
-        buf.set_stringn(area.x, y, num, usize::from(gutter), num_style);
+        if let Some(label) = labels.get(row) {
+            // Sanitized when the blame arrived (SEC-15).
+            buf.set_stringn(area.x, y, label, usize::from(blame_w), theme.git_blame);
+        }
+        buf.set_stringn(gx, y, num, usize::from(gutter), num_style);
         if let Some(Some((sym, kind))) = marks.get(row)
             && gutter > 1
         {
@@ -338,7 +351,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
                 vr_git::ChangeKind::Modified => theme.git_modified,
                 vr_git::ChangeKind::Deleted => theme.git_deleted,
             };
-            buf.set_stringn(area.x + gutter - 1, y, sym, 1, style);
+            buf.set_stringn(gx + gutter - 1, y, sym, 1, style);
         }
 
         let line = rope.line(ln);

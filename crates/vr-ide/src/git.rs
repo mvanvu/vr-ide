@@ -14,8 +14,13 @@
 //! `refs/remotes` for ahead/behind — watched here by a watcher of its own so the explorer's
 //! folder watches stay untouched. vr-git's reads never write under `.git` (SEC-8), so these
 //! watches cannot loop.
+//!
+//! The blame column (FR-27, D321) is toggled for the session and every tab. Its blame is read
+//! when a file is first shown with the column on and again after each save (or a change of the
+//! file or the repo); edits in between move each annotation with its line ([`remap`]), so
+//! typing never runs git.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -23,7 +28,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use vr_core::{Encoding, FsEvent, Watcher};
+use vr_core::ropey::Rope;
+use vr_core::{DiskStamp, Encoding, FsEvent, Watcher};
 use vr_git::{AheadBehind, Blame, GitError, GitWorker, Head, LineChange, Reply, Repo, Request};
 
 use crate::app::App;
@@ -78,6 +84,8 @@ enum Pending {
     AheadBehind,
     Marks(PathBuf, u64),
     Blame(PathBuf, u64),
+    /// The blame column's read: the text it was asked for, its version and disk stamp.
+    FileBlame(PathBuf, u64, Rope, Option<DiskStamp>),
 }
 
 struct RepoEntry {
@@ -111,6 +119,50 @@ struct BlameSet {
     version: u64,
     blame: Option<Blame>,
 }
+
+/// What the blame column shows on one line of a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ann {
+    /// Index into [`FileBlame::labels`].
+    Commit(u32),
+    /// Added or changed since HEAD (in git's answer or by an edit since).
+    Uncommitted,
+    /// The empty line after a final line break: nothing to annotate.
+    Blank,
+}
+
+/// Author and date of a commit, sanitized (SEC-15) when the answer arrived.
+struct Label {
+    author: String,
+    date: String,
+}
+
+/// The blame column of one document: one [`Ann`] per line of `rope`, the text at `version`.
+struct FileBlame {
+    serial: u64,
+    rope: Rope,
+    version: u64,
+    lines: Vec<Ann>,
+    labels: Vec<Label>,
+    /// The document's disk stamp when the blame was asked for; a save changes it.
+    stamp: Option<DiskStamp>,
+    /// The file or the repo changed since: still drawn, asked again.
+    stale: bool,
+}
+
+/// Column widths: author and date, or a short author and the date.
+const BLAME_FULL: u16 = 24;
+const BLAME_COMPACT: u16 = 18;
+/// Text cells the editor keeps beside each column width; below them the column shrinks, then
+/// hides (AC-B4).
+const BLAME_FULL_MIN_TEXT: u16 = 48;
+const BLAME_COMPACT_MIN_TEXT: u16 = 32;
+const BLAME_ON: &str = "Blame annotations on";
+/// The other lines of a run from the same commit.
+pub const BLAME_CONTINUATION: &str = "┊";
+/// Changed lines around an edit are matched one by one up to this many lines; a larger edit
+/// marks its lines not committed.
+const REMAP_MAX_LINES: usize = 20_000;
 
 /// The shown inline blame and what it belongs to.
 struct Inline {
@@ -168,6 +220,17 @@ pub struct GitState {
     inline: Option<Inline>,
     track: Track,
     sent: u64,
+    /// The blame column is on (FR-27): for the session, every editor tab.
+    annotations: bool,
+    file_blames: HashMap<PathBuf, FileBlame>,
+    /// What the column last asked for per file: repo serial, disk stamp and request id (0:
+    /// nothing sent, the reason was said instead). Only the answer to that request is kept.
+    asked_file_blame: HashMap<PathBuf, (u64, Option<DiskStamp>, u64)>,
+    /// Notices already given since the column was turned on (path, reason): once each.
+    blame_noticed: HashSet<(PathBuf, &'static str)>,
+    file_blame_sent: u64,
+    /// Info notices for the notice line, taken by tick.
+    infos: Vec<String>,
     /// Messages for the notice line (a `.git` folder that cannot be watched), taken by tick.
     warnings: Vec<String>,
 }
@@ -199,6 +262,12 @@ impl Default for GitState {
             inline: None,
             track: Track::default(),
             sent: 0,
+            annotations: false,
+            file_blames: HashMap::new(),
+            asked_file_blame: HashMap::new(),
+            blame_noticed: HashSet::new(),
+            file_blame_sent: 0,
+            infos: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -229,12 +298,13 @@ impl GitState {
         self.repos.iter_mut().find(|e| e.serial == serial)
     }
 
-    fn request(&mut self, serial: u64, req: Request, pending: Pending) {
-        if let Some(e) = self.entry_mut(serial) {
-            let id = e.worker.request(req);
-            e.pending.insert(id, pending);
-            self.sent += 1;
-        }
+    /// Sends `req` to repo `serial`'s worker; the request id, `None` without that repo.
+    fn request(&mut self, serial: u64, req: Request, pending: Pending) -> Option<u64> {
+        let e = self.entry_mut(serial)?;
+        let id = e.worker.request(req);
+        e.pending.insert(id, pending);
+        self.sent += 1;
+        Some(id)
     }
 
     /// Current gutter marks of `path`: the version of the text they describe and the marks.
@@ -266,6 +336,27 @@ impl GitState {
     /// Requests sent to the workers so far (tests check the debounce).
     pub fn requests_sent(&self) -> u64 {
         self.sent
+    }
+
+    /// Blame column reads sent so far (tests check that edits do not ask again).
+    pub fn file_blame_requests(&self) -> u64 {
+        self.file_blame_sent
+    }
+
+    /// The column holds an answer for `path` (tests).
+    #[cfg(test)]
+    pub(crate) fn has_file_blame(&self, path: &Path) -> bool {
+        self.file_blames.contains_key(path)
+    }
+
+    /// Blame column reads not answered yet (tests).
+    #[cfg(test)]
+    pub(crate) fn file_blames_pending(&self) -> usize {
+        self.repos
+            .iter()
+            .flat_map(|e| e.pending.values())
+            .filter(|p| matches!(p, Pending::FileBlame(..)))
+            .count()
     }
 
     /// The repo of root `root`, for reads only: it shares the worker's runner, so removing the
@@ -320,6 +411,8 @@ impl GitState {
         self.asked_blame = None;
         self.blame = None;
         self.inline = None;
+        self.file_blames.clear();
+        self.asked_file_blame.clear();
         self.started = false;
     }
 
@@ -335,6 +428,10 @@ impl GitState {
         }
         for m in self.marks.values_mut().filter(|m| m.serial == serial) {
             m.fresh = false;
+        }
+        self.asked_file_blame.retain(|_, (s, ..)| *s != serial);
+        for b in self.file_blames.values_mut().filter(|b| b.serial == serial) {
+            b.stale = true;
         }
     }
 
@@ -353,11 +450,27 @@ impl GitState {
         if self.inline.as_ref().is_some_and(|i| i.path == path) {
             self.inline = None;
         }
+        self.file_blames.remove(path);
+        self.asked_file_blame.remove(path);
+        // Answers still on their way describe the earlier document: never kept.
+        for e in &mut self.repos {
+            e.pending.retain(|id, p| {
+                let theirs = matches!(p, Pending::FileBlame(q, ..) if q == path);
+                if theirs {
+                    e.worker.cancel_file_blame(*id);
+                }
+                !theirs
+            });
+        }
     }
 
     /// Forgets what was asked about `path` (the file changed on disk).
     fn forget_path(&mut self, path: &Path) {
         self.asked_marks.remove(path);
+        self.asked_file_blame.remove(path);
+        if let Some(b) = self.file_blames.get_mut(path) {
+            b.stale = true;
+        }
         if self.asked_blame.as_ref().is_some_and(|(_, p, _)| p == path) {
             self.asked_blame = None;
         }
@@ -828,7 +941,7 @@ fn drain_responses(app: &mut App) {
     for e in &mut git.repos {
         while let Some(r) = e.worker.try_recv() {
             if let Some(p) = e.pending.remove(&r.id) {
-                got.push((e.serial, p, r.result));
+                got.push((e.serial, r.id, p, r.result));
             }
         }
     }
@@ -836,7 +949,33 @@ fn drain_responses(app: &mut App) {
         return;
     }
     app.dirty = true;
-    for (serial, pending, result) in got {
+    for (serial, id, pending, result) in got {
+        if let Pending::FileBlame(path, version, rope, stamp) = pending {
+            let open = app.docs.iter().any(|d| d.path.as_deref() == Some(&*path));
+            let git = &mut app.git;
+            let latest = git.asked_file_blame.get(&path).map(|a| a.2) == Some(id);
+            if matches!(result, Err(GitError::Superseded | GitError::ShutDown)) {
+                if latest {
+                    // Dropped while another tab was shown: asked again when this one is.
+                    git.asked_file_blame.remove(&path);
+                }
+                continue;
+            }
+            // A closed tab's requests were forgotten with it (`forget_doc`), so an answer here
+            // is for an open file. One older than the last request still describes the text it
+            // was asked for and is remapped from it: shown until the newer one arrives, so a
+            // file asked again faster than its blame takes still gets a column. Only the last
+            // request's failure is reported.
+            if !open || git.serial_for(&path) != Some(serial) || (!latest && result.is_err()) {
+                continue;
+            }
+            file_blame_arrived(git, serial, path.clone(), (version, rope, stamp), result);
+            if !latest && let Some(b) = git.file_blames.get_mut(&path) {
+                b.stale = true;
+            }
+            continue;
+        }
+        let git = &mut app.git;
         // A newer request of the same kind is on its way; shutdown is the end.
         if matches!(result, Err(GitError::Superseded | GitError::ShutDown)) {
             continue;
@@ -893,6 +1032,8 @@ fn drain_responses(app: &mut App) {
                     blame,
                 });
             }
+            // Handled above.
+            Pending::FileBlame(..) => {}
         }
     }
 }
@@ -908,10 +1049,26 @@ pub fn tick(app: &mut App, now: Instant) {
     drain_discovered(app);
     drain_git_events(app);
     drain_responses(app);
+    schedule(app, now);
+    schedule_annotations(app);
+    sync_annotations(app);
     for w in std::mem::take(&mut app.git.warnings) {
         app.warn(w);
     }
-    schedule(app, now);
+    blame_infos(app);
+}
+
+/// Shows the blame column's notices; one saying why a file shows no column replaces the
+/// plain "on" notice, so the reason is what the notice line shows.
+fn blame_infos(app: &mut App) {
+    let infos = std::mem::take(&mut app.git.infos);
+    if infos.is_empty() {
+        return;
+    }
+    app.notices.retain(|n| n.text != BLAME_ON);
+    for i in infos {
+        app.info(i);
+    }
 }
 
 /// The text git compares: the buffer as it would be saved (a UTF-8 BOM included).
@@ -1148,4 +1305,387 @@ fn cut(s: &str, max: usize) -> String {
 /// Exit and workspace close: every git process is killed and no new one starts.
 pub fn shutdown(app: &mut App) {
     app.git.shutdown();
+}
+
+// ---- blame column (FR-27, D321) ---------------------------------------------------------------
+
+/// `editor.toggle_blame`: the column on or off for the session and every tab (AC-B1, AC-B5).
+pub fn toggle_annotations(app: &mut App) {
+    let git = &mut app.git;
+    git.annotations = !git.annotations;
+    git.blame_noticed.clear();
+    let on = git.annotations;
+    app.info(if on {
+        BLAME_ON
+    } else {
+        "Blame annotations off"
+    });
+    if on {
+        schedule_annotations(app);
+        blame_infos(app);
+    }
+    app.dirty = true;
+}
+
+pub fn annotations_on(app: &App) -> bool {
+    app.git.annotations
+}
+
+/// The active document's column is in step with its text and its repo.
+pub fn annotations_ready(app: &App) -> bool {
+    current_file_blame(app).is_some()
+}
+
+/// The active document's column when it is on and current (same repo, same text version).
+fn current_file_blame(app: &App) -> Option<&FileBlame> {
+    if !app.git.annotations {
+        return None;
+    }
+    let doc = app.active_doc()?;
+    let path = doc.path.as_deref()?;
+    let b = app.git.file_blames.get(path)?;
+    (Some(b.serial) == app.git.serial_for(path) && b.version == doc.buffer.version()).then_some(b)
+}
+
+/// A notice for `path` once per reason while the column is on.
+fn notice_once(git: &mut GitState, path: &Path, reason: &'static str, text: String) {
+    if git.blame_noticed.insert((path.to_path_buf(), reason)) {
+        git.infos.push(text);
+    }
+}
+
+/// Asks for the active document's blame when the column is on and it has none for the file as
+/// saved (first shown, saved since, file or repo changed). Edits never ask (AC-B4).
+fn schedule_annotations(app: &mut App) {
+    if !app.git.started {
+        return;
+    }
+    cancel_unneeded_file_blames(app);
+    if !app.git.annotations {
+        return;
+    }
+    let Some(doc) = app.docs.get(app.active) else {
+        return;
+    };
+    let Some(path) = doc.path.clone() else {
+        return;
+    };
+    let name = app.display_path(&path);
+    let doc = &app.docs[app.active];
+    if doc.read_only || !matches!(doc.encoding, Encoding::Utf8 | Encoding::Utf8Bom) {
+        let text = format!("Blame annotations: {name} is not UTF-8 text");
+        notice_once(&mut app.git, &path, "encoding", text);
+        return;
+    }
+    let serial = match app.git.root_state(&path) {
+        Some(RootState::Repo { serial, .. }) => *serial,
+        Some(RootState::Discovering(_)) => return,
+        Some(RootState::NoRepo) | None => {
+            let text = format!("Blame annotations: {name} is not in a git repository");
+            notice_once(&mut app.git, &path, "no-repo", text);
+            return;
+        }
+    };
+    let stamp = doc.disk_stamp();
+    let git = &app.git;
+    let have = git
+        .file_blames
+        .get(&path)
+        .is_some_and(|b| b.serial == serial && b.stamp == stamp && !b.stale);
+    let asked = git
+        .asked_file_blame
+        .get(&path)
+        .is_some_and(|a| a.0 == serial && a.1 == stamp);
+    if have || asked {
+        return;
+    }
+    let version = doc.buffer.version();
+    let rope = doc.buffer.text().clone();
+    if rope.len_bytes() > git.options.max_file {
+        // vr-git would refuse it (TooLarge): said once, nothing asked.
+        let git = &mut app.git;
+        git.asked_file_blame
+            .insert(path.clone(), (serial, stamp, 0));
+        git.file_blames.remove(&path);
+        let text = format!("Blame annotations: {name} is too large to blame");
+        notice_once(git, &path, "too-large", text);
+        return;
+    }
+    let text = buffer_text(doc);
+    let git = &mut app.git;
+    let Some(id) = git.request(
+        serial,
+        Request::FileBlame {
+            path: path.clone(),
+            text,
+        },
+        Pending::FileBlame(path.clone(), version, rope, stamp),
+    ) else {
+        return;
+    };
+    git.asked_file_blame.insert(path, (serial, stamp, id));
+    git.file_blame_sent += 1;
+}
+
+/// Cancels the column's reads nothing waits for any more: all of them when the column is off,
+/// else those of files other than the active one. A whole-file blame can take many seconds
+/// (SEC-7); the worker's lane runs one at a time.
+fn cancel_unneeded_file_blames(app: &App) {
+    let want = app
+        .active_doc()
+        .and_then(|d| d.path.as_deref())
+        .filter(|_| app.git.annotations);
+    for e in &app.git.repos {
+        for (id, p) in &e.pending {
+            if let Pending::FileBlame(path, ..) = p
+                && Some(path.as_path()) != want
+            {
+                e.worker.cancel_file_blame(*id);
+            }
+        }
+    }
+}
+
+/// The column's blame came back: kept per file, or the reason it shows nothing (once).
+fn file_blame_arrived(
+    git: &mut GitState,
+    serial: u64,
+    path: PathBuf,
+    (version, rope, stamp): (u64, Rope, Option<DiskStamp>),
+    result: vr_git::Result<Arc<Reply>>,
+) {
+    let name = path
+        .file_name()
+        .map(|n| sanitize(&n.to_string_lossy()))
+        .unwrap_or_default();
+    let blame = match result.as_deref() {
+        Ok(Reply::Blame(Some(b))) => b,
+        Ok(Reply::Blame(None)) => {
+            git.file_blames.remove(&path);
+            let text = format!("Blame annotations: {name} is not tracked by git");
+            notice_once(git, &path, "untracked", text);
+            return;
+        }
+        Err(GitError::TooLarge { .. }) => {
+            git.file_blames.remove(&path);
+            let text = format!("Blame annotations: {name} is too large to blame");
+            notice_once(git, &path, "too-large", text);
+            return;
+        }
+        Err(e) => {
+            git.file_blames.remove(&path);
+            if git.blame_noticed.insert((path.clone(), "failed")) {
+                // git's own words come from the repo (SEC-15).
+                git.warnings
+                    .push(format!("Blame annotations: {}", sanitize(&e.to_string())));
+            }
+            return;
+        }
+        Ok(_) => return,
+    };
+    git.file_blames
+        .insert(path, build_file_blame(serial, rope, version, stamp, blame));
+}
+
+fn build_file_blame(
+    serial: u64,
+    rope: Rope,
+    version: u64,
+    stamp: Option<DiskStamp>,
+    blame: &Blame,
+) -> FileBlame {
+    let labels = blame
+        .commits
+        .iter()
+        .map(|c| Label {
+            author: sanitize(&c.author.name),
+            date: utc_date(c.author.time),
+        })
+        .collect();
+    // git ends a line only at '\n', the editor also at a lone '\r' (D326): the editor lines of
+    // one git line all get its annotation.
+    let mut git_line = 0;
+    let mut lines: Vec<Ann> = rope
+        .lines()
+        .map(|line| {
+            let ann = match blame.lines.get(git_line) {
+                Some(l) if blame.commits[l.commit].uncommitted => Ann::Uncommitted,
+                Some(l) => Ann::Commit(l.commit as u32),
+                None => Ann::Blank,
+            };
+            let n = line.len_chars();
+            if n > 0 && line.char(n - 1) == '\n' {
+                git_line += 1;
+            }
+            ann
+        })
+        .collect();
+    fix_last(&rope, &mut lines);
+    FileBlame {
+        serial,
+        rope,
+        version,
+        lines,
+        labels,
+        stamp,
+        stale: false,
+    }
+}
+
+/// `lines` sized to `rope`'s lines, the empty line after a final line break blank and no other.
+fn fix_last(rope: &Rope, lines: &mut Vec<Ann>) {
+    let n = rope.len_lines();
+    lines.resize(n, Ann::Uncommitted);
+    for a in lines.iter_mut().filter(|a| **a == Ann::Blank) {
+        *a = Ann::Uncommitted;
+    }
+    let ends_open = rope.len_chars() == 0 || matches!(rope.char(rope.len_chars() - 1), '\n' | '\r');
+    if ends_open && let Some(last) = lines.last_mut() {
+        *last = Ann::Blank;
+    }
+}
+
+/// Brings the active document's column in step with its text (called each tick and before
+/// drawing): the annotations move with their lines through the edits since.
+pub fn sync_annotations(app: &mut App) {
+    if !app.git.annotations {
+        return;
+    }
+    let Some(doc) = app.docs.get(app.active) else {
+        return;
+    };
+    let Some(path) = doc.path.as_deref() else {
+        return;
+    };
+    let Some(b) = app.git.file_blames.get_mut(path) else {
+        return;
+    };
+    let version = doc.buffer.version();
+    if b.version == version {
+        return;
+    }
+    let rope = doc.buffer.text();
+    b.lines = remap(&b.rope, &b.lines, rope);
+    b.rope = rope.clone();
+    b.version = version;
+}
+
+/// The annotations of `old`'s lines carried over to `new`: lines outside the changed span keep
+/// theirs, lines inside it are matched by a line diff (unchanged copies keep their commit,
+/// the rest are not committed). The span is found from the common start and end of the two
+/// texts, so the cost follows the edit, not the file (copies of a rope share their chunks).
+pub fn remap(old: &Rope, anns: &[Ann], new: &Rope) -> Vec<Ann> {
+    use vr_syntax::{Edit, LineBreaks};
+    let mut out: Vec<Ann>;
+    match Edit::diff_in(old, new, LineBreaks::NoLoneCr) {
+        None => out = anns.to_vec(),
+        Some(e) => {
+            let at_line_start = |r: &Rope, b: usize| r.line_to_byte(r.byte_to_line(b)) == b;
+            let s = old.byte_to_line(e.start_byte);
+            let (oe, ne) = (
+                old.byte_to_line(e.old_end_byte),
+                new.byte_to_line(e.new_end_byte),
+            );
+            // Whole lines inserted or removed leave the line at the span's end untouched.
+            let whole = at_line_start(old, e.start_byte)
+                && at_line_start(old, e.old_end_byte)
+                && at_line_start(new, e.new_end_byte);
+            let (old_end, new_end) = if whole { (oe, ne) } else { (oe + 1, ne + 1) };
+            let old_end = old_end.min(old.len_lines()).max(s);
+            let new_end = new_end.min(new.len_lines()).max(s);
+            let (old_n, new_n) = (old_end - s, new_end - s);
+            let text = |r: &Rope, a: usize, b: usize| {
+                r.slice(r.line_to_char(a)..r.line_to_char(b)).to_string()
+            };
+            let mid: Vec<Ann> = if old_n + new_n <= REMAP_MAX_LINES {
+                let eq = vr_git::equal_lines(&text(old, s, old_end), &text(new, s, new_end));
+                (0..new_n)
+                    .map(|k| {
+                        eq.get(k)
+                            .copied()
+                            .flatten()
+                            .and_then(|j| anns.get(s + j).copied())
+                            .unwrap_or(Ann::Uncommitted)
+                    })
+                    .collect()
+            } else {
+                vec![Ann::Uncommitted; new_n]
+            };
+            out = Vec::with_capacity(new.len_lines());
+            out.extend_from_slice(&anns[..s.min(anns.len())]);
+            out.extend(mid);
+            out.extend_from_slice(anns.get(old_end..).unwrap_or(&[]));
+        }
+    }
+    fix_last(new, &mut out);
+    out
+}
+
+/// `YYYY-MM-DD` of Unix time `secs` in UTC (D308: dates are UTC).
+pub fn utc_date(secs: i64) -> String {
+    let (y, m, d) = crate::recovery::civil_from_days(secs.div_euclid(86_400));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Cells the blame column takes in an editor `editor_w` wide whose line numbers take `gutter`:
+/// full, compact, or 0 when it is off, has nothing current to show or the editor is too
+/// narrow for it (AC-B4).
+pub fn blame_width(app: &App, editor_w: u16, gutter: u16) -> u16 {
+    if current_file_blame(app).is_none() {
+        return 0;
+    }
+    let text = editor_w.saturating_sub(gutter);
+    if text >= BLAME_FULL + BLAME_FULL_MIN_TEXT {
+        BLAME_FULL
+    } else if text >= BLAME_COMPACT + BLAME_COMPACT_MIN_TEXT {
+        BLAME_COMPACT
+    } else {
+        0
+    }
+}
+
+/// The column's text for `rows` lines from `top`, each `width` cells: author and date on the
+/// first line of each run of one commit (and on the top row), a continuation mark on the rest.
+pub fn blame_labels(app: &App, top: usize, rows: usize, width: u16) -> Vec<String> {
+    let Some(b) = current_file_blame(app) else {
+        return Vec::new();
+    };
+    let w = usize::from(width);
+    let inner = w.saturating_sub(1);
+    let compact = width < BLAME_FULL;
+    let pad = |s: String| {
+        let used = ratatui::text::Span::raw(s.as_str()).width();
+        format!("{s}{}", " ".repeat(w.saturating_sub(used)))
+    };
+    (top..top + rows)
+        .map(|ln| {
+            let Some(&ann) = b.lines.get(ln) else {
+                return String::new();
+            };
+            let starts = ln == top || b.lines.get(ln.wrapping_sub(1)) != Some(&ann);
+            match ann {
+                Ann::Blank => pad(String::new()),
+                _ if !starts => pad(BLAME_CONTINUATION.to_string()),
+                Ann::Uncommitted => pad(if compact {
+                    "Uncommitted"
+                } else {
+                    "Not committed yet"
+                }
+                .to_string()),
+                Ann::Commit(i) => {
+                    let Some(l) = b.labels.get(i as usize) else {
+                        return pad(String::new());
+                    };
+                    let room = inner.saturating_sub(l.date.len() + 1);
+                    let author = crate::ui::explorer::fit(&l.author, room);
+                    let used = ratatui::text::Span::raw(author.as_str()).width();
+                    pad(format!(
+                        "{author}{} {}",
+                        " ".repeat(room.saturating_sub(used)),
+                        l.date
+                    ))
+                }
+            }
+        })
+        .collect()
 }

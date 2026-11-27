@@ -1,0 +1,16 @@
+---
+source: crates/vr-ide/src/blame_column_tests.rs
+expression: t.backend()
+---
+" a.txt ●                                "
+"  1▎// new                              "
+"  2 one                                 "
+"  3 two                                 "
+"  4 THREE                               "
+"  5 FOUR                                "
+"  6                                     "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+" EDIT a.txt · main · Ln 2, Col 1        "

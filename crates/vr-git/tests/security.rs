@@ -26,6 +26,7 @@ fn read_everything(r: &Repo, file: &str) {
     let _ = r.head();
     let _ = r.ahead_behind();
     let _ = r.inline_blame(p, "x\ny\n");
+    let _ = r.file_blame(p, "x\ny\n");
     let _ = r.line_changes(p, "x\ny\n");
 }
 
@@ -466,6 +467,10 @@ fn file_over_the_cap_is_too_large() {
         r.inline_blame(Path::new("big.txt"), &"x\n".repeat(10_000)),
         Err(GitError::TooLarge { .. })
     ));
+    assert!(matches!(
+        r.file_blame(Path::new("big.txt"), &"x\n".repeat(10_000)),
+        Err(GitError::TooLarge { .. })
+    ));
 }
 
 #[test]
@@ -792,4 +797,26 @@ fn inline_blame_times_out_at_the_automatic_timeout() {
     let res = r.inline_blame(Path::new("a.txt"), "one\n");
     assert!(matches!(res, Err(GitError::Timeout(_))), "{res:?}");
     assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+}
+
+/// FR-27: the blame column is a read the user asked for, so it gets the longer user timeout,
+/// and a hung blame is still killed at it.
+#[test]
+fn file_blame_runs_under_the_user_timeout() {
+    let f = Fixture::new();
+    f.write("a.txt", "x\n");
+    f.commit_all("c");
+    assert_eq!(Options::default().user_timeout, Duration::from_secs(30));
+    let dir = shim_dir(&f, "case \"$*\" in *blame*) sleep 30;; esac");
+    let opts = Options {
+        env: Some(env_with_path(&f, &dir)),
+        timeout: Duration::from_secs(60),
+        user_timeout: Duration::from_millis(300),
+        ..Options::default()
+    };
+    let r = Repo::discover_with(&f.dir, opts).unwrap().unwrap();
+    let t = Instant::now();
+    let res = r.file_blame(Path::new("a.txt"), "x\n");
+    assert!(matches!(res, Err(GitError::Timeout(_))), "{res:?}");
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
 }

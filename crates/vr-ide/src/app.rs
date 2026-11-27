@@ -1508,7 +1508,8 @@ impl App {
         let view = self.views.get(self.active)?;
         let area = self.layout.editor;
         let rope = doc.buffer.text();
-        let gutter = crate::ui::editor_view::gutter_width(rope);
+        let gutter = crate::ui::editor_view::gutter_width(rope).min(area.width);
+        let gutter = gutter + crate::git::blame_width(self, area.width, gutter);
         let last = rope.len_lines().saturating_sub(1);
         let line = (view.top + usize::from(row.saturating_sub(area.y))).min(last);
         let x = usize::from(column.saturating_sub(area.x + gutter));

@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
+use crate::cmd::Limits;
 use crate::parse::{is_oid, lossy, os, parse_err, path_from, unquote};
 use crate::repo::Repo;
 use crate::{GitError, Result};
@@ -63,6 +66,28 @@ impl Repo {
     /// inline blame of the cursor line (automatic-read timeout); lines that differ from HEAD are
     /// uncommitted. `None` when the file is not tracked.
     pub fn inline_blame(&self, path: &Path, buffer: &str) -> Result<Option<Blame>> {
+        self.blame_buffer(path, buffer, self.git.auto())
+    }
+
+    /// Blame of the whole file for the editor's blame column (FR-27): `buffer` is the editor
+    /// text as the file's current content, like [`Repo::inline_blame`], but the user asked for
+    /// it, so it runs with the user timeout. `None` when the file is not tracked.
+    pub fn file_blame(&self, path: &Path, buffer: &str) -> Result<Option<Blame>> {
+        self.blame_buffer(path, buffer, self.git.user())
+    }
+
+    /// [`Repo::file_blame`] that ends with [`GitError::Superseded`], its git killed, once
+    /// `cancel` is set (the column no longer needs it).
+    pub fn file_blame_cancellable(
+        &self,
+        path: &Path,
+        buffer: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Option<Blame>> {
+        self.blame_buffer(path, buffer, self.git.user_cancellable(cancel))
+    }
+
+    fn blame_buffer(&self, path: &Path, buffer: &str, limits: Limits) -> Result<Option<Blame>> {
         let rel = self.relative(path)?;
         let max = self.git.opts().max_file;
         if buffer.len() > max {
@@ -71,10 +96,10 @@ impl Repo {
                 limit: max,
             });
         }
-        self.blame_inner(&rel, buffer.as_bytes())
+        self.blame_inner(&rel, buffer.as_bytes(), limits)
     }
 
-    fn blame_inner(&self, rel: &Path, buffer: &[u8]) -> Result<Option<Blame>> {
+    fn blame_inner(&self, rel: &Path, buffer: &[u8], limits: Limits) -> Result<Option<Blame>> {
         if self.index_entries(rel)?.is_empty() {
             return Ok(None);
         }
@@ -86,11 +111,9 @@ impl Repo {
             os("--"),
             rel.as_os_str(),
         ];
-        let out = self
-            .git
-            .run(self.workdir(), &args, Some(buffer), self.git.auto())?;
+        let out = self.git.run(self.workdir(), &args, Some(buffer), limits)?;
         if out.code == 0 {
-            return parse_blame(&out.stdout).map(Some);
+            return parse_blame_bounded(&out.stdout, line_count(buffer)).map(Some);
         }
         // In the index but blame failed: not in HEAD yet (staged new file, unborn branch).
         let text = buffer;
@@ -119,12 +142,17 @@ impl Repo {
 
 const ZERO_OID: &str = "0000000000000000000000000000000000000000";
 
-fn all_uncommitted(rel: &Path, text: &[u8]) -> Blame {
-    let n = if text.is_empty() {
+/// Lines of `text` as git counts them (a last line without a line break counts).
+fn line_count(text: &[u8]) -> usize {
+    if text.is_empty() {
         0
     } else {
         text.split(|&b| b == b'\n').count() - usize::from(text.ends_with(b"\n"))
-    };
+    }
+}
+
+fn all_uncommitted(rel: &Path, text: &[u8]) -> Blame {
+    let n = line_count(text);
     let commit = BlameCommit {
         oid: ZERO_OID.into(),
         author: Signature {
@@ -151,7 +179,29 @@ fn all_uncommitted(rel: &Path, text: &[u8]) -> Blame {
     }
 }
 
-pub(crate) fn parse_blame(out: &[u8]) -> Result<Blame> {
+/// Bytes kept of an author name, e-mail or summary: the column shows a few cells of them and
+/// a hostile repo must not make every line carry megabytes.
+pub(crate) const MAX_FIELD: usize = 1024;
+
+/// Raw bytes of a `filename` / `previous` field above which the output is refused.
+const MAX_PATH_FIELD: usize = 16 * 1024;
+
+/// `s` cut to at most [`MAX_FIELD`] bytes on a char boundary.
+fn bounded(mut s: String) -> String {
+    if s.len() > MAX_FIELD {
+        let mut end = MAX_FIELD;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
+}
+
+/// `git blame --porcelain` output of a text with `max_lines` lines. git is trusted to follow
+/// the format but not the repo behind it, so every count is checked against the text before
+/// anything is allocated for it and text fields are cut to [`MAX_FIELD`].
+pub(crate) fn parse_blame_bounded(out: &[u8], max_lines: usize) -> Result<Blame> {
     let mut blame = Blame::default();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut lines = out.split(|&b| b == b'\n');
@@ -170,6 +220,9 @@ pub(crate) fn parse_blame(out: &[u8]) -> Result<Blame> {
         if !is_oid(oid) {
             return Err(parse_err("blame", h.clone()));
         }
+        if fin == 0 || fin as usize > max_lines || blame.lines.len() >= max_lines {
+            return Err(parse_err("blame", "more lines than the text has"));
+        }
         let mut fields: Vec<(&[u8], &[u8])> = Vec::new();
         // Header fields until the TAB-prefixed content line.
         for l in lines.by_ref() {
@@ -182,12 +235,18 @@ pub(crate) fn parse_blame(out: &[u8]) -> Result<Blame> {
             };
             fields.push((k, v));
         }
+        if fields
+            .iter()
+            .any(|(k, v)| matches!(*k, b"filename" | b"previous") && v.len() > MAX_PATH_FIELD)
+        {
+            return Err(parse_err("blame", "path field too long"));
+        }
         let idx = match index.get(oid) {
             Some(&i) => i,
             None => {
                 let get = |k: &[u8]| fields.iter().find(|(n, _)| *n == k).map(|(_, v)| *v);
-                let name = get(b"author").map(lossy).unwrap_or_default();
-                let email = get(b"author-mail").map(lossy).unwrap_or_default();
+                let name = bounded(get(b"author").map(lossy).unwrap_or_default());
+                let email = bounded(get(b"author-mail").map(lossy).unwrap_or_default());
                 let email = email
                     .trim_start_matches('<')
                     .trim_end_matches('>')
@@ -203,7 +262,7 @@ pub(crate) fn parse_blame(out: &[u8]) -> Result<Blame> {
                 blame.commits.push(BlameCommit {
                     oid: oid.to_string(),
                     author: Signature { name, email, time },
-                    summary: get(b"summary").map(lossy).unwrap_or_default(),
+                    summary: bounded(get(b"summary").map(lossy).unwrap_or_default()),
                     uncommitted: oid.bytes().all(|b| b == b'0'),
                     boundary: get(b"boundary").is_some(),
                     filename: get(b"filename")
@@ -231,4 +290,53 @@ pub(crate) fn parse_blame(out: &[u8]) -> Result<Blame> {
         return Err(parse_err("blame", "line numbers are not contiguous"));
     }
     Ok(blame)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OID: &str = "1111111111111111111111111111111111111111";
+
+    fn entry(oid: &str, fin: u32, author: &str) -> String {
+        format!(
+            "{oid} {fin} {fin} 1\nauthor {author}\nauthor-mail <a@b>\nauthor-time 5\n\
+             summary s\nfilename f.txt\n\tline\n"
+        )
+    }
+
+    #[test]
+    fn parse_refuses_line_numbers_past_the_text() {
+        let out = entry(OID, 3, "Ann");
+        assert!(parse_blame_bounded(out.as_bytes(), 2).is_err());
+        let out = format!(
+            "{}{}",
+            entry(OID, 1, "Ann"),
+            entry(OID, 4_000_000_000, "Ann")
+        );
+        assert!(parse_blame_bounded(out.as_bytes(), 10).is_err());
+    }
+
+    #[test]
+    fn parse_refuses_more_lines_than_the_text_has() {
+        let out: String = (1..=3).map(|i| entry(OID, i, "Ann")).collect();
+        assert!(parse_blame_bounded(out.as_bytes(), 2).is_err());
+        assert_eq!(
+            parse_blame_bounded(out.as_bytes(), 3).unwrap().lines.len(),
+            3
+        );
+    }
+
+    #[test]
+    fn parse_cuts_overlong_fields() {
+        let long = "A".repeat(MAX_FIELD * 4);
+        let b = parse_blame_bounded(entry(OID, 1, &long).as_bytes(), 1).unwrap();
+        let name = &b.commits[0].author.name;
+        assert!(name.len() <= MAX_FIELD, "{}", name.len());
+        assert!(name.starts_with("AAAA"));
+        // A cut never splits a char.
+        let wide = "é".repeat(MAX_FIELD);
+        let b = parse_blame_bounded(entry(OID, 1, &wide).as_bytes(), 1).unwrap();
+        assert!(b.commits[0].author.name.len() <= MAX_FIELD);
+    }
 }

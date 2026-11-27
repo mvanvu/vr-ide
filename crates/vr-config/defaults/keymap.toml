@@ -70,6 +70,9 @@
 "ctrl+f9" = "terminal.shrink"
 # Terminal panel at the bottom / on the right, for the session (setting terminal_position).
 "ctrl+f7" = "terminal.toggle_position"
+# Blame annotations: author and date of each line left of the line numbers, every editor tab,
+# read and edit mode (FR-27).
+"shift+f2" = "editor.toggle_blame"
 
 [editor]
 # Read mode / edit mode (D145): a file opens in read mode; space i edits (built in), escape

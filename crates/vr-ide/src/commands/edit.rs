@@ -33,6 +33,11 @@ pub const COMMANDS: &[CommandSpec] = &[
     cmd!("edit.toggle_comment", "Toggle Line Comment", toggle_comment),
     cmd!("editor.edit_mode", "Enter Edit Mode", edit_mode),
     cmd!("editor.read_mode", "Enter Read Mode", read_mode),
+    cmd!(
+        "editor.toggle_blame",
+        "Toggle Blame Annotations",
+        toggle_blame
+    ),
 ];
 
 /// Edit mode on the active tab (D145). From the palette or a side panel the editor also
@@ -45,6 +50,12 @@ fn edit_mode(app: &mut App, _: CmdArgs) -> CmdResult {
         app.focus = Focus::Editor;
     }
     app.enter_edit_mode();
+    Ok(())
+}
+
+/// The blame column on or off for every editor tab (FR-27, D321); the mode stays as it is.
+fn toggle_blame(app: &mut App, _: CmdArgs) -> CmdResult {
+    crate::git::toggle_annotations(app);
     Ok(())
 }
 

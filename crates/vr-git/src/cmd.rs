@@ -7,6 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -20,6 +21,8 @@ use crate::{GitError, Result};
 pub struct Options {
     /// Wall-clock limit of an automatic read (gutter, inline blame, branch).
     pub timeout: Duration,
+    /// Wall-clock limit of a read the user asked for (the file blame column).
+    pub user_timeout: Duration,
     /// Byte cap on the captured output of one command.
     pub max_output: usize,
     /// Byte cap on file contents read for the gutter and inline blame.
@@ -34,6 +37,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(10),
+            user_timeout: Duration::from_secs(30),
             max_output: 64 << 20,
             max_file: 8 << 20,
             max_concurrent: 2,
@@ -125,10 +129,13 @@ pub(crate) struct Output {
 }
 
 /// How long and how much one call may take.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct Limits {
     pub timeout: Duration,
     pub max_output: usize,
+    /// Once set, the running git is killed (with its group) and the call ends with
+    /// [`GitError::Superseded`]: the file blame lane drops a read nobody waits for.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Limits {
@@ -136,6 +143,7 @@ impl Limits {
         Limits {
             timeout,
             max_output,
+            cancel: None,
         }
     }
 }
@@ -205,6 +213,18 @@ impl Git {
 
     pub fn auto(&self) -> Limits {
         Limits::new(self.inner.opts.timeout, self.inner.opts.max_output)
+    }
+
+    pub fn user(&self) -> Limits {
+        Limits::new(self.inner.opts.user_timeout, self.inner.opts.max_output)
+    }
+
+    /// [`Git::user`] limits, stopped once `cancel` is set.
+    pub fn user_cancellable(&self, cancel: Arc<AtomicBool>) -> Limits {
+        Limits {
+            cancel: Some(cancel),
+            ..self.user()
+        }
     }
 
     /// Kill every running git of this repo (all clones of the handle) with its process group,
@@ -361,6 +381,9 @@ impl Git {
         drivers: &[(OsString, OsString)],
     ) -> Result<Output> {
         let _slot = self.acquire();
+        if cancelled(&lim) {
+            return Err(GitError::Superseded);
+        }
         if self.inner.live.lock().unwrap().closed {
             return Err(GitError::ShutDown);
         }
@@ -468,6 +491,9 @@ impl Git {
             if elapsed >= lim.timeout {
                 break Err(GitError::Timeout(name.clone()));
             }
+            if cancelled(&lim) {
+                break Err(GitError::Superseded);
+            }
             match rx.recv_timeout(tick.min(lim.timeout - elapsed)) {
                 Ok(Ok(out)) => break Ok(out),
                 Ok(Err(None)) => {
@@ -530,6 +556,12 @@ impl Drop for SlotGuard<'_> {
         *self.0.busy.lock().unwrap() -= 1;
         self.0.freed.notify_one();
     }
+}
+
+fn cancelled(lim: &Limits) -> bool {
+    lim.cancel
+        .as_ref()
+        .is_some_and(|c| c.load(Ordering::SeqCst))
 }
 
 fn kill_group(group: Pid) {
