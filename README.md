@@ -340,7 +340,9 @@ open one.
 - Dragging the mouse selects and copies to the clipboard; `ctrl+shift+v` pastes (bracketed when the
   program asked for it), as does your terminal's own paste.
 - Colours: `synthwave` and `dracula` give programs their own 16 ANSI colours and background;
-  `dark` and `light` leave your terminal's colours.
+  `dark` and `light` leave your terminal's colours for the editor, but the panel itself has a fixed
+  background (dark `#3a3a3a`, light `#bcbcbc`) so it reads as a separate area; it may blend in on a
+  terminal whose own background is that exact grey.
 - With the kitty keyboard protocol `ctrl+space` is a separate key that reaches the program.
 - Without it your terminal sends ``ctrl+` `` as NUL, the same byte as `ctrl+space` and `ctrl+@`.
   vr-ide takes NUL as ``ctrl+` `` everywhere, so it hides the panel from inside a terminal too,

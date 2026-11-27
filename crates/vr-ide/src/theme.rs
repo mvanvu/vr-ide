@@ -73,6 +73,13 @@ pub struct Theme {
     explorer_kinds: explorer::Table,
     /// Colours of programs in the integrated terminal; read through [`Theme::ansi_palette`].
     ansi: Option<AnsiPalette>,
+    /// Default colours of the terminal panel (FR-26): the background is told apart from the
+    /// editor's so the panel reads as its own area; the foreground reads on it.
+    pub terminal_fg: Color,
+    pub terminal_bg: Color,
+    /// Background of selected terminal text: the editor's selection colour can sit too close to
+    /// the panel background.
+    pub terminal_selection: Color,
 }
 
 impl Theme {
@@ -178,6 +185,11 @@ impl Theme {
                 true,
             ),
             ansi: None,
+            // Fixed pair: the terminal's own colours are unknown, so a light-on-dark pair that
+            // reads on any terminal (a dark panel on a light terminal, a slightly lifted one on dark).
+            terminal_fg: Color::Indexed(252),
+            terminal_bg: Color::Indexed(237),
+            terminal_selection: Color::Indexed(24),
         }
     }
 
@@ -254,6 +266,9 @@ impl Theme {
                 true,
             ),
             ansi: None,
+            terminal_fg: Color::Indexed(235),
+            terminal_bg: Color::Indexed(250),
+            terminal_selection: Color::Indexed(38),
         }
     }
 }
@@ -440,6 +455,10 @@ impl Theme {
         let bar = surface(0x21222c, 234);
         let raised = surface(0x343746, 238);
         let line = surface(0x44475a, 239);
+        // Lifted slate blue (luminance step over the editor); its own selection tone keeps
+        // selected text visible on it.
+        let tbg = surface(0x31437a, 238);
+        let tsel = surface(0x5b6aa6, 61);
         let input = surface(0x44475a, 241);
         let picked = surface(0x4a3f7a, 60);
         let found = surface(0x55501e, 58);
@@ -451,6 +470,7 @@ impl Theme {
             &[bg, bar, raised, line, input, picked, found],
             4.5,
         );
+        let tfg = fit(0xf8f8f2, &[tbg], 7.0);
         let comment = fit(0x6272a4, &[bg], 3.0);
         // Lighter tone of the comment colour so it reads on every surface.
         let dim = fit(0x9aa8d4, &[bg, bar, raised, line, picked], 3.0);
@@ -554,7 +574,10 @@ impl Theme {
                 bg,
                 line,
             ),
-            ansi: Some(ansi::palette(depth, fg, bg, &ansi::DRACULA_ANSI)),
+            terminal_fg: tfg,
+            terminal_bg: tbg,
+            terminal_selection: tsel,
+            ansi: Some(ansi::palette(depth, tfg, tbg, &ansi::DRACULA_ANSI)),
         }
     }
 }
@@ -932,6 +955,80 @@ mod tests {
         }
     }
 
+    /// FR-26 (AC-T1): the terminal panel's default background is told apart from the editor's
+    /// in every theme and its default text reads on it. dark and light fix both colours of the
+    /// panel (the terminal's own are unknown) so text stays readable on any user terminal.
+    #[test]
+    fn terminal_background_differs_from_the_editor_and_text_reads_on_it() {
+        for (name, t) in every_theme() {
+            let editor = t.text.bg.unwrap_or(Color::Reset);
+            assert_ne!(t.terminal_bg, editor, "{name}");
+            let (fg, bg) = (xterm_rgb(t.terminal_fg), xterm_rgb(t.terminal_bg));
+            assert!(contrast(fg, bg) >= 7.0, "{name}: {}", contrast(fg, bg));
+            if let Some(ed) = t.text.bg {
+                // Different surfaces by hue or lightness, not a one-step difference.
+                let (a, b) = (xterm_rgb(ed), xterm_rgb(t.terminal_bg));
+                let d = |x: u8, y: u8| (i32::from(x) - i32::from(y)).pow(2);
+                let dist = d(a.0, b.0) + d(a.1, b.1) + d(a.2, b.2);
+                assert!(dist >= 24 * 24, "{name}: {a:?} vs {b:?}");
+            }
+            if let Some(p) = t.ansi_palette() {
+                assert_eq!((p.bg, p.fg), (t.terminal_bg, t.terminal_fg), "{name}");
+            }
+            // A selection stays visible on the panel and its text keeps reading.
+            let sel = xterm_rgb(t.terminal_selection);
+            assert!(contrast(sel, bg) >= 1.3, "{name}: selection");
+            assert!(contrast(fg, sel) >= 4.5, "{name}: text on selection");
+        }
+    }
+
+    /// The panel reads as its own area at a glance (a luminance step, not only a hue shift) and
+    /// ANSI black blocks stay visible on it. The 256-colour grid is coarser, so dracula's floor
+    /// is lower there.
+    #[test]
+    fn terminal_panel_is_clearly_a_separate_area_in_synthwave_and_dracula() {
+        let lum = |a: Color, b: Color| contrast(xterm_rgb(a), xterm_rgb(b));
+        for depth in BOTH {
+            let true_colour = depth == ColorDepth::TrueColor;
+            for (name, t, floor) in [
+                ("synthwave", Theme::synthwave_with(depth), 1.6),
+                (
+                    "dracula",
+                    Theme::dracula_with(depth),
+                    if true_colour { 1.5 } else { 1.3 },
+                ),
+            ] {
+                let editor = t.text.bg.unwrap();
+                let r = lum(t.terminal_bg, editor);
+                assert!(r >= floor, "{name} {depth:?}: panel vs editor {r}");
+                let black = t.ansi_palette().unwrap().colors[0];
+                let r = lum(t.terminal_bg, black);
+                // The 256-colour cube has no blue that clears both ANSI red and black by more.
+                let black_floor = if true_colour { 1.3 } else { 1.2 };
+                assert!(
+                    r >= black_floor,
+                    "{name} {depth:?}: panel vs ANSI black {r}"
+                );
+            }
+        }
+    }
+
+    /// dark and light draw the editor on the user's own background: the panel stays visibly
+    /// different on the common ones.
+    #[test]
+    fn dark_and_light_panels_differ_from_common_terminal_backgrounds() {
+        let hex = |v: u32| ((v >> 16) as u8, (v >> 8) as u8, v as u8);
+        for (t, backgrounds) in [
+            (Theme::dark(), [0x000000, 0x1c1c1c, 0x300a24, 0x282c34]),
+            (Theme::light(), [0xffffff, 0xdadada, 0xe4e4e4, 0xfdf6e3]),
+        ] {
+            for b in backgrounds {
+                let r = contrast(xterm_rgb(t.terminal_bg), hex(b));
+                assert!(r >= 1.2, "{b:#08x}: {r}");
+            }
+        }
+    }
+
     #[test]
     fn synthwave_is_named() {
         assert_eq!(Theme::named("synthwave"), Some(Theme::synthwave()));
@@ -1043,8 +1140,7 @@ mod tests {
             .chain(BOTH.map(Theme::synthwave_with))
         {
             let p = t.ansi_palette().expect("own terminal palette");
-            assert_eq!(Some(p.bg), t.text.bg);
-            assert_eq!(Some(p.fg), t.text.fg);
+            assert_eq!((p.bg, p.fg), (t.terminal_bg, t.terminal_fg));
             // Normal colours 1..=6 (red..cyan) read on the background.
             for c in &p.colors[1..7] {
                 assert!(ratio(*c, p.bg) >= 3.0, "{c:?} on {:?}", p.bg);
