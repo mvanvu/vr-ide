@@ -820,3 +820,194 @@ fn notification_text_is_sanitized_capped_and_rate_limited() {
     crate::ai::refresh(&mut app);
     assert_eq!(app.notices.len(), 1, "one notice for a thousand bells");
 }
+
+// ---- workspace switch --------------------------------------------------------------------------
+
+/// The message of the open confirm dialog, if one is open.
+fn confirm_message(app: &App) -> Option<String> {
+    match app.dialog.as_ref().map(|d| &d.widget) {
+        Some(crate::ui::dialog::DialogWidget::Confirm(c)) => Some(c.message.clone()),
+        _ => None,
+    }
+}
+
+/// Waits until process `pid` is gone (ended and reaped).
+fn wait_gone(pid: u32) {
+    let deadline = Instant::now() + WAIT;
+    while Path::new(&format!("/proc/{pid}")).exists() {
+        assert!(Instant::now() < deadline, "process {pid} still there");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// `ai_app` with two shells in the terminal panel and one `gemini` session; the pids of all
+/// three, and another folder to switch to.
+fn busy_app() -> (tempfile::TempDir, tempfile::TempDir, App, Vec<u32>) {
+    let (d, mut app) = ai_app();
+    app.terminal.shell = Some(PathBuf::from("/bin/sh"));
+    crate::commands::terminal::new_terminal(&mut app);
+    crate::commands::terminal::new_terminal(&mut app);
+    crate::ai::open_tool(&mut app, "gemini").unwrap();
+    let mut pids: Vec<u32> = app.terminal.tabs.iter().filter_map(|t| t.pid()).collect();
+    pids.extend(app.ai.sessions.iter().filter_map(|s| s.tab.pid()));
+    assert_eq!(pids.len(), 3, "every program started");
+    let other = tempfile::tempdir().unwrap();
+    (d, other, app, pids)
+}
+
+fn other_ws(other: &tempfile::TempDir) -> crate::workspace::Workspace {
+    crate::workspace::Workspace::single(canonical(other))
+}
+
+/// Terminals and AI sessions run in the old folders: the switch asks first, naming how many
+/// close, Cancel selected; Continue ends them all (no process left) and switches, and the
+/// session store no longer holds them.
+#[test]
+fn switching_workspace_asks_then_closes_terminals_and_ai_sessions() {
+    let (d, other, mut app, pids) = busy_app();
+    app.open_workspace(other_ws(&other));
+    let msg = confirm_message(&app).expect("the switch asks first");
+    assert!(
+        msg.contains("Switching workspace closes 2 terminals and 1 AI session."),
+        "{msg}"
+    );
+    assert_eq!(
+        app.workspace.paths(),
+        [canonical(&d)],
+        "nothing switched yet"
+    );
+    assert_eq!(app.terminal.tabs.len(), 2);
+    assert_eq!(app.ai.sessions.len(), 1);
+    // Continue is the first button; Cancel is selected.
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.dialog.is_none());
+    assert_eq!(app.workspace.paths(), [canonical(&other)], "switched");
+    assert!(app.terminal.tabs.is_empty(), "terminals closed");
+    assert!(app.ai.sessions.is_empty(), "AI sessions closed");
+    assert!(app.ai.picker.is_none(), "no picker on the old folder");
+    assert!(!app.terminal.visible && !app.ai.visible);
+    for pid in pids {
+        wait_gone(pid);
+    }
+    assert!(crate::ai::restore::capture(&app).sessions.is_empty());
+    assert!(crate::session::snapshot(&app).terminal.folders.is_empty());
+}
+
+#[test]
+fn cancel_keeps_the_workspace_terminals_and_ai_sessions() {
+    let (d, other, mut app, pids) = busy_app();
+    app.open_workspace(other_ws(&other));
+    assert!(app.dialog.is_some());
+    press(&mut app, KeyCode::Enter);
+    assert!(app.dialog.is_none());
+    assert_eq!(app.workspace.paths(), [canonical(&d)]);
+    assert_eq!(app.terminal.tabs.len(), 2);
+    assert_eq!(app.ai.sessions.len(), 1);
+    assert!(app.terminal.tabs.iter().all(|t| t.running()));
+    assert!(app.ai.sessions[0].running());
+    for pid in pids {
+        assert!(Path::new(&format!("/proc/{pid}")).exists(), "{pid} runs");
+    }
+    // Esc cancels too.
+    app.open_workspace(other_ws(&other));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.workspace.paths(), [canonical(&d)]);
+    assert_eq!(app.ai.sessions.len(), 1);
+}
+
+/// Nothing open in the panels: the switch does not ask.
+#[test]
+fn switching_with_no_terminal_or_ai_session_does_not_ask() {
+    let (_d, mut app) = ai_app();
+    let other = tempfile::tempdir().unwrap();
+    app.open_workspace(other_ws(&other));
+    assert!(app.dialog.is_none());
+    assert_eq!(app.workspace.paths(), [canonical(&other)]);
+}
+
+/// An exited session or terminal is still open (its output shows) and is counted.
+#[test]
+fn exited_sessions_and_terminals_count_as_open() {
+    let (d, mut app) = ai_app();
+    let quick = script(d.path(), "quick", QUICK_AGENT);
+    app.settings.ai_tools.push(tool("codex", &quick, true));
+    crate::ai::open_tool(&mut app, "codex").unwrap();
+    crate::ai::open_tool(&mut app, "codex").unwrap();
+    wait_exit(&app, 0);
+    wait_exit(&app, 1);
+    app.terminal
+        .tabs
+        .push(crate::commands::terminal::TermTab::fake(
+            Default::default(),
+            "sh",
+            vr_term::TermStatus::Exited(0),
+        ));
+    let other = tempfile::tempdir().unwrap();
+    app.open_workspace(other_ws(&other));
+    let msg = confirm_message(&app).expect("asks");
+    assert!(
+        msg.contains("Switching workspace closes 1 terminal and 2 AI sessions."),
+        "{msg}"
+    );
+}
+
+/// The open-sessions question comes first and closes nothing; the unsaved-files question
+/// follows, and Cancel there still leaves the terminals, sessions and edits as they were.
+/// Discard then switches and closes them.
+#[test]
+fn the_sessions_question_comes_before_the_unsaved_files_one() {
+    let (d, other, mut app, _) = busy_app();
+    app.recovery_dir = Some(d.path().join(".recovery"));
+    std::fs::write(d.path().join("a.txt"), "a\n").unwrap();
+    app.open_path(&d.path().join("a.txt")).unwrap();
+    app.focus = Focus::Editor;
+    crate::app_tests::space_i(&mut app);
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.docs[0].is_modified());
+    app.open_workspace(other_ws(&other));
+    let msg = confirm_message(&app).expect("asks");
+    assert!(msg.contains("closes 2 terminals and 1 AI session"), "{msg}");
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Enter);
+    let msg = confirm_message(&app).expect("then asks about the unsaved file");
+    assert!(msg.contains("unsaved file(s): a.txt"), "{msg}");
+    assert_eq!(app.terminal.tabs.len(), 2, "nothing closed yet");
+    assert_eq!(app.ai.sessions.len(), 1);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.workspace.paths(), [canonical(&d)]);
+    assert_eq!(app.terminal.tabs.len(), 2);
+    assert_eq!(app.ai.sessions.len(), 1);
+    assert!(app.docs[0].is_modified(), "the edit is kept");
+    // Again: Continue, then Discard.
+    app.open_workspace(other_ws(&other));
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Enter);
+    assert!(confirm_message(&app).is_some_and(|m| m.contains("unsaved")));
+    let Some(crate::ui::dialog::DialogWidget::Confirm(c)) =
+        app.dialog.as_mut().map(|d| &mut d.widget)
+    else {
+        unreachable!()
+    };
+    c.selected = 1;
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.workspace.paths(), [canonical(&other)]);
+    assert!(app.terminal.tabs.is_empty() && app.ai.sessions.is_empty());
+    assert!(app.docs.iter().all(|d| !d.is_modified()));
+}
+
+/// `/ws open` of the folder already open changes nothing and asks nothing.
+#[test]
+fn reopening_the_open_folder_asks_nothing() {
+    let (_d, _other, mut app, _) = busy_app();
+    crate::slash_tests::set_input_and_enter(&mut app, "/ws open .");
+    assert!(app.dialog.is_none());
+    assert_eq!(app.terminal.tabs.len(), 2);
+    assert_eq!(app.ai.sessions.len(), 1);
+    assert!(
+        crate::slash_tests::notices(&app).contains("is already the open workspace"),
+        "{}",
+        crate::slash_tests::notices(&app)
+    );
+}

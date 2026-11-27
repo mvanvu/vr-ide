@@ -942,6 +942,32 @@ fn ws_open_a_folder_asks_about_unsaved_files_first() {
     assert!(app.docs[0].is_modified(), "the edit is still there");
 }
 
+/// A terminal still runs in the old folder: `/ws open` asks before closing it (Cancel keeps it).
+#[test]
+fn ws_open_a_folder_asks_before_closing_terminals() {
+    let (d, mut app) = ws_app();
+    app.terminal.shell = Some(PathBuf::from("/bin/sh"));
+    crate::commands::terminal::new_terminal(&mut app);
+    let before = root_paths(&app);
+    set_input_and_enter(&mut app, "/ws open ../other");
+    let Some(crate::ui::dialog::DialogWidget::Confirm(c)) = app.dialog.as_ref().map(|d| &d.widget)
+    else {
+        panic!("the open terminal is asked about: {}", notices(&app));
+    };
+    assert_eq!(c.message, "Switching workspace closes 1 terminal.");
+    assert_eq!(c.buttons, ["Continue", "Cancel"]);
+    assert_eq!(c.selected, 1, "Cancel selected");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(root_paths(&app), before);
+    assert_eq!(app.terminal.tabs.len(), 1);
+    set_input_and_enter(&mut app, "/ws open ../other");
+    key(&mut app, KeyCode::Left);
+    key(&mut app, KeyCode::Enter);
+    let other = d.path().join("other").canonicalize().unwrap();
+    assert_eq!(root_paths(&app), [other]);
+    assert!(app.terminal.tabs.is_empty());
+}
+
 #[test]
 fn ws_open_tab_offers_folders_and_workspace_files() {
     let (d, mut app) = ws_app();

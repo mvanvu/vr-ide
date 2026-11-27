@@ -136,7 +136,10 @@ Press `ctrl+q` to quit. If any file has unsaved changes, vr-ide asks first (see
 - `/ws add`, `/ws remove`, `/ws save`, `/ws open` and `/ws recent` (also in the palette as
   `Workspace: …`) change the folders, see [docs/commands.md](docs/commands.md).
 - `/ws open <folder>` switches the window to another folder, `/ws open <file>.vr-workspace` to
-  the folders of a workspace file; unsaved files are asked about first, terminals keep running.
+  the folders of a workspace file (so do `/ws recent` and a recent workspace on the welcome
+  screen). Open terminals and AI sessions run in the old folders: "Switching workspace closes 2
+  terminals and 1 AI session." asks first (Continue / Cancel, Cancel is the default), then unsaved
+  files are asked about; Cancel at either step changes nothing. The window title follows.
 
 ## Using vr-ide
 
@@ -325,7 +328,8 @@ SIGKILL for a program that ignores it).
 unset or does not start) in the project root with `TERM=xterm-256color`. Press it again, wherever
 the keys are, to hide the panel (the shells keep running); click the editor to leave the terminal
 with the panel shown. `shift+f12` from the editor hides the panel too. No terminal starts until you
-open one.
+open one. Switching to another workspace (`/ws open`, `/ws recent`) closes every terminal, after
+asking (see [Workspace](#workspace-several-folders)).
 
 - A focused terminal receives every key, `ctrl+s` and `ctrl+p` included, so `vim`, `htop`
   or `lazygit` work as in any terminal; vr-ide keeps only ``ctrl+` ``, `F1` (the command window),
@@ -379,7 +383,9 @@ open one.
 `f12` shows a column right of the editor, the window's full height, for terminal coding agents
 (claude, codex, gemini, aider, cursor-agent: the `ai_tools` setting; only the ones found on `PATH`
 are offered). Each tab is one agent session, and several sessions of one tool can run at once
-(`1 claude`, `2 claude·2`). A session starts in the active file's workspace folder.
+(`1 claude`, `2 claude·2`). A session starts in the active file's workspace folder. Switching to
+another workspace closes every session, running or exited, after asking (see
+[Workspace](#workspace-several-folders)); a `--session` window then keeps none of them.
 
 | Task | Keys |
 |---|---|

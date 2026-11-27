@@ -222,12 +222,29 @@ fn set_cursor_shape(
     }
 }
 
+/// The window title when it differs from `last`, the one written last (`None`: not written).
+fn changed_title(last: Option<&str>, app: &App) -> Option<String> {
+    let now = app.title();
+    (last != Some(now.as_str())).then_some(now)
+}
+
+/// Writes the window title when the workspace changed it (`main` writes the first one).
+fn set_title(last: &mut Option<String>, app: &App) {
+    let Some(title) = changed_title(last.as_deref(), app) else {
+        return;
+    };
+    if crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(&title)).is_ok() {
+        *last = Some(title);
+    }
+}
+
 /// Runs until a command sets `app.quit`. Draws only when something changed.
 pub fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Result<()>
 where
     B::Error: Send + Sync + 'static,
 {
     let mut bar = None;
+    let mut title = Some(app.title());
     loop {
         app.drain_fs_events();
         app.drain_index();
@@ -249,6 +266,8 @@ where
         if app.dirty {
             draw_frame(terminal, app, &recovery::GLOBAL, ui::render)?;
             set_cursor_shape(&mut bar, cursor_style(app));
+            // A workspace switch, or roots added or removed, redraw: the title follows them.
+            set_title(&mut title, app);
         }
         if app.quit {
             return Ok(());
@@ -363,6 +382,26 @@ mod tests {
         assert!(format!("{:#}", r.unwrap_err()).contains("unsaved buffers written"));
         let msgs = app.exit_messages.join(" | ");
         assert!(msgs.contains("still writing b"), "{msgs}");
+    }
+
+    /// The window title is written again only when the workspace label changed (after a
+    /// switch), never with the control characters a folder name may hold.
+    #[test]
+    fn the_window_title_follows_a_workspace_switch() {
+        let (_d, _p, mut app, _) = crate::app_tests::app_with_file("a\n");
+        let mut last = Some(app.title());
+        assert_eq!(changed_title(last.as_deref(), &app), None, "unchanged");
+        let other = tempfile::tempdir().unwrap();
+        let odd = other.path().join("x\u{1b}]0;evil\u{7}y");
+        std::fs::create_dir(&odd).unwrap();
+        app.open_workspace(crate::workspace::Workspace::single(odd));
+        let t = changed_title(last.as_deref(), &app).expect("written after the switch");
+        assert!(t.starts_with("vr-ide — "), "{t}");
+        assert!(t.ends_with("x?]0;evil?y"), "{t:?}");
+        assert!(!t.chars().any(char::is_control), "{t:?}");
+        last = Some(t);
+        assert_eq!(changed_title(last.as_deref(), &app), None, "written once");
+        assert_eq!(changed_title(None, &app).as_deref(), last.as_deref());
     }
 
     #[test]

@@ -1054,7 +1054,7 @@ fn changed_on_disk(path: &Path) -> String {
 }
 
 /// A folder replaces the workspace as its only root, a `.vr-workspace` file opens its roots.
-/// Unsaved files ask first (Save all / Discard / Cancel), as for quit.
+/// Open terminals and AI sessions, then unsaved files, ask first ([`App::open_workspace`]).
 fn ws_open(app: &mut App, arg: &str) -> Result<(), String> {
     let path = resolve_arg(app, arg);
     // Checked and read off the UI thread (W-2): a FIFO or a dead mount never hangs the window.

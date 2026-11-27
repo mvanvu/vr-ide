@@ -21,6 +21,9 @@ use crate::workspace::{Root, RootId, Workspace, WorkspaceError};
 /// comes at once; a hung mount leaves the UI responsive and the result comes later.
 pub const JOB_WAIT: Duration = Duration::from_millis(300);
 
+/// The open-sessions question's button that goes on with the switch.
+pub const CONTINUE: &str = "Continue";
+
 /// What a workspace job found.
 #[derive(Debug)]
 pub enum JobDone {
@@ -276,10 +279,52 @@ impl App {
         Ok(root)
     }
 
-    /// Replaces the roots with `ws`, after the unsaved-files question quit asks (Save all /
-    /// Discard / Cancel); every tab is closed, terminals keep running. Refused while a
-    /// project replace writes files.
+    /// Replaces the roots with `ws`. Two questions come first, each only when it applies:
+    /// open terminals and AI sessions (Continue / Cancel; they run in the old folders and
+    /// close with the switch), then the unsaved-files question quit asks (Save all / Discard /
+    /// Cancel). The first only asks; nothing closes before the last answer, so Cancel at
+    /// either step leaves everything as it was. Every tab, terminal and AI session is closed.
+    /// Refused while a project replace writes files.
     pub fn open_workspace(&mut self, ws: Workspace) {
+        if !self.replace_allows_switch() {
+            return;
+        }
+        if let Some(message) = self.sessions_closing_message() {
+            let mut dialog = ConfirmDialog::new("Open Workspace", message, &[CONTINUE, CANCEL]);
+            dialog.selected = 1;
+            self.open_dialog(
+                DialogWidget::Confirm(dialog),
+                DialogAction::OpenWorkspaceSessions(Box::new(ws)),
+            );
+            return;
+        }
+        self.open_workspace_closing_sessions(ws);
+    }
+
+    /// "Switching workspace closes 2 terminals and 1 AI session." for every terminal tab and
+    /// AI session open, running or exited (an exited one still shows the old folder's output);
+    /// `None` when there is none.
+    fn sessions_closing_message(&self) -> Option<String> {
+        fn count(n: usize, one: &str, many: &str) -> Option<String> {
+            match n {
+                0 => None,
+                1 => Some(format!("1 {one}")),
+                n => Some(format!("{n} {many}")),
+            }
+        }
+        let parts: Vec<String> = [
+            count(self.terminal.tabs.len(), "terminal", "terminals"),
+            count(self.ai.sessions.len(), "AI session", "AI sessions"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!parts.is_empty()).then(|| format!("Switching workspace closes {}.", parts.join(" and ")))
+    }
+
+    /// [`App::open_workspace`] once the terminals and AI sessions may close (Continue, or none
+    /// open): the unsaved-files question, then the switch.
+    pub(crate) fn open_workspace_closing_sessions(&mut self, ws: Workspace) {
         if !self.replace_allows_switch() {
             return;
         }
@@ -456,6 +501,7 @@ impl App {
     }
 
     fn switch_workspace(&mut self, ws: Workspace) {
+        self.close_sessions();
         for i in (0..self.docs.len()).rev() {
             self.close_doc(i);
         }
@@ -465,6 +511,25 @@ impl App {
         commands::search::clear_stale(self);
         self.sync_mode();
         self.remember_workspace();
+    }
+
+    /// Closes every terminal and AI session through their own close paths (process groups
+    /// hung up off the UI thread; a session's account hold, change tracker and store go with
+    /// it) and hides both panels. The AI picker is dropped too: it names a folder of the old
+    /// workspace. The session store's next save holds none of them.
+    fn close_sessions(&mut self) {
+        // Hidden first: closing the last session of a shown panel would build the empty
+        // state on the old folder.
+        crate::ai::hide(self);
+        for i in (0..self.ai.sessions.len()).rev() {
+            crate::ai::close(self, i);
+        }
+        self.ai.picker = None;
+        self.ai.active = 0;
+        // The last one hides the panel.
+        for i in (0..self.terminal.tabs.len()).rev() {
+            commands::terminal::close_tab(self, i);
+        }
     }
 
     /// Roots are not replaced while a project replace writes files: the tabs it hands

@@ -108,6 +108,9 @@ pub enum DialogAction {
     ReplaceInFile,
     /// Unsaved files before the roots are replaced (W-1): Save all / Discard / Cancel.
     OpenWorkspace(Box<crate::workspace::Workspace>),
+    /// Terminals and AI sessions are open before the roots are replaced: Continue (closes
+    /// them with the switch) / Cancel, Cancel first. Asked before [`DialogAction::OpenWorkspace`].
+    OpenWorkspaceSessions(Box<crate::workspace::Workspace>),
 }
 
 pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
@@ -186,6 +189,9 @@ pub fn answer(app: &mut App, dialog: Dialog, outcome: Outcome) {
             super::app::quit_discarding(app);
         }
         (DialogAction::OpenWorkspace(ws), Outcome::Chosen(b)) => app.answer_open_workspace(*ws, b),
+        (DialogAction::OpenWorkspaceSessions(ws), Outcome::Chosen(0)) => {
+            app.open_workspace_closing_sessions(*ws)
+        }
         _ => {}
     }
 }

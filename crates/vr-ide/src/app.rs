@@ -408,7 +408,15 @@ impl App {
 
     /// Terminal title (AC-1).
     pub fn title(&self) -> String {
-        format!("vr-ide — {}", self.workspace.label())
+        // A folder name may hold control characters; written raw they would end the title
+        // sequence and reach the outer terminal as commands.
+        let label: String = self
+            .workspace
+            .label()
+            .chars()
+            .map(|c| if c.is_control() { '?' } else { c })
+            .collect();
+        format!("vr-ide — {label}")
     }
 
     /// The first root: the explorer's tree (one root: the project root).

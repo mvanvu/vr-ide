@@ -37,10 +37,15 @@ runs the command there, with a notice. `/ai <tool>` always starts a new session 
 never in a terminal; `/ai` alone opens the tool picker there, as `ctrl+f12` does.
 
 `/ws open <folder>` switches the window to that folder alone, `/ws open <file>.vr-workspace` to the
-folders the file lists; any other file is refused. Unsaved files are asked about first (Save all /
-Discard, which keeps a copy in the recovery folder / Cancel), then every tab closes; terminals and
-AI sessions keep running in their folders. Opening the folder that is already the workspace
-changes nothing. The new workspace goes to the front of `/ws recent`.
+folders the file lists; any other file is refused. With terminals or AI sessions open (running or
+exited), it asks first: "Switching workspace closes 2 terminals and 1 AI session." (Continue /
+Cancel, Cancel is the default). Then unsaved files are asked about (Save all / Discard, which keeps
+a copy in the recovery folder / Cancel). Nothing closes before the last answer, so Cancel at either
+step leaves the workspace, the tabs, the terminals and the sessions as they were. On the switch
+every tab, terminal and AI session closes (their programs are ended) and both panels hide; the
+window title names the new workspace. `/ws recent <n>` and a recent workspace on the welcome screen
+ask the same. Opening the folder that is already the workspace changes nothing and asks nothing.
+The new workspace goes to the front of `/ws recent`.
 
 `/ws save` without a name saves to the workspace's own file only when that file is still the
 version the workspace was opened from or last saved to; an edit made since (by hand or by another
