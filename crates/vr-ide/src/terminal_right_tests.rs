@@ -2,7 +2,7 @@
 //! the narrow fallback, the position command and key, the separator drag, grow / shrink of the
 //! width, the find box beside the panel, the PTY following every layout change and snapshots.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use vr_config::TerminalPosition;
 use vr_term::TermStatus;
@@ -183,7 +183,8 @@ fn toggle_position_flips_and_names_the_setting() {
 }
 
 /// ctrl+f7 runs it from the editor, as the kitty protocol reports it and as GNOME Terminal
-/// sends it without (ESC [ 18 ; 5 ~); a focused terminal keeps the key for its program.
+/// sends it without (ESC [ 18 ; 5 ~), and from a focused terminal (the state after ctrl+`),
+/// where it never reaches the program.
 #[test]
 fn ctrl_f7_toggles_the_position() {
     for enhanced in [true, false] {
@@ -208,15 +209,24 @@ fn ctrl_f7_toggles_the_position() {
             Some("ctrl+f7")
         );
     }
-    let (_d, mut app) = right_app();
-    app.focus = Focus::Terminal;
-    draw(&mut app, 120, 40);
-    app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::CONTROL));
-    assert_eq!(
-        app.terminal.position,
-        TerminalPosition::Right,
-        "went to the program"
-    );
+    for enhanced in [true, false] {
+        let (_d, mut app) = right_app();
+        app.terminal.position = TerminalPosition::Bottom;
+        app.keyboard_enhanced = enhanced;
+        app.focus = Focus::Terminal;
+        draw(&mut app, 120, 40);
+        let ev = if enhanced {
+            crate::app_tests::kitty_event("ctrl+f7")
+        } else {
+            legacy_event("ctrl+f7").1.unwrap()
+        };
+        app.handle_key(ev);
+        assert_eq!(
+            app.terminal.position,
+            TerminalPosition::Right,
+            "focused terminal, enhanced={enhanced}"
+        );
+    }
 }
 
 // ---- mouse, grow / shrink -----------------------------------------------------------------
