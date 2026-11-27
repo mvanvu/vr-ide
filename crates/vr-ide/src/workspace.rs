@@ -62,6 +62,8 @@ pub enum WorkspaceError {
     /// The folder's path is not valid UTF-8: workspace files and the recent list (TOML)
     /// cannot hold it, so it would come back as a different, missing folder.
     NotUtf8(PathBuf),
+    /// `/ws open` was given something that is neither a folder nor a `.vr-workspace` file.
+    NotAWorkspace(PathBuf),
 }
 
 impl fmt::Display for WorkspaceError {
@@ -91,6 +93,9 @@ impl fmt::Display for WorkspaceError {
                 "{} has a name that is not UTF-8; vr-ide cannot keep it in a workspace",
                 p.display()
             ),
+            Self::NotAWorkspace(p) => {
+                write!(f, "{} is not a folder or a .vr-workspace file", p.display())
+            }
         }
     }
 }
@@ -156,6 +161,27 @@ impl Workspace {
         ws.file = Some(real(file));
         ws.file_version = version;
         Ok((ws, refused))
+    }
+
+    /// What `/ws open` opens at `path`: a folder alone (links resolved, it must exist), or
+    /// the roots of a `.vr-workspace` file. Anything else is refused. It stats: run it off
+    /// the UI thread.
+    pub fn from_folder_or_file(
+        path: &Path,
+    ) -> Result<(Workspace, Vec<WorkspaceError>), WorkspaceError> {
+        match std::fs::metadata(path) {
+            Ok(m) if m.is_dir() => {
+                let canon = Workspace::check_folder(path, &[])?;
+                Ok((Workspace::single(canon), Vec::new()))
+            }
+            // The workspace-file read keeps its own refusals (missing, FIFO, too big, bad TOML).
+            _ if vr_config::is_workspace_file(path) => Workspace::from_file(path),
+            Ok(_) => Err(WorkspaceError::NotAWorkspace(path.to_path_buf())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(WorkspaceError::NotFound(path.to_path_buf()))
+            }
+            Err(e) => Err(WorkspaceError::Io(path.to_path_buf(), e.to_string())),
+        }
     }
 
     pub fn roots(&self) -> &[Root] {

@@ -135,6 +135,8 @@ Press `ctrl+q` to quit. If any file has unsaved changes, vr-ide asks first (see
   paste works across them.
 - `/ws add`, `/ws remove`, `/ws save`, `/ws open` and `/ws recent` (also in the palette as
   `Workspace: …`) change the folders, see [docs/commands.md](docs/commands.md).
+- `/ws open <folder>` switches the window to another folder, `/ws open <file>.vr-workspace` to
+  the folders of a workspace file; unsaved files are asked about first, terminals keep running.
 
 ## Using vr-ide
 
@@ -382,7 +384,7 @@ are offered). Each tab is one agent session, and several sessions of one tool ca
 | Task | Keys |
 |---|---|
 | Show the AI panel with the keys / hide it (the agents keep running) | `f12` |
-| Start a session (picker: tool, then New / Continue last / Choose earlier) | `ctrl+f12`, or the `+` of its tab bar, or `/ai <tool>` |
+| Start a session (picker: tool, then New / Continue last / Choose earlier) | `ctrl+f12`, or the `+` of its tab bar, or `/ai` (picker) or `/ai <tool>` |
 | Next / previous session | `f7` / `shift+f7` |
 | See what changed while the session ran | `f6` (list at the top of its tab), `enter` opens a file as a diff in the editor |
 | Keep / revert the selected change (list or diff tab) | `f5` / `shift+f5` |

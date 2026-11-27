@@ -445,7 +445,7 @@ fn find(app: &mut App, input: &str) -> Option<Found> {
             let cands = path_cands(app, &base, head, arg, filter, Style::Plain);
             Some(found(cands, arg, Note::Keys))
         }
-        (_, ArgKind::None | ArgKind::Text) => None,
+        (_, ArgKind::None | ArgKind::Text | ArgKind::OptionalText) => None,
         _ => {
             let rows = slash::rows(app, input);
             // Nothing to offer: the slash list shows the command itself.
@@ -557,7 +557,13 @@ pub fn tab(app: &mut App, back: bool) {
     let text = p.input.text().to_string();
     let kind = slash::in_argument(&text).map(|(c, _)| c.arg);
     // A row the user highlighted with the arrows is an explicit choice: Tab takes it.
-    if p.moved && !matches!(kind, Some(ArgKind::Text | ArgKind::None)) && take_row(app, &text) {
+    if p.moved
+        && !matches!(
+            kind,
+            Some(ArgKind::Text | ArgKind::OptionalText | ArgKind::None)
+        )
+        && take_row(app, &text)
+    {
         return;
     }
     let found = find(app, &text).filter(|f| !f.cands.is_empty());

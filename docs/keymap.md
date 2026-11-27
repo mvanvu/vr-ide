@@ -198,7 +198,7 @@ A `ctrl+space` binding you add to `[terminal]` wins over the NUL rule.
 | `ssh.connect` | SSH: Connect to Host (opens `/ssh `: open sessions, recent lines, `~/.ssh/config` hosts) |
 | `workspace.remove_folder` | Workspace: Remove Folder (the root row under the explorer cursor, else `/ws remove `; also on a root row's right-click menu as "Remove Folder from Workspace"; files on disk are never touched) |
 | `workspace.save_as` | Workspace: Save As… (opens `/ws save `) |
-| `workspace.open` | Workspace: Open… (opens `/ws open `) |
+| `workspace.open` | Workspace: Open… (opens `/ws open `: a folder or a `.vr-workspace` file) |
 | `workspace.open_recent` | Workspace: Open Recent (opens `/ws recent `; the welcome screen lists them too, a click opens one) |
 
 Match case and regex are part of the query (see [The find box](#the-find-box)); there are no

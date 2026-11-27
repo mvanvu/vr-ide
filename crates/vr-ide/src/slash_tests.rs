@@ -625,7 +625,19 @@ fn ai_starts_only_tools_of_ai_tools_never_through_a_shell() {
     );
     assert_eq!(app.terminal.tabs.len(), 1, "no new terminal tab");
     assert!(app.ai.sessions.is_empty());
-    slash_needs(&mut app, "/ai", "/ai needs <tool> [@account]");
+}
+
+/// `/ai` alone opens the picker of ai_tools in the AI panel, as ctrl+f12 does.
+#[test]
+fn ai_alone_opens_the_tool_picker() {
+    let (_d, mut app) = sh_app();
+    app.run_command("app.palette", crate::commands::CmdArgs::None);
+    typ(&mut app, "/ai");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(error(&app), None);
+    assert!(app.ai.picker_active(), "the picker is shown");
+    assert!(crate::ai::has_keys(&app), "the picker has the keys");
+    assert!(app.ai.sessions.is_empty(), "nothing is started yet");
 }
 
 /// Enter on `text` (in a fresh window) shows `message`.
@@ -839,6 +851,107 @@ fn ws_recent_lists_and_opens_by_number() {
         error(&app2).as_deref(),
         Some("/ws recent: no recent workspace 9")
     );
+}
+
+#[test]
+fn ws_open_a_folder_replaces_the_workspace_with_it() {
+    let (d, mut app) = ws_app();
+    app.add_root(&d.path().join("other")).unwrap();
+    set_input_and_enter(&mut app, "/ws open ../other2");
+    assert!(app.palette.is_none(), "{:?}", error(&app));
+    let other2 = d.path().join("other2").canonicalize().unwrap();
+    assert_eq!(
+        root_paths(&app),
+        std::slice::from_ref(&other2),
+        "one root, the folder"
+    );
+    assert!(app.workspace.file().is_none(), "no workspace file");
+    assert_eq!(app.explorer.root(), other2);
+    assert_eq!(
+        app.recent_workspaces.entries[0].roots,
+        [other2],
+        "remembered in the recent list"
+    );
+}
+
+#[test]
+fn ws_open_still_opens_a_workspace_file_after_a_folder() {
+    let (d, mut app) = ws_app();
+    app.add_root(&d.path().join("other")).unwrap();
+    set_input_and_enter(&mut app, "/ws save ../team");
+    set_input_and_enter(&mut app, "/ws open ../other2");
+    assert_eq!(root_paths(&app).len(), 1, "{:?}", error(&app));
+    set_input_and_enter(&mut app, "/ws open ../team.vr-workspace");
+    assert!(app.palette.is_none(), "{:?}", error(&app));
+    assert_eq!(root_paths(&app).len(), 2);
+    assert!(app.workspace.file().is_some());
+}
+
+#[test]
+fn ws_open_refuses_a_file_that_is_not_a_workspace() {
+    let (d, mut app) = ws_app();
+    let before = root_paths(&app);
+    set_input_and_enter(&mut app, "/ws open ../file.txt");
+    let e = error(&app).unwrap_or_default();
+    assert!(
+        e.contains("file.txt is not a folder or a .vr-workspace file"),
+        "{e}"
+    );
+    assert_eq!(input(&app), "/ws open ../file.txt", "the text is kept");
+    key(&mut app, KeyCode::Esc);
+    set_input_and_enter(&mut app, "/ws open ../missing");
+    let e = error(&app).unwrap_or_default();
+    assert!(e.contains("does not exist"), "{e}");
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(root_paths(&app), before);
+    let _ = d;
+}
+
+#[test]
+fn ws_open_of_the_open_folder_changes_nothing() {
+    let (d, mut app) = ws_app();
+    std::fs::write(d.path().join("main/a.txt"), "a\n").unwrap();
+    app.open_path(&d.path().join("main/a.txt")).unwrap();
+    set_input_and_enter(&mut app, "/ws open .");
+    assert!(app.palette.is_none(), "{:?}", error(&app));
+    assert_eq!(app.docs.len(), 1, "the tab stays open");
+    assert!(
+        notices(&app).contains("is already the open workspace"),
+        "{}",
+        notices(&app)
+    );
+}
+
+#[test]
+fn ws_open_a_folder_asks_about_unsaved_files_first() {
+    let (d, mut app) = ws_app();
+    std::fs::write(d.path().join("main/a.txt"), "a\n").unwrap();
+    app.recovery_dir = Some(d.path().join("recovery"));
+    app.open_path(&d.path().join("main/a.txt")).unwrap();
+    crate::app_tests::space_i(&mut app);
+    typ(&mut app, "x");
+    key(&mut app, KeyCode::Esc);
+    let before = root_paths(&app);
+    set_input_and_enter(&mut app, "/ws open ../other");
+    let Some(crate::ui::dialog::DialogWidget::Confirm(c)) = app.dialog.as_ref().map(|d| &d.widget)
+    else {
+        panic!("unsaved files are asked about: {}", notices(&app));
+    };
+    assert!(c.message.contains("a.txt"), "{}", c.message);
+    assert_eq!(root_paths(&app), before, "nothing switched yet");
+    assert!(app.docs[0].is_modified(), "the edit is still there");
+}
+
+#[test]
+fn ws_open_tab_offers_folders_and_workspace_files() {
+    let (d, mut app) = ws_app();
+    std::fs::write(d.path().join("team.vr-workspace"), "roots = []\n").unwrap();
+    slash(&mut app, "/ws open ../");
+    let t = titles(&app);
+    for want in ["../other/", "../other2/", "../team.vr-workspace"] {
+        assert!(t.iter().any(|x| x == want), "{want} in {t:?}");
+    }
+    assert!(!t.iter().any(|x| x.contains("file.txt")), "{t:?}");
 }
 
 // ---- docs, snapshots --------------------------------------------------------------------------

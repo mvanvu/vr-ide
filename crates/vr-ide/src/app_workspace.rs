@@ -191,6 +191,22 @@ impl App {
         }
     }
 
+    /// `/ws open <path>`: a folder becomes the only root, a `.vr-workspace` file opens its
+    /// roots; anything else is refused. Checked off the UI thread like
+    /// [`App::open_workspace_from`].
+    pub fn open_folder_or_workspace(&mut self, path: PathBuf) -> Result<(), WorkspaceError> {
+        let what = format!("Open Workspace {}", path.display());
+        let Some(done) = self.run_ws_job(what, move || {
+            JobDone::Open(Workspace::from_folder_or_file(&path))
+        }) else {
+            return Ok(());
+        };
+        match done {
+            JobDone::Open(r) => self.finish_open(r),
+            JobDone::Add(_) => Ok(()),
+        }
+    }
+
     fn finish_open(
         &mut self,
         read: Result<(Workspace, Vec<WorkspaceError>), WorkspaceError>,
@@ -198,6 +214,13 @@ impl App {
         let (ws, refused) = read?;
         for e in refused {
             self.warn(format!("workspace: {e}"));
+        }
+        // The same folders and no file to read again: switching would only close the tabs.
+        // A workspace file is still reopened, which takes its current version for /ws save.
+        if ws.file().is_none() && ws.paths() == self.workspace.paths() {
+            let msg = format!("workspace: {} is already the open workspace", ws.label());
+            self.info(msg);
+            return Ok(());
         }
         self.open_workspace(ws);
         Ok(())

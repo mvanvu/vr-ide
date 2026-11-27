@@ -33,7 +33,14 @@ integrated panel: the panel's own shell reads it as if you had typed it (vr-ide 
 its own), so a missing program shows that shell's error. `/run` uses the active terminal when its
 shell is waiting for a command; when there is none, its shell has exited or a program started from
 it holds the terminal (an AI tool, an editor, a password prompt), it opens a new terminal tab and
-runs the command there, with a notice. `/ai` always opens a new terminal tab.
+runs the command there, with a notice. `/ai <tool>` always starts a new session in the AI panel,
+never in a terminal; `/ai` alone opens the tool picker there, as `ctrl+f12` does.
+
+`/ws open <folder>` switches the window to that folder alone, `/ws open <file>.vr-workspace` to the
+folders the file lists; any other file is refused. Unsaved files are asked about first (Save all /
+Discard, which keeps a copy in the recovery folder / Cancel), then every tab closes; terminals and
+AI sessions keep running in their folders. Opening the folder that is already the workspace
+changes nothing. The new workspace goes to the front of `/ws recent`.
 
 `/ws save` without a name saves to the workspace's own file only when that file is still the
 version the workspace was opened from or last saved to; an edit made since (by hand or by another
@@ -129,12 +136,12 @@ protocol does not send are marked).
 | `/term right` | Terminal panel on the right, for this session |
 | `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
-| `/ai <tool> [@account]` | Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name> |
+| `/ai [<tool> [@account]]` | Start an AI tool of ai_tools (e.g. claude) in the AI panel (none: pick one); /ai rename <name> |
 | `/ssh [ssh args]` | Open an SSH session, args as after ssh (none: list hosts) |
 | `/ws add <folder>` | Add a folder to the workspace |
 | `/ws remove [root]` | Remove a workspace folder (default: the active file's) |
 | `/ws save [file]` | Save the workspace folders to a .vr-workspace file |
-| `/ws open <file>` | Open a .vr-workspace file |
+| `/ws open <folder\|file>` | Open a folder or a .vr-workspace file as the workspace |
 | `/ws recent [n]` | Open a recent workspace (no number: list them) |
 | `/theme synthwave\|dracula\|dark\|light` | Switch the colour theme for this session |
 | `/hidden` | Show or hide hidden files in the explorer |

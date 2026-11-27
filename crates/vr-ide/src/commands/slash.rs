@@ -19,8 +19,10 @@ pub enum ArgKind {
     None,
     /// A path, completed from the disk with Tab. `dirs`: only folders are offered.
     Path { required: bool, dirs: bool },
-    /// Free text, sent as typed (`/run`, `/ai`).
+    /// Free text, sent as typed (`/run`).
     Text,
+    /// Free text that may be left out (`/ai`: none opens the picker).
+    OptionalText,
     /// One of a fixed list.
     Choice(&'static [&'static str]),
     /// Optional: a root of the workspace by name (default: the root of the active file).
@@ -231,9 +233,9 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     ),
     cmd(
         "ai",
-        "<tool> [@account]",
-        ArgKind::Text,
-        "Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name>",
+        "[<tool> [@account]]",
+        ArgKind::OptionalText,
+        "Start an AI tool of ai_tools (e.g. claude) in the AI panel (none: pick one); /ai rename <name>",
         ai,
     ),
     cmd(
@@ -272,12 +274,12 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     ),
     cmd(
         "ws open",
-        "<file>",
+        "<folder|file>",
         ArgKind::Path {
             required: true,
             dirs: false,
         },
-        "Open a .vr-workspace file",
+        "Open a folder or a .vr-workspace file as the workspace",
         ws_open,
     ),
     cmd(
@@ -418,7 +420,7 @@ fn command_row(c: &SlashCommand) -> Row {
 /// argument of a known command is typed, the values Tab can complete (else that command).
 pub fn rows(app: &App, input: &str) -> Vec<Row> {
     if let Some((c, arg)) = in_argument(input) {
-        let values = candidates(app, c.arg, arg);
+        let values = candidates(app, c, arg);
         if values.is_empty() {
             return vec![command_row(c)];
         }
@@ -494,10 +496,10 @@ pub fn submit(input: &str, rows: &[Row], selected: usize) -> Submit {
 }
 
 /// Values the argument of `kind` can take for the partial `arg`: (value, label).
-fn candidates(app: &App, kind: ArgKind, arg: &str) -> Vec<(String, String)> {
-    match kind {
-        ArgKind::None | ArgKind::Text => Vec::new(),
-        ArgKind::Path { dirs, .. } => path_candidates(app, arg, dirs),
+fn candidates(app: &App, c: &SlashCommand, arg: &str) -> Vec<(String, String)> {
+    match c.arg {
+        ArgKind::None | ArgKind::Text | ArgKind::OptionalText => Vec::new(),
+        ArgKind::Path { dirs, .. } => path_candidates(app, arg, dirs, c.name == "ws open"),
         ArgKind::Choice(list) => list
             .iter()
             .filter(|v| v.starts_with(arg))
@@ -778,7 +780,13 @@ pub fn prepare(app: &mut App, input: &str) {
 
 /// Entries of the folder part of `arg` whose name starts with the rest; folders end in `/`.
 /// Hidden entries only when the typed name starts with a dot.
-fn path_candidates(app: &App, arg: &str, dirs_only: bool) -> Vec<(String, String)> {
+/// `workspaces`: folders and `.vr-workspace` files only (`/ws open`, as Tab offers them).
+fn path_candidates(
+    app: &App,
+    arg: &str,
+    dirs_only: bool,
+    workspaces: bool,
+) -> Vec<(String, String)> {
     let (dir_part, prefix, base) = split_path_arg(app, arg);
     let held = app
         .palette
@@ -800,7 +808,8 @@ fn path_candidates(app: &App, arg: &str, dirs_only: bool) -> Vec<(String, String
             name.starts_with(prefix)
                 && (!name.starts_with('.') || prefix.starts_with('.'))
                 && !name.chars().any(crate::ui::safe_text::is_unsafe_char)
-                && (*is_dir || !dirs_only)
+                && (*is_dir
+                    || !dirs_only && (!workspaces || vr_config::is_workspace_file(Path::new(name))))
         })
         .take(PATH_LIMIT)
         .map(|(name, is_dir)| {
@@ -952,8 +961,13 @@ fn run(app: &mut App, line: &str) -> Result<(), String> {
 }
 
 /// `/ai <tool> [@account]` starts a tool of `ai_tools` in the AI panel (D7) as argv, never through
-/// a shell (SEC-8); `/ai rename <name>` names the active session (AI: Rename Session).
+/// a shell (SEC-8); `/ai rename <name>` names the active session (AI: Rename Session); `/ai`
+/// alone opens the tool picker, as ctrl+f12 does.
 fn ai(app: &mut App, arg: &str) -> Result<(), String> {
+    if arg.trim().is_empty() {
+        crate::ai::open_picker(app);
+        return Ok(());
+    }
     one_line("ai", arg)?;
     if let Some(rest) = arg.strip_prefix("rename")
         && (rest.is_empty() || rest.starts_with(' '))
@@ -1039,11 +1053,12 @@ fn changed_on_disk(path: &Path) -> String {
     )
 }
 
+/// A folder replaces the workspace as its only root, a `.vr-workspace` file opens its roots.
 /// Unsaved files ask first (Save all / Discard / Cancel), as for quit.
 fn ws_open(app: &mut App, arg: &str) -> Result<(), String> {
-    let file = resolve_arg(app, arg);
-    // Read off the UI thread (W-2): a FIFO or a dead mount never hangs the window.
-    app.open_workspace_from(Some(file), Vec::new())
+    let path = resolve_arg(app, arg);
+    // Checked and read off the UI thread (W-2): a FIFO or a dead mount never hangs the window.
+    app.open_folder_or_workspace(path)
         .map_err(|e| e.to_string())
 }
 
