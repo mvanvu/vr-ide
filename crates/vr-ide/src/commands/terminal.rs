@@ -39,6 +39,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         run: hide_terminal,
     },
     CommandSpec {
+        name: "terminal.new",
+        title: "Terminal: New Terminal",
+        run: new_cmd,
+    },
+    CommandSpec {
+        name: "terminal.close",
+        title: "Terminal: Close Terminal",
+        run: close_cmd,
+    },
+    CommandSpec {
         name: "terminal.next",
         title: "Terminal: Focus Next Terminal",
         run: next,
@@ -398,7 +408,7 @@ fn hide_terminal(app: &mut App, _: CmdArgs) -> CmdResult {
     Ok(())
 }
 
-/// The tab bar's '+' (D280, D291; no key, no palette entry): a new terminal tab, shown with
+/// The tab bar's '+' (D280, D291): a new terminal tab, shown with
 /// the keys, its shell started in the active file's root (the first root still on disk when
 /// that one is gone).
 pub fn new_terminal(app: &mut App) {
@@ -406,6 +416,20 @@ pub fn new_terminal(app: &mut App) {
     if add_tab_in(app, &cwd) {
         reveal(app);
     }
+}
+
+/// ctrl+n in a focused terminal (D330): the same as the '+'. Bound in `[terminal]` only; the
+/// palette does not list it (D291).
+fn new_cmd(app: &mut App, _: CmdArgs) -> CmdResult {
+    new_terminal(app);
+    Ok(())
+}
+
+/// ctrl+w in a focused terminal (D330): the same as the active tab's 'x', question included.
+fn close_cmd(app: &mut App, _: CmdArgs) -> CmdResult {
+    let i = app.terminal.active;
+    close_tab_asking(app, i);
+    Ok(())
 }
 
 /// Where the '+' starts a shell: the active file's root, else the first root whose folder
