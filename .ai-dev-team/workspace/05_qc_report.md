@@ -83,3 +83,82 @@ Engine: real `target/debug/vr-ide` (built with `cargo build -p vr-ide`, ok) in a
 | AC-W8 `/set` for font keys | not run (static ok) | see above |
 | BASE-26 | pass | warnings name the key and the range; app not crashed |
 | BASE-50 | pass | only qa-artifacts/T4a/qc and this report written |
+
+## QC T3
+Engine: scratch cargo project `qa-artifacts/T3/qc/parity/` (own `[workspace]`, own target dir, crossterm 0.29.0 from the repo lock). TUI side = real crossterm parser through a pty (`tui` bin: raw mode + `event::read()` + `vr_ide::event_loop::chord_from_key(&k, true)`), kitty CSI-u bytes written as a terminal sends them for DISAMBIGUATE|REPORT_ALTERNATE_KEYS|REPORT_EVENT_TYPES (plain text keys as text, Enter/Tab/Backspace legacy bytes when unmodified, F1 SS3, etc.). Window side = hand-built `KeyInput` the OS would give, `translate_key`, then the same `chord_from_key`. Driver: `qa-artifacts/T3/qc/drive.py`; raw table with crossterm events: `qa-artifacts/T3/qc/table.md`. 49 chords.
+
+Result: 47 equal, 2 differ.
+
+DIFFERENCES
+- ctrl+shift+/ : TUI `ctrl+?` (crossterm decodes `47:63;6u` to Char('?') + CONTROL and drops SHIFT), window `ctrl+shift+/`.
+- ctrl+shift+1 : TUI `ctrl+!`, window `ctrl+shift+1`.
+Cause: crossterm 0.29 replaces the key by the shifted alternate and removes SHIFT for symbols; `chord_from_key` then never reaches `unshift_us`. The window keeps SHIFT (dev notes, deviation 1), which gives the keymap name. So a binding `ctrl+shift+/` or `ctrl+shift+1` fires in the window but not in `--tui`; this breaks the anti-goal "same chords in window and --tui" for shifted-symbol chords. Letters (ctrl+shift+a/p) match. Fix belongs to the leader's choice: either make `chord_from_key` map a ctrl/alt chord on a shifted symbol (no SHIFT flag, symbol in `unshift_us` domain) to `ctrl+shift+<unshifted>` (fixes the TUI, window already right), or make the window drop SHIFT (then neither names the keymap form).
+
+Table (chord | TUI | window | equal?)
+| chord | TUI | window | equal? |
+|---|---|---|---|
+| a | a | a | yes |
+| z | z | z | yes |
+| 1 | 1 | 1 | yes |
+| shift+a | shift+a | shift+a | yes |
+| shift+/ (?) | ? | ? | yes |
+| shift+1 (!) | ! | ! | yes |
+| shift+2 (@) | @ | @ | yes |
+| space | space | space | yes |
+| ctrl+a | ctrl+a | ctrl+a | yes |
+| ctrl+p | ctrl+p | ctrl+p | yes |
+| ctrl+shift+a | ctrl+shift+a | ctrl+shift+a | yes |
+| ctrl+shift+p | ctrl+shift+p | ctrl+shift+p | yes |
+| alt+a | alt+a | alt+a | yes |
+| alt+shift+a | shift+alt+a | shift+alt+a | yes |
+| ctrl+alt+a | ctrl+alt+a | ctrl+alt+a | yes |
+| ctrl+[ | ctrl+[ | ctrl+[ | yes |
+| ctrl+h | ctrl+h | ctrl+h | yes |
+| ctrl+i | ctrl+i | ctrl+i | yes |
+| ctrl+/ | ctrl+/ | ctrl+/ | yes |
+| ctrl+shift+/ | ctrl+? | ctrl+shift+/ | **NO** |
+| ctrl+1 | ctrl+1 | ctrl+1 | yes |
+| ctrl+shift+1 | ctrl+! | ctrl+shift+1 | **NO** |
+| ctrl+, | ctrl+, | ctrl+, | yes |
+| ctrl+` | ctrl+` | ctrl+` | yes |
+| F1 | f1 | f1 | yes |
+| F5 | f5 | f5 | yes |
+| shift+F5 | shift+f5 | shift+f5 | yes |
+| ctrl+F12 | ctrl+f12 | ctrl+f12 | yes |
+| Up | up | up | yes |
+| shift+Up | shift+up | shift+up | yes |
+| ctrl+Left | ctrl+left | ctrl+left | yes |
+| alt+Right | alt+right | alt+right | yes |
+| ctrl+shift+Down | ctrl+shift+down | ctrl+shift+down | yes |
+| Home | home | home | yes |
+| End | end | end | yes |
+| ctrl+Home | ctrl+home | ctrl+home | yes |
+| PageUp | pageup | pageup | yes |
+| Delete | delete | delete | yes |
+| ctrl+Delete | ctrl+delete | ctrl+delete | yes |
+| Insert | insert | insert | yes |
+| Enter | enter | enter | yes |
+| keypad Enter | enter | enter | yes |
+| shift+Enter | shift+enter | shift+enter | yes |
+| ctrl+Enter | ctrl+enter | ctrl+enter | yes |
+| Esc | escape | escape | yes |
+| Tab | tab | tab | yes |
+| shift+Tab | shift+tab | shift+tab | yes |
+| ctrl+Tab | ctrl+tab | ctrl+tab | yes |
+| Backspace | backspace | backspace | yes |
+| ctrl+Backspace | ctrl+backspace | ctrl+backspace | yes |
+| alt+Backspace | alt+backspace | alt+backspace | yes |
+
+Notes: keypad Enter is `enter` on both (the kitty flags used do not report keypad separately; window carries `KEYPAD` state, ignored by the chord reader). ctrl+[ , ctrl+h, ctrl+i, ctrl+/ stay distinct from Esc/Backspace/Tab on both.
+
+### AC-W5 IME (Telex "việt") via `ImeInput`, output `qa-artifacts/T3/qc/ime.txt`
+Enabled -> no events. Preedit v, vi, vie, viê, việ, việt -> no events out each step, preedit held (`Some("việt")`), a stray key event while composing is held back (empty). `Commit("việt")` -> Press events Char('v'), Char('i'), Char('ệ'), Char('t'), no modifiers; preedit cleared afterwards; empty Preedit -> nothing. Matches AC-W5 (nothing sent until commit; one Press per character).
+
+## Rule check T3
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-W4 | fail | 47/49 chords equal; ctrl+shift+/ and ctrl+shift+1 differ (table above) |
+| anti-goal same keys window/--tui | fail | same two chords |
+| AC-W5 sequences | pass | Telex "việt": no output while composing, one Press per char on commit, preedit cleared (ime.txt) |
+| BASE-26 | pass | both sides of the contract compared with real crossterm parser output and the real `chord_from_key` |
+| BASE-50 | pass | only `qa-artifacts/T3/qc/` and this file written (git status below) |
