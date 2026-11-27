@@ -1,77 +1,77 @@
-//! What a `--session` instance keeps of the AI panel (D1, D7) and how it comes back. The session
-//! file (T1) stores this struct as it is; it holds only names, folders and the layout — never a
-//! command line (SEC-8, SEC-18).
+//! What a `--session` window keeps of the AI panel (D1, D7) and how it comes back: the
+//! session file's `[ai]` section ([`AiSection`], T1) holds only tool names, account names,
+//! folders, labels and the layout — never a command line (SEC-8, SEC-18).
+//!
+//! [`from_session`] runs once at start, after the session's workspace roots and tabs are back;
+//! from then on [`report`] hands the panel's state to the session store before each save.
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
 use super::{accounts, spawn};
 use crate::app::App;
+use crate::session::{self, AiSection, AiSession};
 
-/// Most sessions a restore reopens.
-pub const MAX_SESSIONS: usize = 32;
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AiPanelState {
-    pub visible: bool,
-    /// The panel width for the session (10..=90); `None`: the setting.
-    pub width_percent: Option<u16>,
-    /// The active session (clamped on restore).
-    pub active: usize,
-    pub sessions: Vec<AiSessionState>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AiSessionState {
-    /// The tool's name in `ai_tools`; restore requires the same name there.
-    pub tool: String,
-    /// The workspace folder the session ran in.
-    pub root: PathBuf,
-    /// The account (D11, T8); `None`: the tool's own config.
-    pub account: Option<String>,
-    /// The name given with AI: Rename Session.
-    pub name: Option<String>,
-}
-
-/// The panel as it is now.
-pub fn capture(app: &App) -> AiPanelState {
+/// The panel as the session file keeps it.
+pub fn capture(app: &App) -> AiSection {
     let p = &app.ai;
-    AiPanelState {
-        visible: p.visible,
-        width_percent: (p.width_percent != app.settings.ai_width_percent)
-            .then_some(p.width_percent),
-        active: p.active.min(p.sessions.len().saturating_sub(1)),
+    AiSection {
+        shown: p.visible,
+        width: (p.width_percent != app.settings.ai_width_percent).then_some(p.width_percent),
         sessions: p
             .sessions
             .iter()
-            .map(|s| AiSessionState {
+            .map(|s| AiSession {
                 tool: s.tool.clone(),
-                root: s.root.clone(),
-                account: s.account.clone(),
-                name: s.name.clone(),
+                account: s.account.clone().unwrap_or_default(),
+                folder: s.root.clone(),
+                label: s.name.clone().unwrap_or_default(),
             })
             .collect(),
     }
 }
 
+/// Reopens the AI section the session file was read with (once), then keeps the file in step
+/// with the panel. A window without `--session` has no section and reports nothing.
+pub fn from_session(app: &mut App) {
+    if app.session.is_none() {
+        return;
+    }
+    if let Some(state) = session::take_restored_ai(app) {
+        restore(app, &state);
+    }
+    // What could not be reopened is not written back.
+    let now = capture(app);
+    session::set_ai(app, now.clone());
+    app.ai.reported = Some(now);
+}
+
+/// Hands the panel's state to the session store when it changed since the last call (the
+/// store's save checks and the quit save call this first). Nothing before [`from_session`].
+pub fn report(app: &mut App) {
+    let Some(last) = &app.ai.reported else {
+        return;
+    };
+    let now = capture(app);
+    if *last != now {
+        session::set_ai(app, now.clone());
+        app.ai.reported = Some(now);
+    }
+}
+
 /// Reopens the saved sessions, each with its tool's continue arguments (D7) and without sending
 /// it any input. A session whose tool is no longer in `ai_tools` (by name) or not on `PATH`,
-/// whose folder is not an existing workspace folder, or whose account cannot be used is not
+/// whose folder is not an existing workspace folder, or whose account cannot be used now is not
 /// reopened — never on another account (SEC-8, SEC-18) — and gets one error notice. The keys
 /// stay where they are.
-pub fn restore(app: &mut App, state: &AiPanelState) {
-    if let Some(w) = state.width_percent {
+pub fn restore(app: &mut App, state: &AiSection) {
+    if let Some(w) = state.width {
         app.ai.width_percent = w.clamp(super::WIDTH_MIN, super::WIDTH_MAX);
         app.ai.width_cols = None;
     }
     let path = std::env::var_os("PATH");
-    let mut opened = Vec::new();
-    for (i, s) in state.sessions.iter().take(MAX_SESSIONS).enumerate() {
+    for s in state.sessions.iter().take(session::MAX_AI_SESSIONS) {
         match check(app, s, path.as_deref()) {
-            Err(why) => app.error(format!("Not reopened: {}", why)),
+            Err(why) => app.error(format!("Not reopened: {why}")),
             Ok((root, account)) => {
                 let tool = app
                     .settings
@@ -80,29 +80,21 @@ pub fn restore(app: &mut App, state: &AiPanelState) {
                     .find(|t| t.name == s.tool)
                     .cloned()
                     .expect("checked");
-                let name = s.name.as_deref().and_then(|n| super::clean_name(n).ok());
-                match super::spawn_session(
-                    app,
-                    &tool,
-                    account,
-                    spawn::again_mode(&tool),
-                    &root,
-                    name,
-                ) {
-                    Ok(()) => opened.push(i),
-                    Err(e) => app.error(format!("Not reopened: {} ({e})", s.tool)),
+                let name = Some(s.label.as_str())
+                    .filter(|l| !l.is_empty())
+                    .and_then(|n| super::clean_name(n).ok());
+                if let Err(e) =
+                    super::spawn_session(app, &tool, account, spawn::again_mode(&tool), &root, name)
+                {
+                    app.error(format!("Not reopened: {} ({e})", s.tool));
                 }
             }
         }
     }
     let p = &mut app.ai;
     p.picker = None;
-    p.active = opened
-        .iter()
-        .position(|&i| i == state.active)
-        .unwrap_or(0)
-        .min(p.sessions.len().saturating_sub(1));
-    p.visible = state.visible && !p.sessions.is_empty();
+    p.active = 0;
+    p.visible = state.shown && !p.sessions.is_empty();
     app.dirty = true;
 }
 
@@ -111,10 +103,10 @@ pub fn restore(app: &mut App, state: &AiPanelState) {
 /// another account (SEC-18).
 fn check(
     app: &App,
-    s: &AiSessionState,
+    s: &AiSession,
     path: Option<&std::ffi::OsStr>,
 ) -> Result<(PathBuf, Option<String>), String> {
-    let shown = crate::git::home_relative(&s.root);
+    let shown = crate::git::home_relative(&s.folder);
     let tool_name = if vr_config::valid_tool_name(&s.tool) {
         s.tool.clone()
     } else {
@@ -125,19 +117,20 @@ fn check(
             "{tool_name} in {shown}, {tool_name} is not in ai_tools"
         ));
     };
-    let account = match &s.account {
-        None => None,
-        Some(a) => {
+    // An empty name is the tool's own config; any other must be usable now.
+    let account = match s.account.as_str() {
+        "" => None,
+        a => {
             let shown = crate::ui::safe_text::sanitize(a);
             accounts::ready(app.ai.state_dir.as_deref(), &tool.name, a)
                 .map_err(|why| format!("{tool_name}@{shown}, {why} (no fallback)"))?;
-            Some(a.clone())
+            Some(a.to_string())
         }
     };
     if spawn::resolve(&tool.command, path).is_none() {
         return Err(format!("{tool_name} in {shown}, {tool_name} not on PATH"));
     }
-    let root = workspace_root(app, &s.root)
+    let root = workspace_root(app, &s.folder)
         .ok_or_else(|| format!("{tool_name} in {shown} (folder missing)"))?;
     Ok((root, account))
 }

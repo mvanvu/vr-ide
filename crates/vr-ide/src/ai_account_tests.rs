@@ -13,10 +13,10 @@ use vr_config::AiTool;
 
 use crate::ai::accounts;
 use crate::ai::picker::Row;
-use crate::ai::restore::{AiPanelState, AiSessionState};
 use crate::app::App;
 use crate::app_tests::test_app;
 use crate::commands::CmdArgs;
+use crate::session::{AiSection, AiSession};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -402,16 +402,17 @@ fn restore_reopens_on_the_same_account_or_not_at_all() {
     let alt = accounts::create(&e.state, "claude", "alt").unwrap();
     accounts::create(&e.state, "codex", "cx").unwrap();
     std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let s = |tool: &str, account: Option<&str>| AiSessionState {
+    let s = |tool: &str, account: Option<&str>| AiSession {
         tool: tool.into(),
-        root: root.clone(),
-        account: account.map(str::to_string),
+        folder: root.clone(),
+        account: account.unwrap_or_default().to_string(),
         ..Default::default()
     };
-    let state = AiPanelState {
-        visible: true,
+    let state = AiSection {
+        shown: true,
         sessions: vec![
             s("claude", Some("work")),
+            s("claude", None),
             s("claude", Some("old-team")),
             s("claude", Some("alt")),
             s("claude", Some("../x")),
@@ -422,11 +423,17 @@ fn restore_reopens_on_the_same_account_or_not_at_all() {
         ..Default::default()
     };
     crate::ai::restore::restore(&mut e.app, &state);
-    assert_eq!(e.app.ai.sessions.len(), 2, "{:?}", notices(&e.app));
+    assert_eq!(e.app.ai.sessions.len(), 3, "{:?}", notices(&e.app));
     assert_eq!(e.app.ai.label(0), "claude@work");
-    assert_eq!(e.app.ai.label(1), "claude@alt");
+    assert_eq!(e.app.ai.label(1), "claude");
+    assert_eq!(e.app.ai.label(2), "claude@alt");
     assert_eq!(ccd(&e.app, 0), format!("{}|", work.display()));
-    assert_eq!(ccd(&e.app, 1), format!("{}|", alt.display()));
+    assert_eq!(
+        ccd(&e.app, 1),
+        inherited("CLAUDE_CONFIG_DIR"),
+        "default: no variable"
+    );
+    assert_eq!(ccd(&e.app, 2), format!("{}|", alt.display()));
     let text = wait_for(&e.app, 0, |s| s.contains("ARGV:"));
     assert!(text.contains("ARGV:--continue|"), "{text}");
     assert_eq!(
@@ -446,8 +453,8 @@ fn restore_reopens_on_the_same_account_or_not_at_all() {
     );
     // The saved state keeps each account.
     let saved = crate::ai::restore::capture(&e.app);
-    let kept: Vec<Option<String>> = saved.sessions.iter().map(|s| s.account.clone()).collect();
-    assert_eq!(kept, [Some("work".into()), Some("alt".into())]);
+    let kept: Vec<&str> = saved.sessions.iter().map(|s| s.account.as_str()).collect();
+    assert_eq!(kept, ["work", "", "alt"]);
 }
 
 /// Restart of an exited session on an account whose folder went away is refused, not run on

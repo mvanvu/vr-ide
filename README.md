@@ -56,6 +56,10 @@ cargo build --release
 ./target/release/vr-ide
 ```
 
+Desktop launcher (GNOME and other freedesktop desktops): `vr-ide --install-desktop` adds an app-menu entry
+and icon under `~/.local/share` (honours `$XDG_DATA_HOME`) that opens vr-ide in a terminal window;
+`vr-ide --uninstall-desktop` removes exactly those two files. Run it again after moving the binary.
+
 Update: pull the new source and install again; `cargo install` replaces the old binary.
 
 ```
@@ -100,8 +104,18 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
   is resolved, so `a/../a/b` works).
 - With a file it is the nearest parent folder that contains `.git`, walking up from the file's
   folder; if there is none, the file's own folder.
-- vr-ide has no options: `vr-ide --help` or `--version` are read as paths and fail. A missing path
-  prints a message and exits with status 2.
+- vr-ide has one option, `--session` (alone); anything else, `vr-ide --help` or `--version`
+  included, is read as a path and fails. A missing path prints a message and exits with status 2.
+- `vr-ide --session` (what the desktop launcher runs) reopens the last session: the workspace
+  folders, the open file tabs (cursor, scroll, read/edit mode), the active tab, the explorer's
+  expanded folders and the terminal panel (shown, position, size); each terminal starts as a fresh
+  shell in its folder and nothing is re-run. Files are read as they are on disk now; a file that is
+  gone is skipped with one notice. With no saved session it opens your home folder. The session is
+  saved on quit and about a second after each change to `~/.local/state/vr-ide/session.toml`
+  (mode 0600; unsaved text is never stored). Only one `--session` window saves it; a second one says
+  so. An unreadable file gives one notice, opens the home folder and is kept as
+  `session.toml.bad`. Plain `vr-ide` and `vr-ide <folder|file|.vr-workspace>` never read or write
+  the session.
 - It needs an interactive terminal; it cannot run with its input or output redirected.
 
 Press `F1` to open the command palette, which lists every command with its
@@ -375,10 +389,17 @@ A focused session takes every key except `f1`, `f3`, `f7`, `shift+f7`, `f12`, `c
 `ctrl+f8`, `ctrl+f9` and ``ctrl+` ``; `ctrl+w`, `ctrl+n` and `f5` reach the agent. Continue last and
 Choose earlier use the tool's own resume (claude `--continue` / `--resume`, codex `resume --last` /
 `resume`: `continue_args` and `resume_args` in `ai_tools`); vr-ide never reads the tools' history.
-An agent that exits keeps its screen; `enter` starts it again with its continue arguments. While
-the panel shows, a terminal set to the right sits at the bottom of the editor column. The tools
-are started directly (no shell), found only in the absolute `PATH` entries, and get no `VR_IDE_*`
-variables.
+A user file with the older `ai_presets` list still works: it is read as `ai_tools` (set only one
+of the two keys), and its entries need `continue_args` / `resume_args` for Continue last / Choose
+earlier.
+An agent that exits keeps its screen (`shift+pageup` / `shift+pagedown` scroll it back) and shows
+the exit line below it; `enter` starts it again with its continue arguments. With
+`vr-ide --session` the panel comes back as it was (shown, width, sessions and their names), each
+session started with its continue arguments and sent no input; a session whose tool is no longer
+in `ai_tools` or on `PATH`, or whose folder is no longer a workspace folder, is not reopened (one
+notice each). While the panel shows, a terminal set to the right sits at the bottom of
+the editor column. The tools are started directly (no shell), found only in the absolute
+`PATH` entries, and get no `VR_IDE_*` variables.
 
 #### Accounts
 
