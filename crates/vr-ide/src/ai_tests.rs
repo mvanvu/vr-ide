@@ -432,3 +432,121 @@ fn tab_cycle_reaches_the_panel() {
     app.run_command("focus.cycle", CmdArgs::None);
     assert_eq!(app.focus, Focus::Ai);
 }
+
+// ---- D9 notify (AC-10, SEC-14) ----------------------------------------------------------------
+
+/// Reads commands from the terminal: `bell`, `osc <text>`, `big` (10 KiB OSC 9 with an escape)
+/// and `flood` (a thousand bells); `ready` once it listens.
+const NOTIFY_AGENT: &str = "#!/bin/sh\nprintf 'ready\\n'\nwhile read cmd arg; do\n  case $cmd in\n    bell) printf '\\007';;\n    osc) printf '\\033]9;%s\\007' \"$arg\";;\n    big) printf '\\033]9;\\033[2J'; head -c 10240 /dev/zero | tr '\\0' 'a'; printf '\\007';;\n    flood) i=0; while [ $i -lt 1000 ]; do printf '\\007'; i=$((i+1)); done;;\n  esac\ndone\n";
+
+fn notify_app() -> (tempfile::TempDir, App) {
+    let (d, mut app) = ai_app();
+    let agent = script(&d.path().join(".bin"), "notify", NOTIFY_AGENT);
+    app.settings.ai_tools = vec![tool("claude", &agent, false)];
+    app.layout.status.width = 120;
+    (d, app)
+}
+
+fn say(app: &App, i: usize, line: &str) {
+    app.ai.sessions[i]
+        .tab
+        .write(format!("{line}\n").as_bytes())
+        .unwrap();
+}
+
+fn wait_marked(app: &mut App, i: usize) {
+    let deadline = Instant::now() + WAIT;
+    while app.ai.sessions[i].attention.is_none() {
+        crate::ai::refresh(app);
+        assert!(Instant::now() < deadline, "session {i} was not marked");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_hidden_session_is_marked_noticed_and_f12_shows_it_and_clears() {
+    let (_d, mut app) = notify_app();
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    wait_for(&app, 0, |s| s.contains("ready"));
+    wait_for(&app, 1, |s| s.contains("ready"));
+    press(&mut app, KeyCode::F(12));
+    assert!(!app.ai.visible);
+    say(&app, 0, "osc Allow Bash(cargo test)?");
+    wait_marked(&mut app, 0);
+    assert_eq!(app.ai.sessions[1].attention, None);
+    let notice = app.notices.front().expect("a notice").text.clone();
+    assert!(
+        notice.starts_with("◆ claude (")
+            && notice.contains("): Allow Bash(cargo test)?  f12 shows it"),
+        "{notice}"
+    );
+    assert_eq!(
+        app.notices.front().unwrap().expires,
+        None,
+        "stays until viewed"
+    );
+    // f12 opens the marked session, not the active one; viewing it clears mark and notice.
+    app.ai.active = 1;
+    press(&mut app, KeyCode::F(12));
+    assert_eq!(app.ai.active, 0);
+    crate::ai::attention::clear_viewed(&mut app);
+    assert_eq!(app.ai.sessions[0].attention, None);
+    assert!(app.notices.is_empty());
+}
+
+#[test]
+fn the_bell_marks_with_its_own_words_and_a_viewed_tab_is_not_marked() {
+    let (_d, mut app) = notify_app();
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    wait_for(&app, 0, |s| s.contains("ready"));
+    assert!(app.ai.visible, "starting a session shows the panel");
+    say(&app, 0, "bell");
+    // Shown and active: the program's request is seen, nothing is marked.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        crate::ai::refresh(&mut app);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(app.ai.sessions[0].attention, None);
+    assert!(app.notices.is_empty());
+    press(&mut app, KeyCode::F(12));
+    say(&app, 0, "bell");
+    wait_marked(&mut app, 0);
+    assert!(app.notices.front().unwrap().text.contains("rang the bell"));
+}
+
+/// SEC-14: escape bytes, 10 KiB and a flood become one sanitized, capped notice.
+#[test]
+fn notification_text_is_sanitized_capped_and_rate_limited() {
+    let (_d, mut app) = notify_app();
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    wait_for(&app, 0, |s| s.contains("ready"));
+    press(&mut app, KeyCode::F(12));
+    say(&app, 0, "big");
+    wait_marked(&mut app, 0);
+    let text = app.notices.front().unwrap().text.clone();
+    assert!(!text.chars().any(|c| c.is_control()), "{text:?}");
+    assert!(
+        text.starts_with("◆ claude"),
+        "prefixed with the label: {text}"
+    );
+    assert!(
+        text.chars().count() < 400,
+        "capped: {}",
+        text.chars().count()
+    );
+    // A flood after the tab was viewed: still one notice.
+    app.ai.active = 0;
+    app.ai.visible = true;
+    crate::ai::attention::clear_viewed(&mut app);
+    app.ai.visible = false;
+    app.notices.clear();
+    // A second notice inside the gap is withheld; after it one comes.
+    std::thread::sleep(Duration::from_millis(1100));
+    say(&app, 0, "flood");
+    wait_marked(&mut app, 0);
+    std::thread::sleep(Duration::from_millis(300));
+    crate::ai::refresh(&mut app);
+    assert_eq!(app.notices.len(), 1, "one notice for a thousand bells");
+}

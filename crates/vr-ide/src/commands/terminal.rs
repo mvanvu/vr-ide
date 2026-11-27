@@ -283,6 +283,13 @@ impl TermTab {
         }
     }
 
+    /// The bells and notifications the program sent since the last call.
+    pub(crate) fn take_attention(&self) -> Vec<vr_term::Attention> {
+        self.term
+            .as_ref()
+            .map_or_else(Vec::new, Terminal::take_attention)
+    }
+
     /// The program printed, changed its title or exited since the last call.
     pub(crate) fn take_output(&self) -> bool {
         self.output.swap(false, Ordering::AcqRel)

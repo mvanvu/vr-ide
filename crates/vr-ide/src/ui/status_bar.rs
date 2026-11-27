@@ -134,6 +134,22 @@ pub fn render_notice(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
 }
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
+    // The bar reflows into the width the badge leaves (its tiers drop detail as usual).
+    let badge = (area.height > 0)
+        .then(|| crate::ai::attention::badge(app, area.width))
+        .flatten();
+    let Some(parts) = badge else {
+        render_bar(buf, area, app, theme);
+        return;
+    };
+    let total = (width_of(&parts.0) + width_of(&parts.1)) as u16;
+    buf.set_style(area, theme.status);
+    let left = Rect::new(area.x, area.y, area.width - total, area.height);
+    render_bar(buf, left, app, theme);
+    crate::ai::attention::render_badge(buf, area, theme, &parts);
+}
+
+fn render_bar(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     if area.height == 0 {
         return;
     }

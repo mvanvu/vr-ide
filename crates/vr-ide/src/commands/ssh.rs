@@ -423,6 +423,7 @@ fn open(app: &mut App, launch: Launch, probe: Option<Probe>, keys: KeysAt) {
     let extras = SpawnExtras {
         marker: nonce.as_ref().map(Nonce::marker),
         env_remove: withheld_env(),
+        attention: false,
     };
     let cwd = app
         .ssh
