@@ -10,6 +10,16 @@ use vr_core::DiskState;
 use crate::app::App;
 use crate::theme::Theme;
 
+/// The close button's glyph; it sits two cells before the label's end (`x` + a space).
+const CLOSE: &str = "x";
+
+fn close_style(active: bool, base: Style, theme: &Theme) -> Style {
+    match (active, theme.dim.fg) {
+        (false, Some(fg)) => base.fg(fg),
+        _ => base,
+    }
+}
+
 /// The pieces of tab `i`'s label with their styles.
 fn label<'a>(app: &'a App, i: usize, theme: &Theme) -> Vec<Span<'a>> {
     let doc = &app.docs[i];
@@ -37,6 +47,12 @@ fn label<'a>(app: &'a App, i: usize, theme: &Theme) -> Vec<Span<'a>> {
         }
         DiskState::InSync => {}
     }
+    // The close button: dim on inactive tabs like the terminal tabs' 'x'.
+    spans.push(Span::styled(" ", base));
+    spans.push(Span::styled(
+        CLOSE,
+        close_style(i == app.active, base, theme),
+    ));
     spans.push(Span::styled(" ", base));
     spans
 }
@@ -79,6 +95,34 @@ pub fn hit(app: &App, x: u16, width: u16) -> Option<usize> {
         .into_iter()
         .find(|(_, start, w)| x >= *start && x < start + w)
         .map(|(i, ..)| i)
+}
+
+/// Offset (from the bar's left edge) of tab `i`'s `x`; `None` when the tab is off screen or
+/// cut before its `x`, so a cut label never closes on a click.
+pub fn close_offset(app: &App, i: usize, width: u16) -> Option<u16> {
+    positions(app, width)
+        .into_iter()
+        .find(|(j, ..)| *j == i)
+        .and_then(|(_, start, w)| {
+            let full = label_width(app, i);
+            (w == full).then(|| start + full - 2)
+        })
+}
+
+/// What a click at bar column `x` lands on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    Label(usize),
+    Close(usize),
+}
+
+pub fn hit_part(app: &App, x: u16, width: u16) -> Option<Part> {
+    let i = hit(app, x, width)?;
+    Some(if close_offset(app, i, width) == Some(x) {
+        Part::Close(i)
+    } else {
+        Part::Label(i)
+    })
 }
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {

@@ -2,7 +2,7 @@
 source: crates/vr-ide/src/ui/mod.rs
 expression: t.backend()
 ---
-" a.txt                                  "
+" a.txt x                                "
 "  ┌ Command Palette ─────────────────┐  "
 "  │> sa                              │  "
 "  │ Save  file.save           ctrl+s │  "
