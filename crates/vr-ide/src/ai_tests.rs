@@ -1777,3 +1777,30 @@ fn an_unusable_vr_ide_path_gives_no_browser_and_one_notice() {
     );
     assert!(!app.ai.state_dir.clone().unwrap().join("ai-login").exists());
 }
+
+/// A new attention mark during a loop step asks the frontend for attention (the window's
+/// taskbar hint); the terminal frontend ignores it.
+#[test]
+fn a_new_mark_asks_the_frontend_for_attention() {
+    use crate::event_loop::{StepState, step};
+    use crate::frontend::tests::FakeFrontend;
+    let (_d, mut app) = notify_app();
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    wait_for(&app, 0, |s| s.contains("ready"));
+    press(&mut app, KeyCode::F(12));
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+    let (mut f, mut s) = (FakeFrontend::default(), StepState::default());
+    step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
+    assert_eq!(f.attention, 0);
+    say(&app, 0, "bell");
+    let deadline = Instant::now() + WAIT;
+    while app.ai.sessions[0].attention.is_none() {
+        assert!(Instant::now() < deadline, "session 0 was not marked");
+        step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(f.attention, 1);
+    // The same mark again asks nothing more.
+    step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
+    assert_eq!(f.attention, 1);
+}

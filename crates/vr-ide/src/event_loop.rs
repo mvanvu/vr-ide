@@ -1,13 +1,16 @@
-//! The terminal event loop and the crossterm → `KeyChord` conversion.
+//! The loop step every frontend drives ([`step`]), the terminal loop ([`run`]) and the
+//! crossterm → `KeyChord` conversion.
 
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
+use ratatui::layout::Rect;
 use vr_config::{KeyChord, Mods};
 
 use crate::app::App;
+use crate::frontend::{CursorShape, DrawnCursor, Frontend};
 use crate::recovery;
 use crate::ui;
 
@@ -199,26 +202,27 @@ pub(crate) fn poll_interval(app: &App) -> Duration {
 
 /// The focused terminal's program picks its cursor shape (M5); otherwise block cursor in read
 /// mode, bar where typing goes into text (D145).
-fn cursor_style(app: &App) -> crossterm::cursor::SetCursorStyle {
-    use crossterm::cursor::SetCursorStyle;
-    crate::commands::terminal::cursor_style(app).unwrap_or(if app.wants_bar_cursor() {
-        SetCursorStyle::BlinkingBar
-    } else {
-        SetCursorStyle::SteadyBlock
-    })
+fn cursor_style(app: &App) -> CursorShape {
+    crate::commands::terminal::cursor_style(app)
+        .map(CursorShape::from_crossterm)
+        .unwrap_or(if app.wants_bar_cursor() {
+            CursorShape::BlinkingBar
+        } else {
+            CursorShape::SteadyBlock
+        })
 }
 
-/// Writes the cursor shape only when it changes. Terminals without cursor shapes ignore the
-/// sequence; `main` restores the user's shape on exit.
+/// Sets the cursor shape only when it changes.
 fn set_cursor_shape(
-    current: &mut Option<crossterm::cursor::SetCursorStyle>,
-    style: crossterm::cursor::SetCursorStyle,
+    frontend: &mut impl Frontend,
+    current: &mut Option<CursorShape>,
+    shape: CursorShape,
 ) {
-    if *current == Some(style) {
+    if *current == Some(shape) {
         return;
     }
-    if crossterm::execute!(std::io::stdout(), style).is_ok() {
-        *current = Some(style);
+    if frontend.set_cursor_shape(shape).is_ok() {
+        *current = Some(shape);
     }
 }
 
@@ -228,12 +232,12 @@ fn changed_title(last: Option<&str>, app: &App) -> Option<String> {
     (last != Some(now.as_str())).then_some(now)
 }
 
-/// Writes the window title when the workspace changed it (`main` writes the first one).
-fn set_title(last: &mut Option<String>, app: &App) {
+/// Sets the window title when the workspace changed it.
+fn set_title(frontend: &mut impl Frontend, last: &mut Option<String>, app: &App) {
     let Some(title) = changed_title(last.as_deref(), app) else {
         return;
     };
-    if crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(&title)).is_ok() {
+    if frontend.set_title(&title).is_ok() {
         *last = Some(title);
     }
 }
@@ -273,40 +277,141 @@ pub(crate) fn background_pass(app: &mut App, now: Instant) {
     }
 }
 
-/// Runs until a command sets `app.quit`. Draws only when something changed.
-pub fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Result<()>
-where
-    B::Error: Send + Sync + 'static,
-{
-    let mut bar = None;
-    let mut title = Some(app.title());
-    loop {
-        background_pass(app, Instant::now());
-        if app.dirty {
-            draw_frame(terminal, app, &recovery::GLOBAL, ui::render)?;
-            set_cursor_shape(&mut bar, cursor_style(app));
-            // A workspace switch, or roots added or removed, redraw: the title follows them.
-            set_title(&mut title, app);
-        }
-        if app.quit {
-            return Ok(());
-        }
-        if event::poll(poll_interval(app))? {
-            // Handle everything already queued before drawing again (fast typing, pastes).
-            loop {
-                match event::read()? {
-                    Event::Key(k) => app.handle_key(k),
-                    Event::Paste(s) => app.handle_paste(&s),
-                    Event::Mouse(m) => app.handle_mouse(m),
-                    Event::Resize(..) => app.on_resize(),
-                    _ => {}
-                }
-                if app.quit || !event::poll(Duration::ZERO)? {
-                    break;
-                }
-            }
+/// What [`step`] tells its caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StepOutcome {
+    /// A command set `app.quit`: the caller ends its loop and runs [`exit`].
+    pub quit: bool,
+    /// Call [`step`] again within this time even without events: timers, watcher results and
+    /// terminal output are picked up by the background pass.
+    pub next_wake: Duration,
+}
+
+/// What [`step`] last gave the frontend, so it is given again only when it changes.
+#[derive(Debug, Default)]
+pub struct StepState {
+    title: Option<String>,
+    cursor: Option<CursorShape>,
+    /// `None`: not given yet.
+    ime: Option<Option<Rect>>,
+}
+
+impl StepState {
+    /// The state after the frontend already shows `title` (the terminal sets it on entry).
+    pub fn with_title(title: String) -> Self {
+        Self {
+            title: Some(title),
+            ..Self::default()
         }
     }
+}
+
+/// Hands one input event to the app.
+fn handle_event(app: &mut App, event: Event) {
+    match event {
+        Event::Key(k) => app.handle_key(k),
+        Event::Paste(s) => app.handle_paste(&s),
+        Event::Mouse(m) => app.handle_mouse(m),
+        Event::Resize(..) => app.on_resize(),
+        _ => {}
+    }
+}
+
+/// AI sessions marked for a bell or notification (`ai::attention::mark`).
+fn attention_marks(app: &App) -> usize {
+    app.ai
+        .sessions
+        .iter()
+        .filter(|s| s.attention.is_some())
+        .count()
+}
+
+/// One turn of any frontend's loop: handles `events` in order (the ones after a quit are left
+/// unread, `events` is consumed lazily), runs the background pass at `now`, draws when something
+/// changed and gives the frontend the title, cursor shape and IME area when they changed. The
+/// app stays on the caller's thread; nothing here needs `Send`.
+pub fn step<B, F>(
+    terminal: &mut Terminal<B>,
+    frontend: &mut F,
+    state: &mut StepState,
+    app: &mut App,
+    events: impl IntoIterator<Item = Event>,
+    now: Instant,
+) -> anyhow::Result<StepOutcome>
+where
+    B: Backend + DrawnCursor,
+    B::Error: Send + Sync + 'static,
+    F: Frontend,
+{
+    for event in events {
+        handle_event(app, event);
+        if app.quit {
+            break;
+        }
+    }
+    let marked = attention_marks(app);
+    background_pass(app, now);
+    if attention_marks(app) > marked {
+        frontend.request_attention();
+    }
+    if app.dirty {
+        draw_frame(terminal, app, &recovery::GLOBAL, ui::render)?;
+        set_cursor_shape(frontend, &mut state.cursor, cursor_style(app));
+        let ime = terminal
+            .backend()
+            .drawn_cursor()
+            .map(|p| Rect::new(p.x, p.y, 1, 1));
+        if state.ime != Some(ime) {
+            frontend.set_ime_area(ime);
+            state.ime = Some(ime);
+        }
+        // A workspace switch, or roots added or removed, redraw: the title follows them.
+        set_title(frontend, &mut state.title, app);
+    }
+    Ok(StepOutcome {
+        quit: app.quit,
+        next_wake: poll_interval(app),
+    })
+}
+
+/// The terminal loop: `poll → read → step` until a command sets `app.quit`. `main` set the
+/// first title on entry.
+pub fn run<B, F>(terminal: &mut Terminal<B>, frontend: &mut F, app: &mut App) -> anyhow::Result<()>
+where
+    B: Backend + DrawnCursor,
+    B::Error: Send + Sync + 'static,
+    F: Frontend,
+{
+    let mut state = StepState::with_title(app.title());
+    let mut out = step(terminal, frontend, &mut state, app, [], Instant::now())?;
+    while !out.quit {
+        if !event::poll(out.next_wake)? {
+            out = step(terminal, frontend, &mut state, app, [], Instant::now())?;
+            continue;
+        }
+        // Handle everything already queued before drawing again (fast typing, pastes).
+        let mut failed = None;
+        let mut first = true;
+        let events = std::iter::from_fn(|| {
+            if !std::mem::take(&mut first) {
+                match event::poll(Duration::ZERO) {
+                    Ok(true) => {}
+                    Ok(false) => return None,
+                    Err(e) => {
+                        failed = Some(e);
+                        return None;
+                    }
+                }
+            }
+            event::read().map_err(|e| failed = Some(e)).ok()
+        });
+        let result = step(terminal, frontend, &mut state, app, events, Instant::now());
+        if let Some(e) = failed {
+            return Err(e.into());
+        }
+        out = result?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -473,5 +578,133 @@ mod tests {
         let cs = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
         assert_eq!(chord(K::Char('~'), cs, true), "ctrl+shift+`");
         assert_eq!(chord(K::Char('`'), KeyModifiers::CONTROL, true), "ctrl+`");
+    }
+
+    use crate::frontend::tests::FakeFrontend;
+
+    type TestTerminal = Terminal<ratatui::backend::TestBackend>;
+
+    fn test_terminal() -> TestTerminal {
+        Terminal::new(ratatui::backend::TestBackend::new(60, 12)).unwrap()
+    }
+
+    fn typed(c: char) -> Event {
+        Event::Key(KeyEvent::new(K::Char(c), KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn step_handles_events_in_order_then_draws() {
+        let (_d, _p, mut app, _) = crate::app_tests::app_with_file("a\n");
+        let (mut t, mut f, mut s) = (
+            test_terminal(),
+            FakeFrontend::default(),
+            StepState::default(),
+        );
+        let events = [typed('x'), typed('y'), Event::Resize(60, 12), typed('z')];
+        let out = step(&mut t, &mut f, &mut s, &mut app, events, Instant::now()).unwrap();
+        assert_eq!(app.docs[0].buffer.text().to_string(), "xyza\n");
+        assert!(!out.quit);
+        assert!(!app.dirty, "drawn");
+        let screen = format!("{:?}", t.backend().buffer());
+        assert!(screen.contains("xyza"), "{screen}");
+    }
+
+    /// The events after the one that quits stay unread (the terminal loop reads lazily).
+    #[test]
+    fn step_stops_reading_events_at_a_quit() {
+        let (_d, _p, mut app, _) = crate::app_tests::app_with_file("a\n");
+        let (mut t, mut f, mut s) = (
+            test_terminal(),
+            FakeFrontend::default(),
+            StepState::default(),
+        );
+        let quit = Event::Key(KeyEvent::new(K::Char('q'), KeyModifiers::CONTROL));
+        let mut read = 0;
+        let events = [quit, typed('x')].into_iter().inspect(|_| read += 1);
+        let out = step(&mut t, &mut f, &mut s, &mut app, events, Instant::now()).unwrap();
+        assert!(out.quit && app.quit);
+        assert_eq!(read, 1, "the event after the quit was read");
+        assert_eq!(app.docs[0].buffer.text().to_string(), "a\n");
+    }
+
+    #[test]
+    fn step_reports_the_next_wake_from_the_poll_interval() {
+        let (_d, _p, mut app, _) = crate::app_tests::app_with_file("a\n");
+        let (mut t, mut f, mut s) = (
+            test_terminal(),
+            FakeFrontend::default(),
+            StepState::default(),
+        );
+        let out = step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
+        assert_eq!(out.next_wake, POLL, "no terminal is running");
+        assert_eq!(out.next_wake, poll_interval(&app));
+        assert!(!out.quit);
+    }
+
+    /// Title, cursor shape and IME area go to the frontend on the first draw and again only
+    /// when they change; a failed title write is tried again on the next draw.
+    #[test]
+    fn step_gives_the_frontend_only_changed_values() {
+        let (_d, _p, mut app, _) = crate::app_tests::app_with_file("a\n");
+        let (mut t, mut f, mut s) = (
+            test_terminal(),
+            FakeFrontend::default(),
+            StepState::default(),
+        );
+        step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
+        assert_eq!(f.titles, [app.title()]);
+        assert_eq!(
+            f.shapes,
+            [CursorShape::BlinkingBar],
+            "edit mode types into text"
+        );
+        let cursor = t
+            .backend()
+            .drawn_cursor()
+            .expect("the editor shows its cursor");
+        assert_eq!(f.ime, [Some(Rect::new(cursor.x, cursor.y, 1, 1))]);
+
+        // Redrawn with nothing changed for the frontend.
+        app.dirty = true;
+        step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
+        assert_eq!((f.titles.len(), f.shapes.len(), f.ime.len()), (1, 1, 1));
+
+        // Moving the cursor one cell: only the IME area follows.
+        let right = Event::Key(KeyEvent::new(K::Right, KeyModifiers::NONE));
+        step(&mut t, &mut f, &mut s, &mut app, [right], Instant::now()).unwrap();
+        assert_eq!((f.titles.len(), f.shapes.len()), (1, 1));
+        assert_eq!(
+            f.ime.last(),
+            Some(&Some(Rect::new(cursor.x + 1, cursor.y, 1, 1)))
+        );
+
+        // A workspace switch changes the title; the first write fails and is retried.
+        let other = tempfile::tempdir().unwrap();
+        app.open_workspace(crate::workspace::Workspace::single(
+            other.path().to_path_buf(),
+        ));
+        f.fail_title = true;
+        app.dirty = true;
+        step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
+        assert_eq!(f.titles.len(), 1);
+        f.fail_title = false;
+        app.dirty = true;
+        step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
+        assert_eq!(f.titles.len(), 2, "{:?} now {}", f.titles, app.title());
+        assert_eq!(f.titles[1], app.title());
+        app.dirty = true;
+        step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
+        assert_eq!(f.titles.len(), 2, "written once");
+    }
+
+    /// The terminal sets the first title on entry; the loop does not write it again.
+    #[test]
+    fn a_title_already_shown_is_not_written_again() {
+        let (_d, _p, mut app, _) = crate::app_tests::app_with_file("a\n");
+        let (mut t, mut f) = (test_terminal(), FakeFrontend::default());
+        let mut s = StepState::with_title(app.title());
+        step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
+        assert!(f.titles.is_empty());
+        assert_eq!(f.attention, 0);
     }
 }

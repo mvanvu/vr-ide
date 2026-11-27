@@ -12,6 +12,7 @@ pub mod commands;
 mod config_reload;
 pub mod desktop;
 pub mod event_loop;
+pub mod frontend;
 pub mod git;
 pub mod monitor;
 mod recent_files;

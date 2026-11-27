@@ -1,40 +1,11 @@
 use std::io::{self, Stdout};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
-use crossterm::cursor::SetCursorStyle;
-use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
-    supports_keyboard_enhancement,
-};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use vr_ide::app::App;
+use vr_ide::frontend::{self, Crossterm, Frontend, restore_terminal};
 use vr_ide::{cli, clipboard, event_loop, recovery, session, ui};
-
-/// Set once the kitty keyboard flags were pushed, so restoring pops them (also from the
-/// panic hook).
-static ENHANCED: AtomicBool = AtomicBool::new(false);
-
-fn restore_terminal() {
-    let mut out = io::stdout();
-    if ENHANCED.swap(false, Ordering::SeqCst) {
-        let _ = execute!(out, PopKeyboardEnhancementFlags);
-    }
-    let _ = execute!(
-        out,
-        SetCursorStyle::DefaultUserShape,
-        DisableBracketedPaste,
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    );
-    let _ = disable_raw_mode();
-}
 
 fn main() -> Result<()> {
     let mut argv = std::env::args_os();
@@ -114,18 +85,7 @@ fn main() -> Result<()> {
         (workspace, None)
     };
     let (mut app, warnings) = App::load_workspace(workspace, clipboard::system());
-    enable_raw_mode()?;
-    let setup = execute!(
-        io::stdout(),
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste,
-        SetTitle(app.title())
-    );
-    if let Err(e) = setup {
-        restore_terminal();
-        return Err(e.into());
-    }
+    frontend::enter_terminal(&app.title())?;
     recovery::GLOBAL.set_tui_active(true);
     app.report_config(warnings);
     for n in notices {
@@ -170,20 +130,8 @@ fn run(app: &mut App) -> Result<()> {
     app.start_index();
     app.start_git();
     app.remember_workspace();
-    // Without the kitty protocol, ctrl+shift+<letter>, ctrl+/ and similar chords cannot be
-    // told apart; the startup notice lists the affected keys.
-    let enhanced = matches!(supports_keyboard_enhancement(), Ok(true))
-        && execute!(
-            io::stdout(),
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-                    // Labels auto-repeat, so a held quit / close key cannot confirm itself.
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-            )
-        )
-        .is_ok();
-    ENHANCED.store(enhanced, Ordering::SeqCst);
-    app.report_keyboard(enhanced);
-    event_loop::run(&mut terminal, app)
+    let mut frontend = Crossterm::stdout(frontend::enhance_keyboard());
+    // Without the kitty protocol the startup notice lists the keys that cannot be told apart.
+    app.report_keyboard(frontend.keyboard_enhanced());
+    event_loop::run(&mut terminal, &mut frontend, app)
 }
