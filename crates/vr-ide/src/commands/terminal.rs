@@ -150,7 +150,7 @@ impl TermTab {
     /// A fresh snapshot at the tab's scroll position (the stored grid for a fake tab).
     pub fn grid_now(&self) -> Grid {
         match &self.term {
-            Some(t) => t.snapshot(self.scroll),
+            Some(t) => t.snapshot(),
             None => self.grid.clone(),
         }
     }
@@ -158,9 +158,29 @@ impl TermTab {
     /// Takes a fresh snapshot into [`TermTab::grid`]; this also re-arms the terminal's `Notify`.
     pub fn refresh(&mut self) {
         if let Some(t) = &self.term {
-            self.grid = t.snapshot(self.scroll);
+            self.grid = t.snapshot();
             self.scroll = self.grid.scroll_offset;
         }
+    }
+
+    /// Moves the view `lines` up into the history (negative: down), clamped. A real
+    /// terminal keeps the view on its lines while output arrives (AC-F2).
+    pub fn scroll_by(&mut self, lines: isize) {
+        self.scroll = match &self.term {
+            Some(t) => t.scroll(lines),
+            None => self
+                .scroll
+                .saturating_add_signed(lines)
+                .min(self.grid.scrollback_len),
+        };
+    }
+
+    /// Back to the bottom: the view follows the output again.
+    pub fn scroll_to_bottom(&mut self) {
+        if let Some(t) = &self.term {
+            t.scroll_to_bottom();
+        }
+        self.scroll = 0;
     }
 
     /// The screen as text, one line per row (tests and selection).
@@ -761,8 +781,9 @@ fn spawn_size(app: &App) -> (u16, u16) {
 
 // ---- event loop, layout ----------------------------------------------------------------------
 
-/// After a wake: terminals with new output return to the bottom (spec: any output does) and
-/// the tab bar's titles of the other tabs are refreshed. True when the panel must be redrawn.
+/// After a wake: the tab bar's titles of the other tabs are refreshed. Output leaves a
+/// scrolled-back view where it is (AC-F2): only a key, a paste or a scroll to the bottom returns
+/// to it. True when the panel must be redrawn.
 pub fn refresh(app: &mut App) -> bool {
     let p = &mut app.terminal;
     let mut changed = false;
@@ -770,7 +791,6 @@ pub fn refresh(app: &mut App) -> bool {
         if !tab.output.swap(false, Ordering::AcqRel) {
             continue;
         }
-        tab.scroll = 0;
         if i == p.active {
             p.selection = None;
         }
@@ -894,14 +914,10 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     let shift_only = key.modifiers == KeyModifiers::SHIFT;
     if shift_only && matches!(key.code, K::PageUp | K::PageDown) && !modes.alt_screen {
         let page = tab.grid.rows.saturating_sub(1).max(1);
-        let max = tab.grid.scrollback_len;
+        let lines = page as isize;
         let up = key.code == K::PageUp;
         if let Some(tab) = app.terminal.active_mut() {
-            tab.scroll = if up {
-                (tab.scroll + page).min(max)
-            } else {
-                tab.scroll.saturating_sub(page)
-            };
+            tab.scroll_by(if up { lines } else { -lines });
         }
         return true;
     }
@@ -915,7 +931,7 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     if let Some(k) = term_key(key) {
         let bytes = encode_key(k, modes);
         if let Some(tab) = app.terminal.active_mut() {
-            tab.scroll = 0;
+            tab.scroll_to_bottom();
         }
         send(app, &bytes);
     }
@@ -985,7 +1001,7 @@ pub fn paste(app: &mut App, text: &str) {
     if !tab.running() {
         return;
     }
-    tab.scroll = 0;
+    tab.scroll_to_bottom();
     let bytes = encode_paste(text, tab.grid.modes);
     send(app, &bytes);
 }
@@ -1023,7 +1039,7 @@ pub fn type_line(app: &mut App, line: &str, target: LineTarget) -> Result<(), St
     }
     reveal(app);
     if let Some(tab) = app.terminal.active_mut() {
-        tab.scroll = 0;
+        tab.scroll_to_bottom();
     }
     let mut bytes = line.as_bytes().to_vec();
     bytes.push(b'\r');
@@ -1192,12 +1208,8 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
                     send(app, &bytes);
                 }
             } else {
-                let max = tab.grid.scrollback_len;
-                tab.scroll = if up {
-                    (tab.scroll + WHEEL_LINES).min(max)
-                } else {
-                    tab.scroll.saturating_sub(WHEEL_LINES)
-                };
+                let lines = WHEEL_LINES as isize;
+                tab.scroll_by(if up { lines } else { -lines });
                 app.terminal.selection = None;
             }
         }

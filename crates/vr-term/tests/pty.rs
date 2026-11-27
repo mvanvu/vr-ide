@@ -150,12 +150,50 @@ fn scroll_offset_shows_history_and_scrollback_is_capped() {
     );
     // Screen: 192..=200 and the cursor line.
     assert_eq!(grid.row_text(0), "192");
-    let up = term.snapshot(5);
+    term.scroll(5);
+    let up = term.snapshot();
     assert_eq!((up.scroll_offset, up.row_text(0).as_str()), (5, "187"));
     assert!(!up.cursor.visible || up.cursor.row < up.rows);
-    let top = term.snapshot(10_000);
+    assert_eq!(term.scroll(10_000), 50);
+    let top = term.snapshot();
     assert_eq!((top.scroll_offset, top.row_text(0).as_str()), (50, "142"));
     assert!(!top.cursor.visible, "cursor line is scrolled out of view");
+}
+
+/// AC-F2: a scrolled-back view stays on its lines while output arrives (the offset grows by
+/// the lines pushed into the history), up to the scrollback cap; back at the bottom it follows.
+#[test]
+fn scrolled_view_stays_on_its_lines_while_output_arrives() {
+    let mut o = opts(
+        "seq 1 100; read a; seq 101 130; printf 'live 1\\nlive 2'; read b; seq 131 400; read c",
+        20,
+        10,
+    );
+    o.scrollback = 200;
+    let (term, wake) = spawn_opts(o);
+    let first = wait_for(&term, &wake, T, |g| has_text(g, "100"));
+    assert_eq!(term.scroll(4), 4);
+    let held = term.snapshot();
+    assert_eq!(held.scroll_offset, 4);
+
+    term.write(b"\r").unwrap();
+    let g = wait_for(&term, &wake, T, |g| g.scroll_offset >= 34);
+    assert_eq!(screen(&g), screen(&held), "the view moved with the output");
+    assert_eq!(
+        g.scroll_offset - held.scroll_offset,
+        g.scrollback_len - first.scrollback_len,
+        "offset grows by the lines pushed into the history"
+    );
+
+    // Past the scrollback cap the view sits on the oldest kept line.
+    term.write(b"\r").unwrap();
+    let capped = wait_for(&term, &wake, T, |g| g.scroll_offset == 200);
+    assert_eq!(capped.scrollback_len, 200);
+    assert_eq!(term.scroll(-1), 199);
+
+    term.scroll_to_bottom();
+    let bottom = wait_for(&term, &wake, T, |g| has_text(g, "400"));
+    assert_eq!(bottom.scroll_offset, 0);
 }
 
 #[test]
@@ -188,7 +226,7 @@ fn resize_reaches_the_program_and_the_grid() {
     assert_eq!((grid.cols, grid.rows, grid.cells.len()), (100, 30, 3000));
     // Tiny sizes are fine; zero is refused.
     term.resize(1, 1).unwrap();
-    assert_eq!((term.snapshot(0).cols, term.snapshot(0).rows), (1, 1));
+    assert_eq!((term.snapshot().cols, term.snapshot().rows), (1, 1));
     assert!(matches!(term.resize(0, 5), Err(TermError::BadSize { .. })));
 }
 
@@ -208,7 +246,7 @@ fn exit_notifies_and_notifications_are_coalesced_until_a_snapshot() {
     // Let the reader drain the last output.
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(wake.count(), 1, "one Notify until the UI takes a snapshot");
-    term.snapshot(0);
+    term.snapshot();
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(wake.count(), 1, "nothing new after the snapshot");
 }
@@ -317,7 +355,7 @@ fn input_to_a_program_that_never_reads_is_bounded_and_never_blocks() {
     );
     // The emulator stays usable.
     let t0 = Instant::now();
-    term.snapshot(0);
+    term.snapshot();
     assert!(t0.elapsed() < Duration::from_millis(100));
 }
 

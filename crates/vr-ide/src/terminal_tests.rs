@@ -486,6 +486,149 @@ fn shift_pageup_scrolls_back_and_a_key_returns_to_the_bottom() {
     assert_eq!(tab(&app).scroll, 0);
 }
 
+/// Starts a shell loop in the active terminal that copies whatever the test writes into a FIFO
+/// to the screen, so the test controls the program's output byte for byte. Returns the FIFO.
+fn fifo_program(app: &mut App, dir: &Path, history: usize) -> PathBuf {
+    let fifo = dir.join("out.fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    typ(
+        app,
+        &format!(
+            "seq 1 {history}; while :; do cat {}; done\n",
+            fifo.display()
+        ),
+    );
+    let last = history.to_string();
+    wait_screen(app, "the history", |s| {
+        s.lines().any(|l| l == last.as_str())
+    });
+    fifo
+}
+
+/// Writes `bytes` as the program's output and waits until the emulator has pushed at least
+/// `pushed` more lines into the history.
+fn emit(app: &App, fifo: &Path, bytes: &[u8], pushed: usize) {
+    use std::io::Write;
+    let before = tab(app).grid_now().scrollback_len;
+    let mut f = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
+    f.write_all(bytes).unwrap();
+    drop(f);
+    let deadline = Instant::now() + WAIT;
+    while tab(app).grid_now().scrollback_len < before + pushed {
+        assert!(Instant::now() < deadline, "output not seen");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// What an Ink-style agent (`claude`) writes: per frame a synchronized update that erases the
+/// two-line live region (cursor up + erase line), prints one finished line, which scrolls into
+/// the history, and redraws the live region; bracketed paste is toggled on the way.
+fn ink_frames(frames: usize) -> Vec<u8> {
+    let mut out = String::from("\x1b[?2004h\x1b[?25l");
+    for f in 0..frames {
+        out.push_str("\x1b[?2026h");
+        if f > 0 {
+            out.push_str("\r\x1b[2K\x1b[1A\x1b[2K\r");
+        }
+        out.push_str(&format!("done {f}\nspinner {f}\nstatus {f}"));
+        out.push_str("\x1b[?2026l");
+    }
+    out.push_str("\r\n\x1b[?25h");
+    out.into_bytes()
+}
+
+/// AC-F2: while a program streams output (an Ink-style redraw loop, then a flood), a view
+/// scrolled back with shift+pageup stays on the same lines; new output does not pull it down
+/// and the offset grows with the lines pushed into the history. A key returns to the bottom.
+#[test]
+fn scrolled_view_holds_while_a_program_streams_output() {
+    let (d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    draw(&mut app, 80, 24);
+    let fifo = fifo_program(&mut app, d.path(), 300);
+    key(&mut app, KeyCode::PageUp, KeyModifiers::SHIFT);
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    let held = tab(&app).screen_text();
+    let offset = tab(&app).scroll;
+    assert!(offset > 0);
+
+    let history = tab(&app).grid.scrollback_len;
+    emit(&app, &fifo, &ink_frames(40), 40);
+    crate::commands::terminal::refresh(&mut app);
+    let t = draw(&mut app, 80, 24);
+    assert_eq!(tab(&app).screen_text(), held, "view moved during redraws");
+    assert!(frame_text(&t).contains('↑'), "{}", frame_text(&t));
+    let grown = tab(&app).grid.scrollback_len - history;
+    assert_eq!(tab(&app).scroll, offset + grown);
+
+    let flood: String = (0..2000).map(|_| "y\n").collect();
+    emit(&app, &fifo, flood.as_bytes(), 2000);
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    assert_eq!(tab(&app).screen_text(), held, "view moved during a flood");
+
+    // Any key returns to the bottom and output is followed again.
+    typ(&mut app, "x");
+    assert_eq!(tab(&app).scroll, 0);
+    emit(&app, &fifo, b"after 1\nafter 2\n", 2);
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    assert_eq!(tab(&app).scroll, 0);
+    assert!(tab(&app).screen_text().contains("after 2"));
+}
+
+/// AC-F2 with the mouse wheel: a wheel scroll back holds while output arrives, and wheeling
+/// down to the bottom follows the output again.
+#[test]
+fn wheel_scrolled_view_holds_while_output_arrives() {
+    let (d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    draw(&mut app, 80, 24);
+    let fifo = fifo_program(&mut app, d.path(), 300);
+    let area = app.layout.terminal;
+    let wheel = |app: &mut App, kind: MouseEventKind| {
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: area.x + 2,
+            row: area.y + 2,
+            modifiers: KeyModifiers::NONE,
+        });
+    };
+    for _ in 0..3 {
+        wheel(&mut app, MouseEventKind::ScrollUp);
+    }
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    assert_eq!(tab(&app).scroll, 9);
+    let held = tab(&app).screen_text();
+
+    emit(&app, &fifo, &ink_frames(25), 25);
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    assert_eq!(tab(&app).screen_text(), held, "view moved");
+    assert!(tab(&app).scroll >= 9 + 25);
+
+    // Wheel down the whole way: back at the bottom, new output is followed.
+    for _ in 0..30 {
+        wheel(&mut app, MouseEventKind::ScrollDown);
+    }
+    assert_eq!(tab(&app).scroll, 0);
+    emit(&app, &fifo, b"tail line\n", 1);
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    assert_eq!(tab(&app).scroll, 0);
+    assert!(tab(&app).screen_text().contains("tail line"));
+}
+
 // ---- tabs, exited state ----------------------------------------------------------------------
 
 /// D280 / D291: the tab bar's '+' opens a terminal, each tab's 'x' closes that one (its shell
