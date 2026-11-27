@@ -367,18 +367,40 @@ are offered). Each tab is one agent session, and several sessions of one tool ca
 | Show the AI panel with the keys / hide it (the agents keep running) | `f12` |
 | Start a session (picker: tool, then New / Continue last / Choose earlier) | `ctrl+f12`, or the `+` of its tab bar, or `/ai <tool>` |
 | Next / previous session | `f7` / `shift+f7` |
+| See what changed while the session ran | `f6` (list at the top of its tab), `enter` opens a file as a diff in the editor |
+| Keep / revert the selected change (list or diff tab) | `f5` / `shift+f5` |
 | Back to the editor (panel stays) | `f3` |
 | Panel width while it has the keys | `ctrl+f8` / `ctrl+f9`, or drag its separator |
 | Rename / close a session | palette: AI: Rename Session…, AI: Close Session (or the tab's `x`) |
 
-A focused session takes every key except `f1`, `f3`, `f7`, `shift+f7`, `f12`, `ctrl+f12`,
-`ctrl+f8`, `ctrl+f9` and ``ctrl+` ``; `ctrl+w`, `ctrl+n` and `f5` reach the agent. Continue last and
+A focused session takes every key except `f1`, `f3`, `f6`, `f7`, `shift+f7`, `f12`, `ctrl+f12`,
+`ctrl+f8`, `ctrl+f9` and ``ctrl+` ``; `ctrl+w`, `ctrl+n` and `f5` reach the agent (`f6` opens the changes list). Continue last and
 Choose earlier use the tool's own resume (claude `--continue` / `--resume`, codex `resume --last` /
 `resume`: `continue_args` and `resume_args` in `ai_tools`); vr-ide never reads the tools' history.
 An agent that exits keeps its screen; `enter` starts it again with its continue arguments. While
 the panel shows, a terminal set to the right sits at the bottom of the editor column. The tools
 are started directly (no shell), found only in the absolute `PATH` entries, and get no `VR_IDE_*`
 variables.
+
+**AI changes.** While a session's program runs, vr-ide records which files in its folder change
+(`M` modified, `A` created, `D` deleted; `±N` on the tab bar) — by any program except vr-ide's
+own editor, so another program's edits in that folder during that time count as the agent's (the
+list says so). `f6` lists them; `enter` shows a file as a read-only diff (earlier version against
+the file now). `f5` (Keep) drops the record. `shift+f5` (Revert) asks first, then writes the
+earlier version back byte for byte with its permission bits, or moves a file the agent created to
+the trash; it refuses when the file changed again since you were shown it (the diff reloads) or
+when the file has unsaved edits in the editor. `f5` / `shift+f5` act only in that list or on a diff
+tab; in a focused session they go to the agent.
+
+The earlier version is a copy taken when the session starts, only of files that were last written
+before that moment and that the ignore rules (`.gitignore`) do not leave out. A file vr-ide first
+saw after its change, one over 8 MiB, or one past the limits (256 MiB per session, 512 MiB for all
+sessions, 5 000 files per list, 10 000 watched folders) is still listed, marked `no earlier` /
+`too large` / `limit`: Keep only. If the file watcher loses events the list says it may be
+incomplete. Copies live in `~/.local/state/vr-ide/ai/` (folder `0700`, files `0600`, also for
+secret files such as `.env`) until Keep, Revert or the session's tab closes; what a crash leaves
+is removed at the next start. `.git/`, the trash, vr-ide's state and config folders are never
+recorded.
 
 ### SSH sessions
 

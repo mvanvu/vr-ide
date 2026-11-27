@@ -155,6 +155,8 @@ pub struct ConfirmDialog {
     pub message: String,
     pub buttons: Vec<String>,
     pub selected: usize,
+    /// A last line of the message in the secondary colour (what else the answer implies).
+    pub note: Option<String>,
     /// Screen areas of the buttons in the last frame (mouse hit test).
     pub button_areas: Vec<Rect>,
 }
@@ -166,6 +168,7 @@ impl ConfirmDialog {
             message: message.into(),
             buttons: buttons.iter().map(|b| (*b).to_string()).collect(),
             selected: 0,
+            note: None,
             button_areas: Vec::new(),
         }
     }
@@ -352,6 +355,9 @@ impl DialogWidget {
                     .split('\n')
                     .map(|l| Span::raw(l.to_string()).width())
                     .max()
+                    .into_iter()
+                    .chain(d.note.iter().map(|n| Span::raw(n.as_str()).width()))
+                    .max()
                     .unwrap_or(0);
                 (d.title.clone(), msg.max(buttons))
             }
@@ -370,6 +376,11 @@ impl DialogWidget {
             DialogWidget::Confirm(d) => {
                 for l in wrap(&d.message, inner_w) {
                     rows.push(Row::Text(l, ratatui::style::Style::default()));
+                }
+                if let (Some(note), Some(fg)) = (&d.note, theme.note.fg) {
+                    for l in wrap(note, inner_w) {
+                        rows.push(Row::Text(l, ratatui::style::Style::default().fg(fg)));
+                    }
                 }
                 rows.push(Row::Text(String::new(), ratatui::style::Style::default()));
                 for r in button_rows(&d.buttons, inner_w) {

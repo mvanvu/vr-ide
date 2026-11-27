@@ -1,5 +1,6 @@
 //! Rendering. `render` draws the whole frame from `App` and records the layout it used.
 
+pub mod ai_changes;
 pub mod ai_view;
 pub mod dialog;
 pub mod editor_view;
@@ -78,10 +79,14 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
         layout.editor.width,
     );
     layout::grow_find_box(&mut layout, list_rows);
+    if crate::ai::review::diff_shown(app) {
+        layout::place_diff_head(&mut layout);
+    }
     app.layout = layout;
     explorer::render(frame.buffer_mut(), layout.explorer, app, theme);
     tabs::render(frame.buffer_mut(), layout.tabs, app, theme);
     find_bar::render(frame, layout.find_bar, app, theme);
+    ai_changes::render_diff_head(frame.buffer_mut(), layout.diff_head, app, theme);
     editor_view::render(frame, layout.editor, app, theme);
     terminal_view::render(frame, layout.terminal, app, theme);
     terminal_view::render_separator(frame.buffer_mut(), layout.terminal_sep, app, theme);
@@ -115,6 +120,7 @@ mod tests {
     use super::*;
     use crate::app_tests::{app_with_file, test_app};
 
+    mod ai_changes_view_tests;
     mod ai_view_tests;
     mod palette_detail;
     mod preview;

@@ -29,6 +29,7 @@ fn label<'a>(app: &'a App, i: usize, theme: &Theme) -> Vec<Span<'a>> {
         theme.tab_inactive
     };
     let name = match app.views.get(i).and_then(|v| v.title) {
+        Some(crate::ai::review::DIFF_TITLE) => crate::ui::ai_changes::tab_name(app).into(),
         Some(title) => title.into(),
         None => doc
             .path

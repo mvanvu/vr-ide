@@ -4,8 +4,12 @@
 //! picker in its own tab starts new ones; a focused session gets every key but the `[ai]`
 //! table's.
 
+pub mod changes;
+#[cfg(test)]
+mod changes_tests;
 pub mod picker;
 pub mod restore;
+pub mod review;
 pub mod spawn;
 
 use std::ffi::OsString;
@@ -98,9 +102,41 @@ pub struct AiSession {
     pub mode: StartMode,
     /// The agent asked for the user (D9, T7 sets it): the order of the mark, oldest first.
     pub attention: Option<u64>,
+    /// Tells this session from every other one of this run (dialogs and the diff tab name it).
+    pub serial: u64,
+    /// What changed in its folder while it ran (D8); `None`: not recorded.
+    pub changes: Option<changes::Changes>,
+    /// The tracker's list and banner as last read ([`review::refresh`]).
+    pub records: Vec<changes::Record>,
+    pub banner: Option<changes::Banner>,
+    pub(crate) changes_version: Option<u64>,
 }
 
 impl AiSession {
+    pub fn new(
+        tab: TermTab,
+        tool: &str,
+        account: Option<String>,
+        root: PathBuf,
+        mode: StartMode,
+    ) -> AiSession {
+        static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        AiSession {
+            tab,
+            tool: tool.to_string(),
+            account,
+            root,
+            name: None,
+            mode,
+            attention: None,
+            serial: SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            changes: None,
+            records: Vec::new(),
+            banner: None,
+            changes_version: None,
+        }
+    }
+
     pub fn running(&self) -> bool {
         self.tab.running()
     }
@@ -124,6 +160,20 @@ pub struct AiPanel {
     captured: bool,
     /// The separator is being dragged.
     resizing: bool,
+    /// `state_dir()/ai`, where sessions keep earlier versions (D8); `None`: changes are not
+    /// recorded (tests that do not set it).
+    pub changes_dir: Option<PathBuf>,
+    /// Bytes of every session's store (the total cap is shared).
+    pub changes_total: Arc<std::sync::atomic::AtomicU64>,
+    pub changes_limits: changes::Limits,
+    /// Folders never recorded: the state folder, the config folder, the trash.
+    pub changes_excluded: Vec<PathBuf>,
+    /// The changes list of the active session while open (f6).
+    pub list: Option<review::ChangeList>,
+    /// What the editor's diff tab shows.
+    pub diff: Option<review::DiffTab>,
+    /// Rows the list took at the top of the session in the last frame.
+    pub list_rows: u16,
 }
 
 impl AiPanel {
@@ -139,6 +189,13 @@ impl AiPanel {
             selecting: false,
             captured: false,
             resizing: false,
+            changes_dir: None,
+            changes_total: Arc::default(),
+            changes_limits: changes::Limits::default(),
+            changes_excluded: Vec::new(),
+            list: None,
+            diff: None,
+            list_rows: 0,
         }
     }
 
@@ -573,16 +630,19 @@ pub(crate) fn spawn_session(
     root: &Path,
     name: Option<String>,
 ) -> Result<(), String> {
+    // The tracker's start time must precede the program's first write (SEC-9).
+    let tracker = review::start(app, root);
     let (tab_term, program, output) = start_program(app, tool, account.as_deref(), mode, root)?;
-    app.ai.sessions.push(AiSession {
-        tab: TermTab::new(tab_term, program, output),
-        tool: tool.name.clone(),
+    let mut session = AiSession::new(
+        TermTab::new(tab_term, program, output),
+        &tool.name,
         account,
-        root: root.to_path_buf(),
-        name,
+        root.to_path_buf(),
         mode,
-        attention: None,
-    });
+    );
+    session.name = name;
+    session.changes = tracker;
+    app.ai.sessions.push(session);
     app.dirty = true;
     Ok(())
 }
@@ -683,6 +743,10 @@ fn restart(app: &mut App) {
         return;
     };
     let (name, account, root) = (s.tool.clone(), s.account.clone(), s.root.clone());
+    // A new run: what the folder holds now is its starting point.
+    if let Some(c) = &s.changes {
+        c.resume();
+    }
     let result = find_tool(app, &name).and_then(|tool| {
         let mode = spawn::again_mode(&tool);
         start_program(app, &tool, account.as_deref(), mode, &root).map(|r| (r, mode))
@@ -732,10 +796,12 @@ pub fn answer_close(app: &mut App, pid: Option<u32>) {
 /// Closes session `i` without asking (its process group is hung up). The last one leaves the
 /// empty state while the panel shows.
 pub fn close(app: &mut App, i: usize) {
-    let p = &mut app.ai;
-    if i >= p.sessions.len() {
+    let Some(serial) = app.ai.sessions.get(i).map(|s| s.serial) else {
         return;
-    }
+    };
+    review::session_closing(app, serial);
+    let p = &mut app.ai;
+    // Dropping the session ends its tracker and deletes its store (SEC-10).
     let s = p.sessions.remove(i);
     s.tab.close_later();
     p.selection = None;
@@ -782,7 +848,8 @@ pub fn refresh(app: &mut App) -> bool {
         }
         changed |= p.visible;
     }
-    changed
+    let listed = review::refresh(app);
+    changed || listed
 }
 
 /// Gives every session the grid size (after each layout change; a no-op when equal).
@@ -861,6 +928,9 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     }
     if app.ai.picker_active() {
         picker_key(app, key);
+        return true;
+    }
+    if review::handle_key(app, key) {
         return true;
     }
     app.ai.selection = None;
@@ -961,6 +1031,8 @@ fn send(app: &mut App, bytes: &[u8]) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarHit {
     New,
+    /// The `±N` count: opens the changes list.
+    Changes,
     Close(usize),
     Tab(usize),
 }
@@ -979,11 +1051,17 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
         return true;
     }
     let area = app.layout.ai;
+    // The open changes list sits between the tab bar and the session.
+    let list_rows = if app.ai.list.is_some() && !app.ai.picker_active() {
+        app.ai.list_rows.min(area.height.saturating_sub(1))
+    } else {
+        0
+    };
     let grid_area = Rect::new(
         area.x,
-        area.y + 1,
+        area.y + 1 + list_rows,
         area.width,
-        area.height.saturating_sub(1),
+        area.height.saturating_sub(1 + list_rows),
     );
     if matches!(ev.kind, MK::Down(_)) {
         app.ai.captured = false;
@@ -1028,6 +1106,7 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
         if ev.kind == MK::Down(MB::Left) {
             match bar_hit(app, ev.column - area.x) {
                 Some(BarHit::New) => open_picker(app),
+                Some(BarHit::Changes) => review::open_list(app),
                 Some(BarHit::Close(i)) if i >= app.ai.sessions.len() => close_picker(app),
                 Some(BarHit::Close(i)) => close_asking(app, i),
                 Some(BarHit::Tab(i)) => {
@@ -1040,8 +1119,19 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
         }
         return true;
     }
+    if ev.row < grid_area.y {
+        if ev.kind == MK::Down(MB::Left)
+            && let Some(row) = crate::ui::ai_changes::row_at(app, ev.row - area.y - 1)
+        {
+            review::click_row(app, row);
+        }
+        return true;
+    }
     if matches!(ev.kind, MK::Down(_)) {
         app.focus = Focus::Ai;
+        if let Some(l) = &mut app.ai.list {
+            l.focused = false;
+        }
     }
     if app.ai.picker_active() {
         if ev.kind == MK::Down(MB::Left) {
@@ -1097,6 +1187,13 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
 
 fn bar_hit(app: &App, x: u16) -> Option<BarHit> {
     let bar = crate::ui::ai_view::tab_bar(app, app.layout.ai.width);
+    if bar
+        .changes
+        .as_ref()
+        .is_some_and(|(text, at)| x >= *at && usize::from(x - *at) < text.chars().count())
+    {
+        return Some(BarHit::Changes);
+    }
     if bar
         .plus
         .is_some_and(|p| x >= p && x < p + crate::ui::ai_view::PLUS_WIDTH)

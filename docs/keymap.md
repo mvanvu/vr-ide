@@ -72,6 +72,9 @@ keys back with the panel shown).
 | `ai.new` | AI: New Session… | `ctrl+f12` (the session picker in a new tab of the panel) |
 | `ai.next` | AI: Next Session | `f7` |
 | `ai.prev` | AI: Previous Session | `shift+f7` |
+| `ai.changes` | AI: Show Changes | `f6` (the list of files changed while the active session ran, at the top of its tab, with the keys; again, or `escape`: closes it) |
+| `ai.keep` | AI: Keep Change | `f5` (only while the changes list has the keys or the editor shows a diff tab: drops the record, no question) |
+| `ai.revert` | AI: Revert Change | `shift+f5` (same places: asks, then writes the earlier version back; a created file goes to the trash) |
 | `ai.rename` | AI: Rename Session… | (palette; opens `/ai rename `) |
 | `ai.close` | AI: Close Session | (palette, or the tab's `x`; asks "Close session?" first while the agent runs) |
 
@@ -118,7 +121,7 @@ under 60 columns wide the panel is shown at the bottom.
 
 ### `[ai]`
 
-A focused AI session receives every key except ten: `f1`, `f3` (`focus.editor`), `f7` / `shift+f7`
+A focused AI session receives every key except ten: `f1`, `f3` (`focus.editor`), `f6` (`ai.changes`), `f7` / `shift+f7`
 (`ai.next` / `ai.prev`), `f12` (`ai.toggle`), `ctrl+f12` (`ai.new`), `ctrl+f8` / `ctrl+f9`
 (`ai.grow` / `ai.shrink`: the panel's width) and ``ctrl+` `` (`terminal.toggle`; NUL follows the
 `terminal_pass_nul` rule of terminals). `f5` / `shift+f5` and every `ctrl` letter reach the agent.
@@ -248,6 +251,7 @@ Typing and cursor movement are built in and not listed in `keymap.toml`.
 | Dialogs | `left`/`right`/`tab`/`shift+tab` choose a button; `enter` confirms; `esc` cancels. A held (repeating) `enter` never confirms |
 | Find box, File scope | typing searches as you type; `up`/`down`/`pageup`/`pagedown` move in the list (the editor shows the match); `enter` in the find field goes to the match and gives the editor the keys in read mode (the box stays open: `f4`/`shift+f4` go on); `shift+enter` there selects the previous match and keeps the box (terminals with the kitty keyboard protocol; others send it as `enter`); in the replace field `enter` asks "Replace: One / All / Cancel" (One first; the box shows "enter replace"; each replacement is one undo step); `tab`/`shift+tab` switch field; `esc` closes the box and returns to read mode. A click on a row selects that match |
 | Terminal | Every key goes to the program except ``ctrl+` ``, `f1`, `ctrl+f7`, `ctrl+f8`, `ctrl+f9`, `ctrl+n` (new terminal), `ctrl+w` (close this terminal), `f12`, `ctrl+f12` and these: `shift+pageup`/`shift+pagedown` scroll back (main screen only; a key sent to the program or a paste returns to the bottom, new output keeps the view); `ctrl+shift+v` pastes the clipboard (bracketed when the program asked for it). After the program exits, `enter` starts a new shell in the tab (an SSH tab connects to the same target again) and `ctrl+w` closes it. Mouse: drag selects and copies, the wheel scrolls back (programs that ask for the mouse get it; hold `shift` to select anyway), a click on a tab switches to it, dragging a tab along the bar moves it there (past the last tab shown, onto `+N`, it moves on one place per cell; at the bar's left edge, past the first tab shown, it moves toward the front the same way), on its `x` closes it (asks "Close terminal?" first while a program other than the shell runs in it; Cancel is the default), on the `+` opens a new terminal, dragging the rest of the tab bar (at the bottom) or the separator (on the right) resizes the panel |
+| AI changes list (`f6`) | `up`/`down` move; `enter` opens the selected file as a diff tab in the editor (the list keeps the keys), or hides the "may be incomplete" line; `f5` keeps and `shift+f5` reverts the selected file; `escape` or `f6` closes the list. Other keys do nothing (they are not typed into the agent). Mouse: a click on `±N` in the tab bar opens the list, a click on a row opens its diff, a click on the session below gives it the keys back. |
 | AI session picker | `up`/`down` move over the starts (tool headers are skipped); `enter` starts the selected one, or, for a tool that can pick up an earlier conversation (`continue_args` / `resume_args` in `ai_tools`), shows New / Continue last / Choose earlier first (Choose earlier opens the tool's own list in the tab); `esc` steps back (the empty state: hides the panel). A click on a row starts it |
 | AI session | Like a terminal: every key but the `[ai]` ones goes to the agent; `shift+pageup`/`shift+pagedown` scroll back; `ctrl+shift+v` pastes. After the agent exits, `enter` starts it again in the tab with its continue arguments. Mouse: as in a terminal; a click on a tab switches to it, on its `x` closes it, on the `+` opens the picker; dragging the separator resizes the panel |
 | Find box, Project scope | `tab`/`shift+tab` switch field; `enter` in the search field searches, in the replace field shows the replace preview, on a result opens it (read mode; the box stays open), and on a shown preview confirms the replace; `down` moves into the results; `up`/`down`/`pageup`/`pagedown`/`home`/`end` move in the list; `space` checks or unchecks a replace preview row; `esc` closes a preview (cancels a running replace), otherwise closes the box and returns to read mode |

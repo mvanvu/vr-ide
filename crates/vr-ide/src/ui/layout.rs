@@ -10,6 +10,9 @@ pub struct AppLayout {
     pub tabs: Rect,
     /// The find box (fields and result list), between the tab bar and the editor.
     pub find_bar: Rect,
+    /// The header row of the AI diff tab (kind, file, counts, keys), over the editor; empty
+    /// for every other tab.
+    pub diff_head: Rect,
     pub editor: Rect,
     /// The terminal panel (M5) under the editor, or right of it (T19): its tab bar row, then
     /// the terminal grid. Empty while the panel is hidden.
@@ -72,6 +75,7 @@ pub fn compute(area: Rect, notice_rows: u16, side: Side) -> AppLayout {
         explorer,
         tabs,
         find_bar,
+        diff_head: Rect::default(),
         editor,
         terminal: Rect::default(),
         terminal_sep: Rect::default(),
@@ -100,6 +104,18 @@ pub fn grow_find_box(layout: &mut AppLayout, rows: u16) {
     layout.find_bar.height += rows;
     layout.editor.y += rows;
     layout.editor.height -= rows;
+}
+
+/// Takes the diff tab's header row from the top of the editor (after the find box and the
+/// terminal took theirs); an editor of one row keeps it.
+pub fn place_diff_head(layout: &mut AppLayout) {
+    let ed = layout.editor;
+    if ed.height < 2 || ed.width == 0 {
+        return;
+    }
+    layout.diff_head = Rect::new(ed.x, ed.y, ed.width, 1);
+    layout.editor.y += 1;
+    layout.editor.height -= 1;
 }
 
 /// Fewest rows the terminal panel gets (tab bar included) when the screen has them.

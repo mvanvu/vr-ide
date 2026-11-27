@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/tests/ai_changes_view_tests.rs
+expression: t.backend()
+---
+" session.rs x                                   │ 1 claude x                  + "
+"  1 use std::path::{Path, PathBuf};             │ Changes · claude · 0 files f6 "
+"  2                                             │ No changes since it started   "
+"  3 use serde::{Deserialize, Serialize};        │───────────────────────────────"
+"  4                                             │                               "
+"  5 /// What a `--session` instance restores (D1│                               "
+"  6 #[derive(Debug, Default, Serialize, Deserial│                               "
+"  7 pub struct Session {                        │                               "
+"  8     pub roots: Vec<PathBuf>,                │                               "
+"  9     pub tabs: Vec<TabState>,                │                               "
+" 10     pub active: usize,                      │                               "
+" 11     pub expanded: Vec<PathBuf>,             │                               "
+" 12 }                                           │                               "
+" 13                                             │                               "
+" 14 impl Session {                              │                               "
+" 15     pub fn load(path: &Path) -> Result<Sessi│                               "
+" 16         let text = std::fs::read_to_string(p│                               "
+" 17         toml::from_str(&text).map_err(|e| e.│                               "
+" 18     }                                       │                               "
+" 19                                             │                               "
+" 20     /// Drops tabs whose file is gone.      │                               "
+" 21     pub fn skip_missing(&mut self) {        │[exited 0] enter: start again  "
+" 22         self.tabs.retain(|t| t.path.exists()│(claude --continue)            "
+" AI  claude [exited 0] · /home/user/DEV/vr-ide              1/1 · enter restart "

@@ -375,6 +375,17 @@ impl App {
         warnings.extend(app.load_languages(Some(&dir.join(vr_config::LANGUAGES_FILE))));
         let state = vr_config::state_dir();
         app.recovery_dir = Some(state.join("recovery"));
+        // AI changes (D8): earlier versions live under the state folder; stores left by a
+        // vr-ide that is gone are removed, off the UI thread.
+        let ai_store = state.join("ai");
+        app.ai.changes_excluded = vec![state.clone(), dir.clone()];
+        app.ai
+            .changes_excluded
+            .extend(crate::ai::changes::trash_dirs());
+        app.ai.changes_dir = Some(ai_store.clone());
+        let _ = std::thread::Builder::new()
+            .name("vr-ai-sweep".into())
+            .spawn(move || crate::ai::changes::sweep(&ai_store));
         let recent = state.join(vr_config::RECENT_FILE);
         let (list, w) = vr_config::RecentWorkspaces::load(&recent);
         warnings.extend(w);

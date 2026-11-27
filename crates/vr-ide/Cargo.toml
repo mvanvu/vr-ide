@@ -18,6 +18,8 @@ crossterm.workspace = true
 arboard.workspace = true
 ropey.workspace = true
 serde.workspace = true
+similar.workspace = true
+ignore.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 
@@ -25,4 +27,3 @@ tracing.workspace = true
 vr-core = { workspace = true, features = ["test-util"] }
 insta.workspace = true
 tempfile.workspace = true
-similar.workspace = true

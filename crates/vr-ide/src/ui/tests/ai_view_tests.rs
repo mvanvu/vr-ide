@@ -56,15 +56,13 @@ const CLAUDE: &[&str] = &[
 ];
 
 fn session(tool: &str, account: Option<&str>, root: &str, status: TermStatus) -> AiSession {
-    AiSession {
-        tab: TermTab::fake(grid(CLAUDE, 120, 40), tool, status),
-        tool: tool.into(),
-        account: account.map(str::to_string),
-        root: PathBuf::from(root),
-        name: None,
-        mode: StartMode::New,
-        attention: None,
-    }
+    AiSession::new(
+        TermTab::fake(grid(CLAUDE, 120, 40), tool, status),
+        tool,
+        account.map(str::to_string),
+        PathBuf::from(root),
+        StartMode::New,
+    )
 }
 
 fn tools() -> Vec<AiTool> {
