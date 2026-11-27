@@ -38,6 +38,27 @@ fn restore_terminal() {
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    match cli::desktop_action(&args) {
+        Ok(Some(action)) => {
+            let result = match action {
+                cli::DesktopAction::Install => vr_ide::desktop::run_install(),
+                cli::DesktopAction::Uninstall => vr_ide::desktop::run_uninstall(),
+            };
+            match result {
+                Ok(msg) => println!("{msg}"),
+                Err(e) => {
+                    eprintln!("vr-ide: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("vr-ide: {e}");
+            std::process::exit(2);
+        }
+    }
     let launch = match cli::resolve(&args, &std::env::current_dir()?) {
         Ok(l) => l,
         Err(e) => {

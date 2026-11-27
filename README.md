@@ -56,6 +56,10 @@ cargo build --release
 ./target/release/vr-ide
 ```
 
+Desktop launcher (GNOME and other freedesktop desktops): `vr-ide --install-desktop` adds an app-menu entry
+and icon under `~/.local/share` (honours `$XDG_DATA_HOME`) that opens vr-ide in a terminal window;
+`vr-ide --uninstall-desktop` removes exactly those two files. Run it again after moving the binary.
+
 Update: pull the new source and install again; `cargo install` replaces the old binary.
 
 ```
