@@ -56,6 +56,10 @@ cargo build --release
 ./target/release/vr-ide
 ```
 
+Desktop launcher (GNOME and other freedesktop desktops): `vr-ide --install-desktop` adds an app-menu entry
+and icon under `~/.local/share` (honours `$XDG_DATA_HOME`) that opens vr-ide in a terminal window;
+`vr-ide --uninstall-desktop` removes exactly those two files. Run it again after moving the binary.
+
 Update: pull the new source and install again; `cargo install` replaces the old binary.
 
 ```
@@ -100,8 +104,18 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
   is resolved, so `a/../a/b` works).
 - With a file it is the nearest parent folder that contains `.git`, walking up from the file's
   folder; if there is none, the file's own folder.
-- vr-ide has no options: `vr-ide --help` or `--version` are read as paths and fail. A missing path
-  prints a message and exits with status 2.
+- vr-ide has one option, `--session` (alone); anything else, `vr-ide --help` or `--version`
+  included, is read as a path and fails. A missing path prints a message and exits with status 2.
+- `vr-ide --session` (what the desktop launcher runs) reopens the last session: the workspace
+  folders, the open file tabs (cursor, scroll, read/edit mode), the active tab, the explorer's
+  expanded folders and the terminal panel (shown, position, size); each terminal starts as a fresh
+  shell in its folder and nothing is re-run. Files are read as they are on disk now; a file that is
+  gone is skipped with one notice. With no saved session it opens your home folder. The session is
+  saved on quit and about a second after each change to `~/.local/state/vr-ide/session.toml`
+  (mode 0600; unsaved text is never stored). Only one `--session` window saves it; a second one says
+  so. An unreadable file gives one notice, opens the home folder and is kept as
+  `session.toml.bad`. Plain `vr-ide` and `vr-ide <folder|file|.vr-workspace>` never read or write
+  the session.
 - It needs an interactive terminal; it cannot run with its input or output redirected.
 
 Press `F1` to open the command palette, which lists every command with its
@@ -377,10 +391,34 @@ A focused session takes every key except `f1`, `f3`, `f6`, `f7`, `shift+f7`, `f1
 `ctrl+f8`, `ctrl+f9` and ``ctrl+` ``; `ctrl+w`, `ctrl+n` and `f5` reach the agent (`f6` opens the changes list). Continue last and
 Choose earlier use the tool's own resume (claude `--continue` / `--resume`, codex `resume --last` /
 `resume`: `continue_args` and `resume_args` in `ai_tools`); vr-ide never reads the tools' history.
-An agent that exits keeps its screen; `enter` starts it again with its continue arguments. While
-the panel shows, a terminal set to the right sits at the bottom of the editor column. The tools
-are started directly (no shell), found only in the absolute `PATH` entries, and get no `VR_IDE_*`
-variables.
+A user file with the older `ai_presets` list still works: it is read as `ai_tools` (set only one
+of the two keys), and its entries need `continue_args` / `resume_args` for Continue last / Choose
+earlier.
+An agent that exits keeps its screen (`shift+pageup` / `shift+pagedown` scroll it back) and shows
+the exit line below it; `enter` starts it again with its continue arguments. With
+`vr-ide --session` the panel comes back as it was (shown, width, sessions and their names), each
+session started with its continue arguments and sent no input; a session whose tool is no longer
+in `ai_tools` or on `PATH`, or whose folder is no longer a workspace folder, is not reopened (one
+notice each). While the panel shows, a terminal set to the right sits at the bottom of
+the editor column. The tools are started directly (no shell), found only in the absolute
+`PATH` entries, and get no `VR_IDE_*` variables.
+
+#### Agent notifications
+
+When an agent rings the terminal bell (BEL) or sends a desktop notification (OSC 9, or OSC 777
+`notify`), its tab gets a yellow `◆` and a notice `◆ <tab> (<folder>): <message>  f12 shows it`
+appears, also while the panel is hidden (the status bar then shows `◆ <tab>  f12`). `f12` opens
+the session that has waited longest; viewing a tab clears its mark and notice. The text comes from
+the program, so it is shown with control characters made visible, cut at 200 characters, behind the
+tab name, and at most one notice per session per second. The terminal panel's tabs do not mark.
+
+The agent has to send the signal: vr-ide reports itself to the tool as a plain `xterm-256color`
+terminal, so a tool that only notifies inside terminals it recognises stays quiet. vr-ide does not
+change the tools' configuration; set it yourself if you want the marks. Claude Code: the
+`preferredNotifChannel` setting (`terminal_bell` rings BEL when it needs you; `auto` only notifies
+in terminals it knows). Codex: the `[tui]` notification settings in `~/.codex/config.toml`
+(`notification_method = "bel"` or `"osc9"`). Names change between tool versions; check the tool's
+own documentation if the mark does not appear.
 
 **AI changes.** While a session's program runs, vr-ide records which files in its folder change
 (`M` modified, `A` created, `D` deleted; `±N` on the tab bar) — by any program except vr-ide's
@@ -408,16 +446,29 @@ vr-ide opens SSH sessions with your system `ssh` (OpenSSH), so your `~/.ssh/conf
 and known hosts apply as they do in a terminal.
 
 - Open the command window (`F1`) and type `ssh` and a space (or `/ssh `, or pick SSH: Connect to
-  Host). The list shows the open sessions first, then recently used targets, then the `Host` names
-  of `~/.ssh/config` and the files it includes (patterns such as `*` are left out). Type
-  `[user@]host[:port]` for any other host; the first row is what you typed. Enter starts the
-  highlighted row. Anything that is not a plain target (a leading `-`, spaces, `%`, `$`, quotes …)
-  is refused and nothing is run.
-- The session starts in a new tab of the terminal panel, titled `ssh <target>`. Host-key
-  questions, passwords and passphrases are asked by ssh and answered there. vr-ide does not read,
-  store or log what you type into a terminal.
+  Host). The list shows the open sessions first, then recently used lines, then the `Host` names
+  of `~/.ssh/config` and the files it includes (patterns such as `*` are left out). Type what you
+  would type after `ssh ` in a terminal: `/ssh -i credentials/id_fixecom root@app.fixecom.vn`,
+  `/ssh -p 2222 user@host`, `/ssh -J jump host`. The first row is what you typed; under the list
+  the window shows `runs: ssh …`, the exact command with relative paths shown resolved. Enter
+  starts the highlighted row.
+- The line is split like a shell splits it, but no shell runs it: `'…'` keeps everything,
+  `"…"` keeps everything but `\"`, `\\`, `` \` `` and `\$`, `\` keeps the next character, and
+  `~` / `~/…` at the start of a word is your home folder. `$VAR`, backticks, `*`, `;`, `|` and
+  redirections are ordinary characters. A line with an unclosed quote, a trailing `\`, a control
+  character, more than 4 KiB or 128 words, an option ssh does not know or no valid destination is
+  refused (the notice never repeats what you typed) and nothing is run. An old `user@host:port`
+  still works and means `-p port user@host`.
+- ssh runs in the workspace folder of the active file (else the active one), so relative paths
+  such as `-i credentials/key`, `-F config` or `-o IdentityFile=…` resolve as in a terminal
+  opened there; if that folder is gone nothing is started. ssh is found on the absolute entries
+  of `PATH` only, and the session gets a `PATH` without empty or relative entries.
+- The session starts in a new tab of the terminal panel, titled `ssh <destination>` (the host
+  word ssh connects to, found with ssh's own option rules). Host-key questions, passwords and
+  passphrases are asked by ssh and answered there. vr-ide does not read, store or log what you
+  type into a terminal.
 - When the login succeeded the tab takes the whole window: only the last row stays vr-ide's
-  (`SSH <target>` and the key back). Every key goes to the session except the keys a focused
+  (`SSH <destination>` and the key back). Every key goes to the session except the keys a focused
   terminal keeps: ``ctrl+` `` (back to the editor; the session keeps running), `F1`, `ctrl+f7`,
   `ctrl+f8`, `ctrl+f9` (these three change the panel only in the IDE layout; in full screen they
   just say so). `shift+pageup` / `shift+pagedown` scroll back as in any terminal tab. Notices
@@ -427,20 +478,32 @@ and known hosts apply as they do in a terminal.
   the bar instead), or choose it in the ssh list. Several sessions can be open, one tab each (at
   most 16).
 - When ssh ends (logout, a dropped connection, a failed login) the editor comes back and the tab
-  shows `[process exited N]`; Enter there connects to the same target again. Quitting vr-ide or
-  closing the tab of a live session asks first.
-- Recently used targets (at most 20, recorded after a successful login, or after a clean
-  exit when `ssh_fullscreen = false`) are kept in
-  `~/.local/state/vr-ide/ssh-recent`, readable by you only. No password or key is ever stored.
+  shows `[process exited N]`; Enter there runs the same line again in the same folder. Quitting
+  vr-ide or closing the tab of a live session asks first.
+- Recently used lines (at most 20, recorded after a successful login, or after a clean exit when
+  `ssh_fullscreen = false`) are kept with the folder they ran in, in
+  `~/.local/state/vr-ide/ssh-recent`, readable by you only (a file others can write is ignored).
+  A recent line chosen from the list (or put in the input from it and not edited) runs again in
+  that folder, and the window shows `in <folder>`; the same line typed by hand runs in the
+  workspace folder of the active file. A long row is cut in the middle so its first option
+  and its destination stay visible. Choosing a row whose line makes ssh run a local program
+  (`ProxyCommand`, `LocalCommand`, other `…Command`, `PKCS11Provider`, `SecurityKeyProvider`,
+  `-I`, bundled or not) or read a config file of its own (`-F` other than `-F none`) only puts
+  it in the input with a warning; Enter then runs it. No password or key is ever
+  stored, but a remote command you typed is part of the line.
 
 How the login is detected: vr-ide starts ssh as
-`ssh [-l user] [-p port] -o ControlMaster=no -o PermitLocalCommand=yes -o LocalCommand=<prints a
-one-time marker> -- host`. ssh runs `LocalCommand` on your machine only after a successful login;
-the marker is random per start and never shown, so nothing the remote side prints can fake it.
-vr-ide passes no other option: host-key checking and everything else stay as you configured them.
-The session stays an ordinary panel tab (a notice says why) when
+`ssh -o ControlMaster=no -o PermitLocalCommand=yes -o LocalCommand=<prints a one-time marker>
+<your words>`. ssh runs `LocalCommand` on your machine only after a successful login; the marker
+is random per start and never shown, so nothing the remote side prints can fake it. vr-ide adds
+nothing after your words and passes no other option: host-key checking and everything else stay
+as you configured them. The session stays an ordinary panel tab (a notice says why) when
 
-- your ssh config sets a `LocalCommand` of its own for that host (vr-ide then adds none),
+- your words set `LocalCommand`, `PermitLocalCommand` or connection sharing (`ControlMaster`,
+  `ControlPath`, `ControlPersist`, `-M`, `-S`, `-O`), or use `-G`, `-V`, `-Q` or `-f` (vr-ide
+  then adds none of its options, since ssh keeps the first value it is given),
+- your ssh config sets a `LocalCommand` of its own for that host (vr-ide then adds none; it asks
+  `ssh -G <your words>` in the same folder, at most 5 s),
 - ssh reuses a shared connection (`ControlMaster` / `ControlPath`; such a session runs no
   `LocalCommand`), or
 - `ssh_fullscreen = false` is set in `settings.toml` (ssh is then started without the two

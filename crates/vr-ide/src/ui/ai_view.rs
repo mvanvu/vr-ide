@@ -60,10 +60,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let Some(s) = app.ai.active_session() else {
         return;
     };
+    let reserved = reserved_rows(app, s, grid);
+    let cells = Rect {
+        height: grid.height - reserved,
+        ..grid
+    };
     let cursor =
-        crate::ui::terminal_view::render_cells(buf, grid, Some(&s.tab), app.ai.selection, theme);
-    if let Some(code) = ai::exit_code(s) {
-        render_exited(buf, grid, app, code, theme);
+        crate::ui::terminal_view::render_cells(buf, cells, Some(&s.tab), app.ai.selection, theme);
+    let exited = exited_lines(app, s, grid.width);
+    if !exited.is_empty() {
+        let below = if reserved > 0 {
+            Rect::new(grid.x, cells.y + cells.height, grid.width, reserved)
+        } else {
+            cells
+        };
+        render_exited(buf, below, &exited, theme);
         return;
     }
     if let Some(pos) = cursor
@@ -91,10 +102,11 @@ pub fn render_separator(buf: &mut Buffer, app: &App, theme: &Theme) {
     }
 }
 
-/// `[exited 0] enter: start again (claude --continue)` on the grid's last rows, wrapped.
-fn render_exited(buf: &mut Buffer, grid: Rect, app: &App, code: i32, theme: &Theme) {
-    let Some(s) = app.ai.active_session() else {
-        return;
+/// `[exited 0] enter: start again (claude --continue)`, wrapped to `width`; empty while the
+/// session's program runs.
+pub(crate) fn exited_lines(app: &App, s: &ai::AiSession, width: u16) -> Vec<String> {
+    let Some(code) = ai::exit_code(s) else {
+        return Vec::new();
     };
     let again = app
         .settings
@@ -108,14 +120,30 @@ fn render_exited(buf: &mut Buffer, grid: Rect, app: &App, code: i32, theme: &The
             )
         })
         .unwrap_or_default();
-    let text = format!("[exited {code}] enter: start again{again}");
-    let lines = wrap(&text, usize::from(grid.width));
-    let n = lines.len().min(usize::from(grid.height));
-    let top = grid.y + grid.height - n as u16;
+    wrap(
+        &format!("[exited {code}] enter: start again{again}"),
+        usize::from(width),
+    )
+}
+
+/// Rows kept below an exited session's grid for its exited line (D15), so the line covers
+/// nothing the program printed; the program keeps at least one row.
+pub(crate) fn reserved_rows(app: &App, s: &ai::AiSession, grid: Rect) -> u16 {
+    let n = exited_lines(app, s, grid.width).len();
+    u16::try_from(n)
+        .unwrap_or(u16::MAX)
+        .min(grid.height.saturating_sub(1))
+}
+
+/// The exited line in `area`, the rows reserved for it (the grid's last row when there are
+/// none).
+fn render_exited(buf: &mut Buffer, area: Rect, lines: &[String], theme: &Theme) {
+    let n = lines.len().min(usize::from(area.height.max(1)));
+    let top = (area.y + area.height).saturating_sub(n as u16);
     for (i, line) in lines.iter().take(n).enumerate() {
         let y = top + i as u16;
-        buf.set_style(Rect::new(grid.x, y, grid.width, 1), theme.popup);
-        buf.set_stringn(grid.x, y, line, usize::from(grid.width), theme.popup);
+        buf.set_style(Rect::new(area.x, y, area.width, 1), theme.popup);
+        buf.set_stringn(area.x, y, line, usize::from(area.width), theme.popup);
     }
 }
 

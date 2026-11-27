@@ -106,6 +106,8 @@ pub struct TermTab {
     fake_title: String,
     /// The SSH session this tab runs instead of a shell (FR-25).
     pub ssh: Option<super::ssh::Session>,
+    /// The folder the shell was started in (a restored session reopens an exited one there).
+    pub cwd: Option<PathBuf>,
 }
 
 impl TermTab {
@@ -120,6 +122,7 @@ impl TermTab {
             fake_status: status,
             fake_title: title.to_string(),
             ssh: None,
+            cwd: None,
         }
     }
 
@@ -280,7 +283,15 @@ impl TermTab {
             fake_status: TermStatus::Running,
             fake_title: String::new(),
             ssh: None,
+            cwd: None,
         }
+    }
+
+    /// The bells and notifications the program sent since the last call.
+    pub(crate) fn take_attention(&self) -> Vec<vr_term::Attention> {
+        self.term
+            .as_ref()
+            .map_or_else(Vec::new, Terminal::take_attention)
     }
 
     /// The program printed, changed its title or exited since the last call.
@@ -820,11 +831,14 @@ fn add_tab(app: &mut App) -> bool {
 }
 
 /// A new terminal tab whose shell starts in `cwd`.
-fn add_tab_in(app: &mut App, cwd: &Path) -> bool {
+pub(crate) fn add_tab_in(app: &mut App, cwd: &Path) -> bool {
     let output = Arc::new(AtomicBool::new(false));
     match spawn(app, &output, cwd) {
         Ok((term, shell)) => {
             push_tab(app, term, shell, output, None, true);
+            if let Some(t) = app.terminal.tabs.last_mut() {
+                t.cwd = Some(cwd.to_path_buf());
+            }
             true
         }
         Err(e) => {
@@ -853,6 +867,7 @@ pub(crate) fn push_tab(
         fake_status: TermStatus::Running,
         fake_title: String::new(),
         ssh,
+        cwd: None,
     });
     if !activate {
         return;
@@ -947,6 +962,21 @@ pub(crate) fn spawn_program(
 ) -> Result<Terminal, TermError> {
     let size = spawn_size(app);
     spawn_sized(app, output, program, args, cwd, extras, Vec::new(), size)
+}
+
+/// [`spawn_program`] with variables set after the terminal's own (they win over the user's
+/// `terminal_env`): the ssh session's cleaned `PATH`.
+pub(crate) fn spawn_program_env(
+    app: &App,
+    output: &Arc<AtomicBool>,
+    program: &Path,
+    args: Vec<OsString>,
+    cwd: &Path,
+    extras: SpawnExtras,
+    env: Vec<(OsString, OsString)>,
+) -> Result<Terminal, TermError> {
+    let size = spawn_size(app);
+    spawn_sized(app, output, program, args, cwd, extras, env, size)
 }
 
 /// [`spawn_program`] at `(cols, rows)` with `env` added after the terminal environment.

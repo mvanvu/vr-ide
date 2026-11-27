@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use vr_config::{AiTool, TerminalPosition};
 
-use crate::ai::restore::{AiPanelState, AiSessionState};
 use crate::ai::spawn::StartMode;
 use crate::app::{App, Focus};
 use crate::app_tests::test_app;
 use crate::commands::CmdArgs;
+use crate::session::{AiSection, AiSession};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -361,41 +361,35 @@ fn quit_counts_running_sessions() {
 }
 
 /// Restore (D7, SEC-8, SEC-18): each saved session reopens with its tool's continue arguments,
-/// no input sent, the keys left where they were; a tool not in `ai_tools` by name, an account,
-/// or a folder outside the workspace is not reopened, with one notice each, and nothing runs.
+/// no input sent, the keys left where they were; a tool not in `ai_tools` by name or not on
+/// `PATH`, an account, or a folder outside the workspace is not reopened, with one notice each,
+/// and nothing runs.
 #[test]
 fn restore_reopens_with_continue_args_and_refuses_the_rest() {
     let (d, mut app) = ai_app();
     let marker = d.path().join("p");
     let root = canonical(&d);
     let other = tempfile::tempdir().unwrap();
-    let state = AiPanelState {
-        visible: true,
-        width_percent: Some(55),
-        active: 3,
+    let entry = |tool: &str, folder: &Path, account: &str, label: &str| AiSession {
+        tool: tool.into(),
+        account: account.into(),
+        folder: folder.to_path_buf(),
+        label: label.into(),
+    };
+    let state = AiSection {
+        shown: true,
+        width: Some(55),
         sessions: vec![
-            AiSessionState {
-                tool: format!("claude; touch {}", marker.display()),
-                root: root.clone(),
-                ..Default::default()
-            },
-            AiSessionState {
-                tool: "claude".into(),
-                root: root.clone(),
-                account: Some("old-team".into()),
-                ..Default::default()
-            },
-            AiSessionState {
-                tool: "gemini".into(),
-                root: other.path().to_path_buf(),
-                ..Default::default()
-            },
-            AiSessionState {
-                tool: "claude".into(),
-                root: root.clone(),
-                name: Some("review".into()),
-                ..Default::default()
-            },
+            entry(
+                &format!("claude; touch {}", marker.display()),
+                &root,
+                "",
+                "",
+            ),
+            entry("claude", &root, "old-team", ""),
+            entry("gemini", other.path(), "", ""),
+            entry("aider", &root, "", ""),
+            entry("claude", &root, "", "review"),
         ],
     };
     crate::ai::restore::restore(&mut app, &state);
@@ -404,24 +398,253 @@ fn restore_reopens_with_continue_args_and_refuses_the_rest() {
     assert_eq!(app.ai.width_percent, 55);
     assert!(app.ai.visible);
     assert_eq!(app.focus, Focus::Editor, "keys stay");
-    let text = wait_for(&app, 0, |s| s.contains("CWD:"));
+    let text = wait_for(&app, 0, |s| s.contains("VRIDE:"));
     assert!(text.contains("ARGV:--base|--continue|"), "{text}");
     let errors: Vec<&str> = app.notices.iter().map(|n| n.text.as_str()).collect();
-    assert_eq!(errors.len(), 3, "{errors:?}");
+    assert_eq!(errors.len(), 4, "{errors:?}");
     assert!(errors[0].contains("is not in ai_tools"), "{errors:?}");
     assert_eq!(
         errors[1],
         "Not reopened: claude@old-team, account folder missing (no fallback)"
     );
     assert!(errors[2].ends_with("(folder missing)"), "{errors:?}");
+    assert!(errors[3].ends_with("aider not on PATH"), "{errors:?}");
     std::thread::sleep(Duration::from_millis(100));
     assert!(!marker.exists(), "nothing ran");
-    // What a session file keeps.
+    let screen = app.ai.sessions[0].tab.screen_text();
+    assert_eq!(
+        screen.trim_end().lines().count(),
+        3,
+        "no input sent: {screen}"
+    );
+    // What a session file keeps: names, folders and the layout.
     let saved = crate::ai::restore::capture(&app);
-    assert_eq!(saved.sessions.len(), 1);
-    assert_eq!(saved.sessions[0].tool, "claude");
-    assert_eq!(saved.sessions[0].root, root);
-    assert_eq!(saved.width_percent, Some(55));
+    assert_eq!(
+        saved,
+        AiSection {
+            shown: true,
+            width: Some(55),
+            sessions: vec![entry("claude", &root, "", "review")],
+        }
+    );
+}
+
+/// A `--session` window as `main` starts it (lock, workspace, session restore, then the AI
+/// panel's restore), with the test agents in `ai_tools`.
+fn session_window(state: &Path, home: &Path, tools: &[AiTool]) -> App {
+    let started = crate::session::start(state, home);
+    let mut app = App::with_workspace(
+        started.workspace,
+        vr_config::Keymap::load(None).0,
+        vr_config::Settings::default(),
+        Box::new(crate::clipboard::MemoryClipboard::new()),
+    );
+    app.enter_settle = Duration::ZERO;
+    app.enter_repeat_gap = Duration::ZERO;
+    app.settings.ai_tools = tools.to_vec();
+    crate::session::restore(&mut app, started.restore);
+    crate::ai::restore::from_session(&mut app);
+    app
+}
+
+fn quit_window(mut app: App) {
+    crate::commands::terminal::shutdown(&mut app);
+    crate::ai::shutdown(&mut app);
+}
+
+struct SessionDirs {
+    _dir: tempfile::TempDir,
+    state: PathBuf,
+    home: PathBuf,
+    tools: Vec<AiTool>,
+}
+
+fn session_dirs() -> SessionDirs {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    let home = base.join("home");
+    let bin = base.join("bin");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+    let echo = script(&bin, "agent", ECHO_AGENT);
+    SessionDirs {
+        state: base.join("state"),
+        tools: vec![tool("claude", &echo, true), tool("gemini", &echo, false)],
+        _dir: dir,
+        home,
+    }
+}
+
+/// The panel goes into `session.toml` as it changes and comes back on the next `--session`
+/// launch: shown, width, every session with its name, each started with its continue
+/// arguments; the file holds no command line.
+#[test]
+fn the_panel_round_trips_through_the_session_file() {
+    let t = session_dirs();
+    let mut app = session_window(&t.state, &t.home, &t.tools);
+    assert!(app.ai.sessions.is_empty());
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    crate::ai::rename(&mut app, "review").unwrap();
+    crate::ai::open_tool(&mut app, "gemini").unwrap();
+    app.run_command("ai.grow", CmdArgs::None);
+    let width = app.ai.width_percent;
+    assert_ne!(width, app.settings.ai_width_percent);
+    // The debounced save sees the change (CHECK_EVERY + SAVE_DELAY later).
+    let now = Instant::now();
+    app.tick(now);
+    app.tick(now + Duration::from_secs(1));
+    app.tick(now + Duration::from_secs(2));
+    crate::session::flush(&mut app);
+    let body = std::fs::read_to_string(crate::session::file_for_tests(&app)).unwrap();
+    assert!(body.contains("label = \"review\""), "{body}");
+    assert!(body.contains("tool = \"gemini\""), "{body}");
+    assert!(
+        !body.contains("--base") && !body.contains("agent"),
+        "{body}"
+    );
+    crate::session::save_on_quit(&mut app);
+    quit_window(app);
+
+    let mut app = session_window(&t.state, &t.home, &t.tools);
+    assert_eq!(app.ai.sessions.len(), 2);
+    assert!(app.ai.visible);
+    assert_eq!(app.ai.width_percent, width);
+    assert_eq!(app.ai.label(0), "review");
+    assert_eq!(app.focus, Focus::Editor, "keys stay");
+    let claude = wait_for(&app, 0, |s| s.contains("VRIDE:"));
+    assert!(claude.contains("ARGV:--base|--continue|"), "{claude}");
+    assert!(
+        claude.contains(&format!("CWD:{}", t.home.display())),
+        "{claude}"
+    );
+    let gemini = wait_for(&app, 1, |s| s.contains("VRIDE:"));
+    assert!(gemini.contains("ARGV:--base|\n"), "{gemini}");
+    // Hidden and one session closed: the next save says so.
+    press(&mut app, KeyCode::F(12));
+    crate::ai::close(&mut app, 1);
+    crate::session::save_on_quit(&mut app);
+    let body = std::fs::read_to_string(crate::session::file_for_tests(&app)).unwrap();
+    assert!(body.contains("shown = false"), "{body}");
+    assert!(!body.contains("gemini"), "{body}");
+    quit_window(app);
+}
+
+/// A session that cannot be reopened is left out of the file from then on; the others stay.
+#[test]
+fn a_refused_session_is_not_written_back() {
+    let t = session_dirs();
+    let mut app = session_window(&t.state, &t.home, &t.tools);
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    crate::ai::open_tool(&mut app, "gemini").unwrap();
+    crate::session::save_on_quit(&mut app);
+    quit_window(app);
+    // gemini is gone from ai_tools at the next launch.
+    let app = session_window(&t.state, &t.home, &t.tools[..1]);
+    assert_eq!(app.ai.sessions.len(), 1);
+    let notices: Vec<&str> = app.notices.iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(
+        notices,
+        [format!(
+            "Not reopened: gemini in {}, gemini is not in ai_tools",
+            crate::git::home_relative(&t.home)
+        )]
+    );
+    let mut app = app;
+    crate::session::save_on_quit(&mut app);
+    let body = std::fs::read_to_string(crate::session::file_for_tests(&app)).unwrap();
+    assert!(
+        body.contains("claude") && !body.contains("gemini"),
+        "{body}"
+    );
+    quit_window(app);
+}
+
+/// The AI sessions' quit question answers like the other quit questions: Quit anyway quits,
+/// and the session keeps the edit mode the file tab had before the question.
+#[test]
+fn the_ai_quit_question_keeps_the_edit_mode() {
+    let t = session_dirs();
+    std::fs::write(t.home.join("notes.txt"), "a\n").unwrap();
+    let mut app = session_window(&t.state, &t.home, &t.tools);
+    crate::ai::open_tool(&mut app, "gemini").unwrap();
+    app.open_path(&t.home.join("notes.txt")).unwrap();
+    app.focus = Focus::Editor;
+    app.sync_mode();
+    app.enter_edit_mode();
+    assert!(app.edit_mode());
+    let now = Instant::now();
+    app.tick(now);
+    app.run_command("app.quit", CmdArgs::None);
+    let d = app.dialog.take().expect("a running AI session asks");
+    assert!(
+        format!("{:?}", d.widget).contains("1 AI session still running"),
+        "{:?}",
+        d.widget
+    );
+    crate::commands::dialog::answer(&mut app, d, crate::ui::dialog::Outcome::Chosen(0));
+    app.sync_mode();
+    assert!(app.quit, "Quit anyway quits");
+    app.tick(now + Duration::from_secs(3));
+    crate::session::save_on_quit(&mut app);
+    let body = std::fs::read_to_string(crate::session::file_for_tests(&app)).unwrap();
+    assert!(body.contains("edit = true"), "{body}");
+    quit_window(app);
+}
+
+/// An agent that printed `n` numbered lines and exits without a final newline.
+fn lines_agent(dir: &Path, n: usize) -> PathBuf {
+    script(
+        dir,
+        "lines",
+        &format!(
+            "#!/bin/sh\ni=1\nwhile [ $i -le {n} ]; do echo L$i; i=$((i+1)); done\nprintf LAST\n"
+        ),
+    )
+}
+
+#[test]
+fn an_exited_session_scrolls_back() {
+    let (d, mut app) = ai_app();
+    let agent = lines_agent(d.path(), 200);
+    app.settings.ai_tools.push(tool("codex", &agent, true));
+    crate::ai::open_tool(&mut app, "codex").unwrap();
+    wait_exit(&app, 0);
+    wait_for(&app, 0, |s| s.contains("LAST"));
+    key(&mut app, KeyCode::PageUp, KeyModifiers::SHIFT);
+    assert!(app.ai.sessions[0].tab.scroll > 0, "scrolled back");
+    key(&mut app, KeyCode::PageDown, KeyModifiers::SHIFT);
+    assert_eq!(app.ai.sessions[0].tab.scroll, 0);
+    assert_eq!(app.ai.sessions[0].mode, StartMode::New, "not restarted");
+}
+
+/// D15: the exited line has rows of its own below the agent's grid; nothing the agent printed
+/// is drawn over.
+#[test]
+fn the_exited_line_is_drawn_below_the_agent_output() {
+    let (d, mut app) = ai_app();
+    let agent = lines_agent(d.path(), 60);
+    app.settings.ai_tools.push(tool("codex", &agent, true));
+    crate::terminal_tests::draw(&mut app, 120, 40);
+    crate::ai::open_tool(&mut app, "codex").unwrap();
+    wait_exit(&app, 0);
+    wait_for(&app, 0, |s| s.contains("LAST"));
+    crate::terminal_tests::draw(&mut app, 120, 40);
+    let t = crate::terminal_tests::draw(&mut app, 120, 40);
+    let rows: Vec<String> = (0..40)
+        .map(|y| crate::terminal_tests::row_text(&t, y))
+        .collect();
+    let last = rows.iter().position(|r| r.contains("LAST"));
+    let exited = rows.iter().position(|r| r.contains("[exited 0]"));
+    assert!(
+        matches!((last, exited), (Some(l), Some(e)) if l < e),
+        "{}",
+        rows.join("\n")
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("L60")),
+        "{}",
+        rows.join("\n")
+    );
 }
 
 #[test]
@@ -431,4 +654,122 @@ fn tab_cycle_reaches_the_panel() {
     press(&mut app, KeyCode::F(3));
     app.run_command("focus.cycle", CmdArgs::None);
     assert_eq!(app.focus, Focus::Ai);
+}
+
+// ---- D9 notify (AC-10, SEC-14) ----------------------------------------------------------------
+
+/// Reads commands from the terminal: `bell`, `osc <text>`, `big` (10 KiB OSC 9 with an escape)
+/// and `flood` (a thousand bells); `ready` once it listens.
+const NOTIFY_AGENT: &str = "#!/bin/sh\nprintf 'ready\\n'\nwhile read cmd arg; do\n  case $cmd in\n    bell) printf '\\007';;\n    osc) printf '\\033]9;%s\\007' \"$arg\";;\n    big) printf '\\033]9;\\033[2J'; head -c 10240 /dev/zero | tr '\\0' 'a'; printf '\\007';;\n    flood) i=0; while [ $i -lt 1000 ]; do printf '\\007'; i=$((i+1)); done;;\n  esac\ndone\n";
+
+fn notify_app() -> (tempfile::TempDir, App) {
+    let (d, mut app) = ai_app();
+    let agent = script(&d.path().join(".bin"), "notify", NOTIFY_AGENT);
+    app.settings.ai_tools = vec![tool("claude", &agent, false)];
+    app.layout.status.width = 120;
+    (d, app)
+}
+
+fn say(app: &App, i: usize, line: &str) {
+    app.ai.sessions[i]
+        .tab
+        .write(format!("{line}\n").as_bytes())
+        .unwrap();
+}
+
+fn wait_marked(app: &mut App, i: usize) {
+    let deadline = Instant::now() + WAIT;
+    while app.ai.sessions[i].attention.is_none() {
+        crate::ai::refresh(app);
+        assert!(Instant::now() < deadline, "session {i} was not marked");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_hidden_session_is_marked_noticed_and_f12_shows_it_and_clears() {
+    let (_d, mut app) = notify_app();
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    wait_for(&app, 0, |s| s.contains("ready"));
+    wait_for(&app, 1, |s| s.contains("ready"));
+    press(&mut app, KeyCode::F(12));
+    assert!(!app.ai.visible);
+    say(&app, 0, "osc Allow Bash(cargo test)?");
+    wait_marked(&mut app, 0);
+    assert_eq!(app.ai.sessions[1].attention, None);
+    let notice = app.notices.front().expect("a notice").text.clone();
+    assert!(
+        notice.starts_with("◆ claude (")
+            && notice.contains("): Allow Bash(cargo test)?  f12 shows it"),
+        "{notice}"
+    );
+    assert_eq!(
+        app.notices.front().unwrap().expires,
+        None,
+        "stays until viewed"
+    );
+    // f12 opens the marked session, not the active one; viewing it clears mark and notice.
+    app.ai.active = 1;
+    press(&mut app, KeyCode::F(12));
+    assert_eq!(app.ai.active, 0);
+    crate::ai::attention::clear_viewed(&mut app);
+    assert_eq!(app.ai.sessions[0].attention, None);
+    assert!(app.notices.is_empty());
+}
+
+#[test]
+fn the_bell_marks_with_its_own_words_and_a_viewed_tab_is_not_marked() {
+    let (_d, mut app) = notify_app();
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    wait_for(&app, 0, |s| s.contains("ready"));
+    assert!(app.ai.visible, "starting a session shows the panel");
+    say(&app, 0, "bell");
+    // Shown and active: the program's request is seen, nothing is marked.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        crate::ai::refresh(&mut app);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(app.ai.sessions[0].attention, None);
+    assert!(app.notices.is_empty());
+    press(&mut app, KeyCode::F(12));
+    say(&app, 0, "bell");
+    wait_marked(&mut app, 0);
+    assert!(app.notices.front().unwrap().text.contains("rang the bell"));
+}
+
+/// SEC-14: escape bytes, 10 KiB and a flood become one sanitized, capped notice.
+#[test]
+fn notification_text_is_sanitized_capped_and_rate_limited() {
+    let (_d, mut app) = notify_app();
+    crate::ai::open_tool(&mut app, "claude").unwrap();
+    wait_for(&app, 0, |s| s.contains("ready"));
+    press(&mut app, KeyCode::F(12));
+    say(&app, 0, "big");
+    wait_marked(&mut app, 0);
+    let text = app.notices.front().unwrap().text.clone();
+    assert!(!text.chars().any(|c| c.is_control()), "{text:?}");
+    assert!(
+        text.starts_with("◆ claude"),
+        "prefixed with the label: {text}"
+    );
+    assert!(
+        text.chars().count() < 400,
+        "capped: {}",
+        text.chars().count()
+    );
+    // A flood after the tab was viewed: still one notice.
+    app.ai.active = 0;
+    app.ai.visible = true;
+    crate::ai::attention::clear_viewed(&mut app);
+    app.ai.visible = false;
+    app.notices.clear();
+    // A second notice inside the gap is withheld; after it one comes.
+    std::thread::sleep(Duration::from_millis(1100));
+    say(&app, 0, "flood");
+    wait_marked(&mut app, 0);
+    std::thread::sleep(Duration::from_millis(300));
+    crate::ai::refresh(&mut app);
+    assert_eq!(app.notices.len(), 1, "one notice for a thousand bells");
 }

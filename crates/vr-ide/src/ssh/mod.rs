@@ -1,11 +1,14 @@
 //! SSH sessions (FR-25, D317): everything that decides what is run, kept apart from the UI.
 //!
 //! vr-ide starts the system `ssh` in a terminal tab and adds nothing an outsider controls
-//! (02_threat-model_SSH.md): a [`Target`] is the only text that reaches the command line and it
-//! is validated first; the arguments are an argv, never a command string; the one option that
-//! makes ssh run something locally is a constant apart from a random [`Nonce`], and it is only
-//! added when the user's own configuration has no `LocalCommand` ([`probe`]).
+//! (02_threat-model_SSH.md, SEC-1..SEC-5): what the user typed after `/ssh ` reaches ssh only
+//! as the words of a checked [`args::Line`], whose destination is a validated [`Target`]; the
+//! arguments are an argv, never a command string; the one option that makes ssh run something
+//! locally is a constant apart from a random [`Nonce`], and it is only added when neither the
+//! user's words nor their configuration set a `LocalCommand` or connection sharing
+//! ([`probe`]).
 
+pub mod args;
 pub mod config;
 pub mod recent;
 
@@ -38,7 +41,8 @@ const MARKER_TAG: &str = "vr-ide-ssh";
 const USER_MAX: usize = 64;
 const HOST_MAX: usize = 253;
 
-/// Where a session goes: `[user@]host[:port]` or `[user@][v6]:port`, validated (SEC-S1).
+/// Where a session goes: `[user@]host[:port]`, `[user@][v6]:port` or
+/// `ssh://[user@]host[:port]`, validated (SEC-S1, SEC-2).
 /// Every target (typed, a config alias, a line of the recent file) is made by [`Target::parse`]
 /// and nothing else, so text that could be read as an option, a token or a second word never
 /// reaches ssh.
@@ -54,10 +58,18 @@ pub struct Target {
 }
 
 impl Target {
-    /// `None` for anything but ASCII `[user@]host[:port]` / `[user@][v6][:port]`: a leading `-`
-    /// in any part, whitespace, control characters, `%`, `$`, `/`, `\`, quotes, a backtick,
-    /// `;`, a second `@`, `ssh://` and non-ASCII are all outside the allowed characters.
+    /// `None` for anything but ASCII `[user@]host[:port]` / `[user@][v6][:port]`, optionally
+    /// after `ssh://` (the text is then what follows it): a leading `-` in any part,
+    /// whitespace, control characters, `%`, `$`, `/`, `\`, quotes, a backtick, `;`, a second
+    /// `@` and non-ASCII are all outside the allowed characters.
     pub fn parse(s: &str) -> Option<Target> {
+        match s.strip_prefix("ssh://") {
+            Some(rest) => Target::parse_plain(rest),
+            None => Target::parse_plain(s),
+        }
+    }
+
+    fn parse_plain(s: &str) -> Option<Target> {
         let (user, rest) = match s.split_once('@') {
             Some((user, rest)) => (Some(user), rest),
             None => (None, s),
@@ -130,18 +142,6 @@ impl Target {
     pub fn is_alias(&self) -> bool {
         self.user.is_none() && self.port.is_none() && !self.v6
     }
-
-    /// `[-l user] [-p port]`.
-    fn login_args(&self) -> Vec<OsString> {
-        let mut args = Vec::new();
-        if let Some(user) = &self.user {
-            args.extend(["-l".into(), user.into()]);
-        }
-        if let Some(port) = self.port {
-            args.extend(["-p".into(), port.to_string().into()]);
-        }
-        args
-    }
 }
 
 impl std::fmt::Display for Target {
@@ -199,28 +199,43 @@ impl Nonce {
     }
 }
 
-/// The arguments of the session's ssh (SEC-S2, SEC-S5): exactly
-/// `[-l user] [-p port] -o ControlMaster=no [-o PermitLocalCommand=yes -o LocalCommand=…] -- host`.
-/// `ControlMaster=no` keeps vr-ide's ssh from becoming a connection-sharing master that would
-/// outlive the tab; nothing else of the user's configuration is overridden.
-pub fn argv(target: &Target, local_command: Option<&str>) -> Vec<OsString> {
-    let mut args = target.login_args();
-    args.extend(["-o".into(), "ControlMaster=no".into()]);
-    if let Some(command) = local_command {
-        args.extend(["-o".into(), "PermitLocalCommand=yes".into()]);
-        args.extend(["-o".into(), format!("LocalCommand={command}").into()]);
+/// The arguments of the session's ssh (SEC-S2, SEC-S5, SEC-3): exactly
+/// `-o ControlMaster=no [-o PermitLocalCommand=yes -o LocalCommand=…] <the user's words>`, or
+/// the user's words alone when they set what that prefix sets
+/// ([`args::Line::keeps_own_options`]). `ControlMaster=no` keeps vr-ide's ssh from becoming a
+/// connection-sharing master that would outlive the tab. ssh keeps the first value of an
+/// option, so the prefix goes first and is left out whole rather than overriding the user;
+/// nothing is ever added after the user's words.
+pub fn argv(line: &args::Line, local_command: Option<&str>) -> Vec<OsString> {
+    let mut out: Vec<OsString> = Vec::new();
+    if !line.keeps_own_options() {
+        out.extend(["-o".into(), "ControlMaster=no".into()]);
+        if let Some(command) = local_command {
+            out.extend(["-o".into(), "PermitLocalCommand=yes".into()]);
+            out.extend(["-o".into(), format!("LocalCommand={command}").into()]);
+        }
     }
-    args.extend(["--".into(), (&target.host).into()]);
-    args
+    out.extend(line.words().iter().map(OsString::from));
+    out
 }
 
-/// The arguments of the configuration probe: `-G [-l user] [-p port] -- host`, without any
-/// option of vr-ide's own, so the output is what the user's configuration says.
-pub fn probe_argv(target: &Target) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec!["-G".into()];
-    args.extend(target.login_args());
-    args.extend(["--".into(), (&target.host).into()]);
-    args
+/// The arguments of the configuration probe: `-G <the user's words>`, without any option of
+/// vr-ide's own, so the output is what the user's configuration and options say.
+pub fn probe_argv(line: &args::Line) -> Vec<OsString> {
+    let mut out: Vec<OsString> = vec!["-G".into()];
+    out.extend(line.words().iter().map(OsString::from));
+    out
+}
+
+/// `path` (a `PATH` value) without its empty and relative entries: ssh runs in a workspace
+/// folder, and a `ProxyCommand nc` must not find a `./nc` there (SEC-4).
+pub fn child_path(path: &OsStr) -> OsString {
+    let kept: Vec<&[u8]> = path
+        .as_bytes()
+        .split(|&b| b == b':')
+        .filter(|d| d.first() == Some(&b'/'))
+        .collect();
+    OsString::from(OsStr::from_bytes(&kept.join(&b':')))
 }
 
 /// The first executable `name` in the absolute entries of `path` (a `PATH` value). Empty and
@@ -251,13 +266,16 @@ pub enum Probe {
     Failed,
 }
 
-/// Runs `ssh -G` for `target` and reads the effective configuration. Blocks up to `timeout`
-/// (call it off the UI thread). The probe has no stdin and no controlling terminal, so nothing
+/// Runs `ssh -G` with the user's words in `cwd` (where the session will run, so a relative
+/// `-F` names the same file) with `path` as `PATH`, and reads the effective configuration.
+/// Blocks up to `timeout` (call it off the UI thread). The probe has no stdin and no controlling terminal, so nothing
 /// it starts (`Match exec`) can prompt; past the timeout or [`PROBE_OUTPUT_CAP`] its whole
 /// session is killed.
-pub fn probe(ssh: &Path, target: &Target, timeout: Duration) -> Probe {
+pub fn probe(ssh: &Path, line: &args::Line, cwd: &Path, path: &OsStr, timeout: Duration) -> Probe {
     let mut cmd = Command::new(ssh);
-    cmd.args(probe_argv(target))
+    cmd.args(probe_argv(line))
+        .current_dir(cwd)
+        .env("PATH", path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());

@@ -64,6 +64,9 @@ pub struct Palette {
     pub dir_cache: Option<super::slash::DirListing>,
     /// The `ssh` list: the aliases of the ssh config, read once per window (FR-25).
     pub ssh_hosts: Option<Vec<String>>,
+    /// The `ssh` list: the input text put there from a listed session or recent line, with the
+    /// folder that line runs in; forgotten at the first edit (SEC-4, SEC-5).
+    pub ssh_listed: Option<(String, std::path::PathBuf)>,
 }
 
 /// Registered only so a `[terminal]` key can run them (D291, D330).
@@ -99,6 +102,7 @@ pub fn open(app: &mut App) {
         error: None,
         dir_cache: None,
         ssh_hosts: None,
+        ssh_listed: None,
     });
     app.modal_since = Some(app.now());
     app.focus = Focus::Palette;

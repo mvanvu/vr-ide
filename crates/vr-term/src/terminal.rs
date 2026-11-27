@@ -25,6 +25,7 @@ use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::io::Errno;
 
+use crate::attention::{Attention, AttentionScan};
 use crate::marker::MarkerScan;
 use crate::snapshot;
 use crate::types::{Grid, Notify, SpawnExtras, SpawnOptions, TermError, TermStatus};
@@ -154,6 +155,9 @@ impl EventListener for Listener {
     }
 }
 
+/// Events kept for the UI between two takes.
+const MAX_ATTENTION: usize = 64;
+
 struct Shared {
     term: Mutex<Term<Listener>>,
     /// Snapshots waiting for the emulator lock; the reader steps aside while this is non-zero.
@@ -168,10 +172,29 @@ struct Shared {
     closed: AtomicBool,
     /// The session's marker came through its own output while its child ran (sticky).
     marker_seen: AtomicBool,
+    /// Scan the output for bells and notifications (AI sessions only).
+    watch_attention: bool,
+    /// Bells and notifications since the UI last took them (at most [`MAX_ATTENTION`]).
+    attention: Mutex<Vec<Attention>>,
     notify: Notify,
 }
 
 impl Shared {
+    /// Queues events and wakes the UI on the empty to non-empty edge: the output wake is
+    /// coalesced and a hidden panel never takes a snapshot, which re-arms it.
+    fn push_attention(&self, found: &mut Vec<Attention>) {
+        let first = {
+            let mut q = lock(&self.attention);
+            let was_empty = q.is_empty();
+            let room = MAX_ATTENTION.saturating_sub(q.len());
+            q.extend(found.drain(..).take(room));
+            was_empty && !q.is_empty()
+        };
+        if first && !self.closed.load(Ordering::SeqCst) {
+            (self.notify)();
+        }
+    }
+
     fn mark_dirty(&self) {
         if !self.dirty.swap(true, Ordering::SeqCst) && !self.closed.load(Ordering::SeqCst) {
             (self.notify)();
@@ -299,6 +322,8 @@ impl Terminal {
             dirty: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             marker_seen: AtomicBool::new(false),
+            watch_attention: extras.attention,
+            attention: Mutex::default(),
             notify,
         });
 
@@ -423,6 +448,12 @@ impl Terminal {
     /// Later occurrences, and any after the child exited, are removed without effect.
     pub fn marker_seen(&self) -> bool {
         self.shared.marker_seen.load(Ordering::SeqCst)
+    }
+
+    /// The bells and notifications (OSC 9 / 777) the program sent since the last call. The
+    /// queue is bounded; a flood keeps its first events.
+    pub fn take_attention(&self) -> Vec<Attention> {
+        std::mem::take(&mut *lock(&self.shared.attention))
     }
 
     /// Running, or exited with its code once the child is reaped.
@@ -590,6 +621,8 @@ fn ready(fd: &OwnedFd, events: PollFlags, wake: &OwnedFd) -> bool {
 fn read_loop(reader: &OwnedFd, wake: &OwnedFd, shared: &Shared, mut scan: Option<MarkerScan>) {
     let mut parser: Processor = Processor::new();
     let mut buf = vec![0u8; READ_BUF];
+    let mut seen = AttentionScan::default();
+    let mut found = Vec::new();
     // What is left of a read once the marker scanner took its bytes out.
     let mut kept = Vec::new();
     let mut parse = |bytes: &[u8]| {
@@ -613,6 +646,13 @@ fn read_loop(reader: &OwnedFd, wake: &OwnedFd, shared: &Shared, mut scan: Option
             // EOF, or EIO once every holder of the slave side has gone, or `Drop`'s wake.
             Ok(_) | Err(_) => break,
         };
+        if shared.watch_attention {
+            found.clear();
+            seen.feed(&buf[..n], &mut found);
+            if !found.is_empty() {
+                shared.push_attention(&mut found);
+            }
+        }
         let Some(scan) = &mut scan else {
             parse(&buf[..n]);
             shared.mark_dirty();

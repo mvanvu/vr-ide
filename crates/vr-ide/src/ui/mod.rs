@@ -32,6 +32,7 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     let area = frame.area();
     // Before the layout: a "highlighting is off" notice needs its row in this frame.
     app.sync_syntax();
+    crate::ai::attention::clear_viewed(app);
     // Paint the theme background everywhere first; widgets then only patch their own cells.
     frame.buffer_mut().set_style(area, theme.text);
     // A logged-in SSH session chosen for it takes the whole window (FR-25).

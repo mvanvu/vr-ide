@@ -28,13 +28,6 @@ pub struct AiTool {
     pub resume_args: Vec<String>,
 }
 
-impl AiTool {
-    /// The tool can pick up an earlier conversation (the picker's second step, D14).
-    pub fn resumes(&self) -> bool {
-        !self.continue_args.is_empty() || !self.resume_args.is_empty()
-    }
-}
-
 /// Where the terminal panel sits (D227).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -98,7 +91,7 @@ impl Settings {
                 }),
                 Ok(user_table) => {
                     for (key, value) in user_table {
-                        // The list was called ai_presets before the AI panel (D7).
+                        // Legacy key: ai_presets is read as ai_tools.
                         let key = if key == "ai_presets" {
                             "ai_tools".to_string()
                         } else {

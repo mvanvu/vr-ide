@@ -1,7 +1,11 @@
-//! SSH sessions in the terminal panel (FR-25, D317): the `ssh` entry of the command window,
+//! SSH sessions in the terminal panel (FR-25, D317, D5): the `ssh` entry of the command window,
 //! starting the system `ssh` in a tab, the login event that gives a session the whole window,
 //! reconnecting and the recent list. What is run and with which arguments is decided in
 //! [`crate::ssh`]; this module only wires it to the panel.
+//!
+//! `/ssh` takes the words that would follow `ssh ` in a terminal ([`crate::ssh::args`]), and
+//! ssh runs in the workspace folder of the active file, so relative paths in them resolve as
+//! they would in a terminal opened there (SEC-4).
 //!
 //! A session starts as an ordinary tab, so host-key questions and password prompts are answered
 //! there; vr-ide never reads, stores or logs what is typed into it. Full screen follows the
@@ -20,7 +24,9 @@ use vr_term::SpawnExtras;
 use super::registry::{CmdArgs, CmdResult, CommandSpec};
 use super::terminal;
 use crate::app::App;
-use crate::ssh::{self, MAX_SESSIONS, NOT_VALID, Nonce, Probe, Target};
+use crate::ssh::args::{self, Line};
+use crate::ssh::recent::Entry;
+use crate::ssh::{self, MAX_SESSIONS, Nonce, Probe};
 
 pub const COMMANDS: &[CommandSpec] = &[CommandSpec {
     name: "ssh.connect",
@@ -31,18 +37,29 @@ pub const COMMANDS: &[CommandSpec] = &[CommandSpec {
 /// The slash command the palette entry and a typed `ssh ` lead to.
 pub const SLASH: &str = "/ssh ";
 
+/// The notice when the folder ssh would run in is gone (SEC-4): never another folder instead.
+pub const BASE_GONE: &str = "SSH: the workspace folder of the active file is missing; not started";
+/// The same for a recent line run again: it runs where it ran before, or not at all (SEC-5).
+pub const RECENT_BASE_GONE: &str =
+    "SSH: the folder this recent line ran in is missing; not started";
+
 /// The SSH session of a terminal tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     /// Stays with the tab across reconnects.
     pub id: u64,
-    /// Where it goes: the source of the tab label and the status row.
-    pub target: Target,
+    /// Where it goes: the source of the tab label and the status row (the line's validated
+    /// destination, SEC-2).
+    pub target: ssh::Target,
+    /// What was typed after `/ssh `, checked.
+    pub line: Line,
+    /// The folder ssh runs in (canonical when it started).
+    pub base: PathBuf,
     /// Its own login marker came through its own output (this start of ssh).
     pub logged_in: bool,
     /// ssh was started with vr-ide's `LocalCommand`, so a marker can come at all.
     marked: bool,
-    /// The target is in the recent list for this start.
+    /// The line is in the recent list for this start.
     recorded: bool,
 }
 
@@ -50,15 +67,18 @@ pub struct Session {
 pub struct SshState {
     /// Program run instead of the `ssh` found on `PATH` (tests).
     pub bin: Option<PathBuf>,
-    /// The home folder whose `.ssh/config` lists hosts and where ssh starts; `None`: no list
-    /// (tests), ssh starts in `/`.
+    /// The home folder whose `.ssh/config` lists hosts and that `~` names in a line; `None`:
+    /// no list (tests), `~` stays as typed.
     pub home: Option<PathBuf>,
     /// Where the recent list is kept; `None`: in memory only (tests).
     pub recent_file: Option<PathBuf>,
-    /// Recently used targets, most recent first.
-    pub recent: Vec<Target>,
+    /// Recently used lines, most recent first.
+    pub recent: Vec<Entry>,
     /// How long the configuration probe may take.
     pub probe_timeout: Duration,
+    /// The line the command window is about to run when it was picked from the list, with
+    /// the folder it brings ([`picked`]); taken by [`connect`].
+    pub picked: Option<(String, PathBuf)>,
     /// The one probe running (SEC-S16), with what to start when it answers.
     pending: Option<Pending>,
     next_id: u64,
@@ -72,6 +92,7 @@ impl Default for SshState {
             recent_file: None,
             recent: Vec::new(),
             probe_timeout: ssh::PROBE_TIMEOUT,
+            picked: None,
             pending: None,
             next_id: 1,
         }
@@ -97,14 +118,15 @@ impl SshState {
         self.pending.is_some()
     }
 
-    /// A probe for `target` that never answers, started `age` ago (tests). The returned sender
+    /// A probe for `line` that never answers, started `age` ago (tests). The returned sender
     /// keeps its channel open.
     #[cfg(test)]
-    pub(crate) fn stall_probe(&mut self, target: Target, age: Duration) -> mpsc::Sender<Probe> {
+    pub(crate) fn stall_probe(&mut self, line: &str, age: Duration) -> mpsc::Sender<Probe> {
         let (tx, rx) = mpsc::channel();
         self.pending = Some(Pending {
             launch: Launch {
-                target,
+                line: Line::parse(line, None).expect("a valid line"),
+                base: PathBuf::from("/"),
                 bin: PathBuf::new(),
                 replace: None,
             },
@@ -124,7 +146,8 @@ impl SshState {
 
 /// What to start once the probe answered.
 struct Launch {
-    target: Target,
+    line: Line,
+    base: PathBuf,
     bin: PathBuf,
     /// The session id of the exited tab to reconnect in; `None`: a new tab.
     replace: Option<u64>,
@@ -179,13 +202,15 @@ fn open_list(app: &mut App, _: CmdArgs) -> CmdResult {
 }
 
 /// Rows of the `ssh` list for the typed `arg`, as (value, label): what was typed (when it is a
-/// target of its own), then the open sessions, the recently used targets and the config's
-/// aliases, each target once.
+/// valid line of its own), then the open sessions, the recently used lines and the config's
+/// aliases, each line once.
 pub fn rows(app: &App, arg: &str, hosts: &[String]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let add = |out: &mut Vec<(String, String)>, value: &str, note: &str| {
         if value.contains(arg) && !out.iter().any(|(v, _)| v == value) {
-            out.push((value.to_string(), format!("{value}  {note}")));
+            // A stored line can hold any printable text (a remote command): shown made safe.
+            let shown = crate::ui::safe_text::sanitize(value);
+            out.push((value.to_string(), format!("{shown}  {note}")));
         }
     };
     for tab in &app.terminal.tabs {
@@ -197,47 +222,229 @@ pub fn rows(app: &App, arg: &str, hosts: &[String]) -> Vec<(String, String)> {
             } else {
                 "open session, not logged in yet"
             };
-            add(&mut out, s.target.as_str(), note);
+            add(&mut out, s.line.text(), note);
         }
     }
-    for t in &app.ssh.recent {
-        add(&mut out, t.as_str(), "recent");
+    for e in &app.ssh.recent {
+        add(&mut out, &e.text, "recent");
     }
     for h in hosts {
         add(&mut out, h, "ssh config");
     }
-    if Target::parse(arg).is_some() && !out.iter().any(|(v, _)| v == arg) {
-        out.insert(0, (arg.to_string(), format!("{arg}  connect")));
+    if Line::parse(arg, app.ssh.home.as_deref()).is_ok() && !out.iter().any(|(v, _)| v == arg) {
+        let shown = crate::ui::safe_text::sanitize(arg);
+        out.insert(0, (arg.to_string(), format!("{shown}  connect")));
     }
     out
 }
 
-/// `/ssh <target>`: the open session to that target gets the keys (full screen again when it
-/// is logged in); otherwise a new session starts. Err: nothing was started (the text for the
-/// command window).
+/// A listed row's title cut to `cells` keeping the first option and the destination of its
+/// line visible (SEC-5: a cut row never hides where it goes); `None` for a row that is not
+/// an argument line.
+pub fn fit_row(title: &str, cells: usize) -> Option<String> {
+    let (value, note) = title.rsplit_once("  ")?;
+    let note_w = ratatui::text::Span::raw(note).width();
+    let cut = args::cut_middle(value, cells.checked_sub(note_w + 2)?)?;
+    Some(format!("{cut}  {note}"))
+}
+
+/// What the command window shows under the `/ssh` list for the line Enter would run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Detail {
+    /// `runs: ssh …` (wrapped by the window), or the local-command hint, then `in <folder>`
+    /// when the line runs somewhere else than the active file's folder.
+    pub text: Vec<String>,
+    /// The hint: drawn as a warning.
+    pub warn: bool,
+    /// Where the destination starts in the first text, counted in characters that are not
+    /// spaces (wrapping moves only spaces): a cut command keeps that line visible.
+    pub dest_at: Option<usize>,
+}
+
+/// The line a row (or what is typed, `row` = `None`) stands for in the `/ssh` window, with
+/// the folder it brings. A session or recent line brings its folder only when it is picked:
+/// highlighted over a different typed text, or put in the input from the list and not
+/// edited since. A line typed by hand runs in the active file's folder even when it equals
+/// a listed line (SEC-4, SEC-5).
+fn line_of(app: &App, row: Option<&str>) -> Option<(String, Option<PathBuf>)> {
+    let p = app.palette.as_ref()?;
+    let input = p.input.text();
+    let typed = input.strip_prefix(SLASH)?;
+    match row
+        .and_then(|r| r.strip_prefix(SLASH))
+        .filter(|v| !v.trim().is_empty())
+    {
+        Some(v) if v.trim() != typed.trim() => Some((v.to_string(), stored_base(app, v))),
+        _ => {
+            let filled = p
+                .ssh_listed
+                .as_ref()
+                .filter(|(t, _)| t == input)
+                .map(|(_, b)| b.clone());
+            Some((typed.to_string(), filled))
+        }
+    }
+}
+
+/// The line Enter would run now and the folder it brings (see [`line_of`]).
+fn highlighted(app: &App) -> Option<(String, Option<PathBuf>)> {
+    let p = app.palette.as_ref()?;
+    let rows = super::slash::rows(app, p.input.text());
+    line_of(app, rows.get(p.selected).map(|r| r.fill.as_str()))
+}
+
+/// The highlighted line when it brings a folder of its own: what the window hands to
+/// [`connect`] through [`SshState::picked`].
+pub fn picked(app: &App) -> Option<(String, PathBuf)> {
+    let (text, base) = highlighted(app)?;
+    Some((text, base?))
+}
+
+/// The folder an open session or a recent line with this text runs in.
+fn stored_base(app: &App, text: &str) -> Option<PathBuf> {
+    let text = text.trim_matches(' ');
+    let session = app.terminal.tabs.iter().find_map(|t| {
+        t.ssh
+            .as_ref()
+            .filter(|s| t.running() && s.line.text() == text)
+            .map(|s| s.base.clone())
+    });
+    session.or_else(|| {
+        app.ssh
+            .recent
+            .iter()
+            .find(|e| e.text == text)
+            .and_then(|e| e.base.clone())
+    })
+}
+
+/// The workspace folder of the active file, else the first folder: where a typed line runs
+/// (SEC-4). One rule for what is shown and what runs; reads nothing from the disk, so a
+/// missing folder is shown and then refused, never swapped for another.
+fn active_base(app: &App) -> PathBuf {
+    let file = app.active_doc().and_then(|d| d.path.as_deref());
+    file.and_then(|f| app.workspace.root_of(f))
+        .unwrap_or_else(|| app.workspace.primary())
+        .path
+        .clone()
+}
+
+/// The detail of the `/ssh` window (UI spec S5): for the highlighted row (or what is typed),
+/// the exact command with its relative paths shown resolved, or the hint that the line runs a
+/// local program. Reads nothing from the disk: drawn every frame.
+pub fn palette_detail(app: &App) -> Option<Detail> {
+    let (value, base) = highlighted(app)?;
+    detail_for(app, &value, base)
+}
+
+/// The detail of every listed row (and of what is typed): the window keeps the rows the
+/// longest one needs, so arrowing never resizes it (D323).
+pub fn palette_details(app: &App) -> Vec<Detail> {
+    let Some(p) = app.palette.as_ref() else {
+        return Vec::new();
+    };
+    let rows = super::slash::rows(app, p.input.text());
+    std::iter::once(None)
+        .chain(rows.iter().map(|r| Some(r.fill.as_str())))
+        .filter_map(|r| line_of(app, r))
+        .filter_map(|(value, base)| detail_for(app, &value, base))
+        .collect()
+}
+
+fn detail_for(app: &App, value: &str, base: Option<PathBuf>) -> Option<Detail> {
+    let line = Line::parse(value, app.ssh.home.as_deref()).ok()?;
+    let active = active_base(app);
+    let base = base.unwrap_or_else(|| active.clone());
+    let sanitize = crate::ui::safe_text::sanitize;
+    let (mut text, warn, dest_at) = match line.local_command() {
+        Some(name) => {
+            let first = if name == format!("-{}", args::CONFIG_FILE) {
+                "Uses its own ssh config file (-F):".to_string()
+            } else {
+                format!("Has a local-command option ({name}):")
+            };
+            (
+                vec![first, "check it; enter runs it".to_string()],
+                true,
+                None,
+            )
+        }
+        None => {
+            let (cmd, at) = args::shown_command_at(line.words(), &base);
+            // Counted on the shown (sanitized) text, without spaces: wrapping moves spaces only.
+            let dest_at = at.map(|at| solid_chars("runs: ") + solid_chars(&sanitize(&cmd[..at])));
+            (vec![format!("runs: {}", sanitize(&cmd))], false, dest_at)
+        }
+    };
+    if base != active {
+        text.push(format!("in {}", sanitize(&base.to_string_lossy())));
+    }
+    Some(Detail {
+        text,
+        warn,
+        dest_at,
+    })
+}
+
+/// Characters of `s` that are not spaces.
+pub fn solid_chars(s: &str) -> usize {
+    s.chars().filter(|&c| c != ' ').count()
+}
+
+/// The folder the line `text` (as typed after `/ssh `) would run in, without touching the
+/// disk: for display, and the folder Tab completion lists relative paths from (SEC-4).
+pub fn shown_base(app: &App, text: &str) -> PathBuf {
+    match picked(app) {
+        Some((t, b)) if t.trim() == text.trim() => b,
+        _ => active_base(app),
+    }
+}
+
+/// Where ssh runs for `line` (SEC-4, SEC-5): the folder a picked session or recent line
+/// brings (`picked`), else the workspace folder of the active file, made canonical. A
+/// missing folder refuses the start.
+fn base_for(app: &App, picked: Option<PathBuf>) -> Result<PathBuf, String> {
+    match picked {
+        Some(b) => args::canonical_base(&b).ok_or_else(|| RECENT_BASE_GONE.to_string()),
+        None => args::canonical_base(&active_base(app)).ok_or_else(|| BASE_GONE.to_string()),
+    }
+}
+
+/// `/ssh <argument line>`: the open session with the same line and folder gets the keys (full
+/// screen again when it is logged in); otherwise a new session starts. Err: nothing was
+/// started (the text for the command window).
 pub fn connect(app: &mut App, text: &str) -> Result<(), String> {
     // Refused input is never echoed: it may be a password typed into the wrong place.
-    let target = Target::parse(text).ok_or_else(|| NOT_VALID.to_string())?;
-    let open = app
-        .terminal
-        .tabs
-        .iter()
-        .position(|t| t.running() && t.ssh.as_ref().is_some_and(|s| s.target == target));
+    let line = Line::parse(text, app.ssh.home.as_deref()).map_err(|e| e.notice().to_string())?;
+    // The folder the window handed over for exactly this line, if any; taken once.
+    let picked = app
+        .ssh
+        .picked
+        .take()
+        .filter(|(t, _)| t.trim_matches(' ') == line.text())
+        .map(|(_, b)| b);
+    let base = base_for(app, picked)?;
+    let open = app.terminal.tabs.iter().position(|t| {
+        t.running()
+            && t.ssh
+                .as_ref()
+                .is_some_and(|s| s.line.text() == line.text() && s.base == base)
+    });
     if let Some(i) = open {
         terminal::select_tab(app, i);
         terminal::enter_full(app);
         return Ok(());
     }
-    start(app, target, None)
+    start(app, line, base, None)
 }
 
-/// Enter on an exited session: the same validated target again, from the start (probe, new
-/// nonce), in the same tab.
+/// Enter on an exited session: the same line again, in the same folder, from the start
+/// (probe, new nonce), in the same tab.
 pub fn reconnect(app: &mut App, i: usize) {
     let Some(session) = app.terminal.tabs.get(i).and_then(|t| t.ssh.clone()) else {
         return;
     };
-    if let Err(e) = start(app, session.target, Some(session.id)) {
+    if let Err(e) = start(app, session.line, session.base, Some(session.id)) {
         app.warn(e);
     }
 }
@@ -250,12 +457,32 @@ fn live_sessions(app: &App) -> usize {
         .count()
 }
 
-fn start(app: &mut App, target: Target, replace: Option<u64>) -> Result<(), String> {
+/// The `PATH` ssh and its probe get: the one a terminal tab gets (the user's `terminal_env`
+/// value, else vr-ide's own) without empty and relative entries (SEC-4).
+fn session_path(app: &App) -> OsString {
+    let from_settings = app
+        .terminal
+        .env
+        .iter()
+        .rev()
+        .find(|(k, _)| k == "PATH")
+        .map(|(_, v)| v.clone());
+    let path = from_settings
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    ssh::child_path(&path)
+}
+
+fn start(app: &mut App, line: Line, base: PathBuf, replace: Option<u64>) -> Result<(), String> {
     if let Some(p) = &app.ssh.pending {
         if p.since.elapsed() < app.ssh.probe_timeout + PROBE_GRACE {
             return Err("SSH: another session is still starting; try again in a moment".into());
         }
-        let stuck = app.ssh.pending.take().map(|p| p.launch.target);
+        let stuck = app
+            .ssh
+            .pending
+            .take()
+            .map(|p| p.launch.line.target().clone());
         if let Some(target) = stuck {
             app.warn(format!(
                 "SSH {target}: reading the ssh configuration did not finish; not started"
@@ -267,6 +494,9 @@ fn start(app: &mut App, target: Target, replace: Option<u64>) -> Result<(), Stri
             "SSH: {MAX_SESSIONS} sessions are open; close one first"
         ));
     }
+    if !base.is_dir() {
+        return Err(BASE_GONE.to_string());
+    }
     let bin = app
         .ssh
         .bin
@@ -274,28 +504,32 @@ fn start(app: &mut App, target: Target, replace: Option<u64>) -> Result<(), Stri
         .or_else(|| ssh::find_in_path(&std::env::var_os("PATH")?, "ssh"))
         .ok_or_else(|| "SSH: no ssh program was found on PATH".to_string())?;
     let launch = Launch {
-        target,
+        line,
+        base,
         bin,
         replace,
     };
     let keys = KeysAt::now(app);
-    // Without full screen there is no marker to add, so the user's configuration need not be
-    // asked (and `ssh -G` not run) at all.
-    if !app.settings.ssh_fullscreen {
+    // Without full screen there is no marker to add, and with the user's own LocalCommand or
+    // connection-sharing words none may be added: the configuration need not be asked (and
+    // `ssh -G` not run) at all.
+    if !app.settings.ssh_fullscreen || launch.line.keeps_own_options() {
         open(app, launch, None, keys);
         return Ok(());
     }
     let (tx, rx) = mpsc::channel();
-    let (bin, target, timeout) = (
+    let (bin, line, cwd, path, timeout) = (
         launch.bin.clone(),
-        launch.target.clone(),
+        launch.line.clone(),
+        launch.base.clone(),
+        session_path(app),
         app.ssh.probe_timeout,
     );
     let wake = app.terminal.wake_handle();
     let started = std::thread::Builder::new()
         .name("vr-ssh-probe".into())
         .spawn(move || {
-            let _ = tx.send(ssh::probe(&bin, &target, timeout));
+            let _ = tx.send(ssh::probe(&bin, &line, &cwd, &path, timeout));
             wake.store(true, Ordering::Release);
         });
     match started {
@@ -314,7 +548,7 @@ fn start(app: &mut App, target: Target, replace: Option<u64>) -> Result<(), Stri
 
 /// Looks at what happened in the background since the last call: a finished probe starts its
 /// session; a login marker makes its tab logged in (and full screen when that tab has the
-/// keys); a login or a clean exit puts the target in the recent list. True when something
+/// keys); a login or a clean exit puts the line in the recent list. True when something
 /// changed on screen.
 pub fn poll(app: &mut App) -> bool {
     let mut changed = false;
@@ -342,7 +576,7 @@ pub fn poll(app: &mut App) -> bool {
         }
         if !s.recorded && (s.logged_in || status == vr_term::TermStatus::Exited(0)) {
             s.recorded = true;
-            used.push(s.target.clone());
+            used.push((s.line.text().to_string(), s.base.clone()));
         }
     }
     for i in logged_in {
@@ -358,22 +592,26 @@ pub fn poll(app: &mut App) -> bool {
             ));
         }
     }
-    for target in used {
-        record(app, &target);
+    for (text, base) in used {
+        record(app, &text, base);
     }
     let was_full = app.terminal.full;
     terminal::sync_full(app);
     changed | (was_full != app.terminal.full)
 }
 
-/// Puts `target` first in the recent list (and its file, when there is one).
-fn record(app: &mut App, target: &Target) {
+/// Puts the line first in the recent list, with the folder it ran in (and in its file, when
+/// there is one).
+fn record(app: &mut App, text: &str, base: PathBuf) {
+    let Some(entry) = Entry::new(text, Some(base)) else {
+        return;
+    };
     let list = &mut app.ssh.recent;
-    list.retain(|t| t != target);
-    list.insert(0, target.clone());
+    list.retain(|e| e.text != entry.text);
+    list.insert(0, entry.clone());
     list.truncate(ssh::recent::MAX);
     if let Some(file) = &app.ssh.recent_file {
-        match ssh::recent::record(file, target) {
+        match ssh::recent::record(file, &entry) {
             Ok(list) => app.ssh.recent = list,
             Err(e) => tracing::debug!(error = %e, "ssh recent list not written"),
         }
@@ -389,14 +627,16 @@ fn withheld_env() -> Vec<OsString> {
 }
 
 /// Starts ssh for `launch` in a tab. `probe`: what the user's configuration said; `None` when
-/// full screen is switched off and nothing was asked. `keys`: where the keys were when the
-/// session was asked for.
+/// nothing was asked (full screen switched off, or the line keeps its own options). `keys`:
+/// where the keys were when the session was asked for.
 fn open(app: &mut App, launch: Launch, probe: Option<Probe>, keys: KeysAt) {
     let Launch {
-        target,
+        line,
+        base,
         bin,
         replace,
     } = launch;
+    let target = line.target().clone();
     // A fresh nonce for every start; without one (or without a clean probe) the session is a
     // plain tab: `PermitLocalCommand=yes` is never passed without vr-ide's own command.
     let nonce = match probe {
@@ -404,6 +644,9 @@ fn open(app: &mut App, launch: Launch, probe: Option<Probe>, keys: KeysAt) {
         _ => None,
     };
     let why_plain = match probe {
+        None if app.settings.ssh_fullscreen && line.keeps_own_options() => Some(
+            "your ssh options set LocalCommand or connection sharing (Control…, -M -S -O -G -V -Q -f), so vr-ide adds none of its own: the session stays a panel tab",
+        ),
         Some(Probe::UserLocalCommand) => Some(
             "your ssh config sets LocalCommand, so vr-ide adds none of its own: the session stays a panel tab",
         ),
@@ -419,20 +662,15 @@ fn open(app: &mut App, launch: Launch, probe: Option<Probe>, keys: KeysAt) {
         _ => None,
     };
     let local_command = nonce.as_ref().map(Nonce::local_command);
-    let args = ssh::argv(&target, local_command.as_deref());
+    let argv = ssh::argv(&line, local_command.as_deref());
     let extras = SpawnExtras {
         marker: nonce.as_ref().map(Nonce::marker),
         env_remove: withheld_env(),
+        attention: false,
     };
-    let cwd = app
-        .ssh
-        .home
-        .clone()
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .filter(|h| h.is_dir())
-        .unwrap_or_else(|| PathBuf::from("/"));
+    let env = vec![(OsString::from("PATH"), session_path(app))];
     let output = Arc::new(AtomicBool::new(false));
-    let term = match terminal::spawn_program(app, &output, &bin, args, &cwd, extras) {
+    let term = match terminal::spawn_program_env(app, &output, &bin, argv, &base, extras, env) {
         Ok(term) => term,
         Err(e) => {
             app.error(format!("SSH: {e}"));
@@ -455,6 +693,8 @@ fn open(app: &mut App, launch: Launch, probe: Option<Probe>, keys: KeysAt) {
     let session = Session {
         id,
         target: target.clone(),
+        line,
+        base,
         logged_in: false,
         marked: nonce.is_some(),
         recorded: false,
