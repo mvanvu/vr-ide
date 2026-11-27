@@ -106,6 +106,8 @@ pub struct TermTab {
     fake_title: String,
     /// The SSH session this tab runs instead of a shell (FR-25).
     pub ssh: Option<super::ssh::Session>,
+    /// The folder the shell was started in (a restored session reopens an exited one there).
+    pub cwd: Option<PathBuf>,
 }
 
 impl TermTab {
@@ -120,6 +122,7 @@ impl TermTab {
             fake_status: status,
             fake_title: title.to_string(),
             ssh: None,
+            cwd: None,
         }
     }
 
@@ -757,11 +760,14 @@ fn add_tab(app: &mut App) -> bool {
 }
 
 /// A new terminal tab whose shell starts in `cwd`.
-fn add_tab_in(app: &mut App, cwd: &Path) -> bool {
+pub(crate) fn add_tab_in(app: &mut App, cwd: &Path) -> bool {
     let output = Arc::new(AtomicBool::new(false));
     match spawn(app, &output, cwd) {
         Ok((term, shell)) => {
             push_tab(app, term, shell, output, None, true);
+            if let Some(t) = app.terminal.tabs.last_mut() {
+                t.cwd = Some(cwd.to_path_buf());
+            }
             true
         }
         Err(e) => {
@@ -790,6 +796,7 @@ pub(crate) fn push_tab(
         fake_status: TermStatus::Running,
         fake_title: String::new(),
         ssh,
+        cwd: None,
     });
     if !activate {
         return;
