@@ -882,7 +882,23 @@ pub(crate) fn spawn_program(
     cwd: &Path,
     extras: SpawnExtras,
 ) -> Result<Terminal, TermError> {
+    spawn_program_env(app, output, program, args, cwd, extras, Vec::new())
+}
+
+/// [`spawn_program`] with variables set after the terminal's own (they win over the user's
+/// `terminal_env`): the ssh session's cleaned `PATH`.
+pub(crate) fn spawn_program_env(
+    app: &App,
+    output: &Arc<AtomicBool>,
+    program: &Path,
+    args: Vec<OsString>,
+    cwd: &Path,
+    extras: SpawnExtras,
+    set: Vec<(OsString, OsString)>,
+) -> Result<Terminal, TermError> {
     let p = &app.terminal;
+    let mut env = child_env(&p.env, crate::theme::ColorDepth::detect());
+    env.extend(set);
     let (cols, rows) = spawn_size(app);
     let (o, w) = (output.clone(), p.wake.clone());
     let notify: vr_term::Notify = Arc::new(move || {
@@ -894,7 +910,7 @@ pub(crate) fn spawn_program(
             shell: program.to_path_buf(),
             args,
             cwd: cwd.to_path_buf(),
-            env: child_env(&p.env, crate::theme::ColorDepth::detect()),
+            env,
             cols,
             rows,
             scrollback: p.scrollback,
