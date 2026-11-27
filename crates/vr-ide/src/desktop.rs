@@ -1,7 +1,8 @@
 //! Desktop launcher: writes and removes the `.desktop` entry and icon for vr-ide.
 //!
-//! The pure helpers (`build_entry`, `quote_exec_arg`, `install`, `uninstall`) take the data
-//! directory and the executable as parameters so tests never touch the real `~/.local/share`.
+//! The pure helpers (`build_entry`, `quote_exec_arg`, `install`, `uninstall`,
+//! `migrate_on_window_start`) take the data directory and the executable as parameters so
+//! tests never touch the real `~/.local/share`.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -56,16 +57,53 @@ pub fn validate_exe(exe: &Path) -> Result<&str> {
     Ok(s)
 }
 
-/// Text of the `.desktop` entry. `gnome_terminal` picks the GNOME Terminal form.
-pub fn build_entry(exe: &str, gnome_terminal: bool) -> String {
-    let exe_q = quote_exec_arg(exe);
-    let (exec, terminal) = if gnome_terminal {
-        (
-            format!("gnome-terminal --title=vr-ide -- {exe_q} --session"),
-            "false",
-        )
+/// How the launcher starts vr-ide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryForm {
+    /// `Exec=<exe> --session` with `Terminal=false`: the binary opens its own window.
+    Window,
+    /// The older form: GNOME Terminal hosts the TUI.
+    GnomeTerminal,
+    /// The older form for other desktops: the launcher's own terminal hosts the TUI.
+    Terminal,
+}
+
+/// Whether this binary opens its own window when started from the launcher.
+///
+/// The single switch for the entry form: only a build with the window can start from a
+/// `Terminal=false` entry, so a TUI-only build keeps writing a terminal form that works.
+/// T4 replaces the body with `cfg!(feature = "window")` when it declares that feature; naming
+/// the feature before it exists trips `unexpected_cfgs`.
+pub fn launches_in_window() -> bool {
+    false
+}
+
+/// The form `--install-desktop` writes: the window form when this build has the window,
+/// else GNOME Terminal when it is installed, else the launcher's own terminal.
+pub fn entry_form(window: bool, gnome_terminal_on_path: bool) -> EntryForm {
+    if window {
+        EntryForm::Window
+    } else if gnome_terminal_on_path {
+        EntryForm::GnomeTerminal
     } else {
-        (format!("{exe_q} --session"), "true")
+        EntryForm::Terminal
+    }
+}
+
+/// First token of the GNOME Terminal form's `Exec`; it is how an old entry is recognised.
+const GNOME_EXEC_PREFIX: &str = "gnome-terminal --title=vr-ide -- ";
+
+/// Text of the `.desktop` entry in the given form.
+pub fn build_entry(exe: &str, form: EntryForm) -> String {
+    let exe_q = quote_exec_arg(exe);
+    let (exec, terminal, wm_class) = match form {
+        EntryForm::Window => (
+            format!("{exe_q} --session"),
+            "false",
+            "StartupWMClass=vr-ide\n",
+        ),
+        EntryForm::GnomeTerminal => (format!("{GNOME_EXEC_PREFIX}{exe_q} --session"), "false", ""),
+        EntryForm::Terminal => (format!("{exe_q} --session"), "true", ""),
     };
     format!(
         "[Desktop Entry]\n\
@@ -77,6 +115,7 @@ pub fn build_entry(exe: &str, gnome_terminal: bool) -> String {
          TryExec={try_exec}\n\
          Icon=vr-ide\n\
          Terminal={terminal}\n\
+         {wm_class}\
          Categories=Development;IDE;\n\
          {MARKER}\n",
         try_exec = escape_value(exe),
@@ -147,20 +186,81 @@ fn check_target(path: &Path) -> Result<bool> {
 
 /// Install the entry and icon below `data_home`; returns the written paths. Both targets are
 /// checked before anything is written, and a failed second write undoes the first.
-pub fn install(data_home: &Path, exe: &Path, gnome_terminal: bool) -> Result<Vec<PathBuf>> {
+pub fn install(data_home: &Path, exe: &Path, form: EntryForm) -> Result<Vec<PathBuf>> {
     let exe = validate_exe(exe)?;
     let desktop = desktop_path(data_home);
     let icon = icon_path(data_home);
     check_target(&desktop)?;
     let icon_existed = check_target(&icon)?;
     write_atomic(&icon, ICON_SVG)?;
-    if let Err(e) = write_atomic(&desktop, &build_entry(exe, gnome_terminal)) {
+    if let Err(e) = write_atomic(&desktop, &build_entry(exe, form)) {
         if !icon_existed {
             let _ = fs::remove_file(&icon);
         }
         return Err(e);
     }
     Ok(vec![desktop, icon])
+}
+
+/// The `TryExec` path of an entry, with the value-level escaping undone.
+fn try_exec_of(entry: &str) -> Option<PathBuf> {
+    let raw = entry.lines().find_map(|l| l.strip_prefix("TryExec="))?;
+    let mut out = String::new();
+    let mut it = raw.chars();
+    while let Some(c) = it.next() {
+        out.push(if c == '\\' { it.next()? } else { c });
+    }
+    Some(PathBuf::from(out))
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// On a window start, rewrite an entry vr-ide wrote in a terminal form (GNOME Terminal, or
+/// `Terminal=true` with `Exec=<exe> --session`) into the window form.
+/// Returns a notice for the user when it rewrote the entry, a warning when the rewrite failed,
+/// and `None` when there was nothing to do.
+///
+/// Only a regular file (never a symlink) carrying the marker line and naming this same binary
+/// in `TryExec` is rewritten: an entry for another install (say the packaged binary while a
+/// development build runs) is left alone, so the menu never starts to point at a build that may
+/// go away. The write keeps `install`'s guarantees (no symlink following, atomic rename).
+pub fn migrate_on_window_start(data_home: &Path, exe: &Path) -> Option<String> {
+    let desktop = desktop_path(data_home);
+    let content = read_regular_nofollow(&desktop)?;
+    if !content.lines().any(|l| l.trim() == MARKER) {
+        return None;
+    }
+    let exec = content.lines().find_map(|l| l.strip_prefix("Exec="))?;
+    let try_exec = try_exec_of(&content)?;
+    if !same_file(&try_exec, exe) {
+        return None;
+    }
+    let gnome_form = exec.starts_with(GNOME_EXEC_PREFIX);
+    // Exactly what `build_entry` wrote for the terminal form, so a hand-edited Exec is kept.
+    let terminal_form = content.lines().any(|l| l == "Terminal=true")
+        && try_exec
+            .to_str()
+            .is_some_and(|t| exec == format!("{} --session", quote_exec_arg(t)));
+    if !gnome_form && !terminal_form {
+        return None;
+    }
+    let res = validate_exe(exe).and_then(|exe_s| {
+        // Re-checked right before the write: the file must still be ours.
+        check_target(&desktop)?;
+        write_atomic(&desktop, &build_entry(exe_s, EntryForm::Window))
+    });
+    match res {
+        // No database refresh: the entry has no `MimeType`, so the MIME cache is unchanged.
+        Ok(()) => Some("Updated the vr-ide menu entry to open its own window.".into()),
+        Err(e) => Some(format!(
+            "warning: could not update the vr-ide menu entry: {e:#}"
+        )),
+    }
 }
 
 /// A note for the user when the entry points at a binary other than the `vr-ide` on `PATH`.
@@ -248,8 +348,11 @@ pub(crate) fn refresh_database_with(data_home: &Path, path: Option<&std::ffi::Os
 pub fn run_install() -> Result<String> {
     let exe = std::env::current_exe().context("cannot find the vr-ide executable")?;
     let home = data_home()?;
-    let gnome = find_in_path("gnome-terminal").is_some();
-    let written = install(&home, &exe, gnome)?;
+    let form = entry_form(
+        launches_in_window(),
+        find_in_path("gnome-terminal").is_some(),
+    );
+    let written = install(&home, &exe, form)?;
     refresh_database(&home);
     let mut lines: Vec<String> = written
         .iter()
