@@ -314,8 +314,11 @@ open one.
   The tab bar shows each terminal's title (set
   by the program, or the shell's name) and `[N]` once it exited. Long titles such as bash's
   `user@host: ~/dir` are cut from the left so the directory stays; when the tabs do not fit, the
-  active one stays in view and `+N` counts the others. Click a tab to switch; drag the tab bar to
-  resize the panel (`terminal_height_percent` in settings, 40 % by default, at least 5 rows).
+  active one stays in view and `+N` counts the others. Click a tab to switch; drag a tab along
+  the bar to move it (it stays the active one, its number and `f8` / `shift+f8` follow the new
+  order; past the last tab shown it moves on one place per cell, past those behind `+N`); drag
+  the rest of the tab bar to resize the panel at the bottom (`terminal_height_percent` in
+  settings, 40 % by default, at least 5 rows).
 - `ctrl+f7` (from the editor or a focused terminal; or `/term right`, `/term bottom`) moves the
   panel to the right of the editor for the session: the editor's full height,
   `terminal_width_percent` of the editor column (40 %, at least 20 columns); drag the separator
