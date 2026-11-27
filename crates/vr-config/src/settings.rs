@@ -64,6 +64,10 @@ pub struct Settings {
     pub git_inline_blame: bool,
     /// Width of the AI panel in percent of the screen right of the explorer, 10..=90 (D7).
     pub ai_width_percent: u16,
+    /// Switch a rate-limited AI session to another logged-in account and resume it.
+    pub ai_auto_switch: bool,
+    /// One line typed into the resumed session after an automatic switch, 1..=200 characters.
+    pub ai_auto_switch_prompt: String,
     pub ai_tools: Vec<AiTool>,
 }
 
@@ -202,6 +206,10 @@ fn parse(table: toml::Table) -> Result<Settings, String> {
     }
     if !(10..=90).contains(&s.ai_width_percent) {
         return Err("ai_width_percent must be between 10 and 90".into());
+    }
+    let prompt = &s.ai_auto_switch_prompt;
+    if prompt.is_empty() || prompt.chars().count() > 200 || prompt.chars().any(char::is_control) {
+        return Err("ai_auto_switch_prompt must be one line of 1 to 200 characters".into());
     }
     for (i, t) in s.ai_tools.iter().enumerate() {
         if !valid_tool_name(&t.name) {

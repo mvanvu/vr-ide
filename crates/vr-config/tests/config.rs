@@ -898,3 +898,39 @@ fn ai_tools_are_checked_and_ai_presets_still_read() {
         assert_eq!(s, Settings::default(), "{bad}");
     }
 }
+
+#[test]
+fn ai_auto_switch_defaults_and_override() {
+    let (s, w) = Settings::load(None);
+    assert!(w.is_empty(), "{w:?}");
+    assert!(s.ai_auto_switch);
+    assert_eq!(s.ai_auto_switch_prompt, "Continue where you left off.");
+
+    let (_d, path) = write_user("ai_auto_switch = false\nai_auto_switch_prompt = \"go on\"\n");
+    let (s, w) = Settings::load(Some(&path));
+    assert!(w.is_empty(), "{w:?}");
+    assert!(!s.ai_auto_switch);
+    assert_eq!(s.ai_auto_switch_prompt, "go on");
+
+    let too_long = "x".repeat(201);
+    let bad = [
+        "a\\u0007b".to_string(),
+        "two\\nlines".to_string(),
+        String::new(),
+        too_long,
+    ];
+    for prompt in bad {
+        let (_d, path) = write_user(&format!("ai_auto_switch_prompt = \"{prompt}\"\n"));
+        let (s, w) = Settings::load(Some(&path));
+        assert_eq!(s.ai_auto_switch_prompt, "Continue where you left off.");
+        assert!(
+            matches!(w.as_slice(), [ConfigWarning::InvalidValue { key, .. }] if key == "ai_auto_switch_prompt"),
+            "{prompt:?}: {w:?}"
+        );
+    }
+    let ok = "y".repeat(200);
+    let (_d, path) = write_user(&format!("ai_auto_switch_prompt = \"{ok}\"\n"));
+    let (s, w) = Settings::load(Some(&path));
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(s.ai_auto_switch_prompt, ok);
+}

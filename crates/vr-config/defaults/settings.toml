@@ -46,6 +46,14 @@ git_inline_blame = false
 # it for the session.
 ai_width_percent = 40
 
+# When an AI session hits its usage limit, move it to the next logged-in account of the same tool
+# and resume the conversation there. `/ai autoswitch off` turns it off for one session.
+ai_auto_switch = true
+
+# One line typed into the resumed session after an automatic switch (1..=200 characters, no
+# control characters). An invalid value is reported and this default stays.
+ai_auto_switch_prompt = "Continue where you left off."
+
 # AI agent CLIs of the AI panel (f12, ctrl+f12, /ai <tool>); only the ones found on PATH are
 # offered. A user file that sets ai_tools replaces this whole list.
 #   command        a bare name looked up in the absolute PATH entries, or an absolute path;
