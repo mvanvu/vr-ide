@@ -723,6 +723,39 @@ fn selection_is_dropped_when_its_lines_leave_the_scrollback() {
     assert!(app.terminal.selection.is_none());
 }
 
+/// COR-1: a mouse move over the grid between the output and the wake takes a snapshot of the
+/// slid screen at the top of a full scrollback; the selection is still dropped.
+#[test]
+fn selection_is_dropped_at_the_cap_even_when_a_hover_saw_the_slide_first() {
+    let (d, mut app, _clip) = term_app();
+    let fifo = scrolled_fifo_app(&mut app, d.path(), 400);
+    let (x, y) = (app.layout.terminal.x, app.layout.terminal.y + 1);
+    app.handle_mouse(left(MouseEventKind::Down, x, y + 2));
+    app.handle_mouse(left(MouseEventKind::Up, x + 4, y + 4));
+    assert!(app.terminal.selection.is_some());
+    let flood: String = (0..600).map(|i| format!("flood {i}\n")).collect();
+    emit(&app, &fifo, flood.as_bytes(), 0);
+    let deadline = Instant::now() + WAIT;
+    while tab(&app).grid_now().scroll_offset < 400 {
+        assert!(Instant::now() < deadline, "the view never reached the cap");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let held = tab(&app).grid.cells.clone();
+    while tab(&app).grid_now().cells == held {
+        assert!(Instant::now() < deadline, "the screen never slid");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: x + 1,
+        row: y + 1,
+        modifiers: KeyModifiers::NONE,
+    });
+    crate::commands::terminal::refresh(&mut app);
+    draw(&mut app, 80, 24);
+    assert!(app.terminal.selection.is_none());
+}
+
 // ---- tabs, exited state ----------------------------------------------------------------------
 
 /// D280 / D291: the tab bar's '+' opens a terminal, each tab's 'x' closes that one (its shell

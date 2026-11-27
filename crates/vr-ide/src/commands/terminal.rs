@@ -169,14 +169,22 @@ impl TermTab {
     /// the lines pushed, so nothing slides; at the top the scrollback cap may have dropped lines
     /// under the view, which only a changed screen tells.
     pub fn refresh_holds_view(&mut self) -> bool {
+        let (in_step, holds) = self.refresh_checking_view();
+        in_step && holds
+    }
+
+    /// Takes a fresh snapshot; returns (the view was scrolled back and in step with the last
+    /// snapshot, the view still shows the same lines). A view in step that no longer holds has
+    /// slid under whatever was selected on it.
+    pub fn refresh_checking_view(&mut self) -> (bool, bool) {
         let old = self.grid.clone();
         let in_step = old.scroll_offset > 0 && old.scroll_offset == self.scroll;
         self.refresh();
         let g = &self.grid;
-        in_step
-            && g.scroll_offset >= old.scroll_offset
+        let holds = g.scroll_offset >= old.scroll_offset
             && (g.rows, g.cols) == (old.rows, old.cols)
-            && (g.scroll_offset < g.scrollback_len || g.cells == old.cells)
+            && (g.scroll_offset < g.scrollback_len || g.cells == old.cells);
+        (in_step, holds)
     }
 
     /// Moves the view `lines` up into the history (negative: down), clamped. A real
@@ -1220,10 +1228,25 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) -> bool {
     if matches!(ev.kind, MK::Down(_)) {
         app.focus = Focus::Terminal;
     }
+    let has_selection = app.terminal.selection.is_some();
     let Some(tab) = app.terminal.active_mut() else {
         return true;
     };
-    tab.refresh();
+    // A hover is a snapshot too: one that sees the slid screen would hide the slide from the
+    // next wake, so a selection whose view slid is dropped here.
+    let slid = if has_selection {
+        let (in_step, holds) = tab.refresh_checking_view();
+        in_step && !holds
+    } else {
+        tab.refresh();
+        false
+    };
+    if slid {
+        app.terminal.selection = None;
+    }
+    let Some(tab) = app.terminal.active_mut() else {
+        return true;
+    };
     let modes = tab.grid.modes;
     let (col, row) = (ev.column - grid_area.x, ev.row - grid_area.y);
     let reporting = modes.mouse_reporting && tab.scroll == 0 && tab.running();
