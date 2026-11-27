@@ -360,6 +360,8 @@ fn open_bar(app: &mut App, replace: bool) {
     };
     f.origin = origin;
     app.search.visible = false;
+    // File scope has no folder: the next switch to Project is the whole project.
+    super::search::set_folder(app, None);
     app.focus = Focus::FindBar;
     refresh_now(app);
     app.dirty = true;
@@ -429,6 +431,8 @@ fn switch_scope(app: &mut App) {
                 return;
             }
             mirror_project_fields(app);
+            // File scope has no folder: switching back later is the whole project again.
+            super::search::set_folder(app, None);
             let replace = app.search.replace_mode;
             let field = app.search.field;
             app.search.visible = false;
@@ -485,6 +489,7 @@ pub fn close_box(app: &mut App) {
     app.find.pending = None;
     app.find.open = false;
     app.search.visible = false;
+    super::search::set_folder(app, None);
     if matches!(app.focus, Focus::FindBar | Focus::Search) {
         app.focus = Focus::Editor;
         read_mode_keeping_selection(app);
