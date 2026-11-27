@@ -85,7 +85,7 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
   opens) and hides it again.
 - The explorer colours names by kind from the theme: folders in one colour, files by group (source
   code by language family, config/data, docs, images/media, archives/binaries, lock/generated;
-  dotfiles dimmed and italic).
+  other dotfiles dimmed and italic).
 - A file opens in **read mode** (status bar `READ`): you can move, select, copy, find and save, but
   typing does nothing. Press `space` then `i` to edit (`EDIT`) and `esc` to go back to reading;
   `space` `space` opens the command palette and `tab` moves the focus to the next part. A new file
@@ -333,8 +333,9 @@ open one.
 - Notices above the status bar: `Esc` goes to the program while a terminal has the keys, so click
   a notice to dismiss it there.
 - `shift+pageup` / `shift+pagedown` and the mouse wheel scroll back (10 000 lines, setting
-  `scrollback`); any key or new output returns to the bottom. Programs that use the mouse get it;
-  hold `shift` to select text anyway.
+  `scrollback`); a key sent to the program or a paste returns to the bottom, while new output
+  leaves a scrolled view where it is (the `↑` indicator shows you are scrolled back). Programs that
+  use the mouse get it; hold `shift` to select text anyway.
 - Dragging the mouse selects and copies to the clipboard; `ctrl+shift+v` pastes (bracketed when the
   program asked for it), as does your terminal's own paste.
 - Colours: `synthwave` and `dracula` give programs their own 16 ANSI colours and background;
