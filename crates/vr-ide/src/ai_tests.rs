@@ -230,7 +230,9 @@ fn hide_show_step_focus_and_width() {
 fn a_focused_session_gives_other_keys_to_the_agent() {
     let (_d, mut app) = ai_app();
     crate::ai::open_tool(&mut app, "gemini").unwrap();
-    wait_for(&app, 0, |s| s.contains("CWD:"));
+    // The last startup line: the tty echoes typed keys as they arrive, so keys sent while the agent
+    // is still printing would split "hello" across lines.
+    wait_for(&app, 0, |s| s.contains("VRIDE:"));
     app.ran.clear();
     for (code, mods) in [
         (KeyCode::Char('w'), KeyModifiers::CONTROL),
