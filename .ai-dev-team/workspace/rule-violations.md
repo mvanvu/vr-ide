@@ -1,0 +1,4 @@
+- T2 (14:58): red-first not followed (BASE: tests written with code).
+- T3 (15:00): red-first partial (new tests written with code).
+- T2 (15:45): notes without ## Rule compliance table passed the leader's DONE gate (leader miss).
+- T6 (16:12): red-first not followed for ai/changes.rs; COST-8 incident (bad perl pattern broke 5 files, fixed).
