@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 thiserror.workspace = true
 similar.workspace = true
-tracing.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]

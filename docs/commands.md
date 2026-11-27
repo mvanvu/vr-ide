@@ -42,31 +42,10 @@ of the active file that differ from the git index, unsaved changes included: a b
 changed lines, a low or high bar where lines were removed. The status bar shows the branch (or
 `detached <sha>`), `↑n ↓n` against its upstream, and `parent repo: <folder>` when the repository
 was found above the workspace folder (e.g. a dotfiles repo in your home folder). Each workspace
-folder uses its own repository; a folder without git shows nothing. `/git blame line` turns on a
-dim `Author, 3 days ago • subject` after the cursor line once the cursor rests there (`You,
-uncommitted` for lines not committed yet); it hides while you type. It is off by default and
-changes for this session; set `git_inline_blame = true` in `settings.toml` to keep it on.
-
-Git popup: `/git` opens it on the repository of the active file's workspace folder (or of the
-first folder when no file is open); `/git <name>` on the workspace folder with that name (names
-only: `/git ../x` says "no such root"). The popup stays on that repository; opening it again keeps
-your message draft. `/git push` asks "Push main of ~/repo to origin/main?" (with "and make it the
-upstream" for a branch without one) and pushes in the background; `/git pull` pulls in the
-background. Both show the popup with git's progress; a second `/git push` or `/git pull` while
-one runs offers to cancel it. A pull that stops on conflicts leaves the merge to the terminal and
-the popup says so. Keys inside the popup are listed in `docs/keymap.md`.
-
-Git history and blame (popup tabs 2 and 3): `/git log` shows the repository's commits (short id,
-date, author, subject), newest first, loading more as you scroll; `/git log file` the commits of
-the active file, following renames (as `git log --follow`). `enter` opens the commit view: full
-id, author, date (UTC), the whole message, the changed files and the diff against the first parent,
-syntax-coloured; `esc` goes back to the list. `/git blame` shows the active file (your unsaved
-text included) with the author and age of each block of lines, newest commits brightest; lines not
-committed yet show `+ You, uncommitted`. A blame of a long-lived file can take seconds: the tab
-says `blaming…` and every key keeps working. `3` from the Changes tab blames the file selected
-there; `enter` on a line opens its commit. `/git show <commit>` opens the commit view for an id,
-branch, tag or `HEAD~2`; a name git cannot resolve to exactly one commit is refused ("no such
-commit", or "the short id matches more than one commit").
+folder uses its own repository; a folder without git shows nothing. Set `git_inline_blame = true`
+in `settings.toml` for a dim `Author, 3 days ago • subject` after the cursor line once the cursor
+rests there (`You, uncommitted` for lines not committed yet); it hides while you type. It is off
+by default. Stage, commit, push, pull and history are done with git in a terminal tab.
 
 File commands act on the active tab. `/rename <name>` renames its file in the same folder with the
 explorer's checks (one name, no `/`; an existing name is never replaced) and the tab follows,
@@ -131,14 +110,6 @@ protocol does not send are marked).
 | `/config` | Open settings.toml (made when missing) |
 | `/keymap` | Open keymap.toml (made when missing) |
 | `/keys` | Show the key table (read-only tab) |
-| `/git blame line` | Show or hide the cursor line's blame, for this session |
-| `/git [root]` | Git popup: changes, stage, discard, commit, push (default: the active file's repo) |
-| `/git log` | Git popup, History tab: the repo's commits (enter shows one) |
-| `/git log file` | Git popup, History tab: the active file's commits, following renames |
-| `/git blame` | Git popup, Blame tab: author and age of each line of the active file |
-| `/git show <commit>` | Git popup: one commit's details and diff (an id, branch, tag or HEAD~2) |
-| `/git push` | Push the current branch in the background (the target is shown first) |
-| `/git pull` | Pull in the background (conflicts are resolved in the terminal) |
 | `/help` | List the slash commands |
 | `/q` | Quit (asks about unsaved files) |
 | `/q!` | Quit, discarding unsaved changes (copy kept in recovery) |

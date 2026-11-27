@@ -32,7 +32,7 @@ terminal_width_percent = 40
 # protocol ctrl+` and ctrl+space always differ.
 terminal_pass_nul = false
 # Git (M7): a dim "author, 3 days ago • subject" after the cursor line once the cursor rests
-# (uncommitted lines: "You, uncommitted"). /git blame line turns it on or off for the session.
+# (uncommitted lines: "You, uncommitted").
 git_inline_blame = false
 
 # AI agent CLIs opened in a terminal tab in the project root (M6).

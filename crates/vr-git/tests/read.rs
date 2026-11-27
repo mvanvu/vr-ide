@@ -7,7 +7,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use common::Fixture;
-use vr_git::{ChangeKind, FileStatus, Head, LineChange, LineKind, Repo};
+use vr_git::{ChangeKind, Head, LineChange, Repo};
 
 #[test]
 fn no_repo_bare_and_git_dir_discover_none() {
@@ -52,36 +52,6 @@ fn parent_repo_is_reported() {
         .unwrap();
     assert!(r.is_parent_repo_of(&f.path("sub")));
     assert!(!r.is_parent_repo_of(&f.dir));
-}
-
-#[test]
-fn unborn_repo_head_status_log_blame() {
-    let f = Fixture::new();
-    let r = f.repo();
-    assert_eq!(
-        r.head().unwrap(),
-        Head::Branch {
-            name: "main".into(),
-            oid: None
-        }
-    );
-    assert_eq!(r.ahead_behind().unwrap(), None);
-    assert!(r.log(10, None).unwrap().is_empty());
-    f.write("a.txt", "one\ntwo\n");
-    assert!(
-        r.blame(Path::new("a.txt")).unwrap().is_none(),
-        "untracked → nothing"
-    );
-    f.git(&["add", "a.txt"]);
-    let st = r.status().unwrap();
-    assert_eq!(st.staged.len(), 1);
-    assert_eq!(st.staged[0].status, FileStatus::Added);
-    let b = r.blame(Path::new("a.txt")).unwrap().unwrap();
-    assert_eq!(b.lines.len(), 2);
-    assert!(b.commit_of(0).unwrap().uncommitted);
-    let d = r.diff_staged(Path::new("a.txt")).unwrap().unwrap();
-    assert_eq!(d.status, FileStatus::Added);
-    assert_eq!(d.hunks[0].lines.len(), 2);
 }
 
 #[test]
@@ -147,62 +117,7 @@ fn ahead_behind_matches_status_sb() {
 }
 
 #[test]
-fn status_lists_match_porcelain() {
-    let f = Fixture::new();
-    f.write("mod.txt", "a\n");
-    f.write("del.txt", "a\n");
-    f.write("old name.txt", "same content here\nline two\nline three\n");
-    f.write("both.txt", "a\n");
-    f.commit_all("base");
-    f.write("mod.txt", "b\n");
-    std::fs::remove_file(f.path("del.txt")).unwrap();
-    f.git(&["mv", "old name.txt", "new name.txt"]);
-    f.write("both.txt", "staged\n");
-    f.git(&["add", "both.txt"]);
-    f.write("both.txt", "worktree\n");
-    f.write("new/untracked.txt", "u\n");
-    f.write("added.txt", "x\n");
-    f.git(&["add", "added.txt"]);
-    let st = f.repo().status().unwrap();
-    let names = |v: &[vr_git::StatusEntry]| -> Vec<(String, FileStatus)> {
-        v.iter()
-            .map(|e| (e.path.to_string_lossy().into_owned(), e.status))
-            .collect()
-    };
-    let mut staged = names(&st.staged);
-    staged.sort_by(|a, b| a.0.cmp(&b.0));
-    assert_eq!(
-        staged,
-        vec![
-            ("added.txt".into(), FileStatus::Added),
-            ("both.txt".into(), FileStatus::Modified),
-            ("new name.txt".into(), FileStatus::Renamed),
-        ]
-    );
-    let ren = st
-        .staged
-        .iter()
-        .find(|e| e.status == FileStatus::Renamed)
-        .unwrap();
-    assert_eq!(ren.orig_path.as_deref(), Some(Path::new("old name.txt")));
-    let mut unstaged = names(&st.unstaged);
-    unstaged.sort_by(|a, b| a.0.cmp(&b.0));
-    assert_eq!(
-        unstaged,
-        vec![
-            ("both.txt".into(), FileStatus::Modified),
-            ("del.txt".into(), FileStatus::Deleted),
-            ("mod.txt".into(), FileStatus::Modified),
-            ("new/untracked.txt".into(), FileStatus::Untracked),
-        ]
-    );
-    // Same set of paths as git's short format.
-    let short = f.git_s(&["status", "--porcelain=v1", "-uall"]);
-    assert_eq!(short.lines().count(), 6, "{short}"); // "MM both.txt" is one line
-}
-
-#[test]
-fn conflicted_file_is_listed_and_has_no_gutter() {
+fn conflicted_file_has_no_gutter() {
     let f = Fixture::new();
     f.write("c.txt", "base\n");
     f.commit_all("base");
@@ -229,20 +144,7 @@ fn conflicted_file_is_listed_and_has_no_gutter() {
         .unwrap();
     assert!(!out.status.success());
     let r = f.repo();
-    let st = r.status().unwrap();
-    assert_eq!(
-        st.unstaged
-            .iter()
-            .find(|e| e.path == Path::new("c.txt"))
-            .unwrap()
-            .status,
-        FileStatus::Conflicted
-    );
     assert_eq!(r.line_changes(Path::new("c.txt"), "x\n").unwrap(), None);
-    assert_eq!(
-        r.diff_unstaged(Path::new("c.txt")).unwrap().unwrap().status,
-        FileStatus::Conflicted
-    );
 }
 
 /// Parse `git diff -U0` hunk headers into gutter marks, the reference for AC-16a.
@@ -333,316 +235,6 @@ fn gutter_is_against_the_index_not_head() {
             .unwrap(),
         vec![]
     );
-}
-
-#[test]
-fn diffs_carry_line_numbers_and_match_git() {
-    let f = Fixture::new();
-    let base: String = (1..=20).map(|i| format!("l{i}\n")).collect();
-    f.write("d.txt", &base);
-    f.commit_all("base");
-    f.write(
-        "d.txt",
-        base.replace("l5\n", "L5\n").replace("l15\n", "l15\nnew\n"),
-    );
-    let r = f.repo();
-    let d = r.diff_unstaged(Path::new("d.txt")).unwrap().unwrap();
-    assert_eq!(d.hunks.len(), 2);
-    let h = &d.hunks[0];
-    assert_eq!(
-        (h.old_start, h.old_len, h.new_start, h.new_len),
-        (2, 7, 2, 7)
-    );
-    let removed = h
-        .lines
-        .iter()
-        .find(|l| l.kind == LineKind::Removed)
-        .unwrap();
-    assert_eq!(
-        (removed.old_line, removed.text_lossy().as_str()),
-        (Some(5), "l5")
-    );
-    let added = d.hunks[1]
-        .lines
-        .iter()
-        .find(|l| l.kind == LineKind::Added)
-        .unwrap();
-    assert_eq!(
-        (added.new_line, added.text_lossy().as_str()),
-        (Some(16), "new")
-    );
-    let git_headers: Vec<String> = f
-        .git_s(&["diff", "--", "d.txt"])
-        .lines()
-        .filter(|l| l.starts_with("@@"))
-        .map(str::to_string)
-        .collect();
-    assert_eq!(
-        d.hunks.iter().map(|h| h.header.clone()).collect::<Vec<_>>(),
-        git_headers
-    );
-    assert_eq!(d.old_oid.as_deref().map(str::len), Some(40));
-    assert!(r.diff_staged(Path::new("d.txt")).unwrap().is_none());
-    f.git(&["add", "d.txt"]);
-    assert!(r.diff_unstaged(Path::new("d.txt")).unwrap().is_none());
-    assert_eq!(
-        r.diff_staged(Path::new("d.txt"))
-            .unwrap()
-            .unwrap()
-            .hunks
-            .len(),
-        2
-    );
-}
-
-#[test]
-fn untracked_diff_is_all_added_and_no_newline_kept() {
-    let f = Fixture::new();
-    f.commit_all("empty");
-    f.write("n.txt", "a\nb");
-    let d = f.repo().diff_unstaged(Path::new("n.txt")).unwrap().unwrap();
-    assert_eq!(d.status, FileStatus::Untracked);
-    let l = &d.hunks[0].lines;
-    assert_eq!(l.len(), 2);
-    assert!(l[1].no_newline);
-    assert!(l.iter().all(|l| l.kind == LineKind::Added));
-}
-
-#[test]
-fn staged_rename_and_commit_diff_detect_renames() {
-    let f = Fixture::new();
-    let body: String = (1..=10).map(|i| format!("row {i}\n")).collect();
-    f.write("a.txt", &body);
-    f.commit_all("base");
-    f.git(&["mv", "a.txt", "b.txt"]);
-    f.write("b.txt", body.replace("row 3", "ROW 3"));
-    f.git(&["add", "b.txt"]);
-    let r = f.repo();
-    let d = r.diff_staged(Path::new("b.txt")).unwrap().unwrap();
-    assert_eq!(d.status, FileStatus::Renamed);
-    assert_eq!(d.old_path.as_deref(), Some(Path::new("a.txt")));
-    let sha = f.commit_all("rename");
-    let all = r.diff_commit(&sha, None).unwrap();
-    assert_eq!(all.len(), 1);
-    assert_eq!(all[0].status, FileStatus::Renamed);
-    let one = r.diff_commit(&sha, Some(Path::new("b.txt"))).unwrap();
-    assert_eq!(one, all);
-    // Root commit diffs against the empty tree.
-    let root = f
-        .git_s(&["rev-list", "--max-parents=0", "HEAD"])
-        .trim()
-        .to_string();
-    let rd = r.diff_commit(&root, None).unwrap();
-    assert_eq!(rd[0].status, FileStatus::Added);
-}
-
-#[test]
-fn log_follows_renames_and_matches_git() {
-    let f = Fixture::new();
-    f.write("old.txt", "a\nb\nc\nd\n");
-    f.commit_all("one");
-    f.write("other.txt", "x\n");
-    f.commit_all("unrelated");
-    f.git(&["mv", "old.txt", "new.txt"]);
-    f.commit_all("rename");
-    f.write("new.txt", "a\nb\nc\nd\ne\n");
-    f.commit_all("edit\n\nbody \x1e with separator");
-    let r = f.repo();
-    let log = r.log(100, Some(Path::new("new.txt"))).unwrap();
-    let git: Vec<String> = f
-        .git_s(&["log", "--follow", "--format=%H", "--", "new.txt"])
-        .lines()
-        .map(str::to_string)
-        .collect();
-    assert_eq!(log.iter().map(|c| c.oid.clone()).collect::<Vec<_>>(), git);
-    assert_eq!(
-        log.iter().map(|c| c.summary.as_str()).collect::<Vec<_>>(),
-        ["edit", "rename", "one"]
-    );
-    assert_eq!(log[2].path.as_deref(), Some(Path::new("old.txt")));
-    assert_eq!(log[0].path.as_deref(), Some(Path::new("new.txt")));
-    assert_eq!(log[0].author.name, "Ann Author");
-    let all = r.log(2, None).unwrap();
-    assert_eq!(all.len(), 2);
-    assert_eq!(all[1].parents.len(), 1);
-    let info = r.commit(&log[0].oid).unwrap();
-    assert_eq!(info.message, "edit\n\nbody \x1e with separator");
-    assert_eq!(info.summary(), "edit");
-    let git_show = f.git_s(&["show", "-s", "--format=%an|%ae|%at|%cn", &log[0].oid]);
-    assert_eq!(
-        git_show.trim(),
-        format!(
-            "{}|{}|{}|{}",
-            info.author.name, info.author.email, info.author.time, info.committer.name
-        )
-    );
-    assert_eq!(r.commit("HEAD").unwrap().oid, log[0].oid);
-}
-
-#[test]
-fn blame_matches_porcelain_and_marks_uncommitted_lines() {
-    let f = Fixture::new();
-    f.write("b.txt", "one\ntwo\nthree\n");
-    let c1 = f.commit_all("first");
-    f.write("b.txt", "one\nTWO\nthree\n");
-    let c2 = f.commit_all("second");
-    let r = f.repo();
-    let b = r.blame(Path::new("b.txt")).unwrap().unwrap();
-    let oids: Vec<&str> = (0..3)
-        .map(|i| b.commit_of(i).unwrap().oid.as_str())
-        .collect();
-    assert_eq!(oids, [c1.as_str(), c2.as_str(), c1.as_str()]);
-    let git: Vec<String> = f
-        .git_s(&["blame", "--line-porcelain", "--", "b.txt"])
-        .lines()
-        .filter(|l| l.len() > 40 && l.as_bytes()[..40].iter().all(u8::is_ascii_hexdigit))
-        .map(|l| l[..40].to_string())
-        .collect();
-    assert_eq!(oids, git.iter().map(String::as_str).collect::<Vec<_>>());
-    assert_eq!(b.commit_of(1).unwrap().summary, "second");
-    assert!(b.commit_of(0).unwrap().boundary || !b.commit_of(0).unwrap().uncommitted);
-
-    let bt = r
-        .blame_text(Path::new("b.txt"), "one\nTWO\nedited\nnew line\n")
-        .unwrap()
-        .unwrap();
-    assert_eq!(bt.lines.len(), 4);
-    let unc: Vec<bool> = (0..4)
-        .map(|i| bt.commit_of(i).unwrap().uncommitted)
-        .collect();
-    assert_eq!(unc, [false, false, true, true]);
-    // The saved file is untouched by blame_text.
-    assert_eq!(
-        std::fs::read_to_string(f.path("b.txt")).unwrap(),
-        "one\nTWO\nthree\n"
-    );
-}
-
-#[test]
-fn odd_paths_round_trip() {
-    let f = Fixture::new();
-    let names: Vec<&[u8]> = vec![
-        b"with space.txt",
-        b"-rf",
-        b"--output=x",
-        b":(glob)*",
-        b"*",
-        b":!a",
-        b"a\nb",
-        b"a\tb",
-        b"\"q\"",
-        b"caf\xc3\xa9.txt",
-        b"bad\xff\xfe.txt",
-    ];
-    for n in &names {
-        f.write(OsStr::from_bytes(n), "v1\n");
-    }
-    f.commit_all("odd");
-    for n in &names {
-        f.write(OsStr::from_bytes(n), "v1\nv2\n");
-    }
-    let r = f.repo();
-    let st = r.status().unwrap();
-    assert_eq!(st.unstaged.len(), names.len(), "{:?}", st.unstaged);
-    for n in &names {
-        let p = Path::new(OsStr::from_bytes(n));
-        assert_eq!(
-            st.unstaged.iter().filter(|e| e.path == p).count(),
-            1,
-            "{p:?}"
-        );
-        let d = r
-            .diff_unstaged(p)
-            .unwrap()
-            .unwrap_or_else(|| panic!("diff of {p:?}"));
-        assert_eq!(d.path(), Some(p), "diff path of {p:?}");
-        assert_eq!(
-            d.hunks[0]
-                .lines
-                .iter()
-                .filter(|l| l.kind == LineKind::Added)
-                .count(),
-            1
-        );
-        let b = r.blame(p).unwrap().unwrap();
-        assert_eq!(b.lines.len(), 2);
-        assert!(b.commit_of(1).unwrap().uncommitted);
-        assert_eq!(r.log(5, Some(p)).unwrap().len(), 1, "log of {p:?}");
-        assert_eq!(r.line_changes(p, "v1\nv2\n").unwrap().unwrap().len(), 1);
-    }
-    let sha = f.head();
-    let all = r.diff_commit(&sha, None).unwrap();
-    let mut got: Vec<PathBuf> = all
-        .iter()
-        .map(|d| d.path().unwrap().to_path_buf())
-        .collect();
-    got.sort();
-    let mut want: Vec<PathBuf> = names
-        .iter()
-        .map(|n| PathBuf::from(OsStr::from_bytes(n)))
-        .collect();
-    want.sort();
-    assert_eq!(got, want);
-    assert!(!f.path("x").exists(), "--output=x must never write a file");
-}
-
-#[test]
-fn user_typed_revisions_are_verified() {
-    let f = Fixture::new();
-    f.write("a", "1\n");
-    f.commit_all("one");
-    let r = f.repo();
-    for bad in ["--output=x", "-p", "nope", "HEAD:a", ""] {
-        assert!(
-            matches!(r.commit(bad), Err(vr_git::GitError::NotACommit(_))),
-            "{bad}"
-        );
-        assert!(
-            matches!(
-                r.diff_commit(bad, None),
-                Err(vr_git::GitError::NotACommit(_))
-            ),
-            "{bad}"
-        );
-    }
-    assert!(!f.path("x").exists());
-    assert!(r.commit("HEAD~0").is_ok());
-}
-
-#[test]
-fn message_search_revisions_resolve_to_the_matching_commit() {
-    let f = Fixture::new();
-    f.write("a", "1\n");
-    f.commit_all("fourteen apples");
-    f.write("a", "2\n");
-    f.commit_all("two pears");
-    let r = f.repo();
-    let want = f.git_s(&["rev-parse", "HEAD~1"]);
-    assert_eq!(r.resolve_commit(":/fourteen").unwrap(), want.trim());
-    assert_eq!(
-        r.resolve_commit(":/^two").unwrap(),
-        r.resolve_commit("HEAD").unwrap()
-    );
-    for bad in [":/nothing-matches", ":/"] {
-        assert!(
-            matches!(r.resolve_commit(bad), Err(vr_git::GitError::NotACommit(_))),
-            "{bad}"
-        );
-    }
-}
-
-#[test]
-fn symlink_is_addressed_by_its_own_path() {
-    let f = Fixture::new();
-    std::os::unix::fs::symlink("/etc/hostname", f.path("link")).unwrap();
-    f.commit_all("link");
-    let r = f.repo();
-    assert_eq!(r.relative(&f.path("link")).unwrap(), PathBuf::from("link"));
-    std::fs::remove_file(f.path("link")).unwrap();
-    std::os::unix::fs::symlink("/etc/passwd", f.path("link")).unwrap();
-    let d = r.diff_unstaged(&f.path("link")).unwrap().unwrap();
-    assert_eq!(d.path(), Some(Path::new("link")));
-    assert_eq!(d.new_mode.as_deref(), Some("120000"));
 }
 
 #[test]
@@ -741,22 +333,110 @@ fn gutter_follows_git_line_ending_conversion() {
 }
 
 #[test]
-fn the_staged_fingerprint_follows_the_index_only() {
+fn unborn_repo_head_and_inline_blame() {
     let f = Fixture::new();
     let r = f.repo();
-    // Unborn branch: compared with the empty tree.
-    let empty = r.staged_fingerprint().unwrap();
-    f.write("a.txt", "one\n");
+    assert_eq!(
+        r.head().unwrap(),
+        Head::Branch {
+            name: "main".into(),
+            oid: None
+        }
+    );
+    assert_eq!(r.ahead_behind().unwrap(), None);
+    f.write("a.txt", "one\ntwo\n");
+    assert!(
+        r.inline_blame(Path::new("a.txt"), "one\ntwo\n")
+            .unwrap()
+            .is_none(),
+        "untracked → nothing"
+    );
     f.git(&["add", "a.txt"]);
-    let one = r.staged_fingerprint().unwrap();
-    assert_ne!(one, empty);
-    // A worktree change alone leaves it.
-    f.write("a.txt", "two\n");
-    assert_eq!(r.staged_fingerprint().unwrap(), one);
-    // New content of a staged path (the list stays the same) moves it.
-    f.git(&["add", "a.txt"]);
-    let two = r.staged_fingerprint().unwrap();
-    assert_ne!(two, one);
-    f.commit_all("c");
-    assert_eq!(r.staged_fingerprint().unwrap(), empty);
+    let b = r
+        .inline_blame(Path::new("a.txt"), "one\ntwo\n")
+        .unwrap()
+        .unwrap();
+    assert_eq!(b.lines.len(), 2);
+    assert!(b.commit_of(0).unwrap().uncommitted);
+}
+
+#[test]
+fn inline_blame_matches_porcelain_and_marks_unsaved_lines() {
+    let f = Fixture::new();
+    f.write("b.txt", "one\ntwo\nthree\n");
+    let c1 = f.commit_all("first");
+    f.write("b.txt", "one\nTWO\nthree\n");
+    let c2 = f.commit_all("second");
+    let r = f.repo();
+    let b = r
+        .inline_blame(Path::new("b.txt"), "one\nTWO\nthree\n")
+        .unwrap()
+        .unwrap();
+    let oids: Vec<&str> = (0..3)
+        .map(|i| b.commit_of(i).unwrap().oid.as_str())
+        .collect();
+    assert_eq!(oids, [c1.as_str(), c2.as_str(), c1.as_str()]);
+    let git: Vec<String> = f
+        .git_s(&["blame", "--line-porcelain", "--", "b.txt"])
+        .lines()
+        .filter(|l| l.len() > 40 && l.as_bytes()[..40].iter().all(u8::is_ascii_hexdigit))
+        .map(|l| l[..40].to_string())
+        .collect();
+    assert_eq!(oids, git.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(b.commit_of(1).unwrap().summary, "second");
+
+    let bt = r
+        .inline_blame(Path::new("b.txt"), "one\nTWO\nedited\nnew line\n")
+        .unwrap()
+        .unwrap();
+    assert_eq!(bt.lines.len(), 4);
+    let unc: Vec<bool> = (0..4)
+        .map(|i| bt.commit_of(i).unwrap().uncommitted)
+        .collect();
+    assert_eq!(unc, [false, false, true, true]);
+    // The saved file is untouched by the blame.
+    assert_eq!(
+        std::fs::read_to_string(f.path("b.txt")).unwrap(),
+        "one\nTWO\nthree\n"
+    );
+}
+
+#[test]
+fn odd_paths_round_trip() {
+    let f = Fixture::new();
+    let names: Vec<&[u8]> = vec![
+        b"with space.txt",
+        b"-rf",
+        b"--output=x",
+        b":(glob)*",
+        b"*",
+        b":!a",
+        b"a\nb",
+        b"a\tb",
+        b"\"q\"",
+        b"caf\xc3\xa9.txt",
+        b"bad\xff\xfe.txt",
+    ];
+    for n in &names {
+        f.write(OsStr::from_bytes(n), "v1\n");
+    }
+    f.commit_all("odd");
+    let r = f.repo();
+    for n in &names {
+        let p = Path::new(OsStr::from_bytes(n));
+        assert_eq!(r.line_changes(p, "v1\nv2\n").unwrap().unwrap().len(), 1);
+        let b = r.inline_blame(p, "v1\nv2\n").unwrap().unwrap();
+        assert_eq!(b.lines.len(), 2);
+        assert!(b.commit_of(1).unwrap().uncommitted);
+    }
+    assert!(!f.path("x").exists(), "--output=x must never write a file");
+}
+
+#[test]
+fn symlink_is_addressed_by_its_own_path() {
+    let f = Fixture::new();
+    std::os::unix::fs::symlink("/etc/hostname", f.path("link")).unwrap();
+    f.commit_all("link");
+    let r = f.repo();
+    assert_eq!(r.relative(&f.path("link")).unwrap(), PathBuf::from("link"));
 }

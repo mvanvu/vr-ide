@@ -425,7 +425,6 @@ impl App {
         commands::search::roots_changed(self);
         // Removed roots stop their git worker; new ones are discovered off the UI thread.
         crate::git::roots_changed(self);
-        crate::git_popup::roots_changed(self);
         self.root_files.clear();
         // Branches and missing marks of new roots come with the next monitor sample.
         let paths = self.workspace.paths();

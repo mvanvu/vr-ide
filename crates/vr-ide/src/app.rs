@@ -228,12 +228,6 @@ pub struct App {
     pub ws_check_gate: Option<std::sync::mpsc::Receiver<()>>,
     /// Git context of the editor (M7-4a): per-root repos, gutter marks, branch, inline blame.
     pub git: crate::git::GitState,
-    /// The Git popup session (M7-3): bound to one repo; kept while hidden so a push or a
-    /// queued write goes on and the message draft stays.
-    pub git_popup: Option<crate::git_popup::GitPopup>,
-    /// Commit message drafts of popup sessions replaced by one on another repo, by work tree;
-    /// a session on that repo takes its draft back (D307).
-    pub git_drafts: Vec<(std::path::PathBuf, String)>,
 }
 
 /// What the welcome screen shows of one root besides its name.
@@ -335,8 +329,6 @@ impl App {
             #[cfg(test)]
             ws_check_gate: None,
             git: Default::default(),
-            git_popup: None,
-            git_drafts: Vec::new(),
         }
     }
 
@@ -369,10 +361,6 @@ impl App {
         warnings.extend(app.load_languages(Some(&dir.join(vr_config::LANGUAGES_FILE))));
         let state = vr_config::state_dir();
         app.recovery_dir = Some(state.join("recovery"));
-        // Discard copies of the Git popup (vr-git refuses a relative folder).
-        if state.is_absolute() {
-            app.git.options.recovery_dir = Some(state.join("git-recovery"));
-        }
         let recent = state.join(vr_config::RECENT_FILE);
         let (list, w) = vr_config::RecentWorkspaces::load(&recent);
         warnings.extend(w);
@@ -888,9 +876,7 @@ impl App {
             Some(p) => p.prev_focus,
             None => self.focus,
         };
-        let on_editor = self.dialog.is_none()
-            && !self.git_popup_shown()
-            && matches!(focus, Focus::Editor | Focus::FindBar);
+        let on_editor = self.dialog.is_none() && matches!(focus, Focus::Editor | Focus::FindBar);
         let here = Some(self.active).filter(|&i| on_editor && i < self.docs.len());
         if here == self.editor_seen {
             return;
@@ -1096,7 +1082,6 @@ impl App {
     /// Drops expired info notices and runs a find rescan whose typing pause is over.
     pub fn tick(&mut self, now: Instant) {
         crate::git::tick(self, now);
-        crate::git_popup::tick(self, now);
         commands::find::poll(self, now);
         // The welcome screen is the only reader of the monitor: nothing is read behind a file or a panel that covers it.
         // Before the first frame nothing is known: sample as usual.
@@ -1182,11 +1167,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// The Git popup is open on screen (it takes every key and click below a dialog).
-    pub fn git_popup_shown(&self) -> bool {
-        self.git_popup.as_ref().is_some_and(|p| p.visible)
-    }
-
     /// Hands a dialog's answer to its action (which may open the next dialog).
     fn answer_dialog(&mut self, outcome: Outcome) {
         if outcome == Outcome::Pending {
@@ -1240,34 +1220,18 @@ impl App {
         if self.focus != Focus::Editor || self.edit_mode() || self.dialog.is_some() {
             self.space_pending = false;
         }
-        // In the Git popup's message box Enter types a line break: two quick ones are a blank
-        // line, not a repeat (D307); a labelled repeat and the settle time still apply.
-        let text_box = self.dialog.is_none()
-            && self.git_popup.as_ref().is_some_and(|p| {
-                p.visible
-                    && p.tab == crate::git_popup::Tab::Changes
-                    && p.focus == crate::git_popup::Pane::Message
-            });
-        let enter_ignored =
-            key.code == KeyCode::Enter && self.enter_is_not_deliberate(&key, now, !text_box);
+        let enter_ignored = key.code == KeyCode::Enter && self.enter_is_not_deliberate(&key, now);
         if key.code == KeyCode::Enter {
             self.last_enter = Some(now);
         }
-        let modal = self.dialog.is_some()
-            || self.focus == Focus::Palette
-            || self.explorer.menu.is_some()
-            || self.git_popup_shown();
+        let modal =
+            self.dialog.is_some() || self.focus == Focus::Palette || self.explorer.menu.is_some();
         if modal && enter_ignored {
             return;
         }
         if let Some(d) = &mut self.dialog {
             let outcome = d.widget.handle_key(&key);
             self.answer_dialog(outcome);
-            return;
-        }
-        // The Git popup is modal: its own keys only (D297), nothing global.
-        if self.git_popup_shown() {
-            crate::git_popup::handle_key(self, &key);
             return;
         }
         // The explorer's right-click menu takes the keys it uses (T23).
@@ -1345,15 +1309,14 @@ impl App {
 
     /// An Enter that a dialog or the palette must not take: a labelled repeat, one within
     /// [`ENTER_SETTLE`] of the dialog opening (typed for what was there before), or one within
-    /// [`ENTER_REPEAT_GAP`] of the previous Enter (legacy auto-repeat of a held key; only when
-    /// `gap`).
-    fn enter_is_not_deliberate(&self, key: &KeyEvent, now: Instant, gap: bool) -> bool {
+    /// [`ENTER_REPEAT_GAP`] of the previous Enter (legacy auto-repeat of a held key).
+    fn enter_is_not_deliberate(&self, key: &KeyEvent, now: Instant) -> bool {
         let within = |t: Option<Instant>, d: Duration| {
             t.is_some_and(|t| now.saturating_duration_since(t) < d)
         };
         key.kind == KeyEventKind::Repeat
             || within(self.modal_since, self.enter_settle)
-            || (gap && within(self.last_enter, self.enter_repeat_gap))
+            || within(self.last_enter, self.enter_repeat_gap)
     }
 
     /// Time of the event being handled.
@@ -1368,10 +1331,6 @@ impl App {
         self.space_pending = false;
         if let Some(d) = &mut self.dialog {
             d.widget.handle_paste(text);
-            return;
-        }
-        if self.git_popup_shown() {
-            crate::git_popup::paste(self, text);
             return;
         }
         match self.focus {
@@ -1418,10 +1377,6 @@ impl App {
         if let Some(d) = &mut self.dialog {
             let outcome = d.widget.handle_mouse(&ev);
             self.answer_dialog(outcome);
-            return;
-        }
-        if self.git_popup_shown() {
-            crate::git_popup::handle_mouse(self, &ev);
             return;
         }
         // An open explorer menu sees every mouse event first (T23).
