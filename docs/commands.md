@@ -16,7 +16,7 @@ The list shows the matching slash commands with their arguments and a short desc
 - `Esc` closes the window and returns to read (normal) mode.
 - Without `/` the window is the command palette and lists the named commands as before.
 
-`/run` and `/ai` only act on your `Enter`. They type the text, then `Enter`, into a terminal of the
+`/run` only acts on your `Enter`. It types the text, then `Enter`, into a terminal of the
 integrated panel: the panel's own shell reads it as if you had typed it (vr-ide adds no shell of
 its own), so a missing program shows that shell's error. `/run` uses the active terminal when its
 shell is waiting for a command; when there is none, its shell has exited or a program started from
@@ -117,7 +117,7 @@ protocol does not send are marked).
 | `/term right` | Terminal panel on the right, for this session |
 | `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
-| `/ai <tool>` | Run an AI tool (e.g. claude) in a new terminal tab |
+| `/ai <tool>` | Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name> |
 | `/ssh [ssh args]` | Open an SSH session, args as after ssh (none: list hosts) |
 | `/ws add <dir>` | Add a folder to the workspace |
 | `/ws remove [root]` | Remove a workspace folder (default: the active file's) |

@@ -22,7 +22,7 @@ pub use recent::{
     RECENT_FILE, RECENT_WORKSPACES_MAX, RecentWorkspace, RecentWorkspaces, write_atomic,
 };
 pub use recent_files::{RECENT_FILES_FILE, RECENT_FILES_MAX, RecentFiles};
-pub use settings::{AiPreset, DEFAULT_SETTINGS, Settings, TerminalPosition};
+pub use settings::{AiTool, DEFAULT_SETTINGS, Settings, TerminalPosition, valid_tool_name};
 pub use workspace_file::{
     MAX_WORKSPACE_FILE, WORKSPACE_EXT, format_workspace, is_workspace_file, parse_workspace,
     read_workspace,
@@ -35,7 +35,7 @@ pub enum ConfigWarning {
     Io { file: PathBuf, message: String },
     #[error("{}: invalid TOML, built-in defaults kept: {message}", file.display())]
     Malformed { file: PathBuf, message: String },
-    #[error("{}: [{name}] is not a keymap context (editor, explorer, palette, terminal)", file.display())]
+    #[error("{}: [{name}] is not a keymap context (editor, explorer, palette, terminal, ai)", file.display())]
     UnknownContext { file: PathBuf, name: String },
     #[error("{}: key {key:?} is not a valid key chord: {reason}", file.display())]
     InvalidKey {
@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(s, Settings::default());
         let text = std::fs::read_to_string(&settings).unwrap();
         assert!(text.contains("\n# tab_width = 4\n"), "{text}");
-        assert!(text.contains("\n# [[ai_presets]]\n"), "{text}");
+        assert!(text.contains("\n# [[ai_tools]]\n"), "{text}");
         std::fs::write(&settings, text.replace("# tab_width = 4", "tab_width = 2")).unwrap();
         assert_eq!(Settings::load(Some(&settings)).0.tab_width, 2);
 

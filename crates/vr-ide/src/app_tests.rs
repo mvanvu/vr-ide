@@ -751,8 +751,8 @@ pub(crate) const KEYSET_V2: &[(&str, &str, &str)] = &[
 /// Keys the spec removed (T21; ctrl+f2, f12 and f5 by the user's later changes; f3 / shift+f3,
 /// ctrl+f4 and ctrl+f12 by D279 / D280). ctrl+f7, kept free for T19, is the panel position key.
 pub(crate) const REMOVED_V2: &[&str] = &[
-    "ctrl+i", "ctrl+]", "ctrl+u", "f7", "shift+f7", "ctrl+t", "f3", "shift+f3", "f6", "ctrl+f1",
-    "ctrl+f2", "ctrl+f3", "ctrl+f5", "f12", "f5", "ctrl+f4", "ctrl+f12",
+    "ctrl+i", "ctrl+]", "ctrl+u", "ctrl+t", "shift+f3", "f6", "ctrl+f1", "ctrl+f2", "ctrl+f3",
+    "ctrl+f5", "f5", "ctrl+f4",
 ];
 
 /// The bytes GNOME Terminal (VTE) sends for `k` without the kitty protocol, and the event

@@ -605,6 +605,11 @@ pub fn quote(word: &str) -> String {
 /// shell would need it, and the relative path values of `-i`/`-F`/`-E`/`-S`/`-o …File=`
 /// shown joined to `base`, the folder ssh runs in (it resolves them there itself).
 pub fn shown_command(words: &[String], base: &Path) -> String {
+    shown_command_at(words, base).0
+}
+
+/// [`shown_command`] and the byte offset of the destination word in it.
+pub fn shown_command_at(words: &[String], base: &Path) -> (String, Option<usize>) {
     let refs: Vec<&str> = words.iter().map(String::as_str).collect();
     let join = |v: &str| -> String {
         // `none` is ssh's word for no file at all.
@@ -618,10 +623,9 @@ pub fn shown_command(words: &[String], base: &Path) -> String {
     let mut i = 0;
     // Only the option part of the line is looked at: the remote command is shown as typed.
     let (parsed, _) = walk(&refs);
-    let opt_end = parsed
-        .ok()
-        .and_then(|p| p.dest)
-        .map_or(words.len(), |d| option_end(&refs, d));
+    let dest = parsed.ok().and_then(|p| p.dest);
+    let opt_end = dest.map_or(words.len(), |d| option_end(&refs, d));
+    let mut dest_out = None;
     while i < words.len() {
         let w = words[i].as_str();
         let mut shown = w.to_string();
@@ -657,10 +661,14 @@ pub fn shown_command(words: &[String], base: &Path) -> String {
                 }
             }
         }
+        if Some(i) == dest {
+            dest_out = Some(out.len());
+        }
         out.push(quote(&shown));
         i += 1;
     }
-    out.join(" ")
+    let at = dest_out.map(|n| out[..n].iter().map(|w| w.len() + 1).sum());
+    (out.join(" "), at)
 }
 
 /// Index of the first remote-command word of `words` whose destination is at `dest`.

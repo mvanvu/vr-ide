@@ -297,26 +297,38 @@ fn row_text(item: &PaletteItem) -> String {
 /// it does not fit, the cut is marked with "…" and never hides the destination; a line
 /// after the command (`in <folder>`) keeps its end.
 fn ssh_detail_lines(d: &crate::commands::ssh::Detail, width: u16, rows: usize) -> Vec<String> {
-    let runs = "runs: ";
     let w = usize::from(width);
-    let mut items: Vec<Vec<String>> = d
-        .text
-        .iter()
-        .map(|t| {
-            if !d.warn && t.starts_with(runs) {
-                crate::ssh::args::wrap_command(t, w, runs.len())
-            } else {
-                crate::ui::dialog::wrap(t, width)
-            }
-        })
-        .collect();
+    let wrap = |t: &str, cells: usize| -> Vec<String> {
+        let runs = "runs: ";
+        if !d.warn && t.starts_with(runs) {
+            crate::ssh::args::wrap_command(t, cells, runs.len())
+        } else {
+            crate::ui::dialog::wrap(t, cells as u16)
+        }
+    };
+    let mut items: Vec<Vec<String>> = d.text.iter().map(|t| wrap(t, w)).collect();
     if items.iter().map(Vec::len).sum::<usize>() <= rows || items.is_empty() || rows == 0 {
         let mut all: Vec<String> = items.into_iter().flatten().collect();
         all.truncate(rows);
         return all;
     }
-    let first = items.remove(0);
     let first_text = d.text.first().map_or("", String::as_str);
+    // One row and another folder: both share it, the folder (a warning) before the rest.
+    let folder = d.text.iter().skip(1).find(|t| t.starts_with("in "));
+    if rows == 1
+        && let Some(folder) = folder
+    {
+        let fw = Span::raw(folder.as_str()).width().min(w / 2);
+        let shown = if Span::raw(folder.as_str()).width() <= fw {
+            folder.clone()
+        } else {
+            format!("in {}", keep_end(&folder[3..], fw.saturating_sub(3)))
+        };
+        let cw = w.saturating_sub(fw + 2);
+        let cmd = cut_keeping(wrap(first_text, cw), 1, d.dest_at, cw, first_text);
+        return vec![format!("{}  {shown}", cmd.concat())];
+    }
+    let first = items.remove(0);
     let mut rest: Vec<String> = items
         .into_iter()
         .zip(d.text.iter().skip(1))
@@ -329,22 +341,34 @@ fn ssh_detail_lines(d: &crate::commands::ssh::Detail, width: u16, rows: usize) -
         })
         .collect();
     rest.truncate(rows - 1);
-    let mut out = cut_keeping(first, rows - rest.len(), &d.dest, w, first_text);
+    let mut out = cut_keeping(first, rows - rest.len(), d.dest_at, w, first_text);
     out.extend(rest);
     out
 }
 
-/// `lines` (one text wrapped) in `k` lines: the first ones, then the line holding `dest`
-/// (else the next one), each cut marked with "…". One line: the start, "…", the
-/// destination's line.
-fn cut_keeping(lines: Vec<String>, k: usize, dest: &str, width: usize, text: &str) -> Vec<String> {
+/// `lines` (one text wrapped) in `k` lines: the first ones, then the line where the
+/// destination starts (`dest_at`, in characters that are not spaces; else the next line),
+/// each cut marked with "…". One line: the start, "…", the destination's line.
+fn cut_keeping(
+    lines: Vec<String>,
+    k: usize,
+    dest_at: Option<usize>,
+    width: usize,
+    text: &str,
+) -> Vec<String> {
     if lines.len() <= k {
         return lines;
     }
     if k == 0 {
         return Vec::new();
     }
-    let at = lines.iter().rposition(|l| l.contains(dest));
+    let at = dest_at.and_then(|n| {
+        let mut seen = 0;
+        lines.iter().position(|l| {
+            seen += crate::commands::ssh::solid_chars(l);
+            seen > n
+        })
+    });
     if k == 1 {
         let Some(at) = at.filter(|&a| a > 0) else {
             return vec![ellipsize(text, width)];

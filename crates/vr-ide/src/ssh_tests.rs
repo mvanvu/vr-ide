@@ -1796,3 +1796,61 @@ fn ui_s5_a_long_command_keeps_its_destination_and_the_box_keeps_its_height() {
     );
     assert!(!rows[runs + 3].contains("fixecom"), "{screen}");
 }
+
+/// The detail rows under the list's separator in `screen`.
+fn detail_rows(screen: &str) -> Vec<String> {
+    screen
+        .lines()
+        .skip_while(|l| !l.contains("│ ───"))
+        .skip(1)
+        .take_while(|l| !l.contains('└'))
+        .map(|l| {
+            // Between the box's borders: what is drawn beside the box is not the box's.
+            let inner = match (l.find('│'), l.rfind('│')) {
+                (Some(a), Some(b)) if a < b => &l[a + '│'.len_utf8()..b],
+                _ => l,
+            };
+            inner.trim().to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn ui_s5_a_cut_command_keeps_the_real_destination_not_the_same_text_later_on() {
+    let mut f = fx("");
+    let a = "a".repeat(60);
+    let b = "b".repeat(60);
+    slash(
+        &mut f.app,
+        &format!(
+            "/ssh -o UserKnownHostsFile=config/known_hosts-of-the-team -o \
+             IdentityFile=config/ids/a-key-with-a-long-name deploy@db1 printf {a} {b} deploy@db1"
+        ),
+    );
+    let rows = detail_rows(&pump(&mut f.app));
+    assert_eq!(rows.len(), 3, "{rows:#?}");
+    assert!(
+        rows.iter().any(|r| r.contains("deploy@db1 printf")),
+        "the destination's own line stays: {rows:#?}"
+    );
+    assert!(rows.iter().any(|r| r.contains('…')), "{rows:#?}");
+}
+
+#[test]
+fn ui_s5_one_detail_row_still_names_the_other_folder() {
+    let mut f = fx("");
+    let a = f.path("roota");
+    std::fs::create_dir(&a).unwrap();
+    let ca = canonical(&a);
+    f.app.ssh.recent = vec![Entry::new("-i credentials/k web1", Some(PathBuf::from(&ca))).unwrap()];
+    slash(&mut f.app, "/ssh ");
+    let screen = frame_text(&draw(&mut f.app, 80, 8));
+    let rows = detail_rows(&screen);
+    assert_eq!(rows.len(), 1, "{screen}");
+    assert!(rows[0].contains("web1"), "{screen}");
+    assert!(
+        rows[0].contains("in …") || rows[0].contains(&format!("in {ca}")),
+        "{screen}"
+    );
+    assert!(rows[0].ends_with("roota"), "{screen}");
+}

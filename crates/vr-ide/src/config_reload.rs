@@ -137,9 +137,9 @@ impl App {
                 changed.push(name);
             }
         }
-        if old.ai_presets != file.ai_presets {
-            next.ai_presets = file.ai_presets.clone();
-            changed.push("ai_presets".to_string());
+        if old.ai_tools != file.ai_tools {
+            next.ai_tools = file.ai_tools.clone();
+            changed.push("ai_tools".to_string());
         }
         if changed.is_empty() {
             if saved {

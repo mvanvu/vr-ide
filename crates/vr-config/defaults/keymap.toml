@@ -7,11 +7,12 @@
 #   ctrl+s = "file.save"              # same; quotes around the key are optional
 #   "ctrl+q" = ""                     # empty command name removes a built-in binding
 #   [explorer]                        # context tables:
-#   "delete" = "explorer.delete"      #   editor | explorer | palette | terminal
+#   "delete" = "explorer.delete"      #   editor | explorer | palette | terminal | ai
 #   "delete" = { command = "explorer.delete", when = "explorer" }   # same, as one line at top level
 #
 # Lookup: the focused context's table first, then the global keys. The terminal context is the
-# exception (D8): a focused terminal gets every key except the ones in [terminal].
+# exception (D8): a focused terminal gets every key except the ones in [terminal]; a focused AI
+# session likewise gets every key except the ones in [ai].
 #
 # Keys: one key with modifiers ctrl, shift, alt (any order, case-insensitive) joined by "+":
 #   a letter, digit or symbol ("ctrl+/", "ctrl+]", "ctrl+`"), f1..f24, enter, escape, tab,
@@ -73,6 +74,15 @@
 # Blame annotations: author and date of each line left of the line numbers, every editor tab,
 # read and edit mode (FR-27).
 "shift+f2" = "editor.toggle_blame"
+# AI panel (D7): a column right of the editor, full height; one tab per agent session.
+# f12: hidden, show it with the keys; shown, give it the keys; focused, hide it (agents keep
+# running). ctrl+f12 opens the session picker in a new tab. f7 / shift+f7 step the sessions.
+"f12" = "ai.toggle"
+"ctrl+f12" = "ai.new"
+"f7" = "ai.next"
+"shift+f7" = "ai.prev"
+# The editor gets the keys; the panels stay shown.
+"f3" = "focus.editor"
 
 [editor]
 # Read mode / edit mode (D145): a file opens in read mode; space i edits (built in), escape
@@ -133,3 +143,23 @@
 # first while a program other than the shell runs). Neither reaches the program.
 "ctrl+n" = "terminal.new"
 "ctrl+w" = "terminal.close"
+# The AI panel keys work from a focused terminal too (f3, f6 and f7 stay with the program: mc).
+"f12" = "ai.toggle"
+"ctrl+f12" = "ai.new"
+
+[ai]
+# A focused AI session receives every key except these (global keys do not apply here), so the
+# agent's own prompt keys (ctrl+w, ctrl+n, other ctrl letters, f5) reach it. Without the kitty
+# protocol ctrl+` arrives as NUL and does the same, unless terminal_pass_nul = true. Built in,
+# not listed: shift+pageup / shift+pagedown scroll back, ctrl+shift+v pastes; in the session
+# picker up / down / enter / escape.
+"f1" = "app.palette"
+"f3" = "focus.editor"
+"f7" = "ai.next"
+"shift+f7" = "ai.prev"
+"f12" = "ai.toggle"
+"ctrl+f12" = "ai.new"
+# Panel width while the AI panel has the keys (from the editor these keys size the terminal).
+"ctrl+f8" = "ai.grow"
+"ctrl+f9" = "ai.shrink"
+"ctrl+`" = "terminal.toggle"

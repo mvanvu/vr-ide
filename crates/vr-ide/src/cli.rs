@@ -4,7 +4,10 @@
 //! `vr-ide` opens the current folder; `vr-ide dir1 dir2 …` opens each folder as a root;
 //! `vr-ide file` opens the file and adds its project (git work tree, else its folder) as a
 //! root unless a folder argument already holds it; `vr-ide x.vr-workspace` opens the roots
-//! listed in that file (alone: a workspace file is not mixed with other arguments).
+//! listed in that file (alone: a workspace file is not mixed with other arguments);
+//! `vr-ide --session` (alone; the desktop launcher) opens the home folder, which the saved
+//! session then replaces (`crate::session`).
+//! `vr-ide --install-desktop` / `--uninstall-desktop` (alone) add or remove the app-menu entry.
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -18,6 +21,9 @@ pub struct Launch {
     pub open_files: Vec<PathBuf>,
     /// Folders left out (nested in another root), for the startup notice.
     pub notices: Vec<String>,
+    /// `--session`: restore the saved session and keep it (D2). Every other launch leaves
+    /// the session file alone.
+    pub session: bool,
 }
 
 #[derive(Debug)]
@@ -34,7 +40,7 @@ impl fmt::Display for CliError {
             CliError::NotFound(p) => write!(f, "path does not exist: {}", p.display()),
             CliError::TooManyArgs => write!(
                 f,
-                "usage: vr-ide [<dir>|<file>]... | vr-ide <file>.{}",
+                "usage: vr-ide [<dir>|<file>]... | vr-ide <file>.{} | vr-ide {SESSION_FLAG} | vr-ide {INSTALL_DESKTOP_FLAG} | vr-ide {UNINSTALL_DESKTOP_FLAG}",
                 vr_config::WORKSPACE_EXT
             ),
             CliError::Io(p, e) => write!(f, "cannot access {}: {e}", p.display()),
@@ -45,13 +51,51 @@ impl fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
+/// The launcher's flag: restore and keep the session.
+pub const SESSION_FLAG: &str = "--session";
+pub const INSTALL_DESKTOP_FLAG: &str = "--install-desktop";
+pub const UNINSTALL_DESKTOP_FLAG: &str = "--uninstall-desktop";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopAction {
+    Install,
+    Uninstall,
+}
+
+/// `--install-desktop` / `--uninstall-desktop`: each only as the single argument.
+pub fn desktop_action(args: &[OsString]) -> Result<Option<DesktopAction>, CliError> {
+    let action = |a: &OsString| match a.to_str() {
+        Some(INSTALL_DESKTOP_FLAG) => Some(DesktopAction::Install),
+        Some(UNINSTALL_DESKTOP_FLAG) => Some(DesktopAction::Uninstall),
+        _ => None,
+    };
+    match args.iter().find_map(action) {
+        None => Ok(None),
+        Some(_) if args.len() > 1 => Err(CliError::TooManyArgs),
+        found => Ok(found),
+    }
+}
+
 /// Resolves launch arguments (without argv[0]) against `cwd`.
 pub fn resolve(args: &[OsString], cwd: &Path) -> Result<Launch, CliError> {
+    if args.iter().any(|a| a == SESSION_FLAG) {
+        if args.len() > 1 {
+            return Err(CliError::TooManyArgs);
+        }
+        let home = crate::session::home_dir().unwrap_or_else(|| cwd.to_path_buf());
+        return Ok(Launch {
+            workspace: Workspace::single(canonical(&home)?),
+            open_files: Vec::new(),
+            notices: Vec::new(),
+            session: true,
+        });
+    }
     if args.is_empty() {
         return Ok(Launch {
             workspace: Workspace::single(canonical(cwd)?),
             open_files: Vec::new(),
             notices: Vec::new(),
+            session: false,
         });
     }
     let mut dirs = Vec::new();
@@ -78,6 +122,7 @@ pub fn resolve(args: &[OsString], cwd: &Path) -> Result<Launch, CliError> {
                 workspace,
                 open_files: Vec::new(),
                 notices: notices(refused),
+                session: false,
             });
         } else {
             files.push(target);
@@ -96,6 +141,7 @@ pub fn resolve(args: &[OsString], cwd: &Path) -> Result<Launch, CliError> {
         workspace,
         open_files: files,
         notices: notices(refused),
+        session: false,
     })
 }
 
@@ -248,6 +294,43 @@ mod tests {
         std::fs::write(base.join("bad.vr-workspace"), "roots = [").unwrap();
         let err = resolve(&[os("bad.vr-workspace")], &base).unwrap_err();
         assert!(err.to_string().contains("bad.vr-workspace"), "{err}");
+    }
+
+    #[test]
+    fn cli_session_flag_opens_home_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let l = resolve(&[os("--session")], &base).unwrap();
+        assert!(l.session);
+        let home = crate::session::home_dir().unwrap_or(base.clone());
+        assert_eq!(roots(&l), [home.canonicalize().unwrap()]);
+        assert!(l.open_files.is_empty());
+        assert!(matches!(
+            resolve(&[os("--session"), os(".")], &base),
+            Err(CliError::TooManyArgs)
+        ));
+        assert!(!resolve(&[], &base).unwrap().session);
+    }
+
+    #[test]
+    fn cli_desktop_action_flags_are_alone() {
+        assert_eq!(desktop_action(&[]).unwrap(), None);
+        assert_eq!(desktop_action(&[os(".")]).unwrap(), None);
+        assert_eq!(
+            desktop_action(&[os("--install-desktop")]).unwrap(),
+            Some(DesktopAction::Install)
+        );
+        assert_eq!(
+            desktop_action(&[os("--uninstall-desktop")]).unwrap(),
+            Some(DesktopAction::Uninstall)
+        );
+        for args in [
+            vec![os("--install-desktop"), os(".")],
+            vec![os("--session"), os("--uninstall-desktop")],
+            vec![os("--install-desktop"), os("--uninstall-desktop")],
+        ] {
+            assert!(matches!(desktop_action(&args), Err(CliError::TooManyArgs)));
+        }
     }
 
     #[cfg(unix)]

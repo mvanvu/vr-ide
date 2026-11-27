@@ -256,8 +256,9 @@ pub struct Detail {
     pub text: Vec<String>,
     /// The hint: drawn as a warning.
     pub warn: bool,
-    /// The destination as the command shows it: a cut command keeps it visible.
-    pub dest: String,
+    /// Where the destination starts in the first text, counted in characters that are not
+    /// spaces (wrapping moves only spaces): a cut command keeps that line visible.
+    pub dest_at: Option<usize>,
 }
 
 /// The line a row (or what is typed, `row` = `None`) stands for in the `/ssh` window, with
@@ -354,31 +355,40 @@ fn detail_for(app: &App, value: &str, base: Option<PathBuf>) -> Option<Detail> {
     let line = Line::parse(value, app.ssh.home.as_deref()).ok()?;
     let active = active_base(app);
     let base = base.unwrap_or_else(|| active.clone());
-    let dest = crate::ui::safe_text::sanitize(&args::quote(line.target().as_str()));
-    let (mut text, warn) = match line.local_command() {
+    let sanitize = crate::ui::safe_text::sanitize;
+    let (mut text, warn, dest_at) = match line.local_command() {
         Some(name) => {
             let first = if name == format!("-{}", args::CONFIG_FILE) {
                 "Uses its own ssh config file (-F):".to_string()
             } else {
                 format!("Has a local-command option ({name}):")
             };
-            (vec![first, "check it; enter runs it".to_string()], true)
+            (
+                vec![first, "check it; enter runs it".to_string()],
+                true,
+                None,
+            )
         }
-        None => (
-            vec![format!(
-                "runs: {}",
-                crate::ui::safe_text::sanitize(&args::shown_command(line.words(), &base))
-            )],
-            false,
-        ),
+        None => {
+            let (cmd, at) = args::shown_command_at(line.words(), &base);
+            // Counted on the shown (sanitized) text, without spaces: wrapping moves spaces only.
+            let dest_at = at.map(|at| solid_chars("runs: ") + solid_chars(&sanitize(&cmd[..at])));
+            (vec![format!("runs: {}", sanitize(&cmd))], false, dest_at)
+        }
     };
     if base != active {
-        text.push(format!(
-            "in {}",
-            crate::ui::safe_text::sanitize(&base.to_string_lossy())
-        ));
+        text.push(format!("in {}", sanitize(&base.to_string_lossy())));
     }
-    Some(Detail { text, warn, dest })
+    Some(Detail {
+        text,
+        warn,
+        dest_at,
+    })
+}
+
+/// Characters of `s` that are not spaces.
+pub fn solid_chars(s: &str) -> usize {
+    s.chars().filter(|&c| c != ' ').count()
 }
 
 /// The folder the line `text` (as typed after `/ssh `) would run in, without touching the
