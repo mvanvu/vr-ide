@@ -14,6 +14,7 @@ pub mod git;
 pub mod monitor;
 mod recent_files;
 pub mod recovery;
+pub mod session;
 pub mod ssh;
 pub mod syntax;
 pub mod theme;
@@ -42,6 +43,8 @@ mod language_snapshot_tests;
 mod mode_tests;
 #[cfg(test)]
 mod search_tests;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod slash2_tests;
 #[cfg(test)]
