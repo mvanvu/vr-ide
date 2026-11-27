@@ -283,6 +283,7 @@ impl TermTab {
             fake_status: TermStatus::Running,
             fake_title: String::new(),
             ssh: None,
+            cwd: None,
         }
     }
 

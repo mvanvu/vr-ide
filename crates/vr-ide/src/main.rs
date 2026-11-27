@@ -82,6 +82,8 @@ fn main() -> Result<()> {
     app.start_watcher();
     if let Some(restore) = restore {
         session::restore(&mut app, restore);
+        // After the roots: a saved agent reopens only in one of them.
+        vr_ide::ai::restore::from_session(&mut app);
     }
     for file in &open_files {
         if let Err(e) = app.open_path(file) {

@@ -385,10 +385,17 @@ A focused session takes every key except `f1`, `f3`, `f7`, `shift+f7`, `f12`, `c
 `ctrl+f8`, `ctrl+f9` and ``ctrl+` ``; `ctrl+w`, `ctrl+n` and `f5` reach the agent. Continue last and
 Choose earlier use the tool's own resume (claude `--continue` / `--resume`, codex `resume --last` /
 `resume`: `continue_args` and `resume_args` in `ai_tools`); vr-ide never reads the tools' history.
-An agent that exits keeps its screen; `enter` starts it again with its continue arguments. While
-the panel shows, a terminal set to the right sits at the bottom of the editor column. The tools
-are started directly (no shell), found only in the absolute `PATH` entries, and get no `VR_IDE_*`
-variables.
+A user file with the older `ai_presets` list still works: it is read as `ai_tools` (set only one
+of the two keys), and its entries need `continue_args` / `resume_args` for Continue last / Choose
+earlier.
+An agent that exits keeps its screen (`shift+pageup` / `shift+pagedown` scroll it back) and shows
+the exit line below it; `enter` starts it again with its continue arguments. With
+`vr-ide --session` the panel comes back as it was (shown, width, sessions and their names), each
+session started with its continue arguments and sent no input; a session whose tool is no longer
+in `ai_tools` or on `PATH`, or whose folder is no longer a workspace folder, is not reopened (one
+notice each). While the panel shows, a terminal set to the right sits at the bottom of
+the editor column. The tools are started directly (no shell), found only in the absolute
+`PATH` entries, and get no `VR_IDE_*` variables.
 
 ### SSH sessions
 

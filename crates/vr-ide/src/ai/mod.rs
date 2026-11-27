@@ -119,6 +119,9 @@ pub struct AiPanel {
     /// Exact width in columns (separator included) set by a drag; grow / shrink clear it.
     pub width_cols: Option<u16>,
     pub selection: Option<Selection>,
+    /// What the session store last got from [`restore::report`]; `None` until
+    /// [`restore::from_session`] ran (no `--session`, or not restored yet).
+    pub(crate) reported: Option<crate::session::AiSection>,
     selecting: bool,
     /// The program got a mouse press; drags and the release go to it until that release.
     captured: bool,
@@ -136,6 +139,7 @@ impl AiPanel {
             width_percent: width_percent.clamp(WIDTH_MIN, WIDTH_MAX),
             width_cols: None,
             selection: None,
+            reported: None,
             selecting: false,
             captured: false,
             resizing: false,
@@ -785,13 +789,15 @@ pub fn refresh(app: &mut App) -> bool {
     changed
 }
 
-/// Gives every session the grid size (after each layout change; a no-op when equal).
+/// Gives every session the grid size, an exited one less the rows of its exited line (after
+/// each layout change; a no-op when equal).
 pub fn fit(app: &mut App, grid: Rect) {
     if grid.width == 0 || grid.height == 0 {
         return;
     }
     for s in &app.ai.sessions {
-        s.tab.resize(grid.width, grid.height);
+        let reserved = crate::ui::ai_view::reserved_rows(app, s, grid);
+        s.tab.resize(grid.width, grid.height - reserved);
     }
 }
 
@@ -868,6 +874,16 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         return true;
     };
     s.tab.refresh();
+    let modes = s.tab.grid.modes;
+    let shift_only = key.modifiers == KeyModifiers::SHIFT;
+    // Scrolling back works on an exited session too: its output stays to be read.
+    if shift_only && matches!(key.code, K::PageUp | K::PageDown) && !modes.alt_screen {
+        let lines = s.tab.grid.rows.saturating_sub(1).max(1) as isize;
+        let up = key.code == K::PageUp;
+        s.tab.scroll_by(if up { lines } else { -lines });
+        app.dirty = true;
+        return true;
+    }
     if !s.running() {
         let closes = chord
             .as_ref()
@@ -878,14 +894,6 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             let i = app.ai.active;
             close(app, i);
         }
-        return true;
-    }
-    let modes = s.tab.grid.modes;
-    let shift_only = key.modifiers == KeyModifiers::SHIFT;
-    if shift_only && matches!(key.code, K::PageUp | K::PageDown) && !modes.alt_screen {
-        let lines = s.tab.grid.rows.saturating_sub(1).max(1) as isize;
-        let up = key.code == K::PageUp;
-        s.tab.scroll_by(if up { lines } else { -lines });
         return true;
     }
     if chord.as_ref() == Some(&term::paste_chord()) {
