@@ -7,6 +7,7 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, Clear, Widget};
 
 use crate::app::App;
+use crate::commands::completion;
 use crate::commands::palette::{PaletteItem, PaletteMode};
 use crate::theme::Theme;
 
@@ -22,6 +23,29 @@ const SLASH_DESC_MIN: usize = 10;
 const MAX_DETAIL_ROWS: usize = 3;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
+    // `/ssh`: the command the highlighted line runs, or its local-command hint (UI spec S5).
+    // While Tab completion lists `/ssh` destinations the list holds candidates, so the detail
+    // is that of the input; other completions own the area themselves.
+    let completing = app
+        .palette
+        .as_ref()
+        .and_then(|p| p.completion.as_ref())
+        .map(|c| {
+            matches!(c.note, completion::Note::SshRuns) && c.phase != completion::Phase::Common
+        });
+    let (ssh_detail, ssh_details) = match completing {
+        None => (
+            crate::commands::ssh::palette_detail(app),
+            crate::commands::ssh::palette_details(app),
+        ),
+        Some(true) => (
+            crate::commands::ssh::typed_detail(app),
+            crate::commands::ssh::typed_detail(app)
+                .into_iter()
+                .collect(),
+        ),
+        Some(false) => (None, Vec::new()),
+    };
     let Some(p) = &mut app.palette else {
         return;
     };
@@ -51,7 +75,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     // box (D323); the text is the selected row's, blank while that row fits.
     let row_w = usize::from(w.saturating_sub(4));
     // Lines the most demanding cut row needs (at most [`MAX_DETAIL_ROWS`]); 0 = none cut.
-    let need = p
+    let mut need = p
         .items
         .iter()
         .filter(|it| RowFit::of(it, row_w).is_cut(it, row_w))
@@ -68,9 +92,26 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         }
         _ => Vec::new(),
     };
+    // Tab completion (D6) owns the area under the list while it is open.
+    let comp = p.completion.clone();
+    if let Some(c) = &comp {
+        detail_lines = completion_detail(c, text_w);
+        need = detail_lines.len();
+    }
+    // `/ssh`: as many rows as the longest row's detail needs (D323).
+    if let Some(most) = ssh_details
+        .iter()
+        .map(|d| ssh_detail_lines(d, text_w, usize::MAX).len())
+        .max()
+    {
+        need = most.min(MAX_DETAIL_ROWS);
+    }
     let spare = room.saturating_sub(3 + err_rows + 1);
     let reserved = need.min(usize::from(spare.saturating_sub(1)));
-    detail_lines.truncate(reserved);
+    match &ssh_detail {
+        Some(d) => detail_lines = ssh_detail_lines(d, text_w, reserved),
+        None => detail_lines.truncate(reserved),
+    }
     let detail_rows = if reserved == 0 {
         0
     } else {
@@ -98,7 +139,41 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let pw = prompt.len() as u16;
     buf.set_style(Rect::new(x0, rect.y + 1, inner_w, 1), theme.input);
     buf.set_string(x0, rect.y + 1, prompt, theme.input);
-    let field_w = inner_w.saturating_sub(pw);
+    // Right of the input while completing: `tab: list (N)` or `i/N`. The typed text and the
+    // cursor after it keep their room: a narrow box takes the short tag or none; the list
+    // counter always stays.
+    let typed_w = Span::raw(p.input.text()).width() as u16 + 1;
+    let avail = inner_w.saturating_sub(pw);
+    let fits = |t: &str| {
+        let w = Span::raw(t).width() as u16;
+        !t.is_empty() && w + 1 + typed_w <= avail
+    };
+    let tag = match &comp {
+        None => String::new(),
+        Some(c) => {
+            let full = c.tag();
+            if fits(&full) {
+                full
+            } else if let Some(s) = c.short_tag().filter(|s| fits(s)) {
+                s
+            } else if matches!(c.phase, completion::Phase::List(_)) {
+                full
+            } else {
+                String::new()
+            }
+        }
+    };
+    let tag_w = Span::raw(tag.as_str()).width() as u16;
+    let tag_room = if tag.is_empty() || tag_w + 2 > avail {
+        0
+    } else {
+        tag_w + 1
+    };
+    let field_w = inner_w.saturating_sub(pw + tag_room);
+    if tag_room > 0 {
+        let tx = x0 + inner_w - tag_w - 1;
+        buf.set_string(tx, rect.y + 1, &tag, theme.input.patch(theme.dim));
+    }
     let (shown, cx) = p.input.view(field_w);
     buf.set_stringn(
         x0 + pw,
@@ -131,6 +206,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     let width = usize::from(inner_w.saturating_sub(2));
     let slash =
         p.mode == PaletteMode::Commands && crate::commands::palette::is_slash(p.input.text());
+    // Candidate folders in the folder colour (S5).
+    let folders = comp
+        .as_ref()
+        .is_some_and(|c| matches!(c.phase, completion::Phase::List(_)));
+    let folder = ratatui::style::Style::default().fg(theme.popup_border.fg.unwrap_or_default());
+    let ssh_line = slash && p.input.text().starts_with(crate::commands::ssh::SLASH);
     if p.items.is_empty() {
         buf.set_stringn(
             x0 + 1,
@@ -172,7 +253,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             } else {
                 width - 2 - SLASH_DESC_MIN.min(name_w)
             };
-            ellipsize(&item.title, keep)
+            // An ssh line keeps its first option and its destination (SEC-5).
+            let fitted = if ssh_line {
+                crate::commands::ssh::fit_row(&item.title, keep)
+            } else {
+                None
+            };
+            fitted.unwrap_or_else(|| ellipsize(&item.title, keep))
         } else {
             item.title.clone()
         };
@@ -185,6 +272,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             }
             let style = if item.hits.contains(&ci) {
                 base.patch(theme.matched)
+            } else if folders && item.title.ends_with('/') {
+                base.patch(folder)
             } else {
                 base
             };
@@ -206,10 +295,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     }
     if detail_rows > 0 {
         let dim = theme.popup.patch(theme.dim);
+        let text_style = match &ssh_detail {
+            Some(d) if d.warn => theme
+                .popup
+                .patch(theme.warning)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+            _ => dim,
+        };
         let sy = list.y + list_rows;
         buf.set_stringn(x0 + 1, sy, "─".repeat(width), width, dim);
         for (i, l) in detail_lines.iter().enumerate() {
-            buf.set_stringn(x0 + 1, sy + 1 + i as u16, l, width, dim);
+            buf.set_stringn(x0 + 1, sy + 1 + i as u16, l, width, text_style);
         }
     }
     frame.set_cursor_position(cursor);
@@ -264,6 +360,139 @@ fn row_text(item: &PaletteItem) -> String {
         .join("  ")
 }
 
+/// The `/ssh` detail in at most `rows` lines of `width` cells: the command wrapped at spaces
+/// and after `/` with continuation lines under the command, a hint wrapped on words. When
+/// it does not fit, the cut is marked with "…" and never hides the destination; a line
+/// after the command (`in <folder>`) keeps its end.
+fn ssh_detail_lines(d: &crate::commands::ssh::Detail, width: u16, rows: usize) -> Vec<String> {
+    let w = usize::from(width);
+    let wrap = |t: &str, cells: usize| -> Vec<String> {
+        let runs = "runs: ";
+        if !d.warn && t.starts_with(runs) {
+            crate::ssh::args::wrap_command(t, cells, runs.len())
+        } else {
+            crate::ui::dialog::wrap(t, cells as u16)
+        }
+    };
+    let mut items: Vec<Vec<String>> = d.text.iter().map(|t| wrap(t, w)).collect();
+    if items.iter().map(Vec::len).sum::<usize>() <= rows || items.is_empty() || rows == 0 {
+        let mut all: Vec<String> = items.into_iter().flatten().collect();
+        all.truncate(rows);
+        return all;
+    }
+    let first_text = d.text.first().map_or("", String::as_str);
+    // One row and another folder: both share it, the folder (a warning) before the rest.
+    let folder = d.text.iter().skip(1).find(|t| t.starts_with("in "));
+    if rows == 1
+        && let Some(folder) = folder
+    {
+        let fw = Span::raw(folder.as_str()).width().min(w / 2);
+        let shown = if Span::raw(folder.as_str()).width() <= fw {
+            folder.clone()
+        } else {
+            format!("in {}", keep_end(&folder[3..], fw.saturating_sub(3)))
+        };
+        let cw = w.saturating_sub(fw + 2);
+        let cmd = cut_keeping(wrap(first_text, cw), 1, d.dest_at, cw, first_text);
+        return vec![format!("{}  {shown}", cmd.concat())];
+    }
+    let first = items.remove(0);
+    let mut rest: Vec<String> = items
+        .into_iter()
+        .zip(d.text.iter().skip(1))
+        .map(|(lines, text)| {
+            if lines.len() <= 1 {
+                lines.into_iter().next().unwrap_or_default()
+            } else {
+                keep_end(text, w)
+            }
+        })
+        .collect();
+    rest.truncate(rows - 1);
+    let mut out = cut_keeping(first, rows - rest.len(), d.dest_at, w, first_text);
+    out.extend(rest);
+    out
+}
+
+/// `lines` (one text wrapped) in `k` lines: the first ones, then the line where the
+/// destination starts (`dest_at`, in characters that are not spaces; else the next line),
+/// each cut marked with "…". One line: the start, "…", the destination's line.
+fn cut_keeping(
+    lines: Vec<String>,
+    k: usize,
+    dest_at: Option<usize>,
+    width: usize,
+    text: &str,
+) -> Vec<String> {
+    if lines.len() <= k {
+        return lines;
+    }
+    if k == 0 {
+        return Vec::new();
+    }
+    let at = dest_at.and_then(|n| {
+        let mut seen = 0;
+        lines.iter().position(|l| {
+            seen += crate::commands::ssh::solid_chars(l);
+            seen > n
+        })
+    });
+    if k == 1 {
+        let Some(at) = at.filter(|&a| a > 0) else {
+            return vec![ellipsize(text, width)];
+        };
+        let tail = lines[at].trim_start();
+        let tail_w = Span::raw(tail).width();
+        if tail_w + 2 > width {
+            return vec![keep_end(tail, width)];
+        }
+        let mut head = ellipsize(&lines[0], width - tail_w - 1);
+        if !head.ends_with('…') {
+            head.push('…');
+        }
+        return vec![format!("{head}{tail}")];
+    }
+    let last_i = at.map_or(k - 1, |a| a.max(k - 1));
+    let mut out = lines[..k - 1].to_vec();
+    let mut last = lines[last_i].clone();
+    if last_i > k - 1 {
+        let text = last.trim_start();
+        let indent = last.len() - text.len();
+        last = if indent > 0 {
+            format!("{}…{text}", " ".repeat(indent - 1))
+        } else {
+            keep_end(&format!("…{text}"), width)
+        };
+    }
+    if last_i < lines.len() - 1 {
+        last = if Span::raw(last.as_str()).width() < width {
+            format!("{last}…")
+        } else {
+            ellipsize(&last, width)
+        };
+    }
+    out.push(last);
+    out
+}
+
+/// `text` cut to `cells` keeping its end, starting with "…" when cut.
+fn keep_end(text: &str, cells: usize) -> String {
+    if Span::raw(text).width() <= cells {
+        return text.to_string();
+    }
+    let mut tail: Vec<char> = Vec::new();
+    let mut used = 1;
+    for ch in text.chars().rev() {
+        let cw = Span::raw(ch.to_string()).width();
+        if used + cw > cells {
+            break;
+        }
+        tail.push(ch);
+        used += cw;
+    }
+    std::iter::once('…').chain(tail.into_iter().rev()).collect()
+}
+
 /// `text` wrapped on word boundaries to `width` cells, at most `rows` lines; a longer text
 /// ends its last line in "…".
 fn wrap_cut(text: &str, width: u16, rows: usize) -> Vec<String> {
@@ -305,4 +534,15 @@ fn ellipsize(text: &str, cells: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// The lines under the list while a completion is open: the common part's candidates on one
+/// line, the folder paths come from, or the key hint. `/ssh` destinations show the window's
+/// own `runs:` detail instead (none here).
+fn completion_detail(c: &completion::Completion, width: u16) -> Vec<String> {
+    match (c.phase, &c.note) {
+        (completion::Phase::Common, _) => vec![ellipsize(&c.detail(), usize::from(width))],
+        (completion::Phase::List(_), completion::Note::SshRuns) => Vec::new(),
+        _ => wrap_cut(&c.detail(), width, MAX_DETAIL_ROWS),
+    }
 }

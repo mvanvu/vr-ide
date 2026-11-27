@@ -147,6 +147,9 @@ names, is in
 Commands without a default key can be run from the palette (`F1`).
 Typing `/` in the palette runs slash commands (`/run`, `/ai`, `/ws add`, `/theme`, `/help`, ...);
 the list is in [docs/commands.md](docs/commands.md).
+`tab` completes there: command names, paths (`/ws add`, `/ws open`, `/run` file arguments, the
+files of `/ssh -i`), `/ssh` hosts and `/ai` tools; a second `tab` lists the candidates, `tab` /
+`shift+tab` step through them, `enter` takes one and `esc` closes only the list.
 
 ### Files and tabs
 
@@ -412,7 +415,7 @@ each tool's accounts under it.
 - Add: `+ Add account…`, type a name (`a-z 0-9 - _`, up to 32, unique across tools), `enter`: the
   folder is made and a session starts on it. Sign in once with `/login` in that tab; the tool
   writes its login into the folder. vr-ide never reads, copies or stores tokens.
-- Use: pick the account in the picker, or `/ai claude @work`. The tab shows it (`2 claude@work`);
+- Use: pick the account in the picker, or `/ai claude @work` (`tab` after `@` completes the names). The tab shows it (`2 claude@work`);
   a restored session reopens on the same account, or not at all (a notice) when its folder is
   missing or not safe — never on `default`.
 - Remove: `del` on the account in the picker. It asks first, and is refused while a session on it
@@ -421,22 +424,52 @@ each tool's accounts under it.
 - A folder that is a symlink, belongs to another user, or is open to others is refused or made
   private (0700) before use. No usage tracking and no switching on its own.
 
+#### Agent notifications
+
+When an agent rings the terminal bell (BEL) or sends a desktop notification (OSC 9, or OSC 777
+`notify`), its tab gets a yellow `◆` and a notice `◆ <tab> (<folder>): <message>  f12 shows it`
+appears, also while the panel is hidden (the status bar then shows `◆ <tab>  f12`). `f12` opens
+the session that has waited longest; viewing a tab clears its mark and notice. The text comes from
+the program, so it is shown with control characters made visible, cut at 200 characters, behind the
+tab name, and at most one notice per session per second. The terminal panel's tabs do not mark.
+
+The agent has to send the signal: vr-ide reports itself to the tool as a plain `xterm-256color`
+terminal, so a tool that only notifies inside terminals it recognises stays quiet. vr-ide does not
+change the tools' configuration; set it yourself if you want the marks. Claude Code: the
+`preferredNotifChannel` setting (`terminal_bell` rings BEL when it needs you; `auto` only notifies
+in terminals it knows). Codex: the `[tui]` notification settings in `~/.codex/config.toml`
+(`notification_method = "bel"` or `"osc9"`). Names change between tool versions; check the tool's
+own documentation if the mark does not appear.
+
 ### SSH sessions
 
 vr-ide opens SSH sessions with your system `ssh` (OpenSSH), so your `~/.ssh/config`, keys, agent
 and known hosts apply as they do in a terminal.
 
 - Open the command window (`F1`) and type `ssh` and a space (or `/ssh `, or pick SSH: Connect to
-  Host). The list shows the open sessions first, then recently used targets, then the `Host` names
-  of `~/.ssh/config` and the files it includes (patterns such as `*` are left out). Type
-  `[user@]host[:port]` for any other host; the first row is what you typed. Enter starts the
-  highlighted row. Anything that is not a plain target (a leading `-`, spaces, `%`, `$`, quotes …)
-  is refused and nothing is run.
-- The session starts in a new tab of the terminal panel, titled `ssh <target>`. Host-key
-  questions, passwords and passphrases are asked by ssh and answered there. vr-ide does not read,
-  store or log what you type into a terminal.
+  Host). The list shows the open sessions first, then recently used lines, then the `Host` names
+  of `~/.ssh/config` and the files it includes (patterns such as `*` are left out). Type what you
+  would type after `ssh ` in a terminal: `/ssh -i credentials/id_fixecom root@app.fixecom.vn`,
+  `/ssh -p 2222 user@host`, `/ssh -J jump host`. The first row is what you typed; under the list
+  the window shows `runs: ssh …`, the exact command with relative paths shown resolved. Enter
+  starts the highlighted row.
+- The line is split like a shell splits it, but no shell runs it: `'…'` keeps everything,
+  `"…"` keeps everything but `\"`, `\\`, `` \` `` and `\$`, `\` keeps the next character, and
+  `~` / `~/…` at the start of a word is your home folder. `$VAR`, backticks, `*`, `;`, `|` and
+  redirections are ordinary characters. A line with an unclosed quote, a trailing `\`, a control
+  character, more than 4 KiB or 128 words, an option ssh does not know or no valid destination is
+  refused (the notice never repeats what you typed) and nothing is run. An old `user@host:port`
+  still works and means `-p port user@host`.
+- ssh runs in the workspace folder of the active file (else the active one), so relative paths
+  such as `-i credentials/key`, `-F config` or `-o IdentityFile=…` resolve as in a terminal
+  opened there; if that folder is gone nothing is started. ssh is found on the absolute entries
+  of `PATH` only, and the session gets a `PATH` without empty or relative entries.
+- The session starts in a new tab of the terminal panel, titled `ssh <destination>` (the host
+  word ssh connects to, found with ssh's own option rules). Host-key questions, passwords and
+  passphrases are asked by ssh and answered there. vr-ide does not read, store or log what you
+  type into a terminal.
 - When the login succeeded the tab takes the whole window: only the last row stays vr-ide's
-  (`SSH <target>` and the key back). Every key goes to the session except the keys a focused
+  (`SSH <destination>` and the key back). Every key goes to the session except the keys a focused
   terminal keeps: ``ctrl+` `` (back to the editor; the session keeps running), `F1`, `ctrl+f7`,
   `ctrl+f8`, `ctrl+f9` (these three change the panel only in the IDE layout; in full screen they
   just say so). `shift+pageup` / `shift+pagedown` scroll back as in any terminal tab. Notices
@@ -446,20 +479,32 @@ and known hosts apply as they do in a terminal.
   the bar instead), or choose it in the ssh list. Several sessions can be open, one tab each (at
   most 16).
 - When ssh ends (logout, a dropped connection, a failed login) the editor comes back and the tab
-  shows `[process exited N]`; Enter there connects to the same target again. Quitting vr-ide or
-  closing the tab of a live session asks first.
-- Recently used targets (at most 20, recorded after a successful login, or after a clean
-  exit when `ssh_fullscreen = false`) are kept in
-  `~/.local/state/vr-ide/ssh-recent`, readable by you only. No password or key is ever stored.
+  shows `[process exited N]`; Enter there runs the same line again in the same folder. Quitting
+  vr-ide or closing the tab of a live session asks first.
+- Recently used lines (at most 20, recorded after a successful login, or after a clean exit when
+  `ssh_fullscreen = false`) are kept with the folder they ran in, in
+  `~/.local/state/vr-ide/ssh-recent`, readable by you only (a file others can write is ignored).
+  A recent line chosen from the list (or put in the input from it and not edited) runs again in
+  that folder, and the window shows `in <folder>`; the same line typed by hand runs in the
+  workspace folder of the active file. A long row is cut in the middle so its first option
+  and its destination stay visible. Choosing a row whose line makes ssh run a local program
+  (`ProxyCommand`, `LocalCommand`, other `…Command`, `PKCS11Provider`, `SecurityKeyProvider`,
+  `-I`, bundled or not) or read a config file of its own (`-F` other than `-F none`) only puts
+  it in the input with a warning; Enter then runs it. No password or key is ever
+  stored, but a remote command you typed is part of the line.
 
 How the login is detected: vr-ide starts ssh as
-`ssh [-l user] [-p port] -o ControlMaster=no -o PermitLocalCommand=yes -o LocalCommand=<prints a
-one-time marker> -- host`. ssh runs `LocalCommand` on your machine only after a successful login;
-the marker is random per start and never shown, so nothing the remote side prints can fake it.
-vr-ide passes no other option: host-key checking and everything else stay as you configured them.
-The session stays an ordinary panel tab (a notice says why) when
+`ssh -o ControlMaster=no -o PermitLocalCommand=yes -o LocalCommand=<prints a one-time marker>
+<your words>`. ssh runs `LocalCommand` on your machine only after a successful login; the marker
+is random per start and never shown, so nothing the remote side prints can fake it. vr-ide adds
+nothing after your words and passes no other option: host-key checking and everything else stay
+as you configured them. The session stays an ordinary panel tab (a notice says why) when
 
-- your ssh config sets a `LocalCommand` of its own for that host (vr-ide then adds none),
+- your words set `LocalCommand`, `PermitLocalCommand` or connection sharing (`ControlMaster`,
+  `ControlPath`, `ControlPersist`, `-M`, `-S`, `-O`), or use `-G`, `-V`, `-Q` or `-f` (vr-ide
+  then adds none of its options, since ssh keeps the first value it is given),
+- your ssh config sets a `LocalCommand` of its own for that host (vr-ide then adds none; it asks
+  `ssh -G <your words>` in the same folder, at most 5 s),
 - ssh reuses a shared connection (`ControlMaster` / `ControlPath`; such a session runs no
   `LocalCommand`), or
 - `ssh_fullscreen = false` is set in `settings.toml` (ssh is then started without the two

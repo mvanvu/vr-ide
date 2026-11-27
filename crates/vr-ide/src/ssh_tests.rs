@@ -18,7 +18,8 @@ use crate::clipboard::{Clipboard, MemoryClipboard};
 use crate::commands::CmdArgs;
 use crate::commands::terminal as term;
 use crate::slash_tests::{error, input, key, notices, slash, titles};
-use crate::ssh::{MAX_SESSIONS, NOT_VALID, Target};
+use crate::ssh::recent::Entry;
+use crate::ssh::{MAX_SESSIONS, NOT_VALID};
 use crate::terminal_tests::{click, ctrl_backtick, draw, frame_text};
 use vr_term::TermStatus;
 
@@ -29,6 +30,7 @@ dir=$(dirname "$0")
 mode=$(cat "$dir/mode" 2>/dev/null)
 if [ "$1" = "-G" ]; then
   printf 'G %s\n' "$*" >> "$dir/log"
+  pwd > "$dir/gcwd"
   case "$mode" in
     *usercmd*) echo "localcommand touch $dir/user-ran" ;;
     *ghang*) sleep 300 ;;
@@ -39,12 +41,15 @@ if [ "$1" = "-G" ]; then
   exit 0
 fi
 printf 'S %s\n' "$*" >> "$dir/log"
+printf '[%s]' "$@" > "$dir/argv"
+pwd > "$dir/cwd"
 env > "$dir/env.$$"
 lc=
 for a in "$@"; do case "$a" in LocalCommand=*) lc=${a#LocalCommand=} ;; esac; done
 [ -f "$dir/pre" ] && cat "$dir/pre"
 case "$mode" in *authfail*) echo "Permission denied (publickey,password)."; exit 255 ;; esac
-case "$mode" in *password*) printf 'password: '; stty -echo; read -r pw; stty echo; echo ;; esac
+# Echo goes off before the prompt shows, as in ssh: a password typed at the prompt never echoes.
+case "$mode" in *password*) stty -echo; printf 'password: '; read -r pw; stty echo; echo ;; esac
 [ -n "$lc" ] && /bin/sh -c "$lc"
 [ -f "$dir/post" ] && cat "$dir/post"
 echo "Welcome to remote"
@@ -83,6 +88,15 @@ impl Fx {
             .lines()
             .filter_map(|l| l.strip_prefix("G ").map(str::to_string))
             .collect()
+    }
+
+    /// The canonical project folder: where ssh runs.
+    fn project(&self) -> String {
+        self.path("project")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string()
     }
 
     fn recent_file(&self) -> String {
@@ -248,12 +262,12 @@ fn ac_s1_the_list_shows_open_sessions_recent_targets_and_config_hosts() {
         "",
         "Host web1 db-*.example !bad \"quo ted\"\n  HostName 10.0.0.1\nHost git.example.com\nHost *\n  User me\n",
     );
-    f.app.ssh.recent = vec![Target::parse("bob@old:2222").unwrap()];
+    f.app.ssh.recent = vec![Entry::new("bob@old:2222", None).unwrap()];
     slash(&mut f.app, "/ssh ");
     assert_eq!(
         titles(&f.app),
         [
-            "bob@old:2222  recent",
+            "-p 2222 bob@old  recent",
             "web1  ssh config",
             "git.example.com  ssh config"
         ]
@@ -303,19 +317,41 @@ fn sec_s4_fifty_listed_hosts_run_no_probe() {
 #[test]
 fn ac_s1_sec_s9_a_refused_target_runs_nothing_and_is_not_echoed() {
     let mut f = fx("");
-    let secret = "hunter2 -oProxyCommand=evil";
-    for bad in [
-        secret,
-        "-oProxyCommand=x",
-        "a\tb",
-        "%h",
-        "u@h@h",
-        "ssh://h:2",
+    for (bad, notice) in [
+        ("-oProxyCommand=hunter2", NOT_VALID),
+        ("-- -oProxyCommand=x", NOT_VALID),
+        ("%h", NOT_VALID),
+        ("u@h@h", NOT_VALID),
+        ("h\u{202e}x", NOT_VALID),
+        (
+            "-Z hunter2",
+            "/ssh: an option ssh does not know, or one without its value",
+        ),
+        (
+            "-p",
+            "/ssh: an option ssh does not know, or one without its value",
+        ),
+        (
+            "-i \"hunter2 h",
+            "/ssh: unclosed \" (quote paths with spaces, or use \\ )",
+        ),
+        (
+            "-i 'hunter2 h",
+            "/ssh: unclosed ' (quote paths with spaces, or use \\ )",
+        ),
+        ("hunter2\\", "/ssh: a \\ at the end escapes nothing"),
     ] {
         slash(&mut f.app, &format!("/ssh {bad}"));
         key(&mut f.app, KeyCode::Enter);
-        assert_eq!(error(&f.app).as_deref(), Some(NOT_VALID), "{bad:?}");
+        assert_eq!(error(&f.app).as_deref(), Some(notice), "{bad:?}");
         key(&mut f.app, KeyCode::Esc);
+    }
+    // The window takes no control characters; the line check refuses them all the same.
+    for bad in ["a\tb", "a\nb", "a\0b"] {
+        assert_eq!(
+            crate::commands::ssh::connect(&mut f.app, bad),
+            Err("/ssh: the line must be one line without control characters".to_string())
+        );
     }
     pump(&mut f.app);
     assert!(f.app.terminal.tabs.is_empty());
@@ -341,19 +377,19 @@ fn ac_s2_ac_s3_a_session_starts_as_a_tab_and_goes_full_screen_after_login() {
     // A normal panel tab with the keys: the editor layout is still there.
     assert!(!term::full_screen(&f.app));
     assert!(f.app.terminal.visible && f.app.focus == Focus::Terminal);
-    assert!(screen.contains(" 1 ssh bob@web1:2222 x "), "{screen}");
+    assert!(screen.contains(" 1 ssh bob@web1 x "), "{screen}");
     assert!(f.app.layout.editor.height > 0);
     assert!(!session(&f.app, 0).logged_in);
     assert!(f.app.ssh.recent.is_empty(), "not recorded before the login");
     // The probe ran without options of ours; the session with exactly the argv of SEC-S2.
-    assert_eq!(f.probes(), ["-G -l bob -p 2222 -- web1"]);
+    assert_eq!(f.probes(), ["-G -p 2222 bob@web1"]);
     let args = f.sessions().pop().unwrap();
     let nonce = nonce_in(&args);
     assert_eq!(
         args,
         format!(
-            "-l bob -p 2222 -o ControlMaster=no -o PermitLocalCommand=yes -o LocalCommand=printf \
-             '\\033]7717;vr-ide-ssh;{nonce}\\007' -- web1"
+            "-o ControlMaster=no -o PermitLocalCommand=yes -o LocalCommand=printf \
+             '\\033]7717;vr-ide-ssh;{nonce}\\007' -p 2222 bob@web1"
         )
     );
     // The password goes to the tab; then the marker comes and the tab takes the window.
@@ -365,7 +401,7 @@ fn ac_s2_ac_s3_a_session_starts_as_a_tab_and_goes_full_screen_after_login() {
     assert_eq!(rows.len(), 24);
     assert!(rows[0].starts_with("password:"), "{screen}");
     assert!(screen.contains("Welcome to remote"), "{screen}");
-    assert!(rows[23].starts_with(" SSH  bob@web1:2222"), "{}", rows[23]);
+    assert!(rows[23].starts_with(" SSH  bob@web1"), "{}", rows[23]);
     assert!(
         rows[23].trim_end().ends_with("ctrl+` editor"),
         "{}",
@@ -377,7 +413,10 @@ fn ac_s2_ac_s3_a_session_starts_as_a_tab_and_goes_full_screen_after_login() {
     assert!(session(&f.app, 0).logged_in);
     // SEC-S6, SEC-S7, SEC-S9: neither the marker nor the nonce nor the password is anywhere
     // vr-ide shows or keeps.
-    assert_eq!(f.recent_file(), "bob@web1:2222\n");
+    assert_eq!(
+        f.recent_file(),
+        format!("{}\t-p 2222 bob@web1\n", f.project())
+    );
     let state: String = [f.recent_file(), notices(&f.app), screen.clone()].concat();
     for hidden in [nonce.as_str(), "vr-ide-ssh", "7717", "s3cret-pw"] {
         assert!(!state.contains(hidden), "{hidden} shows in:\n{state}");
@@ -393,7 +432,7 @@ fn ac_s3_no_full_screen_when_the_user_has_a_local_command() {
     let screen = wait(&mut f.app, "the session", |_, s| s.contains("remote$"));
     // SEC-S4: neither option is passed, so the user's own PermitLocalCommand stays in force
     // and their command was not run by us.
-    assert_eq!(f.sessions(), ["-o ControlMaster=no -- web1"]);
+    assert_eq!(f.sessions(), ["-o ControlMaster=no web1"]);
     assert!(!f.path("user-ran").exists());
     assert!(!term::full_screen(&f.app) && !session(&f.app, 0).logged_in);
     assert!(screen.contains(" 1 ssh web1 x "), "{screen}");
@@ -410,7 +449,7 @@ fn d320_ssh_fullscreen_off_starts_plain_without_a_probe() {
     f.app.settings.ssh_fullscreen = false;
     connect(&mut f.app, "web1");
     wait(&mut f.app, "the session", |_, s| s.contains("remote$"));
-    assert_eq!(f.log(), "S -o ControlMaster=no -- web1\n");
+    assert_eq!(f.log(), "S -o ControlMaster=no web1\n");
     assert!(!term::full_screen(&f.app));
     assert_eq!(notices(&f.app), "");
     // A clean exit still makes the target a recent one.
@@ -418,7 +457,7 @@ fn d320_ssh_fullscreen_off_starts_plain_without_a_probe() {
     wait(&mut f.app, "the exit", |a, _| {
         !a.terminal.tabs[0].running() && a.ssh.recent.len() == 1
     });
-    assert_eq!(f.recent_file(), "web1\n");
+    assert_eq!(f.recent_file(), format!("{}\tweb1\n", f.project()));
 }
 
 #[test]
@@ -432,7 +471,7 @@ fn sec_s4_a_hanging_probe_is_killed_and_the_tab_opens_plain() {
     assert!(error(&f.app).unwrap().contains("still starting"));
     key(&mut f.app, KeyCode::Esc);
     wait(&mut f.app, "the session", |_, s| s.contains("remote$"));
-    assert_eq!(f.sessions(), ["-o ControlMaster=no -- web1"]);
+    assert_eq!(f.sessions(), ["-o ControlMaster=no web1"]);
     assert!(notices(&f.app).contains("ssh -G failed or took too long"));
     assert!(!term::full_screen(&f.app));
     // The probe is gone (its helpers go with its process group: `ssh::tests`).
@@ -443,17 +482,11 @@ fn sec_s4_a_hanging_probe_is_killed_and_the_tab_opens_plain() {
 #[test]
 fn sec_s16_a_stuck_probe_is_given_up_after_its_grace_period() {
     let mut f = fx("");
-    let _tx = f
-        .app
-        .ssh
-        .stall_probe(Target::parse("stuck").unwrap(), Duration::from_secs(1));
+    let _tx = f.app.ssh.stall_probe("stuck", Duration::from_secs(1));
     connect(&mut f.app, "web1");
     assert!(error(&f.app).unwrap().contains("still starting"));
     key(&mut f.app, KeyCode::Esc);
-    let _tx = f
-        .app
-        .ssh
-        .stall_probe(Target::parse("stuck").unwrap(), Duration::from_secs(60));
+    let _tx = f.app.ssh.stall_probe("stuck", Duration::from_secs(60));
     connect(&mut f.app, "web1");
     assert!(f.app.palette.is_none(), "{:?}", error(&f.app));
     assert!(notices(&f.app).contains("SSH stuck: reading the ssh configuration did not finish"));
@@ -467,7 +500,7 @@ fn sec_s4_a_failing_probe_opens_a_plain_tab() {
     let mut f = fx("gfail");
     connect(&mut f.app, "web1");
     wait(&mut f.app, "the session", |_, s| s.contains("remote$"));
-    assert_eq!(f.sessions(), ["-o ControlMaster=no -- web1"]);
+    assert_eq!(f.sessions(), ["-o ControlMaster=no web1"]);
     assert!(!term::full_screen(&f.app));
 }
 
@@ -649,7 +682,7 @@ fn sec_s14_reserved_keys_never_reach_a_session_that_set_keyboard_modes() {
     f.app.handle_paste("a\x1bb");
     ctrl_backtick(&mut f.app);
     assert!(!term::full_screen(&f.app) && f.app.focus == Focus::Editor);
-    let keys = f.path("home/keys");
+    let keys = f.path("project/keys");
     let deadline = Instant::now() + WAIT;
     while std::fs::metadata(&keys).map_or(0, |m| m.len()) < 4 {
         assert!(Instant::now() < deadline, "the paste did not arrive");
@@ -805,8 +838,11 @@ fn sec_s12_labels_come_from_the_target_and_the_status_row_cannot_be_drawn_over()
     assert!(!rows[23].contains("FAKE"), "{}", rows[23]);
     assert!(screen.contains("FAKE-STATUS-ROW"), "{screen}");
     // Now that the grid is the window minus the status row, row 999 is the grid's last row.
-    typ(&mut f.app, "printf '\\033[999;1HFAKE2\\033[1;1H'\n");
-    let screen = wait(&mut f.app, "the addressed text", |_, s| s.contains("FAKE2"));
+    // Split by quotes, the echoed command never reads FAKE2: only its output does.
+    typ(&mut f.app, "printf '\\033[999;1HFA''KE2\\033[1;1H'\n");
+    let screen = wait(&mut f.app, "the addressed text", |_, s| {
+        s.lines().nth(22).is_some_and(|r| r.contains("FAKE2"))
+    });
     let rows: Vec<&str> = screen.lines().collect();
     assert!(rows[22].contains("FAKE2"), "{screen}");
     assert!(rows[23].starts_with(" SSH  web1") && !rows[23].contains("FAKE"));
@@ -909,11 +945,11 @@ fn sec_s15_the_session_gets_the_terminal_environment_without_vr_ide_or_nonce() {
         assert!(!l.contains(&nonce) && !l.contains("vr-ide-ssh"), "{l}");
         assert!(!l.contains("bob@web1"), "{l}");
     }
-    // It starts in the home folder, not in the project.
+    // It starts in the workspace folder of the active file (SEC-4), as a terminal would.
     typ(&mut f.app, "pwd\n");
-    let home = f.path("home").canonicalize().unwrap();
+    let project = f.project();
     wait(&mut f.app, "pwd", |_, s| {
-        s.replace('\n', "").contains(&home.display().to_string())
+        s.replace('\n', "").contains(&project)
     });
 }
 
@@ -1033,8 +1069,13 @@ fn sec_s10_a_tampered_recent_file_lists_only_valid_targets() {
         "-oProxyCommand=x\na b\ngood@host\n%h\n",
     )
     .unwrap();
+    std::fs::set_permissions(
+        f.path("state/ssh-recent"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
     let state = crate::commands::ssh::SshState::load(&f.path("state"));
-    let listed: Vec<&str> = state.recent.iter().map(Target::as_str).collect();
+    let listed: Vec<&str> = state.recent.iter().map(|e| e.text.as_str()).collect();
     assert_eq!(listed, ["good@host"]);
     assert_eq!(state.recent_file, Some(f.path("state/ssh-recent")));
 }
@@ -1159,7 +1200,7 @@ fn f4_2_dragging_a_logged_in_ssh_tab_moves_it_and_sends_nothing() {
     assert_eq!(f.app.terminal.tabs[1].title(), "ssh web1");
     // The next byte web1's reader gets is the one typed now, not a mouse report.
     typ(&mut f.app, "q");
-    let keys = f.path("home/keys");
+    let keys = f.path("project/keys");
     let deadline = Instant::now() + WAIT;
     while std::fs::metadata(&keys).map_or(0, |m| m.len()) < 1 {
         assert!(Instant::now() < deadline, "the key did not arrive");
@@ -1300,4 +1341,516 @@ fn f4_2_a_press_that_moved_off_its_cell_is_no_click() {
     mouse(&mut f.app, K::Down(B::Left), x, area.y);
     mouse(&mut f.app, K::Up(B::Left), x, area.y);
     assert!(term::full_screen(&f.app));
+}
+
+// ---- AC-6, SEC-1..SEC-5: the argument line (D5) -------------------------------------------------
+
+impl Fx {
+    /// The argv of the last session, one `[word]` each.
+    fn argv(&self) -> String {
+        std::fs::read_to_string(self.path("argv")).unwrap_or_default()
+    }
+
+    /// The folder the last session (`cwd`) or probe (`gcwd`) ran in.
+    fn ran_in(&self, name: &str) -> String {
+        std::fs::read_to_string(self.path(name))
+            .unwrap_or_default()
+            .trim_end()
+            .to_string()
+    }
+}
+
+fn canonical(p: &Path) -> String {
+    p.canonicalize().unwrap().display().to_string()
+}
+
+#[test]
+fn ac_6_sec_4_relative_paths_resolve_in_the_workspace_folder_of_the_active_file() {
+    let mut f = fx("");
+    f.app.settings.ssh_fullscreen = false;
+    let b = f.path("rootb");
+    for root in [f.path("project"), b.clone()] {
+        std::fs::create_dir_all(root.join("credentials")).unwrap();
+        std::fs::write(root.join("credentials/id_fixecom"), "key").unwrap();
+    }
+    std::fs::write(b.join("main.rs"), "fn main() {}\n").unwrap();
+    f.app.add_root(&b).unwrap();
+    f.app.open_path(&b.join("main.rs")).unwrap();
+    connect(&mut f.app, "-i credentials/id_fixecom root@app.fixecom.vn");
+    assert!(f.app.palette.is_none(), "{:?}", error(&f.app));
+    let screen = wait(&mut f.app, "the session", |_, s| s.contains("remote$"));
+    assert_eq!(
+        f.argv(),
+        "[-o][ControlMaster=no][-i][credentials/id_fixecom][root@app.fixecom.vn]"
+    );
+    assert_eq!(f.ran_in("cwd"), canonical(&b));
+    assert!(screen.contains(" 1 ssh root@app.fixecom.vn x "), "{screen}");
+    // A clean exit records the line with the folder it ran in.
+    typ(&mut f.app, "exit\n");
+    wait(&mut f.app, "the exit", |a, _| a.ssh.recent.len() == 1);
+    assert_eq!(
+        f.recent_file(),
+        format!(
+            "{}\t-i credentials/id_fixecom root@app.fixecom.vn\n",
+            canonical(&b)
+        )
+    );
+}
+
+#[test]
+fn ac_6_sec_1_quotes_backslashes_ports_and_jump_hosts_reach_ssh_as_typed() {
+    let mut f = fx("");
+    f.app.settings.ssh_fullscreen = false;
+    connect(
+        &mut f.app,
+        r#"-p 2222 -J jump -i "my key" -o 'User=a b' user@host echo a\ b '$HOME' ~/x a;b"#,
+    );
+    assert!(f.app.palette.is_none(), "{:?}", error(&f.app));
+    let screen = wait(&mut f.app, "the session", |_, s| s.contains("remote$"));
+    let home = f.path("home").display().to_string();
+    assert_eq!(
+        f.argv(),
+        format!(
+            "[-o][ControlMaster=no][-p][2222][-J][jump][-i][my key][-o][User=a b][user@host]\
+             [echo][a b][$HOME][{home}/x][a;b]"
+        )
+    );
+    assert!(screen.contains(" 1 ssh user@host x "), "{screen}");
+}
+
+#[test]
+fn ac_6_sec_3_full_screen_status_row_and_probe_with_the_user_s_words() {
+    let mut f = fx("");
+    let screen = login(&mut f, "-p 2222 -F cfg -o ServerAliveInterval=5 user@host");
+    let rows: Vec<&str> = screen.lines().collect();
+    assert!(rows[23].starts_with(" SSH  user@host "), "{}", rows[23]);
+    // The probe sees the user's `-F` and `-o` words, in the folder the session runs in.
+    assert_eq!(
+        f.probes(),
+        ["-G -p 2222 -F cfg -o ServerAliveInterval=5 user@host"]
+    );
+    assert_eq!(f.ran_in("gcwd"), f.project());
+    assert_eq!(f.ran_in("cwd"), f.project());
+    assert!(
+        f.argv()
+            .ends_with("[-p][2222][-F][cfg][-o][ServerAliveInterval=5][user@host]")
+    );
+    assert_eq!(
+        f.recent_file(),
+        format!(
+            "{}\t-p 2222 -F cfg -o ServerAliveInterval=5 user@host\n",
+            f.project()
+        )
+    );
+    // Plain `/ssh host` of FR-25 still finds its open session.
+    ctrl_backtick(&mut f.app);
+    connect(
+        &mut f.app,
+        "-p 2222 -F cfg -o ServerAliveInterval=5 user@host",
+    );
+    pump(&mut f.app);
+    assert_eq!(f.app.terminal.tabs.len(), 1);
+    assert!(term::full_screen(&f.app));
+}
+
+#[test]
+fn sec_3_the_user_s_own_local_command_or_sharing_words_keep_the_prefix_out() {
+    let mut f = fx("");
+    let lines = [
+        "-M h1",
+        "-o LocalCommand=true h2",
+        "-oPermitLocalCommand=no h3",
+        "-o controlpath=/tmp/none h4",
+    ];
+    let log = f.path("log");
+    let started = move || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("S "))
+            .count()
+    };
+    for (i, line) in lines.iter().enumerate() {
+        connect(&mut f.app, line);
+        assert!(f.app.palette.is_none(), "{:?}", error(&f.app));
+        wait(&mut f.app, "the session", |_, _| started() == i + 1);
+    }
+    assert_eq!(f.probes(), Vec::<String>::new(), "no probe for these lines");
+    assert_eq!(f.sessions(), lines);
+    assert!(!term::full_screen(&f.app));
+    assert!(
+        notices(&f.app).contains("SSH h1: your ssh options set LocalCommand or connection sharing"),
+        "{}",
+        notices(&f.app)
+    );
+}
+
+#[test]
+fn sec_4_the_session_path_has_no_empty_or_relative_entries() {
+    let mut f = fx("");
+    f.app.settings.ssh_fullscreen = false;
+    let shim_dir = f.dir.path().display().to_string();
+    f.app.terminal.env.push((
+        "PATH".into(),
+        format!(".::rel:{shim_dir}:/usr/bin:/bin").into(),
+    ));
+    connect(&mut f.app, "web1");
+    wait(&mut f.app, "the session", |_, s| s.contains("remote$"));
+    let env_file = std::fs::read_dir(f.dir.path())
+        .unwrap()
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("env."))
+        .unwrap()
+        .path();
+    let env = std::fs::read_to_string(env_file).unwrap();
+    let path = env.lines().find_map(|l| l.strip_prefix("PATH="));
+    assert_eq!(path, Some(format!("{shim_dir}:/usr/bin:/bin").as_str()));
+}
+
+#[test]
+fn sec_4_a_missing_workspace_folder_refuses_the_start() {
+    let mut f = fx("");
+    std::fs::remove_dir_all(f.path("project")).unwrap();
+    connect(&mut f.app, "web1");
+    assert_eq!(
+        error(&f.app).as_deref(),
+        Some(crate::commands::ssh::BASE_GONE)
+    );
+    pump(&mut f.app);
+    assert!(f.app.terminal.tabs.is_empty() && !f.app.ssh.starting());
+    assert_eq!(f.log(), "");
+}
+
+#[test]
+fn sec_5_a_recent_line_runs_in_the_folder_it_ran_in() {
+    let mut f = fx("");
+    f.app.settings.ssh_fullscreen = false;
+    let a = f.path("roota");
+    std::fs::create_dir(&a).unwrap();
+    f.app.ssh.recent = vec![
+        Entry::new("-i credentials/k web1", Some(a.clone())).unwrap(),
+        Entry::new("-i credentials/k gone", Some(f.path("gone"))).unwrap(),
+    ];
+    slash(&mut f.app, "/ssh ");
+    assert_eq!(
+        titles(&f.app),
+        [
+            "-i credentials/k web1  recent",
+            "-i credentials/k gone  recent"
+        ]
+    );
+    key(&mut f.app, KeyCode::Enter);
+    wait(&mut f.app, "the session", |_, s| s.contains("remote$"));
+    assert_eq!(f.ran_in("cwd"), canonical(&a), "not the active root");
+    // Its folder is gone: refused, never run somewhere else.
+    slash(&mut f.app, "/ssh ");
+    key(&mut f.app, KeyCode::Down);
+    key(&mut f.app, KeyCode::Enter);
+    assert_eq!(
+        error(&f.app).as_deref(),
+        Some(crate::commands::ssh::RECENT_BASE_GONE)
+    );
+    assert_eq!(f.sessions().len(), 1);
+}
+
+#[test]
+fn sec_5_a_recent_line_with_a_local_command_only_fills_the_input() {
+    let mut f = fx("");
+    f.app.settings.ssh_fullscreen = false;
+    let line = r#"-o ProxyCommand="ssh -W %h:%p jump" deploy@db1"#;
+    let base = Some(PathBuf::from(f.project()));
+    f.app.ssh.recent = vec![
+        Entry::new(line, base.clone()).unwrap(),
+        Entry::new("web1", base).unwrap(),
+    ];
+    slash(&mut f.app, "/ssh ");
+    key(&mut f.app, KeyCode::Enter);
+    assert_eq!(input(&f.app), format!("/ssh {line}"));
+    let screen = pump(&mut f.app);
+    assert!(
+        screen.contains("Has a local-command option (ProxyCommand):"),
+        "{screen}"
+    );
+    assert!(screen.contains("check it; enter runs it"), "{screen}");
+    assert_eq!(f.log(), "", "nothing ran yet");
+    key(&mut f.app, KeyCode::Enter);
+    assert!(f.app.palette.is_none(), "{:?}", error(&f.app));
+    wait(&mut f.app, "the session", |_, s| s.contains("remote$"));
+    assert!(
+        f.argv()
+            .contains("[-o][ProxyCommand=ssh -W %h:%p jump][deploy@db1]"),
+        "{}",
+        f.argv()
+    );
+}
+
+#[test]
+fn ui_s5_the_window_shows_what_runs_and_cuts_long_rows_in_the_middle() {
+    let mut f = fx("");
+    let long =
+        r#"-o ProxyCommand="ssh -W %h:%p jump-host.a-rather-long-name.example.com" deploy@db1"#;
+    f.app.ssh.recent = vec![Entry::new(long, Some(PathBuf::from(f.project()))).unwrap()];
+    slash(
+        &mut f.app,
+        "/ssh -i credentials/id_fixecom root@app.fixecom.vn",
+    );
+    let screen = pump(&mut f.app);
+    let runs = screen
+        .lines()
+        .position(|l| l.contains("runs: ssh -i /"))
+        .unwrap_or_else(|| panic!("{screen}"));
+    let next = screen.lines().nth(runs + 1).unwrap();
+    assert!(
+        screen.lines().nth(runs).unwrap().contains("credentials/") || next.contains("credentials/"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("id_fixecom root@app.fixecom.vn"),
+        "{screen}"
+    );
+    key(&mut f.app, KeyCode::Esc);
+    slash(&mut f.app, "/ssh ");
+    let screen = pump(&mut f.app);
+    let row = screen
+        .lines()
+        .find(|l| l.contains("-o ProxyCommand="))
+        .unwrap_or_else(|| panic!("{screen}"));
+    assert!(row.contains("… deploy@db1"), "{row}");
+    assert!(row.contains("recent"), "{row}");
+    assert_eq!(f.log(), "");
+}
+
+/// Waits until the `n`-th session tab shows the remote prompt.
+fn wait_session(f: &mut Fx, n: usize) {
+    wait(&mut f.app, "the session", |a, s| {
+        a.terminal.tabs.len() == n && s.contains("remote$")
+    });
+}
+
+/// Ends the session in the active tab with a clean exit and waits for it.
+fn exit_session(f: &mut Fx) {
+    typ(&mut f.app, "exit\n");
+    wait(&mut f.app, "the exit", |a, _| {
+        !a.terminal.tabs[a.terminal.active].running()
+    });
+}
+
+#[test]
+fn sec_4_sec_5_a_recent_line_s_folder_applies_only_to_a_line_picked_from_the_list() {
+    let mut f = fx("");
+    f.app.settings.ssh_fullscreen = false;
+    let (a, b) = (f.path("roota"), f.path("rootb"));
+    std::fs::create_dir(&a).unwrap();
+    std::fs::create_dir(&b).unwrap();
+    std::fs::write(b.join("main.rs"), "fn main() {}\n").unwrap();
+    f.app.add_root(&b).unwrap();
+    f.app.open_path(&b.join("main.rs")).unwrap();
+    let (ca, cb) = (canonical(&a), canonical(&b));
+    let line = "-i credentials/k web1";
+    f.app.ssh.recent = vec![Entry::new(line, Some(PathBuf::from(&ca))).unwrap()];
+    let in_a = format!("in {ca}");
+
+    // Highlighted in the list: it runs where it ran, and the window says so.
+    slash(&mut f.app, "/ssh ");
+    let screen = pump(&mut f.app);
+    assert!(
+        screen.contains(&format!("{ca}/credentials/k web1")),
+        "{screen}"
+    );
+    assert!(screen.contains(&in_a), "{screen}");
+    key(&mut f.app, KeyCode::Enter);
+    wait_session(&mut f, 1);
+    assert_eq!(f.ran_in("cwd"), ca);
+    exit_session(&mut f);
+
+    // Put in the input from the list: still that folder, until the line is edited.
+    slash(&mut f.app, "/ssh -i");
+    key(&mut f.app, KeyCode::Tab);
+    assert_eq!(input(&f.app), format!("/ssh {line}"));
+    assert!(pump(&mut f.app).contains(&in_a));
+    key(&mut f.app, KeyCode::Backspace);
+    let screen = pump(&mut f.app);
+    assert!(
+        screen.contains(&format!("{cb}/credentials/k web")),
+        "{screen}"
+    );
+    assert!(!screen.contains(&in_a), "{screen}");
+    typ(&mut f.app, "1");
+    let screen = pump(&mut f.app);
+    assert!(
+        !screen.contains(&in_a),
+        "an edited line is a typed line: {screen}"
+    );
+    key(&mut f.app, KeyCode::Esc);
+    slash(&mut f.app, "/ssh -i");
+    key(&mut f.app, KeyCode::Tab);
+    key(&mut f.app, KeyCode::Enter);
+    wait_session(&mut f, 2);
+    assert_eq!(f.ran_in("cwd"), ca);
+    exit_session(&mut f);
+
+    // The same line typed by hand: the active file's folder, as any typed line.
+    slash(&mut f.app, &format!("/ssh {line}"));
+    let screen = pump(&mut f.app);
+    assert!(
+        screen.contains(&format!("{cb}/credentials/k web1")),
+        "{screen}"
+    );
+    assert!(!screen.contains(&in_a), "{screen}");
+    key(&mut f.app, KeyCode::Enter);
+    assert!(f.app.palette.is_none(), "{:?}", error(&f.app));
+    wait_session(&mut f, 3);
+    assert_eq!(f.ran_in("cwd"), cb, "not the recent line's folder");
+}
+
+#[test]
+fn sec_4_the_shown_folder_and_the_folder_ssh_runs_in_follow_one_rule() {
+    let mut f = fx("");
+    f.app.settings.ssh_fullscreen = false;
+    let b = f.path("rootb");
+    std::fs::create_dir(&b).unwrap();
+    f.app.add_root(&b).unwrap();
+    let project = f.project();
+    std::fs::remove_dir_all(f.path("project")).unwrap();
+    // No active file and the first folder is gone: shown there, and refused there, never
+    // moved to another folder.
+    slash(&mut f.app, "/ssh -i k web1");
+    let screen = pump(&mut f.app);
+    assert!(screen.contains(&format!("{project}/k web1")), "{screen}");
+    key(&mut f.app, KeyCode::Enter);
+    assert_eq!(
+        error(&f.app).as_deref(),
+        Some(crate::commands::ssh::BASE_GONE)
+    );
+    assert_eq!(f.log(), "");
+}
+
+#[test]
+fn sec_5_recent_lines_with_a_bundled_i_or_a_config_file_only_fill_the_input() {
+    let mut f = fx("");
+    f.app.settings.ssh_fullscreen = false;
+    let base = Some(PathBuf::from(f.project()));
+    for (line, hint) in [
+        ("-vI /x.so h1", "Has a local-command option (-I):"),
+        ("-F cfg h2", "Uses its own ssh config file (-F):"),
+    ] {
+        f.app.ssh.recent = vec![Entry::new(line, base.clone()).unwrap()];
+        slash(&mut f.app, "/ssh ");
+        key(&mut f.app, KeyCode::Enter);
+        assert_eq!(input(&f.app), format!("/ssh {line}"));
+        let screen = pump(&mut f.app);
+        assert!(screen.contains(hint), "{screen}");
+        assert!(screen.contains("check it; enter runs it"), "{screen}");
+        assert_eq!(f.log(), "", "nothing ran yet");
+        key(&mut f.app, KeyCode::Esc);
+    }
+    // `-F none` reads no file: it runs at once.
+    f.app.ssh.recent = vec![Entry::new("-F none h3", base).unwrap()];
+    slash(&mut f.app, "/ssh ");
+    key(&mut f.app, KeyCode::Enter);
+    assert!(f.app.palette.is_none(), "{:?}", error(&f.app));
+    wait_session(&mut f, 1);
+    assert!(f.argv().ends_with("[-F][none][h3]"), "{}", f.argv());
+}
+
+#[test]
+fn ui_s5_a_long_command_keeps_its_destination_and_the_box_keeps_its_height() {
+    let mut f = fx("");
+    let root = f.path("a-folder-with-a-long-name/and-another-long-one/fixecom");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+    f.app.add_root(&root).unwrap();
+    f.app.open_path(&root.join("main.rs")).unwrap();
+    // The reviewer's line without `-F` (a line with `-F` shows the config-file hint instead).
+    let long = "-i credentials/id_fixecom -o IdentityFile=config/second_key -o \
+                UserKnownHostsFile=config/known_hosts root@app.fixecom.vn";
+    let base = Some(PathBuf::from(canonical(&root)));
+    f.app.ssh.recent = vec![
+        Entry::new("web1", base.clone()).unwrap(),
+        Entry::new(long, base).unwrap(),
+    ];
+    slash(&mut f.app, "/ssh ");
+    let screen = pump(&mut f.app);
+    let short_h = f.app.palette.as_ref().unwrap().area.height;
+    assert!(screen.contains("runs: ssh web1"), "{screen}");
+    key(&mut f.app, KeyCode::Down);
+    let screen = pump(&mut f.app);
+    assert_eq!(
+        f.app.palette.as_ref().unwrap().area.height,
+        short_h,
+        "arrowing never resizes the box"
+    );
+    let rows: Vec<&str> = screen.lines().collect();
+    let runs = rows
+        .iter()
+        .position(|l| l.contains("runs: ssh -i /"))
+        .unwrap_or_else(|| panic!("{screen}"));
+    let detail: Vec<&str> = rows[runs..runs + 3].to_vec();
+    assert!(
+        detail.iter().any(|l| l.contains("root@app.fixecom.vn")),
+        "the destination stays: {screen}"
+    );
+    assert!(
+        detail.iter().any(|l| l.contains('…')),
+        "the cut is marked: {screen}"
+    );
+    assert!(!rows[runs + 3].contains("fixecom"), "{screen}");
+}
+
+/// The detail rows under the list's separator in `screen`.
+fn detail_rows(screen: &str) -> Vec<String> {
+    screen
+        .lines()
+        .skip_while(|l| !l.contains("│ ───"))
+        .skip(1)
+        .take_while(|l| !l.contains('└'))
+        .map(|l| {
+            // Between the box's borders: what is drawn beside the box is not the box's.
+            let inner = match (l.find('│'), l.rfind('│')) {
+                (Some(a), Some(b)) if a < b => &l[a + '│'.len_utf8()..b],
+                _ => l,
+            };
+            inner.trim().to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn ui_s5_a_cut_command_keeps_the_real_destination_not_the_same_text_later_on() {
+    let mut f = fx("");
+    let a = "a".repeat(60);
+    let b = "b".repeat(60);
+    slash(
+        &mut f.app,
+        &format!(
+            "/ssh -o UserKnownHostsFile=config/known_hosts-of-the-team -o \
+             IdentityFile=config/ids/a-key-with-a-long-name deploy@db1 printf {a} {b} deploy@db1"
+        ),
+    );
+    let rows = detail_rows(&pump(&mut f.app));
+    assert_eq!(rows.len(), 3, "{rows:#?}");
+    assert!(
+        rows.iter().any(|r| r.contains("deploy@db1 printf")),
+        "the destination's own line stays: {rows:#?}"
+    );
+    assert!(rows.iter().any(|r| r.contains('…')), "{rows:#?}");
+}
+
+#[test]
+fn ui_s5_one_detail_row_still_names_the_other_folder() {
+    let mut f = fx("");
+    let a = f.path("roota");
+    std::fs::create_dir(&a).unwrap();
+    let ca = canonical(&a);
+    f.app.ssh.recent = vec![Entry::new("-i credentials/k web1", Some(PathBuf::from(&ca))).unwrap()];
+    slash(&mut f.app, "/ssh ");
+    let screen = frame_text(&draw(&mut f.app, 80, 8));
+    let rows = detail_rows(&screen);
+    assert_eq!(rows.len(), 1, "{screen}");
+    assert!(rows[0].contains("web1"), "{screen}");
+    assert!(
+        rows[0].contains("in …") || rows[0].contains(&format!("in {ca}")),
+        "{screen}"
+    );
+    assert!(rows[0].ends_with("roota"), "{screen}");
 }

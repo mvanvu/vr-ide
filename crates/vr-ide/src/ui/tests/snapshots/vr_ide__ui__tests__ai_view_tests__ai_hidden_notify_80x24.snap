@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/tests/ai_view_tests.rs
+expression: t.backend()
+---
+" /home/user/DEV/vr-ide                                                          "
+"                                        │                                       "
+"  vr-ide v0.1.0                         │ SYSTEM ─────────────────────────────  "
+"  /home/user/DEV/vr-ide                 │ CPU                                —  "
+"                                        │ CORE —                                "
+"                                        │ RAM ░░░░░░░░░░░░░░░░░░░░░░░░░ —    —  "
+"  START ──────────────────────────────  │ SWP ░░░░░░░░░░░░░░░░░░░░░░░░░ —    —  "
+"  ctrl+p  Go to file                    │ LOAD                               —  "
+"  f1      Command palette               │ UP                                 —  "
+"  ctrl+e  Explorer                      │                                       "
+"  ctrl+o  Open file                     │ VR-IDE ─────────────────────────────  "
+"  ctrl+`  Terminal                      │ CPU                                —  "
+"  f12     AI panel                      │ RSS                                —  "
+"  ctrl+q  Quit                          │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"                                        │                                       "
+"◆ claude@work: Allow Bash(cargo test -p vr-ide)? f12                            "
+" /home/user/DEV/vr-ide                                       ◆ claude@work  f12 "

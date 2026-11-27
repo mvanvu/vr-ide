@@ -2,7 +2,9 @@
 //! `ui::palette`.
 //!
 //! Built-in keys (keymap.toml `[palette]` says so): typing and line editing, Up/Down,
-//! PageUp/PageDown, Enter runs the selected command, Esc closes.
+//! PageUp/PageDown, Enter runs the selected command, Esc closes. In slash mode Tab / Shift+Tab
+//! complete (D6, `completion`); while the candidate list is open, Enter takes the candidate
+//! and Esc closes only the list.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,6 +12,7 @@ use std::path::PathBuf;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
+use super::completion;
 use super::registry::{CmdArgs, CommandSpec, all_commands, is_pending};
 use crate::app::{App, Focus};
 use crate::ui::dialog::LineInput;
@@ -64,6 +67,14 @@ pub struct Palette {
     pub dir_cache: Option<super::slash::DirListing>,
     /// The `ssh` list: the aliases of the ssh config, read once per window (FR-25).
     pub ssh_hosts: Option<Vec<String>>,
+    /// Tab completion in progress (D6): the common part shown, or the candidate list open.
+    pub completion: Option<super::completion::Completion>,
+    /// The highlight was moved with the arrows, page keys or the wheel since the list was
+    /// last built: Tab takes the highlighted row.
+    pub moved: bool,
+    /// The `ssh` list: the input text put there from a listed session or recent line, with the
+    /// folder that line runs in; forgotten at the first edit (SEC-4, SEC-5).
+    pub ssh_listed: Option<(String, std::path::PathBuf)>,
 }
 
 /// Registered only so a `[terminal]` key can run them (D291, D330).
@@ -99,6 +110,9 @@ pub fn open(app: &mut App) {
         error: None,
         dir_cache: None,
         ssh_hosts: None,
+        completion: None,
+        moved: false,
+        ssh_listed: None,
     });
     app.modal_since = Some(app.now());
     app.focus = Focus::Palette;
@@ -152,6 +166,11 @@ fn relist(app: &mut App, keep: bool) {
             p.top.min(selected)
         };
         p.indexing = indexing;
+        if !keep {
+            p.moved = false;
+            // The text was set anew: a completion started on the old text is over.
+            p.completion = None;
+        }
     }
     app.dirty = true;
 }
@@ -191,6 +210,15 @@ fn command_items(app: &App, query: &str) -> Vec<PaletteItem> {
 /// Runs the selected command (a command may open a dialog) or opens the selected file,
 /// after closing the palette.
 pub fn accept(app: &mut App) {
+    if completion::list_open(app) {
+        // A click on a candidate (Enter has its own path): the candidate is taken, nothing runs.
+        if let Some(i) = app.palette.as_ref().map(|p| p.selected) {
+            completion::select(app, i);
+        }
+        completion::take(app);
+        return;
+    }
+    completion::clear(app);
     if slash_mode(app) {
         super::slash::enter(app);
         return;
@@ -227,6 +255,13 @@ fn move_selection(app: &mut App, delta: isize) {
     {
         let last = p.items.len() as isize - 1;
         p.selected = (p.selected as isize + delta).clamp(0, last) as usize;
+        p.moved = true;
+    }
+    // In the candidate list the input follows the highlight.
+    if completion::list_open(app)
+        && let Some(i) = app.palette.as_ref().map(|p| p.selected)
+    {
+        completion::select(app, i);
     }
 }
 
@@ -237,15 +272,24 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         .palette
         .as_ref()
         .map_or(1, |p| p.list_area.height.max(1) as isize);
+    let listing = completion::list_open(app);
     match key.code {
+        // The candidate list closes first; the palette on the next Esc.
+        KeyCode::Esc if listing => completion::cancel(app),
         KeyCode::Esc => close(app),
         KeyCode::Enter if key.kind == KeyEventKind::Repeat => {}
+        KeyCode::Enter if listing => completion::take(app),
         KeyCode::Enter => accept(app),
+        KeyCode::Up if listing => completion::step(app, -1),
+        KeyCode::Down if listing => completion::step(app, 1),
         KeyCode::Up => move_selection(app, -1),
         KeyCode::Down => move_selection(app, 1),
         KeyCode::PageUp => move_selection(app, -page),
         KeyCode::PageDown => move_selection(app, page),
-        KeyCode::Tab if key.modifiers.is_empty() && slash_mode(app) => super::slash::tab(app),
+        KeyCode::Tab if key.modifiers.is_empty() && slash_mode(app) => {
+            completion::tab(app, false);
+        }
+        KeyCode::BackTab if slash_mode(app) => completion::tab(app, true),
         _ => {
             let Some(p) = &mut app.palette else {
                 return false;
@@ -254,6 +298,13 @@ pub fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             if !p.input.handle_key(key) {
                 return false;
             }
+            // Any edit (a cursor move too) ends the completion and shows the plain list again.
+            if completion::clear(app) {
+                refilter(app);
+            }
+            let Some(p) = &mut app.palette else {
+                return false;
+            };
             if p.input.text() != before {
                 p.error = None;
                 // `ssh` and a space is the ssh list (AC-S1): the same window as `/ssh `.
@@ -295,6 +346,7 @@ pub fn handle_mouse(app: &mut App, ev: &MouseEvent) {
 }
 
 pub fn paste(app: &mut App, text: &str) {
+    completion::clear(app);
     if let Some(p) = &mut app.palette {
         p.input.insert_str(text);
         p.error = None;

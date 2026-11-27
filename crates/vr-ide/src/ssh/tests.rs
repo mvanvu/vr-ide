@@ -13,6 +13,16 @@ fn t(s: &str) -> Target {
     Target::parse(s).unwrap_or_else(|| panic!("{s:?} should be a target"))
 }
 
+fn l(s: &str) -> args::Line {
+    args::Line::parse(s, None).unwrap_or_else(|e| panic!("{s:?}: {e:?}"))
+}
+
+/// The probe of line `s`, run in `/` with the test's own `PATH` cleaned as a session's is.
+fn pr(ssh: &Path, s: &str, timeout: Duration) -> Probe {
+    let path = child_path(&std::env::var_os("PATH").unwrap_or_default());
+    probe(ssh, &l(s), Path::new("/"), &path, timeout)
+}
+
 fn strs(v: &[OsString]) -> Vec<String> {
     v.iter().map(|s| s.to_string_lossy().into_owned()).collect()
 }
@@ -50,7 +60,6 @@ fn sec_s1_refused_targets() {
         "u@h@h",
         "@h",
         "u@",
-        "ssh://h:2",
         "h:0",
         "h:65536",
         "h:+22",
@@ -112,37 +121,80 @@ fn sec_s1_accepted_targets_and_their_text() {
 #[test]
 fn sec_s2_argv_for_each_target_shape() {
     let lc = "printf 'x'";
+    assert_eq!(strs(&argv(&l("h"), None)), ["-o", "ControlMaster=no", "h"]);
     assert_eq!(
-        strs(&argv(&t("h"), None)),
-        ["-o", "ControlMaster=no", "--", "h"]
-    );
-    assert_eq!(
-        strs(&argv(&t("bob@h:2222"), Some(lc))),
+        strs(&argv(&l("bob@h:2222"), Some(lc))),
         [
-            "-l",
-            "bob",
-            "-p",
-            "2222",
             "-o",
             "ControlMaster=no",
             "-o",
             "PermitLocalCommand=yes",
             "-o",
             "LocalCommand=printf 'x'",
-            "--",
-            "h"
+            "-p",
+            "2222",
+            "bob@h"
         ]
     );
-    // The address goes without its brackets, after `--`.
+    // The old address form goes without its brackets.
     assert_eq!(
-        strs(&argv(&t("u@[::1]:22"), None)),
-        ["-l", "u", "-p", "22", "-o", "ControlMaster=no", "--", "::1"]
+        strs(&argv(&l("u@[::1]:22"), None)),
+        ["-o", "ControlMaster=no", "-p", "22", "u@::1"]
     );
     assert_eq!(
-        strs(&probe_argv(&t("bob@h:2222"))),
-        ["-G", "-l", "bob", "-p", "2222", "--", "h"]
+        strs(&probe_argv(&l("bob@h:2222"))),
+        ["-G", "-p", "2222", "bob@h"]
     );
-    assert_eq!(strs(&probe_argv(&t("h"))), ["-G", "--", "h"]);
+    assert_eq!(strs(&probe_argv(&l("h"))), ["-G", "h"]);
+}
+
+/// SEC-3: the user's words come last and unchanged; with words that set what vr-ide's prefix
+/// sets, the prefix is left out whole.
+#[test]
+fn sec_3_argv_keeps_the_user_s_words_and_drops_the_prefix_for_their_own_options() {
+    let lc = "printf 'x'";
+    assert_eq!(
+        strs(&argv(&l("-i 'a b' -o ProxyCommand=x h ls -la"), Some(lc))),
+        [
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "PermitLocalCommand=yes",
+            "-o",
+            "LocalCommand=printf 'x'",
+            "-i",
+            "a b",
+            "-o",
+            "ProxyCommand=x",
+            "h",
+            "ls",
+            "-la"
+        ]
+    );
+    for line in [
+        "-o LocalCommand=x h",
+        "-oPermitLocalCommand=no h",
+        "-M h",
+        "-o controlpath=/tmp/s h",
+    ] {
+        let words: Vec<String> = l(line).words().to_vec();
+        assert_eq!(strs(&argv(&l(line), Some(lc))), words, "{line}");
+        assert_eq!(strs(&argv(&l(line), None)), words, "{line}");
+    }
+    assert_eq!(
+        strs(&probe_argv(&l("-F cfg -o User=x h"))),
+        ["-G", "-F", "cfg", "-o", "User=x", "h"]
+    );
+}
+
+#[test]
+fn sec_4_the_child_path_has_no_empty_or_relative_entries() {
+    assert_eq!(
+        child_path(".:/shim::rel:/usr/bin:".as_ref()),
+        "/shim:/usr/bin"
+    );
+    assert_eq!(child_path("".as_ref()), "");
+    assert_eq!(child_path("./x:..".as_ref()), "");
 }
 
 /// vr-ide passes nothing that weakens or changes the user's ssh settings, and builds no shell
@@ -152,6 +204,7 @@ fn sec_s2_the_ssh_code_names_no_shell_and_no_weakening_option() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let files = [
         dir.join("ssh/mod.rs"),
+        dir.join("ssh/args.rs"),
         dir.join("ssh/config.rs"),
         dir.join("ssh/recent.rs"),
         dir.join("commands/ssh.rs"),
@@ -265,7 +318,7 @@ fn sec_s3_ssh_echoes_the_local_command_unchanged() {
         .arg("-G")
         .arg(["-", "F"].concat())
         .arg("/dev/null")
-        .args(argv(&t("h"), Some(&n.local_command())))
+        .args(argv(&l("h"), Some(&n.local_command())))
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
@@ -317,14 +370,14 @@ fn sec_s4_real_ssh_g_output_is_parsed() {
         return;
     };
     assert_eq!(
-        probe(&ssh, &t("plain"), PROBE_WAIT),
+        pr(&ssh, "plain", PROBE_WAIT),
         Probe::Clean { shared: false }
     );
     assert_eq!(
-        probe(&ssh, &t("bob@plain:2222"), PROBE_WAIT),
+        pr(&ssh, "bob@plain:2222", PROBE_WAIT),
         Probe::Clean { shared: false }
     );
-    assert_eq!(probe(&ssh, &t("mine"), PROBE_WAIT), Probe::UserLocalCommand);
+    assert_eq!(pr(&ssh, "mine", PROBE_WAIT), Probe::UserLocalCommand);
     // An existing control socket: the session may ride on a shared connection.
     let sock = d.path().join("cm.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
@@ -334,11 +387,11 @@ fn sec_s4_real_ssh_g_output_is_parsed() {
     )
     .unwrap();
     assert_eq!(
-        probe(&ssh, &t("shared"), PROBE_WAIT),
+        pr(&ssh, "shared", PROBE_WAIT),
         Probe::Clean { shared: true }
     );
     assert_eq!(
-        probe(&ssh, &t("plain"), PROBE_WAIT),
+        pr(&ssh, "plain", PROBE_WAIT),
         Probe::Clean { shared: false }
     );
 }
@@ -347,9 +400,9 @@ fn sec_s4_real_ssh_g_output_is_parsed() {
 fn sec_s4_a_failing_probe_is_failed() {
     let d = tempfile::tempdir().unwrap();
     let ssh = script(d.path(), "ssh", "echo 'localcommand x'; exit 3");
-    assert_eq!(probe(&ssh, &t("h"), PROBE_WAIT), Probe::Failed);
+    assert_eq!(pr(&ssh, "h", PROBE_WAIT), Probe::Failed);
     assert_eq!(
-        probe(&d.path().join("missing"), &t("h"), PROBE_WAIT),
+        pr(&d.path().join("missing"), "h", PROBE_WAIT),
         Probe::Failed
     );
 }
@@ -369,11 +422,11 @@ fn sec_s4_the_probe_gets_no_stdin_no_terminal_and_only_the_probe_argv() {
         ),
     );
     assert_eq!(
-        probe(&ssh, &t("bob@h:2222"), PROBE_WAIT),
+        pr(&ssh, "bob@h:2222", PROBE_WAIT),
         Probe::Clean { shared: false }
     );
     let text = std::fs::read_to_string(&log).unwrap();
-    assert!(text.contains("argv:-G -l bob -p 2222 -- h\n"), "{text}");
+    assert!(text.contains("argv:-G -p 2222 bob@h\n"), "{text}");
     assert!(text.contains("stdin:eof"), "{text}");
     assert!(text.contains("tty:no"), "{text}");
     let ids = text.lines().find(|l| l.starts_with("sid:")).unwrap();
@@ -405,10 +458,7 @@ fn sec_s4_a_hanging_probe_is_killed_with_its_group_at_the_timeout() {
     );
     let tag = d.path().file_name().unwrap().to_string_lossy().into_owned();
     let t0 = Instant::now();
-    assert_eq!(
-        probe(&ssh, &t("h"), Duration::from_millis(400)),
-        Probe::Failed
-    );
+    assert_eq!(pr(&ssh, "h", Duration::from_millis(400)), Probe::Failed);
     let took = t0.elapsed();
     assert!(
         took >= Duration::from_millis(400) && took < Duration::from_secs(3),
@@ -435,7 +485,7 @@ fn sec_s4_probe_output_over_the_cap_is_failed() {
         "head -c 400000 /dev/zero | tr '\\0' 'a'; echo; sleep 303",
     );
     let t0 = Instant::now();
-    assert_eq!(probe(&ssh, &t("h"), PROBE_WAIT), Probe::Failed);
+    assert_eq!(pr(&ssh, "h", PROBE_WAIT), Probe::Failed);
     assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
     assert_eq!(PROBE_OUTPUT_CAP, 256 * 1024);
 }
@@ -443,58 +493,104 @@ fn sec_s4_probe_output_over_the_cap_is_failed() {
 // ---- SEC-S10 --------------------------------------------------------------------------------
 
 #[test]
-fn sec_s10_recent_file_is_private_bounded_and_most_recent_first() {
+fn sec_s10_sec_5_recent_file_is_private_bounded_and_most_recent_first() {
     let d = tempfile::tempdir().unwrap();
     let dir = d.path().join("state/vr-ide");
     let file = dir.join("ssh-recent");
+    let a = |text: &str| recent::Entry::new(text, Some(PathBuf::from("/w/a"))).unwrap();
     // A permissive umask must not widen the modes.
     let old = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o022));
-    let listed = recent::record(&file, &t("bob@h:2222")).unwrap();
+    let listed = recent::record(&file, &a("-i credentials/k bob@h")).unwrap();
     rustix::process::umask(old);
-    assert_eq!(listed, [t("bob@h:2222")]);
+    assert_eq!(listed, [a("-i credentials/k bob@h")]);
     assert_eq!(std::fs::metadata(&file).unwrap().mode() & 0o777, 0o600);
     assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
-    recent::record(&file, &t("web1")).unwrap();
-    recent::record(&file, &t("bob@h:2222")).unwrap();
+    recent::record(&file, &a("web1")).unwrap();
+    recent::record(&file, &a("-i credentials/k bob@h")).unwrap();
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        "bob@h:2222\nweb1\n"
+        "/w/a\t-i credentials/k bob@h\n/w/a\tweb1\n"
     );
     for i in 0..30 {
-        recent::record(&file, &t(&format!("host{i}"))).unwrap();
+        recent::record(&file, &a(&format!("host{i}"))).unwrap();
     }
     let all = recent::load(&file);
     assert_eq!(all.len(), recent::MAX);
-    assert_eq!(all[0], t("host29"));
+    assert_eq!(all[0], a("host29"));
     assert_eq!(std::fs::metadata(&file).unwrap().mode() & 0o777, 0o600);
+    // Long lines: the oldest entries go so the file stays loadable.
+    for i in 0..20 {
+        let long = format!("-o User={} h{i}", "u".repeat(4000));
+        recent::record(&file, &a(&long)).unwrap();
+    }
+    assert!(std::fs::metadata(&file).unwrap().len() <= 64 * 1024);
+    let all = recent::load(&file);
+    assert!(!all.is_empty() && all[0].text.ends_with(" h19"));
     // No temp file is left beside it.
     let names: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(names, ["ssh-recent"]);
+    // A folder that cannot be written on one line is not recorded.
+    let odd = recent::Entry::new("web9", Some(PathBuf::from("/w/a\tb"))).unwrap();
+    let before = std::fs::read_to_string(&file).unwrap();
+    recent::record(&file, &odd).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
 }
 
 #[test]
-fn sec_s10_loading_revalidates_every_line_and_ignores_a_big_file() {
+fn sec_s10_sec_5_loading_revalidates_every_line_and_migrates_old_targets() {
     let d = tempfile::tempdir().unwrap();
     let file = d.path().join("ssh-recent");
-    std::fs::write(
-        &file,
-        "-oProxyCommand=x\na b\nok1\n\nu@h@h\nok1\nok2:22\n%h\n",
-    )
-    .unwrap();
-    assert_eq!(recent::load(&file), [t("ok1"), t("ok2:22")]);
+    let write = |text: &str| {
+        let _ = std::fs::remove_file(&file);
+        let mut f = crate::recovery::create_private_file(&file).unwrap();
+        std::io::Write::write_all(&mut f, text.as_bytes()).unwrap();
+    };
+    write(
+        "-oProxyCommand=x\na b\nok1\n\nu@h@h\nok1\nbob@ok2:2222\n%h\n\
+         /w/a\t-i 'k 1' ok3\nrel\t-i k ok4\n/w/b\t\"unclosed ok5\n/w/b\t-- -oX=y\n\t-p 22 ok6\n",
+    );
+    let got: Vec<(String, Option<PathBuf>)> = recent::load(&file)
+        .into_iter()
+        .map(|e| (e.text, e.base))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("ok1".to_string(), None),
+            ("-p 2222 bob@ok2".to_string(), None),
+            ("-i 'k 1' ok3".to_string(), Some(PathBuf::from("/w/a"))),
+            ("-p 22 ok6".to_string(), None),
+        ]
+    );
+    // An old entry recorded again keeps having no folder, and stays loadable.
+    let first = recent::load(&file).remove(1);
+    recent::record(&file, &first).unwrap();
+    assert_eq!(recent::load(&file)[0], first);
     let many: String = (0..10_000).map(|i| format!("host{i}\n")).collect();
     assert!(many.len() > 64 * 1024);
-    std::fs::write(&file, &many).unwrap();
+    write(&many);
     assert!(recent::load(&file).is_empty(), "over 64 KiB is ignored");
     let fits: String = (0..5_000).map(|i| format!("h{i}\n")).collect();
     assert!(fits.len() <= 64 * 1024);
-    std::fs::write(&file, &fits).unwrap();
+    write(&fits);
     assert_eq!(recent::load(&file).len(), recent::MAX);
     assert!(recent::load(&d.path().join("missing")).is_empty());
     assert!(recent::load(d.path()).is_empty(), "a directory is no list");
+}
+
+#[test]
+fn sec_5_a_file_others_can_write_is_ignored() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("ssh-recent");
+    std::fs::write(&file, "web1\n").unwrap();
+    for (mode, listed) in [(0o600, 1), (0o644, 1), (0o666, 0), (0o620, 0), (0o602, 0)] {
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(recent::load(&file).len(), listed, "{mode:o}");
+    }
 }
 
 #[test]
@@ -505,12 +601,13 @@ fn sec_s10_a_symlink_at_the_path_is_replaced_not_followed() {
     let file = d.path().join("ssh-recent");
     symlink(&victim, &file).unwrap();
     assert!(recent::load(&file).is_empty(), "a link is not read");
-    recent::record(&file, &t("web1")).unwrap();
+    let e = recent::Entry::new("web1", Some(PathBuf::from("/w"))).unwrap();
+    recent::record(&file, &e).unwrap();
     assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me\n");
     let meta = std::fs::symlink_metadata(&file).unwrap();
     assert!(meta.file_type().is_file());
     assert_eq!(meta.mode() & 0o777, 0o600);
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "web1\n");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "/w\tweb1\n");
 }
 
 // ---- SEC-S11 --------------------------------------------------------------------------------
@@ -667,6 +764,7 @@ fn sec_s9_terminal_and_ssh_code_log_no_keys_bytes_or_nonce() {
     for f in [
         "commands/terminal.rs",
         "ssh/mod.rs",
+        "ssh/args.rs",
         "ssh/config.rs",
         "ssh/recent.rs",
     ] {
@@ -688,10 +786,7 @@ fn sec_s4_a_probe_that_closes_its_output_but_stays_is_killed_at_the_timeout() {
     );
     let tag = d.path().file_name().unwrap().to_string_lossy().into_owned();
     let t0 = Instant::now();
-    assert_eq!(
-        probe(&ssh, &t("h"), Duration::from_millis(300)),
-        Probe::Failed
-    );
+    assert_eq!(pr(&ssh, "h", Duration::from_millis(300)), Probe::Failed);
     assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
     let deadline = Instant::now() + Duration::from_secs(3);
     while !procs_with(&tag).is_empty() {
@@ -727,10 +822,7 @@ fn sec_s4_a_helper_outside_the_group_that_keeps_the_output_open_leaves_no_thread
         ),
     );
     let t0 = Instant::now();
-    assert_eq!(
-        probe(&ssh, &t("h"), Duration::from_millis(300)),
-        Probe::Failed
-    );
+    assert_eq!(pr(&ssh, "h", Duration::from_millis(300)), Probe::Failed);
     assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
     let leaked = threads_named("vr-ssh-probe-r");
     // The helper is this test's own process: end it by its pid (written once it started).

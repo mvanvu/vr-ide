@@ -287,6 +287,13 @@ impl TermTab {
         }
     }
 
+    /// The bells and notifications the program sent since the last call.
+    pub(crate) fn take_attention(&self) -> Vec<vr_term::Attention> {
+        self.term
+            .as_ref()
+            .map_or_else(Vec::new, Terminal::take_attention)
+    }
+
     /// The program printed, changed its title or exited since the last call.
     pub(crate) fn take_output(&self) -> bool {
         self.output.swap(false, Ordering::AcqRel)
@@ -955,6 +962,21 @@ pub(crate) fn spawn_program(
 ) -> Result<Terminal, TermError> {
     let size = spawn_size(app);
     spawn_sized(app, output, program, args, cwd, extras, Vec::new(), size)
+}
+
+/// [`spawn_program`] with variables set after the terminal's own (they win over the user's
+/// `terminal_env`): the ssh session's cleaned `PATH`.
+pub(crate) fn spawn_program_env(
+    app: &App,
+    output: &Arc<AtomicBool>,
+    program: &Path,
+    args: Vec<OsString>,
+    cwd: &Path,
+    extras: SpawnExtras,
+    env: Vec<(OsString, OsString)>,
+) -> Result<Terminal, TermError> {
+    let size = spawn_size(app);
+    spawn_sized(app, output, program, args, cwd, extras, env, size)
 }
 
 /// [`spawn_program`] at `(cols, rows)` with `env` added after the terminal environment.
