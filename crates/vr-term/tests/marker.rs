@@ -28,6 +28,7 @@ fn spawn_marked(script: &str) -> (Terminal, Arc<Wake>) {
         SpawnExtras {
             marker: Some(marker(NONCE)),
             env_remove: Vec::new(),
+            attention: false,
         },
         Arc::new(|| {}),
     )
@@ -136,6 +137,7 @@ fn withheld_variables_do_not_reach_the_child() {
         SpawnExtras {
             marker: None,
             env_remove: vec!["HOME".into()],
+            attention: false,
         },
         Arc::new(|| {}),
     )
@@ -150,6 +152,7 @@ fn debug_output_of_the_spawn_extras_hides_the_marker() {
     let extras = SpawnExtras {
         marker: Some(marker(NONCE)),
         env_remove: vec!["VR_IDE_X".into()],
+        attention: false,
     };
     let text = format!("{extras:?}");
     assert!(

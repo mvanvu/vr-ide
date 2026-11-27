@@ -9,4 +9,4 @@ expression: t.backend()
 "                                                            "
 "                                                            "
 "                                                            "
-" SSH  bob@web1:2222                           ctrl+` editor "
+" SSH  bob@web1                                ctrl+` editor "

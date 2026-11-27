@@ -28,7 +28,7 @@ pub fn notice_text(app: &App) -> Option<String> {
     let more = app.notices.len() - 1;
     let esc = esc_dismisses(app);
     // A focused terminal gives Esc to its program; a click on the notice dismisses it there.
-    let click = crate::commands::terminal::has_keys(app);
+    let click = crate::commands::terminal::has_keys(app) || crate::ai::has_keys(app);
     let key = if esc {
         Some("Esc")
     } else if click {
@@ -134,10 +134,30 @@ pub fn render_notice(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
 }
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
+    // The bar reflows into the width the badge leaves (its tiers drop detail as usual).
+    let badge = (area.height > 0)
+        .then(|| crate::ai::attention::badge(app, area.width))
+        .flatten();
+    let Some(parts) = badge else {
+        render_bar(buf, area, app, theme);
+        return;
+    };
+    let total = (width_of(&parts.0) + width_of(&parts.1)) as u16;
+    buf.set_style(area, theme.status);
+    let left = Rect::new(area.x, area.y, area.width - total, area.height);
+    render_bar(buf, left, app, theme);
+    crate::ai::attention::render_badge(buf, area, theme, &parts);
+}
+
+fn render_bar(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     if area.height == 0 {
         return;
     }
     buf.set_style(area, theme.status);
+    if crate::ai::has_focus(app) {
+        crate::ui::ai_view::render_status(buf, area, app, theme);
+        return;
+    }
     if crate::commands::terminal::has_focus(app) {
         crate::ui::terminal_view::render_status(buf, area, app, theme);
         return;

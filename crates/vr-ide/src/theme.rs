@@ -79,6 +79,15 @@ pub struct Theme {
     pub terminal_bg: Color,
     /// Background of selected terminal text: dark green, visible on the black panel.
     pub terminal_selection: Color,
+    /// Status bar badge while the AI panel has the keys (`AI`, D7), apart from READ / EDIT / TERM.
+    pub mode_ai: Style,
+    /// An agent session that needs the user (`◆`, D9): not the orange of modified / warnings.
+    pub attention: Style,
+    /// Secondary text below `fg` and above `dim` in rank: picker notes, inactive tab folders.
+    pub note: Style,
+    /// Backgrounds of added / removed lines in a diff (D8).
+    pub diff_added_bg: Color,
+    pub diff_removed_bg: Color,
 }
 
 impl Theme {
@@ -188,6 +197,16 @@ impl Theme {
             terminal_fg: tfg,
             terminal_bg: tbg,
             terminal_selection: tsel,
+            mode_ai: Style::default()
+                .bg(Color::Indexed(141))
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            attention: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            note: Style::default().fg(Color::Indexed(146)),
+            diff_added_bg: Color::Indexed(22),
+            diff_removed_bg: Color::Indexed(52),
         }
     }
 
@@ -268,6 +287,16 @@ impl Theme {
             terminal_fg: tfg,
             terminal_bg: tbg,
             terminal_selection: tsel,
+            mode_ai: Style::default()
+                .bg(Color::Indexed(91))
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            attention: Style::default()
+                .fg(Color::Indexed(136))
+                .add_modifier(Modifier::BOLD),
+            note: Style::default().fg(Color::Indexed(60)),
+            diff_added_bg: Color::Indexed(194),
+            diff_removed_bg: Color::Indexed(224),
         }
     }
 }
@@ -573,6 +602,14 @@ impl Theme {
             terminal_bg: tbg,
             terminal_selection: tsel,
             ansi: Some(ansi::palette(depth, tfg, tbg, &ansi::DRACULA_ANSI)),
+            mode_ai: Style::default()
+                .bg(cyan)
+                .fg(bg)
+                .add_modifier(Modifier::BOLD),
+            attention: Style::default().fg(yellow).add_modifier(Modifier::BOLD),
+            note: Style::default().fg(muted),
+            diff_added_bg: surface(0x1e3a2a, 22),
+            diff_removed_bg: surface(0x4a2030, 52),
         }
     }
 }
@@ -671,6 +708,9 @@ mod tests {
             t.mode_read,
             t.mode_edit,
             t.mode_term,
+            t.mode_ai,
+            t.attention,
+            t.note,
         ]
     }
 
@@ -811,6 +851,11 @@ mod tests {
         v.push(("mode_read", fg(t.mode_read), bg(t.mode_read), 4.5));
         v.push(("mode_edit", fg(t.mode_edit), bg(t.mode_edit), 4.5));
         v.push(("mode_term", fg(t.mode_term), bg(t.mode_term), 4.5));
+        v.push(("mode_ai", fg(t.mode_ai), bg(t.mode_ai), 4.5));
+        for surface in [editor, bg(t.tab_bar), bg(t.popup)] {
+            v.push(("note", fg(t.note), surface, 4.5));
+            v.push(("attention", fg(t.attention), surface, 4.5));
+        }
         v.push(("popup_border", fg(t.popup_border), bg(t.popup), 4.5));
         for (name, surface) in [
             ("dim/editor", editor),

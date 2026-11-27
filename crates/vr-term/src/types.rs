@@ -181,6 +181,9 @@ pub struct SpawnExtras {
     /// An exact byte sequence taken out of the program's output before the emulator sees it;
     /// its first occurrence while the child runs sets `Terminal::marker_seen`.
     pub marker: Option<Vec<u8>>,
+    /// Watch the output for the bell and OSC 9 / 777 notifications (`Terminal::take_attention`);
+    /// off, nothing is scanned or queued.
+    pub attention: bool,
     /// Inherited variables the child must not get.
     pub env_remove: Vec<OsString>,
 }

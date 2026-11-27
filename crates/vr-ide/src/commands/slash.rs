@@ -33,8 +33,8 @@ pub enum ArgKind {
     Language,
     /// A setting name, then its value.
     Setting,
-    /// Optional: an SSH target `[user@]host[:port]`; the list shows open sessions, recently used
-    /// targets and the aliases of the ssh config.
+    /// Optional: an ssh argument line, the words that would follow `ssh ` in a terminal; the
+    /// list shows open sessions, recently used lines and the aliases of the ssh config.
     Ssh,
 }
 
@@ -233,14 +233,14 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         "ai",
         "<tool>",
         ArgKind::Text,
-        "Run an AI tool (e.g. claude) in a new terminal tab",
+        "Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name>",
         ai,
     ),
     cmd(
         "ssh",
-        "[target]",
+        "[ssh args]",
         ArgKind::Ssh,
-        "Open an SSH session: [user@]host[:port] (no target: list hosts)",
+        "Open an SSH session, args as after ssh (none: list hosts)",
         ssh,
     ),
     cmd(
@@ -462,6 +462,17 @@ pub fn submit(input: &str, rows: &[Row], selected: usize) -> Submit {
         && let Ok((c, arg)) = parse(&row.fill)
         && !arg.is_empty()
     {
+        // A listed ssh line that makes ssh run a local program is put in the input to be
+        // read first; Enter on it then runs it (SEC-5).
+        if c.arg == ArgKind::Ssh
+            && arg != typed.trim()
+            && crate::ssh::args::split(&arg, None)
+                .ok()
+                .and_then(|w| crate::ssh::args::local_command_word(&w))
+                .is_some()
+        {
+            return Submit::Fill(row.fill.clone());
+        }
         return Submit::Run(c, arg);
     }
     let err = match parse(input) {
@@ -697,6 +708,12 @@ fn split_path_arg<'a>(app: &App, arg: &'a str) -> (&'a str, &'a str, PathBuf) {
 /// Reads the folder a path argument in `input` completes from, unless the window already
 /// holds that folder's listing. Called before the rows are built.
 pub fn prepare(app: &mut App, input: &str) {
+    // An edited line is a typed line: the folder of the listed line it came from is dropped.
+    if let Some(p) = &mut app.palette
+        && p.ssh_listed.as_ref().is_some_and(|(t, _)| t != input)
+    {
+        p.ssh_listed = None;
+    }
     let Some((c, arg)) = in_argument(input) else {
         return;
     };
@@ -783,6 +800,16 @@ pub(crate) fn set_input(app: &mut App, text: &str) {
     palette::refilter(app);
 }
 
+/// A listed ssh line put in the input keeps the folder it brings until the input is edited
+/// (SEC-4, SEC-5).
+pub(crate) fn remember_listed(app: &mut App, input: &str, picked: Option<(String, PathBuf)>) {
+    if let (Some((line, base)), Some(p)) = (picked, &mut app.palette)
+        && input.strip_prefix(super::ssh::SLASH) == Some(line.as_str())
+    {
+        p.ssh_listed = Some((input.to_string(), base));
+    }
+}
+
 /// Enter in slash mode: runs the command after closing the window; a refused input or a
 /// command that fails leaves the window open with the text and the message under it.
 pub fn enter(app: &mut App) {
@@ -790,15 +817,23 @@ pub fn enter(app: &mut App) {
         return;
     };
     prepare(app, &text);
+    let picked = super::ssh::picked(app);
     match submit(&text, &rows(app, &text), selected) {
         Submit::Run(c, arg) => {
             palette::close(app);
-            if let Err(e) = (c.run)(app, &arg) {
+            app.ssh.picked = picked.clone().filter(|_| c.arg == ArgKind::Ssh);
+            let ran = (c.run)(app, &arg);
+            app.ssh.picked = None;
+            if let Err(e) = ran {
                 reopen(app, &text, e);
+                remember_listed(app, &text, picked);
             }
             app.dirty = true;
         }
-        Submit::Fill(fill) => set_input(app, &fill),
+        Submit::Fill(fill) => {
+            set_input(app, &fill);
+            remember_listed(app, &fill, picked);
+        }
         Submit::Error(e) => show_error(app, e),
     }
 }
@@ -863,7 +898,7 @@ fn reload(app: &mut App, _: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `/ssh [target]`: no target shows the list.
+/// `/ssh [ssh args]`: no argument shows the list.
 fn ssh(app: &mut App, arg: &str) -> Result<(), String> {
     if arg.is_empty() {
         palette::open(app);
@@ -889,11 +924,16 @@ fn run(app: &mut App, line: &str) -> Result<(), String> {
     super::terminal::type_line(app, line, LineTarget::Active)
 }
 
-/// The tool runs through the user's shell in a new tab, so a missing one shows that shell's
-/// own error.
-fn ai(app: &mut App, tool: &str) -> Result<(), String> {
-    one_line("ai", tool)?;
-    super::terminal::type_line(app, tool, LineTarget::NewTab)
+/// `/ai <tool> [@account]` starts a tool of `ai_tools` in the AI panel (D7) as argv, never through
+/// a shell (SEC-8); `/ai rename <name>` names the active session (AI: Rename Session).
+fn ai(app: &mut App, arg: &str) -> Result<(), String> {
+    one_line("ai", arg)?;
+    if let Some(rest) = arg.strip_prefix("rename")
+        && (rest.is_empty() || rest.starts_with(' '))
+    {
+        return crate::ai::rename(app, rest);
+    }
+    crate::ai::open_tool(app, arg)
 }
 
 /// The W-1 checks apply: a missing folder, a file, a repeat or a nested folder is refused.
@@ -1366,6 +1406,11 @@ pub(crate) fn apply_settings(app: &mut App, new: vr_config::Settings) {
     if old.terminal_width_percent != new.terminal_width_percent {
         app.terminal.width_percent = new.terminal_width_percent;
         app.terminal.width_cols = None;
+    }
+    if old.ai_width_percent != new.ai_width_percent {
+        app.ai.width_percent = new.ai_width_percent;
+        app.ai.width_cols = None;
+        app.dirty = true;
     }
     if old.terminal_position != new.terminal_position {
         app.terminal.position = new.terminal_position;

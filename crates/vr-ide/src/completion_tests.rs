@@ -11,7 +11,7 @@ use crate::app::{App, Focus};
 use crate::app_tests::test_app;
 use crate::commands::completion::{self, Phase, SshSlot};
 use crate::slash_tests::{input, key, slash, titles, typ};
-use crate::ssh::Target;
+use crate::ssh::recent::Entry;
 
 fn back_tab(app: &mut App) {
     app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
@@ -71,7 +71,8 @@ impl Fx {
         )
         .unwrap();
         app.ssh.home = Some(home);
-        app.ssh.recent = vec![Target::parse("root@app.fixecom.vn").unwrap()];
+        app.ssh.recent =
+            vec![Entry::new("-i credentials/id_fixecom root@app.fixecom.vn", None).unwrap()];
         Fx { dir, app }
     }
 
@@ -249,6 +250,11 @@ fn ssh_classifier_positions() {
         "remote command"
     );
     assert_eq!(completion::ssh_slot_at_end("-v"), Other);
+    assert_eq!(
+        completion::ssh_slot_at_end("-i"),
+        Other,
+        "the option itself"
+    );
     assert_eq!(completion::ssh_slot_at_end("-i my\\ k"), Path(3));
 }
 
@@ -361,26 +367,27 @@ fn ai_completes_tool_names() {
     assert_eq!(input(app), "/ai claude ");
     crate::slash_tests::set(app, "/ai ");
     key(app, KeyCode::Tab);
-    assert_eq!(titles(app), ["claude", "codex", "gemini", "aider"]);
-    assert_eq!(
-        completion::ai_tool_names(app),
-        ["claude", "codex", "gemini", "aider"]
-    );
+    let names: Vec<String> = app
+        .settings
+        .ai_tools
+        .iter()
+        .map(|t| t.name.clone())
+        .collect();
+    assert!(names.len() > 1, "{names:?}");
+    assert_eq!(titles(app), names, "the ai_tools setting, in order");
+    assert_eq!(completion::ai_tool_names(app), names);
 }
 
 #[test]
-fn ai_tool_names_from_setting_text() {
-    assert_eq!(
-        completion::tool_names_from_toml(r#"["claude", "cursor-agent"]"#),
-        ["claude", "cursor-agent"]
-    );
-    assert_eq!(
-        completion::tool_names_from_toml(
-            r#"[{ name = "claude", command = "claude --x" }, { name = "aider" }]"#
-        ),
-        ["claude", "aider"]
-    );
-    assert!(completion::tool_names_from_toml(r#"["a; rm -rf /"]"#).is_empty());
+fn ai_completes_the_names_of_the_ai_tools_setting() {
+    let mut f = Fx::new("vr-ide");
+    let mut agent = f.app.settings.ai_tools[0].clone();
+    agent.name = "cursor-agent".to_string();
+    f.app.settings.ai_tools.push(agent);
+    let app = &mut f.app;
+    slash(app, "/ai cu");
+    key(app, KeyCode::Tab);
+    assert_eq!(input(app), "/ai cursor-agent ");
 }
 
 #[test]

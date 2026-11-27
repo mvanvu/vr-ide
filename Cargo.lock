@@ -2859,6 +2859,7 @@ dependencies = [
  "serde",
  "similar 3.2.1",
  "tempfile",
+ "toml",
  "tracing",
  "vr-config",
  "vr-core",

@@ -17,6 +17,12 @@ pub struct AppLayout {
     /// The one-column separator left of a panel on the right (its drag handle); empty while
     /// the panel is at the bottom or hidden.
     pub terminal_sep: Rect,
+    /// The AI panel (D7): a column right of the editor from the top row to the notices, its tab
+    /// bar row then the session. Empty while hidden.
+    pub ai: Rect,
+    /// The one-column separator left of the AI panel (its drag handle); empty while hidden or
+    /// while the panel takes the whole area right of the explorer.
+    pub ai_sep: Rect,
     pub notice: Rect,
     pub status: Rect,
 }
@@ -69,6 +75,8 @@ pub fn compute(area: Rect, notice_rows: u16, side: Side) -> AppLayout {
         editor,
         terminal: Rect::default(),
         terminal_sep: Rect::default(),
+        ai: Rect::default(),
+        ai_sep: Rect::default(),
         notice,
         status,
     }
@@ -151,4 +159,83 @@ pub fn right_cols(width: u16, percent: u16) -> u16 {
     let want = (u32::from(width) * u32::from(percent) + 50) / 100;
     let max = width.saturating_sub(EDITOR_MIN_COLS + 1);
     (want as u16).max(TERMINAL_MIN_COLS).min(max)
+}
+
+/// Narrowest area right of the explorer that keeps the editor beside a shown AI panel; a
+/// narrower one gives the panel all of it (ui-spec S1).
+pub const AI_SIDE_MIN_COLUMNS: u16 = 60;
+
+/// Fewest columns of the AI panel, its separator included.
+pub const AI_MIN_COLS: u16 = 30;
+
+/// Editor columns kept left of the AI panel.
+pub const AI_EDITOR_MIN_COLS: u16 = 30;
+
+/// Takes the AI panel and its separator from the right of the tab bar and editor, from the top
+/// row to the notices: `percent` of the area right of the explorer (separator included), at
+/// least [`AI_MIN_COLS`], leaving the editor [`AI_EDITOR_MIN_COLS`]; `exact` (a drag) replaces
+/// the percent with a column count. Under [`AI_SIDE_MIN_COLUMNS`] the panel takes the whole
+/// area and the editor gets none. Call it before the find box and the terminal are placed.
+pub fn place_ai(layout: &mut AppLayout, percent: u16, exact: Option<u16>) {
+    let width = layout.tabs.width;
+    let top = layout.tabs.y;
+    let height = (layout.editor.y + layout.editor.height).saturating_sub(top);
+    if width == 0 || height == 0 {
+        return;
+    }
+    if width < AI_SIDE_MIN_COLUMNS {
+        layout.ai = Rect::new(layout.tabs.x, top, width, height);
+        layout.tabs.width = 0;
+        layout.editor.width = 0;
+        layout.find_bar.width = 0;
+        return;
+    }
+    let total = exact
+        .unwrap_or_else(|| ((u32::from(width) * u32::from(percent) + 50) / 100) as u16)
+        .clamp(AI_MIN_COLS, width - AI_EDITOR_MIN_COLS);
+    let sep_x = layout.tabs.x + width - total;
+    layout.ai_sep = Rect::new(sep_x, top, 1, height);
+    layout.ai = Rect::new(sep_x + 1, top, total - 1, height);
+    layout.tabs.width -= total;
+    layout.editor.width -= total;
+    layout.find_bar.width = layout.find_bar.width.min(layout.editor.width);
+}
+
+#[cfg(test)]
+mod ai_tests {
+    use super::*;
+
+    fn at(w: u16, h: u16, side: Side, percent: u16) -> AppLayout {
+        let mut l = compute(Rect::new(0, 0, w, h), 0, side);
+        place_ai(&mut l, percent, None);
+        l
+    }
+
+    /// The mockups' widths: 120x40 with the explorer (editor 54, panel 35 + separator),
+    /// 80x24 without (editor 48, panel 31 + separator), 80x24 with (editor 30, panel 30),
+    /// 40x12 with the explorer (the panel takes the rest, no separator).
+    #[test]
+    fn ai_panel_widths_follow_the_spec() {
+        let l = at(120, 40, Side::Explorer, 40);
+        assert_eq!((l.editor.width, l.ai_sep.x, l.ai.width), (54, 84, 35));
+        assert_eq!((l.ai.y, l.ai.height), (0, 39));
+        assert_eq!(l.tabs.width, 54);
+        let l = at(80, 24, Side::None, 40);
+        assert_eq!((l.editor.width, l.ai.width), (48, 31));
+        let l = at(80, 24, Side::Explorer, 40);
+        assert_eq!(
+            (l.explorer.width, l.editor.width, l.ai.width + 1),
+            (20, 30, 30)
+        );
+        let l = at(80, 24, Side::Explorer, 90);
+        assert_eq!(l.editor.width, AI_EDITOR_MIN_COLS);
+        let l = at(40, 12, Side::Explorer, 40);
+        assert_eq!(
+            (l.editor.width, l.ai_sep.width, l.ai.x, l.ai.width),
+            (0, 0, 16, 24)
+        );
+        let mut l = compute(Rect::new(0, 0, 120, 40), 0, Side::Explorer);
+        place_ai(&mut l, 40, Some(50));
+        assert_eq!(l.ai.width, 49);
+    }
 }

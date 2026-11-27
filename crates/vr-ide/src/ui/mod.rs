@@ -1,5 +1,6 @@
 //! Rendering. `render` draws the whole frame from `App` and records the layout it used.
 
+pub mod ai_view;
 pub mod dialog;
 pub mod editor_view;
 pub mod explorer;
@@ -30,6 +31,7 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     let area = frame.area();
     // Before the layout: a "highlighting is off" notice needs its row in this frame.
     app.sync_syntax();
+    crate::ai::attention::clear_viewed(app);
     // Paint the theme background everywhere first; widgets then only patch their own cells.
     frame.buffer_mut().set_style(area, theme.text);
     // A logged-in SSH session chosen for it takes the whole window (FR-25).
@@ -50,6 +52,11 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
         layout::Side::None
     };
     let mut layout = layout::compute(area, notice_rows, side);
+    // D7: the AI panel takes its column first, full height; the terminal and the find box then
+    // share what is left of the editor column (L1-A: a right terminal goes to the bottom).
+    if app.ai.visible {
+        layout::place_ai(&mut layout, app.ai.width_percent, app.ai.width_cols);
+    }
     // T19: a panel on the right takes the editor's full height and the find box sits over the
     // editor beside it; at the bottom (D275) the fields come first, then the panel, then the
     // list from what is left.
@@ -79,6 +86,8 @@ pub fn render_with(frame: &mut Frame, app: &mut App, theme: &Theme) {
     editor_view::render(frame, layout.editor, app, theme);
     terminal_view::render(frame, layout.terminal, app, theme);
     terminal_view::render_separator(frame.buffer_mut(), layout.terminal_sep, app, theme);
+    ai_view::render(frame, layout.ai, app, theme);
+    ai_view::render_separator(frame.buffer_mut(), app, theme);
     status_bar::render_notice(frame.buffer_mut(), layout.notice, app, theme);
     status_bar::render(frame.buffer_mut(), layout.status, app, theme);
     // Overlays last: they draw over the editor and set the cursor.
@@ -107,6 +116,7 @@ mod tests {
     use super::*;
     use crate::app_tests::{app_with_file, test_app};
 
+    mod ai_view_tests;
     mod palette_detail;
     mod preview;
     mod welcome_tests;

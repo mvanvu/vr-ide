@@ -612,24 +612,19 @@ fn run_in_an_exited_terminal_opens_a_new_one() {
 }
 
 #[test]
-fn ai_runs_the_tool_in_a_new_tab_through_the_shell() {
+fn ai_starts_only_tools_of_ai_tools_never_through_a_shell() {
     let (_d, mut app) = sh_app();
     crate::commands::terminal::new_terminal(&mut app);
-    app.run_command("app.palette", crate::commands::CmdArgs::None);
-    typ(&mut app, "/ai echo tool-ran");
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.terminal.tabs.len(), 2, "a new tab");
-    assert_eq!(app.terminal.active, 1);
-    assert_eq!(app.focus, Focus::Terminal);
-    wait_for(&app, 1, |s| printed(s, "tool-ran"));
-    // A missing tool: the shell's own error.
-    app.run_command("app.palette", crate::commands::CmdArgs::None);
-    typ(&mut app, "/ai vr-ide-no-such-tool");
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.terminal.tabs.len(), 3);
-    wait_for(&app, 2, |s| {
-        s.contains("vr-ide-no-such-tool") && s.contains("not found")
-    });
+    // Not a tool of ai_tools: refused, nothing typed into a shell (SEC-8; the AI panel runs the
+    // tools, ai_tests covers it).
+    slash_needs(&mut app, "/ai echo tool-ran", "/ai takes <tool> [@account]");
+    slash_needs(
+        &mut app,
+        "/ai vr-ide-no-such-tool",
+        "/ai: vr-ide-no-such-tool is not in ai_tools (claude, codex, gemini, aider, cursor-agent)",
+    );
+    assert_eq!(app.terminal.tabs.len(), 1, "no new terminal tab");
+    assert!(app.ai.sessions.is_empty());
     slash_needs(&mut app, "/ai", "/ai needs <tool>");
 }
 

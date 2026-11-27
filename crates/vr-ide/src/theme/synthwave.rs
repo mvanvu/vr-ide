@@ -41,6 +41,11 @@ struct Palette {
     /// Status bar badge of read mode and of edit mode (text is the editor background).
     read: u32,
     edit: u32,
+    /// Secondary text (the syntax comment tone), fitted to 4.5:1.
+    note: u32,
+    /// Diff line backgrounds.
+    diff_added: Surface,
+    diff_removed: Surface,
 }
 
 pub(super) fn build(depth: ColorDepth) -> Theme {
@@ -136,6 +141,11 @@ pub(super) fn build(depth: ColorDepth) -> Theme {
         terminal_fg: tfg,
         terminal_bg: tbg,
         terminal_selection: tsel,
+        mode_ai: Style::default().bg(purple).fg(bg).add_modifier(bold),
+        attention: Style::default().fg(yellow).add_modifier(bold),
+        note: Style::default().fg(fit(p.note, &[bg, bar, raised], 4.5)),
+        diff_added_bg: surface(p.diff_added),
+        diff_removed_bg: surface(p.diff_removed),
         ansi: Some(super::ansi::palette(
             depth,
             tfg,
@@ -196,4 +206,7 @@ const SYNTHWAVE: Palette = Palette {
     info: 0x2de2e6,
     read: 0x2de2e6,
     edit: 0xff9d3c,
+    note: 0x9884c9,
+    diff_added: (0x0e2c22, 22),
+    diff_removed: (0x3a1027, 52),
 };

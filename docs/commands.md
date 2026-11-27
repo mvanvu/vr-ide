@@ -9,7 +9,7 @@ The list shows the matching slash commands with their arguments and a short desc
   for `/ssh` the files of `-i`, `-F`, `-E`, `-S` and `-o IdentityFile=` (relative to the
   workspace folder of the active file, as ssh resolves them) and, in the destination position,
   the recent targets and the hosts of `~/.ssh/config`; the tool names of `/ai` (setting
-  `ai_tools`, else claude, codex, gemini, aider); the theme names, the workspace folders of
+  `ai_tools`); the theme names, the workspace folders of
   `/ws remove`, the numbers of `/ws recent` and `/recent`, the values of `/indent` and `/eol`,
   the language ids of `/lang`, and for `/set` the setting names (with their value now), then
   `true` / `false` or the theme names. Hidden files are offered only when what you typed starts
@@ -20,7 +20,7 @@ The list shows the matching slash commands with their arguments and a short desc
   the input. There `Tab` / `shift+tab` (or `up` / `down`) step through them, `Enter` takes the
   candidate without running it, `Esc` goes back to the text from before the list (a second `Esc`
   closes the window) and typing closes the list and edits. A row highlighted with `up` / `down`
-  before `Tab` is taken as it is.
+  before `Tab` is taken as it is (not in `/ssh`, where `Tab` completes the word being typed).
 - `Enter` runs the command. On a partial name it takes the highlighted command (a command that
   needs an argument is completed instead).
 - A command that does not exist, or a missing or wrong argument, shows an error under the input
@@ -28,7 +28,7 @@ The list shows the matching slash commands with their arguments and a short desc
 - `Esc` closes the window and returns to read (normal) mode.
 - Without `/` the window is the command palette and lists the named commands as before.
 
-`/run` and `/ai` only act on your `Enter`. They type the text, then `Enter`, into a terminal of the
+`/run` only acts on your `Enter`. It types the text, then `Enter`, into a terminal of the
 integrated panel: the panel's own shell reads it as if you had typed it (vr-ide adds no shell of
 its own), so a missing program shows that shell's error. `/run` uses the active terminal when its
 shell is waiting for a command; when there is none, its shell has exited or a program started from
@@ -50,10 +50,12 @@ under 60 columns wide. A new terminal and closing one: the `+` and the `x` of ea
 panel's tab bar, or `ctrl+n` / `ctrl+w` in a focused terminal (no slash command).
 
 `/ssh` (also: `ssh` and a space, or SSH: Connect to Host in the command list) lists the open SSH
-sessions, the recently used targets and the `Host` names of `~/.ssh/config`; type
-`[user@]host[:port]` for any other host and press Enter on its row. The session starts in a
-terminal tab and takes the whole window once the login succeeded; see "SSH sessions" in the
-README.
+sessions, the recently used lines and the `Host` names of `~/.ssh/config`; type what you would
+type after `ssh ` in a terminal (`-i credentials/key user@host`, `-p 2222 user@host`,
+`-J jump host`; quotes and `\` work, no shell runs it) and press Enter on its row. Relative paths
+resolve in the workspace folder of the active file; the window shows `runs: ssh …` with them
+resolved. The session starts in a terminal tab and takes the whole window once the login
+succeeded; see "SSH sessions" in the README.
 
 Git (read only): in a folder that is a git repository (or inside one) the gutter marks the lines
 of the active file that differ from the git index, unsaved changes included: a bar for added and
@@ -127,8 +129,8 @@ protocol does not send are marked).
 | `/term right` | Terminal panel on the right, for this session |
 | `/term bottom` | Terminal panel at the bottom, for this session |
 | `/run <command>` | Type the command and Enter into the terminal (opens one) |
-| `/ai <tool>` | Run an AI tool (e.g. claude) in a new terminal tab |
-| `/ssh [target]` | Open an SSH session: [user@]host[:port] (no target: list hosts) |
+| `/ai <tool>` | Start an AI tool of ai_tools (e.g. claude) in the AI panel; /ai rename <name> |
+| `/ssh [ssh args]` | Open an SSH session, args as after ssh (none: list hosts) |
 | `/ws add <folder>` | Add a folder to the workspace |
 | `/ws remove [root]` | Remove a workspace folder (default: the active file's) |
 | `/ws save [file]` | Save the workspace folders to a .vr-workspace file |

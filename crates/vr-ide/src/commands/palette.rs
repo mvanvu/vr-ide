@@ -72,6 +72,9 @@ pub struct Palette {
     /// The highlight was moved with the arrows, page keys or the wheel since the list was
     /// last built: Tab takes the highlighted row.
     pub moved: bool,
+    /// The `ssh` list: the input text put there from a listed session or recent line, with the
+    /// folder that line runs in; forgotten at the first edit (SEC-4, SEC-5).
+    pub ssh_listed: Option<(String, std::path::PathBuf)>,
 }
 
 /// Registered only so a `[terminal]` key can run them (D291, D330).
@@ -109,6 +112,7 @@ pub fn open(app: &mut App) {
         ssh_hosts: None,
         completion: None,
         moved: false,
+        ssh_listed: None,
     });
     app.modal_since = Some(app.now());
     app.focus = Focus::Palette;

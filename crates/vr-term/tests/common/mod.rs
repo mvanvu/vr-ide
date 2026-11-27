@@ -41,10 +41,15 @@ pub fn opts(script: &str, cols: u16, rows: u16) -> SpawnOptions {
 }
 
 pub fn spawn_opts(opts: SpawnOptions) -> (Terminal, Arc<Wake>) {
+    spawn_extras(opts, vr_term::SpawnExtras::default())
+}
+
+pub fn spawn_extras(opts: SpawnOptions, extras: vr_term::SpawnExtras) -> (Terminal, Arc<Wake>) {
     let wake = Arc::new(Wake::default());
     let w = wake.clone();
-    let term = Terminal::spawn(
+    let term = Terminal::spawn_with(
         opts,
+        extras,
         Arc::new(move || {
             *w.count.lock().unwrap() += 1;
             w.cv.notify_all();

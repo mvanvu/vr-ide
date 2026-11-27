@@ -304,13 +304,46 @@ pub(crate) fn render_grid(
     close_key: &str,
     theme: &Theme,
 ) -> Option<(u16, u16)> {
+    let Some(tab) = panel.active_tab() else {
+        render_cells(buf, area, None, None, theme);
+        return None;
+    };
+    let cursor = render_cells(buf, area, Some(tab), panel.selection, theme);
+    let w = usize::from(area.width);
+    if let TermStatus::Exited(code) = tab.status() {
+        let y = area.y + area.height - 1;
+        let row = Rect::new(area.x, y, area.width, 1);
+        buf.set_style(row, theme.popup);
+        // Both actions stay visible: the wording shortens before anything is cut.
+        let forms = [
+            format!(" [process exited {code}] — Enter to restart, {close_key} to close"),
+            format!(" exited {code} · Enter restart · {close_key} close"),
+            format!(" exited {code} · Enter · {close_key}"),
+        ];
+        let text = forms.iter().find(|t| width_of(t) <= w).unwrap_or(&forms[2]);
+        buf.set_stringn(area.x, y, text, w, theme.popup);
+        return None;
+    }
+    cursor
+}
+
+/// Draws `tab`'s grid (the panel background alone without a tab) with `selection` and the
+/// scrollback indicator; returns where the program's cursor is when it is shown. The terminal
+/// panel, the SSH full screen and the AI panel all draw through it.
+pub(crate) fn render_cells(
+    buf: &mut Buffer,
+    area: Rect,
+    tab: Option<&term::TermTab>,
+    selection: Option<term::Selection>,
+    theme: &Theme,
+) -> Option<(u16, u16)> {
     let depth = ColorDepth::detect();
     let blank = Cell {
         ch: " ".into(),
         ..Cell::default()
     };
     buf.set_style(area, theme_cell_style(&blank, theme, depth));
-    let tab = panel.active_tab()?;
+    let tab = tab?;
     let g = &tab.grid;
     let (w, h) = (usize::from(area.width), usize::from(area.height));
     for r in 0..g.rows.min(h) {
@@ -321,7 +354,7 @@ pub(crate) fn render_grid(
             };
             let x = area.x + c as u16;
             let mut style = theme_cell_style(cell, theme, depth);
-            if panel.selection.is_some_and(|s| s.contains(r, c)) {
+            if selection.is_some_and(|s| s.contains(r, c)) {
                 style = style.bg(theme.terminal_selection);
             }
             // The spacer of a wide character is covered by it; a wide character that would
@@ -336,26 +369,11 @@ pub(crate) fn render_grid(
             buf[(x, y)].set_symbol(symbol).set_style(style);
         }
     }
-    let status = tab.status();
     if tab.scroll > 0 {
         let text = format!(" ↑ {}/{} ", tab.scroll, g.scrollback_len);
         let tw = width_of(&text).min(w) as u16;
         let style = theme.popup.patch(theme.info);
         buf.set_stringn(area.x + area.width - tw, area.y, &text, w, style);
-    }
-    if let TermStatus::Exited(code) = status {
-        let y = area.y + area.height - 1;
-        let row = Rect::new(area.x, y, area.width, 1);
-        buf.set_style(row, theme.popup);
-        // Both actions stay visible: the wording shortens before anything is cut.
-        let forms = [
-            format!(" [process exited {code}] — Enter to restart, {close_key} to close"),
-            format!(" exited {code} · Enter restart · {close_key} close"),
-            format!(" exited {code} · Enter · {close_key}"),
-        ];
-        let text = forms.iter().find(|t| width_of(t) <= w).unwrap_or(&forms[2]);
-        buf.set_stringn(area.x, y, text, w, theme.popup);
-        return None;
     }
     let cur = g.cursor;
     (tab.scroll == 0 && cur.visible && cur.row < h && cur.col < w)

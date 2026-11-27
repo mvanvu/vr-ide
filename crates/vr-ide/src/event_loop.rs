@@ -149,9 +149,12 @@ pub fn exit(
     let result = finish(result, app, dir);
     // A file opened just before quitting is still queued for the recent-files list.
     app.close_recent_files(Duration::from_millis(500));
+    // Before the terminals go: their shells name the folders the session keeps.
+    crate::session::save_on_quit(app);
     // Terminals get SIGHUP (SIGKILL after a grace period) and are reaped before vr-ide exits
     // (AC-14d); each wait is bounded by vr-term.
     crate::commands::terminal::shutdown(app);
+    crate::ai::shutdown(app);
     // A git read stuck on a slow disk must not outlive vr-ide (SEC-1).
     crate::git::shutdown(app);
     // After the recovery write: printing can block on a full stderr.
@@ -182,7 +185,12 @@ pub(crate) fn poll_interval(app: &App) -> Duration {
         .tabs
         .iter()
         .any(|t| t.status() == vr_term::TermStatus::Running);
-    if app.terminal.visible && running {
+    let agents = app
+        .ai
+        .sessions
+        .iter()
+        .any(|s| s.tab.status() == vr_term::TermStatus::Running);
+    if (app.terminal.visible && running) || (app.ai.visible && agents) {
         TERMINAL_POLL
     } else {
         POLL
@@ -231,8 +239,12 @@ where
             app.dirty = true;
         }
         // A terminal printed, changed its title or exited since the last pass.
-        if app.terminal.take_wake() && crate::commands::terminal::refresh(app) {
-            app.dirty = true;
+        if app.terminal.take_wake() {
+            // Terminals and AI sessions share the wake flag (one PTY machinery).
+            let terminals = crate::commands::terminal::refresh(app);
+            if crate::ai::refresh(app) || terminals {
+                app.dirty = true;
+            }
         }
         if app.dirty {
             draw_frame(terminal, app, &recovery::GLOBAL, ui::render)?;

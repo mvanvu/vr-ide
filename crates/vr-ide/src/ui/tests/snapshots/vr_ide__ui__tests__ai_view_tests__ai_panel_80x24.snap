@@ -1,0 +1,28 @@
+---
+source: crates/vr-ide/src/ui/tests/ai_view_tests.rs
+expression: t.backend()
+---
+" /home/user/DEV/vr-ide                          │ 1 claude  2 ◆  3            + "
+" vr-ide v0.1.0                                  │> restore has to skip tabs whos"
+"                                                │  file is gone, with one notice"
+" CPU                                          — │                               "
+" RAM ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ —    — │● Read(src/session.rs)         "
+"                                                │  └ 64 lines                   "
+" ctrl+p  Go to file                             │● Update(src/session.rs)       "
+" f1      Command palette                        │  └ +12 -3                     "
+" ctrl+e  Explorer                               │                               "
+" ctrl+o  Open file                              │                               "
+" ctrl+`  Terminal                               │                               "
+" f12     AI panel                               │                               "
+" ctrl+q  Quit                                   │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+"                                                │                               "
+" AI  claude · /home/user/DEV/vr-ide                              1/3 · f12 hide "

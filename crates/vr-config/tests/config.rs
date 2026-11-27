@@ -62,6 +62,14 @@ const KEYSET_V2: &[(&str, &str, &str)] = &[
     ("global", "shift+f2", "editor.toggle_blame"),
     ("global", "f1", "app.palette"),
     ("global", "ctrl+q", "app.quit"),
+    // AI panel (D7, run 4 key table).
+    ("global", "f12", "ai.toggle"),
+    ("global", "ctrl+f12", "ai.new"),
+    ("global", "f3", "focus.editor"),
+    ("global", "f7", "ai.next"),
+    ("global", "shift+f7", "ai.prev"),
+    ("ai", "ctrl+f8", "ai.grow"),
+    ("ai", "ctrl+f9", "ai.shrink"),
     // Explorer focus. ctrl+n there asks File / Folder first (user change to the spec).
     ("explorer", "f2", "explorer.rename"),
     ("explorer", "ctrl+n", "explorer.new"),
@@ -75,8 +83,8 @@ const KEYSET_V2: &[(&str, &str, &str)] = &[
 /// ctrl+f4 and ctrl+f12 by D279 / D280): bound nowhere. ctrl+f7, kept free for T19, is the
 /// panel position key now.
 const REMOVED_V2: &[&str] = &[
-    "ctrl+i", "ctrl+]", "ctrl+u", "f7", "shift+f7", "ctrl+t", "f3", "shift+f3", "f6", "ctrl+f1",
-    "ctrl+f2", "ctrl+f3", "ctrl+f5", "f12", "f5", "ctrl+f4", "ctrl+f12",
+    "ctrl+i", "ctrl+]", "ctrl+u", "ctrl+t", "shift+f3", "f6", "ctrl+f1", "ctrl+f2", "ctrl+f3",
+    "ctrl+f5", "f5", "ctrl+f4",
 ];
 
 /// Every command name the plan's registry lists, plus the M5 reserved one.
@@ -144,6 +152,12 @@ const KNOWN: &[&str] = &[
     "terminal.new",
     "terminal.close",
     "editor.toggle_blame",
+    "ai.toggle",
+    "ai.new",
+    "ai.next",
+    "ai.prev",
+    "ai.grow",
+    "ai.shrink",
 ];
 
 #[test]
@@ -287,11 +301,27 @@ fn defaults_load_without_user_file() {
                 ("ctrl+f9", "terminal.shrink"),
                 ("ctrl+n", "terminal.new"),
                 ("ctrl+w", "terminal.close"),
+                ("f12", "ai.toggle"),
+                ("ctrl+f12", "ai.new"),
+            ]
+            .iter()
+            .any(|&(key, command)| chord(key) == *k && command == cmd);
+        // The [ai] table repeats the global keys a focused session keeps for vr-ide (ui-spec
+        // "Key plumbing").
+        let ai_repeat = ctx == Context::Ai
+            && [
+                ("f1", "app.palette"),
+                ("f3", "focus.editor"),
+                ("f7", "ai.next"),
+                ("shift+f7", "ai.prev"),
+                ("f12", "ai.toggle"),
+                ("ctrl+f12", "ai.new"),
+                ("ctrl+`", "terminal.toggle"),
             ]
             .iter()
             .any(|&(key, command)| chord(key) == *k && command == cmd);
         assert!(
-            listed || terminal_repeat,
+            listed || terminal_repeat || ai_repeat,
             "{ctx} {k} = {cmd} is not in the T21 table"
         );
     }
@@ -544,20 +574,30 @@ fn settings_defaults_and_override() {
     assert!(s.insert_spaces);
     assert_eq!(s.scrollback, 10_000);
     assert_eq!(s.terminal_height_percent, 40);
-    let names: Vec<&str> = s.ai_presets.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["claude", "cursor-agent"]);
-    assert_eq!(s.ai_presets[0].command, "claude");
+    let names: Vec<&str> = s.ai_tools.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["claude", "codex", "gemini", "aider", "cursor-agent"]
+    );
+    assert_eq!(s.ai_tools[0].command, "claude");
+    assert_eq!(s.ai_tools[0].continue_args, ["--continue"]);
+    assert_eq!(s.ai_tools[0].resume_args, ["--resume"]);
+    assert_eq!(s.ai_tools[1].continue_args, ["resume", "--last"]);
+    assert_eq!(s.ai_tools[1].resume_args, ["resume"]);
+    assert!(s.ai_tools[2].continue_args.is_empty() && s.ai_tools[2].resume_args.is_empty());
+    assert_eq!(s.ai_width_percent, 40);
 
     let (_d, path) = write_user(
-        "tab_width = 2\nshow_hidden = false\nbogus = 1\ntheme = 7\n\n[[ai_presets]]\nname = \"aider\"\ncommand = \"aider\"\nargs = [\"--no-auto-commits\"]\n",
+        "tab_width = 2\nshow_hidden = false\nbogus = 1\ntheme = 7\n\n[[ai_tools]]\nname = \"aider\"\ncommand = \"aider\"\nargs = [\"--no-auto-commits\"]\n",
     );
     let (s2, w2) = Settings::load(Some(&path));
     assert_eq!(s2.tab_width, 2);
     assert!(!s2.show_hidden);
     assert_eq!(s2.theme, s.theme, "bad value keeps the default");
     assert_eq!(s2.insert_spaces, s.insert_spaces);
-    assert_eq!(s2.ai_presets.len(), 1);
-    assert_eq!(s2.ai_presets[0].args, ["--no-auto-commits"]);
+    assert_eq!(s2.ai_tools.len(), 1);
+    assert_eq!(s2.ai_tools[0].args, ["--no-auto-commits"]);
+    assert!(s2.ai_tools[0].continue_args.is_empty());
     assert_eq!(w2.len(), 2, "{w2:?}");
     assert!(
         w2.iter()
@@ -775,4 +815,77 @@ fn ssh_fullscreen_defaults_to_on_and_is_settable() {
         .with_value("ssh_fullscreen", "false")
         .unwrap();
     assert!(!s.ssh_fullscreen);
+}
+
+/// A focused AI session (ui-spec "Key plumbing"): its own table, no global fallback, so every
+/// other key reaches the agent; f5 / shift+f5 and ctrl letters are not taken.
+#[test]
+fn ai_context_keeps_only_its_table() {
+    let (km, warnings) = Keymap::load(None);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(Context::from_name("ai"), Some(Context::Ai));
+    for (k, cmd) in [
+        ("f1", "app.palette"),
+        ("f3", "focus.editor"),
+        ("f7", "ai.next"),
+        ("shift+f7", "ai.prev"),
+        ("f12", "ai.toggle"),
+        ("ctrl+f12", "ai.new"),
+        ("ctrl+f8", "ai.grow"),
+        ("ctrl+f9", "ai.shrink"),
+        ("ctrl+`", "terminal.toggle"),
+    ] {
+        assert_eq!(km.command_for_in(Context::Ai, &chord(k)), Some(cmd), "{k}");
+    }
+    for k in [
+        "f5", "shift+f5", "ctrl+w", "ctrl+n", "ctrl+c", "ctrl+s", "f8", "ctrl+f7",
+    ] {
+        assert_eq!(km.command_for_in(Context::Ai, &chord(k)), None, "{k}");
+    }
+    // A focused terminal gains f12 and ctrl+f12 and still keeps f3 / f7 for its program.
+    assert_eq!(
+        km.command_for_in(Context::Terminal, &chord("f12")),
+        Some("ai.toggle")
+    );
+    assert_eq!(
+        km.command_for_in(Context::Terminal, &chord("ctrl+f12")),
+        Some("ai.new")
+    );
+    for k in ["f3", "f6", "f7", "shift+f7"] {
+        assert_eq!(km.command_for_in(Context::Terminal, &chord(k)), None, "{k}");
+    }
+    // Users may add keys to [ai].
+    let (_d, path) = write_user("[ai]\n\"ctrl+f6\" = \"ai.prev\"\n");
+    let (km, warnings) = Keymap::load(Some(&path));
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+        km.command_for_in(Context::Ai, &chord("ctrl+f6")),
+        Some("ai.prev")
+    );
+}
+
+/// `ai_tools` entries: a name the panel can show, a command, no repeats; an old user file's
+/// `ai_presets` list still applies as `ai_tools`.
+#[test]
+fn ai_tools_are_checked_and_ai_presets_still_read() {
+    let (_d, path) = write_user(
+        "[[ai_presets]]\nname = \"claude\"\ncommand = \"/opt/claude/bin/claude\"\nargs = [\"--verbose\"]\n",
+    );
+    let (s, w) = Settings::load(Some(&path));
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(s.ai_tools.len(), 1);
+    assert_eq!(s.ai_tools[0].command, "/opt/claude/bin/claude");
+    assert!(s.ai_tools[0].continue_args.is_empty());
+    for bad in [
+        "[[ai_tools]]\nname = \"\"\ncommand = \"x\"\n",
+        "[[ai_tools]]\nname = \"a b\"\ncommand = \"x\"\n",
+        "[[ai_tools]]\nname = \"x\"\ncommand = \"\"\n",
+        "[[ai_tools]]\nname = \"x\"\ncommand = \"x\"\n[[ai_tools]]\nname = \"x\"\ncommand = \"y\"\n",
+        "ai_width_percent = 95\n",
+    ] {
+        let (_d, path) = write_user(bad);
+        let (s, w) = Settings::load(Some(&path));
+        assert_eq!(w.len(), 1, "{bad}: {w:?}");
+        assert_eq!(s, Settings::default(), "{bad}");
+    }
 }

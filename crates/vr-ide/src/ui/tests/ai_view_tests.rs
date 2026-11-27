@@ -1,0 +1,381 @@
+//! The AI panel's screens (ui-spec S1, S2; mockups ai-panel-A-120x40 / -80x24, ai-panel-40x12,
+//! ai-picker-120x40, ai-empty-80x24, ai-exited-empty-80x24) on fake sessions.
+
+use std::path::{Path, PathBuf};
+
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use vr_config::AiTool;
+use vr_term::{Cell, Cursor, CursorShape, Grid, TermStatus};
+
+use super::*;
+use crate::ai::AiSession;
+use crate::ai::picker::Picker;
+use crate::ai::spawn::StartMode;
+use crate::app::Focus;
+use crate::app_tests::test_app;
+use crate::commands::terminal::TermTab;
+
+const ROOT: &str = "/home/user/DEV/vr-ide";
+
+fn grid(lines: &[&str], cols: usize, rows: usize) -> Grid {
+    let mut cells = vec![
+        Cell {
+            ch: " ".into(),
+            ..Cell::default()
+        };
+        cols * rows
+    ];
+    for (r, line) in lines.iter().enumerate().take(rows) {
+        for (c, ch) in line.chars().enumerate().take(cols) {
+            cells[r * cols + c].ch = ch.to_string();
+        }
+    }
+    Grid {
+        cols,
+        rows,
+        cells,
+        cursor: Cursor {
+            row: 0,
+            col: 0,
+            shape: CursorShape::Block,
+            visible: false,
+        },
+        ..Grid::default()
+    }
+}
+
+const CLAUDE: &[&str] = &[
+    "> restore has to skip tabs whose",
+    "  file is gone, with one notice",
+    "",
+    "● Read(src/session.rs)",
+    "  └ 64 lines",
+    "● Update(src/session.rs)",
+    "  └ +12 -3",
+];
+
+fn session(tool: &str, account: Option<&str>, root: &str, status: TermStatus) -> AiSession {
+    AiSession {
+        tab: TermTab::fake(grid(CLAUDE, 120, 40), tool, status),
+        tool: tool.into(),
+        account: account.map(str::to_string),
+        root: PathBuf::from(root),
+        name: None,
+        mode: StartMode::New,
+        attention: None,
+        notify: Default::default(),
+    }
+}
+
+fn tools() -> Vec<AiTool> {
+    let t = |name: &str, command: &str, resumes: bool| AiTool {
+        name: name.into(),
+        command: command.into(),
+        args: vec![],
+        continue_args: if resumes {
+            vec!["--continue".into()]
+        } else {
+            vec![]
+        },
+        resume_args: if resumes {
+            vec!["--resume".into()]
+        } else {
+            vec![]
+        },
+    };
+    vec![
+        t("claude", "/bin/sh", true),
+        t("codex", "/bin/sh", true),
+        t("gemini", "/bin/sh", false),
+        t("aider", "/nonexistent/aider", false),
+        t("cursor-agent", "/nonexistent/cursor-agent", false),
+    ]
+}
+
+/// The mockup's three sessions: `1 claude`, `2 claude@work` (needs attention), `3 codex` in
+/// another folder; the first one active and focused.
+fn panel_app(n: usize) -> App {
+    let (mut app, _) = test_app(Path::new(ROOT));
+    app.settings.ai_tools = tools();
+    let mut all = vec![
+        session("claude", None, ROOT, TermStatus::Running),
+        session("claude", Some("work"), ROOT, TermStatus::Running),
+        session("codex", None, "/home/user/DEV/shop", TermStatus::Running),
+        session("claude", None, ROOT, TermStatus::Running),
+        session("claude", Some("work"), ROOT, TermStatus::Running),
+        session("gemini", None, ROOT, TermStatus::Running),
+    ];
+    all[1].attention = Some(1);
+    all.truncate(n);
+    app.ai.sessions = all;
+    app.ai.visible = true;
+    app.focus = Focus::Ai;
+    app
+}
+
+fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| render(f, app)).unwrap();
+    t
+}
+
+fn snap(name: &str, app: &mut App, sizes: &[(u16, u16)]) {
+    for &(w, h) in sizes {
+        let t = draw(app, w, h);
+        insta::assert_snapshot!(format!("{name}_{w}x{h}"), t.backend());
+    }
+}
+
+fn row(t: &Terminal<TestBackend>, y: u16) -> String {
+    let buf = t.backend().buffer();
+    (0..buf.area.width)
+        .map(|x| buf[(x, y)].symbol().to_string())
+        .collect()
+}
+
+#[test]
+fn ai_panel_sessions() {
+    let mut app = panel_app(3);
+    snap("ai_panel", &mut app, &[(120, 40), (80, 24), (40, 12)]);
+    app.explorer.visible = true;
+    let t = draw(&mut app, 120, 40);
+    assert_eq!(
+        (app.layout.ai_sep.x, app.layout.ai.width),
+        (84, 35),
+        "mockup widths"
+    );
+    let bar = row(&t, 0);
+    let panel: String = bar.chars().skip(85).collect();
+    assert_eq!(
+        panel, " 1 claude  2 @work ◆  3 codex    + ",
+        "mockup ai-panel-A-120x40"
+    );
+    // The separator shows the focus; the mark is the attention colour.
+    let theme = Theme::from_name(&app.settings.theme);
+    let buf = t.backend().buffer();
+    assert_eq!(buf[(84, 5)].symbol(), "│");
+    assert_eq!(buf[(84, 5)].fg, theme.focus.fg.unwrap());
+    let mark = panel.find('◆').unwrap();
+    let mx = 85 + panel[..mark].chars().count() as u16;
+    assert_eq!(buf[(mx, 0)].fg, theme.attention.fg.unwrap());
+    // Status: the AI badge, the session and its folder, which of how many and the hide key.
+    let status = row(&t, 39);
+    assert!(
+        status.starts_with(" AI  claude · /home/user/DEV/vr-ide"),
+        "{status}"
+    );
+    assert!(status.trim_end().ends_with("1/3 · f12 hide"), "{status}");
+    assert_eq!(buf[(1, 39)].bg, theme.mode_ai.bg.unwrap());
+}
+
+/// Six sessions at 80x24: the fit rule takes labels down to numbers, keeps the active tab whole
+/// and the marked tab, and puts the rest into `+N`.
+#[test]
+fn ai_panel_six_sessions_fit() {
+    let mut app = panel_app(6);
+    app.ai.active = 3;
+    snap("ai_panel_six", &mut app, &[(80, 24)]);
+    let t = draw(&mut app, 80, 24);
+    let bar = row(&t, 0);
+    assert!(bar.contains(" 4 claude·2 "), "{bar}");
+    assert!(bar.contains(" 2 ◆ "), "{bar}");
+    let bar = crate::ui::ai_view::tab_bar(&app, 20);
+    assert!(bar.tabs.iter().any(|t| t.index == 3), "active kept");
+    assert!(bar.tabs.iter().any(|t| t.index == 1), "marked kept");
+    assert!(bar.more.is_some());
+}
+
+#[test]
+fn ai_panel_short_labels() {
+    let mut app = panel_app(5);
+    app.ai.sessions[1].attention = None;
+    // claude active: other claude sessions show what tells them apart.
+    assert_eq!(app.ai.short_label(1), "@work");
+    assert_eq!(app.ai.short_label(3), "·2");
+    assert_eq!(app.ai.short_label(4), "@work·2");
+    assert_eq!(app.ai.short_label(2), "codex");
+    assert_eq!(app.ai.label(4), "claude@work·2");
+    assert_eq!(app.ai.folder(2).as_deref(), Some("shop"));
+    assert_eq!(app.ai.folder(1), None);
+    app.ai.sessions[3].name = Some("review".into());
+    assert_eq!(app.ai.label(3), "review");
+    assert_eq!(app.ai.short_label(3), "review");
+}
+
+#[test]
+fn ai_picker() {
+    let mut app = panel_app(3);
+    let picker = Picker::build(&app, PathBuf::from(ROOT), Some(("claude", None)), Some(0));
+    app.ai.picker = Some(picker);
+    app.ai.active = 3;
+    snap("ai_picker", &mut app, &[(120, 40)]);
+    let t = draw(&mut app, 120, 40);
+    let text = format!("{:?}", t.backend());
+    for want in [
+        "New session in /home/user/DEV/vr-ide",
+        "   default",
+        "1 open",
+        "gemini",
+        "Not on PATH: aider, cursor-agent",
+        "(ai_tools in settings)",
+        "enter start  esc back",
+        "new session · /home/user/DEV/vr-ide",
+    ] {
+        assert!(text.contains(want), "{want}:\n{text}");
+    }
+    // The second step (D14) for claude.
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    snap("ai_picker_second", &mut app, &[(120, 40), (40, 12)]);
+    let t = draw(&mut app, 120, 40);
+    let text = format!("{:?}", t.backend());
+    for want in ["Continue last", "--continue", "Choose earlier", "--resume"] {
+        assert!(text.contains(want), "{want}:\n{text}");
+    }
+}
+
+#[test]
+fn ai_empty_state() {
+    let (mut app, _) = test_app(Path::new(ROOT));
+    app.settings.ai_tools = tools();
+    let picker = Picker::build(&app, PathBuf::from(ROOT), None, None);
+    app.ai.picker = Some(picker);
+    app.ai.visible = true;
+    app.focus = Focus::Ai;
+    snap("ai_empty", &mut app, &[(80, 24)]);
+    let t = draw(&mut app, 80, 24);
+    let text = format!("{:?}", t.backend());
+    for want in [
+        " AI ",
+        "Start in vr-ide",
+        "enter start  esc hide",
+        "no session",
+    ] {
+        assert!(text.contains(want), "{want}:\n{text}");
+    }
+    // No tool installed at all.
+    for t in &mut app.settings.ai_tools {
+        t.command = "/nonexistent/x".into();
+    }
+    app.ai.picker = Some(Picker::build(&app, PathBuf::from(ROOT), None, None));
+    let t = draw(&mut app, 120, 40);
+    let text = format!("{:?}", t.backend());
+    assert!(text.contains("No AI tool found on PATH"), "{text}");
+}
+
+#[test]
+fn ai_exited_session() {
+    let mut app = panel_app(2);
+    app.ai.sessions[0] = session("claude", None, ROOT, TermStatus::Exited(0));
+    snap("ai_exited", &mut app, &[(80, 24)]);
+    let t = draw(&mut app, 120, 40);
+    let text = format!("{:?}", t.backend());
+    assert!(
+        text.contains("[exited 0] enter: start again") && text.contains("--continue)"),
+        "{text}"
+    );
+    assert!(text.contains("claude [exited 0]"), "{text}");
+    assert!(text.contains("1/2 · enter restart"), "{text}");
+}
+
+/// The new tokens exist in every theme and differ from the other badges.
+#[test]
+fn ai_tokens_in_every_theme() {
+    for name in crate::commands::slash::THEMES {
+        let t = Theme::from_name(name);
+        assert_ne!(t.mode_ai, t.mode_term, "{name}");
+        assert_ne!(t.mode_ai, t.mode_read, "{name}");
+        assert_ne!(t.mode_ai, t.mode_edit, "{name}");
+        assert!(t.attention.fg.is_some() && t.note.fg.is_some(), "{name}");
+        assert_ne!(t.diff_added_bg, t.diff_removed_bg, "{name}");
+    }
+}
+
+/// S4 with the panel hidden: the notice row and the status bar's badge (mockups
+/// ai-hidden-notify-120x40 / 80x24).
+#[test]
+fn ai_hidden_notify() {
+    let mut app = panel_app(3);
+    app.ai.visible = false;
+    app.focus = Focus::Editor;
+    for (w, h) in [(120u16, 40u16), (80, 24)] {
+        app.notices.clear();
+        app.layout.status.width = w;
+        app.ai.sessions[1].notify = Default::default();
+        app.ai.sessions[1].attention = None;
+        let msg = Some("Allow Bash(cargo test -p vr-ide)?");
+        crate::ai::attention::mark(&mut app, 1, msg, std::time::Instant::now());
+        let t = draw(&mut app, w, h);
+        insta::assert_snapshot!(format!("ai_hidden_notify_{w}x{h}"), t.backend());
+        let status = row(&t, h - 1);
+        assert!(
+            status.trim_end().ends_with("◆ claude@work  f12"),
+            "{status}"
+        );
+        let notice = row(&t, h - 2);
+        assert!(notice.starts_with("◆ claude@work"), "{notice}");
+        assert!(
+            notice.contains("Allow Bash(cargo test -p vr-ide)?"),
+            "{notice}"
+        );
+        let theme = Theme::from_name(&app.settings.theme);
+        let at = status.find('◆').unwrap();
+        let x = status[..at].chars().count() as u16;
+        assert_eq!(
+            t.backend().buffer()[(x, h - 1)].bg,
+            theme.attention.fg.unwrap()
+        );
+    }
+    // Viewing clears the badge and the notice.
+    app.ai.visible = true;
+    app.ai.active = 1;
+    let t = draw(&mut app, 120, 40);
+    assert_eq!(app.ai.sessions[1].attention, None);
+    assert!(app.notices.is_empty());
+    assert!(!row(&t, 39).contains("◆"), "{}", row(&t, 39));
+}
+
+/// The status text reflows into what the badge leaves: no token is cut by the badge at 80
+/// columns with a long path.
+#[test]
+fn badge_reflows_the_status_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let deep = dir
+        .path()
+        .join("a_rather_long_directory/another_long_directory/third_directory");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("a_long_file_name_for_the_status_bar.rs"), "x\n").unwrap();
+    let (mut app, _) = test_app(dir.path());
+    app.settings.ai_tools = tools();
+    app.run_command(
+        "file.open",
+        crate::commands::CmdArgs::Path(
+            "a_rather_long_directory/another_long_directory/third_directory/a_long_file_name_for_the_status_bar.rs".into(),
+        ),
+    );
+    app.ai.sessions = vec![session("claude", Some("work"), ROOT, TermStatus::Running)];
+    app.ai.visible = false;
+    app.layout.status.width = 80;
+    crate::ai::attention::mark(&mut app, 0, None, std::time::Instant::now());
+    let t = draw(&mut app, 80, 24);
+    let status = row(&t, 23);
+    assert!(
+        status.trim_end().ends_with("◆ claude@work  f12"),
+        "{status}"
+    );
+    let before: String = status.chars().take_while(|c| *c != '◆').collect();
+    let before = before.trim_end();
+    // Whole position text, and the file name is kept (the directory goes first).
+    assert!(
+        before.contains("Ln 1, Col 1") || before.contains("Ln 1:1"),
+        "{status}"
+    );
+    assert!(before.contains("status_bar.rs"), "{status}");
+    assert!(
+        !before.ends_with("Co") && !before.ends_with("Ln"),
+        "{status}"
+    );
+}

@@ -44,8 +44,6 @@ pub enum Phase {
     Common,
     /// The list is open on this candidate.
     List(usize),
-    /// One candidate was completed; only the note stays (the `/ssh` command that runs).
-    Done,
 }
 
 /// What the area under the list shows while a completion is open.
@@ -55,8 +53,8 @@ pub enum Note {
     Keys,
     /// A fixed line (the folder `/ssh` paths are taken from).
     Text(String),
-    /// `/ssh` destinations: the command the input runs, paths resolved against this folder.
-    SshRuns(PathBuf),
+    /// `/ssh` destinations: the command the input runs (the `/ssh` window's own detail).
+    SshRuns,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +77,6 @@ impl Completion {
         match self.phase {
             Phase::Common => format!("tab: list ({})", self.cands.len()),
             Phase::List(i) => format!("{}/{}", i + 1, self.cands.len()),
-            Phase::Done => String::new(),
         }
     }
 
@@ -98,7 +95,6 @@ impl Completion {
                 let names: Vec<String> = self.cands.iter().map(short_label).collect();
                 format!("Common part completed: {}", names.join("  "))
             }
-            (Phase::Done, _) => String::new(),
             (Phase::List(_), Note::Text(t)) => t.clone(),
             (Phase::List(_), _) => {
                 let back = if self.back.is_empty() {
@@ -157,21 +153,24 @@ pub enum SshSlot {
     Other,
 }
 
-/// ssh options that take a value (`man ssh`).
-const SSH_VALUE_OPTS: &str = "BbcDEeFIiJLlmOoPpQRSWw";
-/// Of those, the ones whose value is a local path.
-const SSH_PATH_OPTS: &str = "EFiS";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Role {
-    /// A path starts this many bytes into the word.
-    Path(usize),
-    Host,
-    Other,
+/// The position at the end of an `/ssh` argument line, read with the `/ssh` parser's own
+/// grammar (`ssh::args::classify`), so completion and the command agree.
+pub fn ssh_slot_at_end(line: &str) -> SshSlot {
+    match crate::ssh::args::classify(line, line.len()) {
+        // `-i` with nothing after it is the option still being typed, not its value yet.
+        crate::ssh::args::ArgPos::Path { start }
+            if start == line.len() && !line.ends_with([' ', '=', '"', '\'']) =>
+        {
+            SshSlot::Other
+        }
+        crate::ssh::args::ArgPos::Path { start } => SshSlot::Path(start),
+        crate::ssh::args::ArgPos::Destination { start } => SshSlot::Host(start),
+        crate::ssh::args::ArgPos::Other => SshSlot::Other,
+    }
 }
 
 /// Words of a shell-like line with their byte start; `\ ` stays inside a word. A line that
-/// ends in a space has an empty last word at its end.
+/// ends in a space has an empty last word at its end (`/run` arguments).
 fn words(line: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
     let mut start: Option<usize> = None;
@@ -197,89 +196,6 @@ fn words(line: &str) -> Vec<(usize, &str)> {
         None => out.push((line.len(), "")),
     }
     out
-}
-
-/// `-o Key=value` where the key names a file (`IdentityFile`, `UserKnownHostsFile`, …):
-/// the offset of the value.
-fn file_option_value(word: &str) -> Option<usize> {
-    let (k, _) = word.split_once('=')?;
-    k.to_ascii_lowercase()
-        .ends_with("file")
-        .then_some(k.len() + 1)
-}
-
-/// The role of every word of an ssh argument line.
-fn ssh_roles(line: &str) -> Vec<(usize, &str, Role)> {
-    let mut out = Vec::new();
-    let mut expecting: Option<char> = None;
-    let mut dest_seen = false;
-    for (start, w) in words(line) {
-        let role = if let Some(opt) = expecting.take() {
-            if SSH_PATH_OPTS.contains(opt) {
-                Role::Path(0)
-            } else if opt == 'o' {
-                file_option_value(w).map_or(Role::Other, Role::Path)
-            } else {
-                Role::Other
-            }
-        } else if dest_seen {
-            Role::Other
-        } else if let Some(flags) = w.strip_prefix('-').filter(|f| !f.is_empty()) {
-            let mut role = Role::Other;
-            for (i, ch) in flags.char_indices() {
-                if SSH_VALUE_OPTS.contains(ch) {
-                    let rest = &flags[i + ch.len_utf8()..];
-                    let at = 1 + i + ch.len_utf8();
-                    if rest.is_empty() {
-                        expecting = Some(ch);
-                    } else if SSH_PATH_OPTS.contains(ch) {
-                        role = Role::Path(at);
-                    } else if ch == 'o' {
-                        role = file_option_value(rest).map_or(Role::Other, |v| Role::Path(at + v));
-                    }
-                    break;
-                }
-            }
-            role
-        } else if w.is_empty() {
-            Role::Host
-        } else {
-            dest_seen = true;
-            Role::Host
-        };
-        out.push((start, w, role));
-    }
-    out
-}
-
-/// The position at the end of an `/ssh` argument line.
-///
-/// A local classifier (quotes are not parsed; `\ ` is). The `/ssh` argument-line task brings
-/// the real one; this function is the single place to switch to it.
-pub fn ssh_slot_at_end(line: &str) -> SshSlot {
-    match ssh_roles(line).last() {
-        Some(&(start, _, Role::Path(off))) => SshSlot::Path(start + off),
-        Some(&(start, _, Role::Host)) => SshSlot::Host(start),
-        _ => SshSlot::Other,
-    }
-}
-
-/// `runs: ssh …` for an argument line: path arguments made absolute against `base` (`~`
-/// expanded), every other word as typed.
-pub fn ssh_runs_line(line: &str, base: &Path) -> String {
-    let parts: Vec<String> = ssh_roles(line)
-        .into_iter()
-        .filter(|(_, w, _)| !w.is_empty())
-        .map(|(_, w, role)| match role {
-            Role::Path(off) if off < w.len() => {
-                let path = unescape(&w[off..]);
-                let abs = resolve_from(base, &path);
-                format!("{}{}", &w[..off], escape(&abs.to_string_lossy()))
-            }
-            _ => w.to_string(),
-        })
-        .collect();
-    safe_text::sanitize(&format!("runs: ssh {}", parts.join(" ")))
 }
 
 // ---- words and paths -------------------------------------------------------------------------
@@ -428,55 +344,15 @@ struct Found {
     in_arg: bool,
 }
 
-/// Agent tools offered by default (D7) when settings have no `ai_tools`.
-const DEFAULT_AI_TOOLS: &[&str] = &["claude", "codex", "gemini", "aider"];
-
-/// Tool names from the TOML text of an `ai_tools` setting: a list of names, or a list of
-/// tables with a `name`. Only plain program names are kept.
-pub fn tool_names_from_toml(text: &str) -> Vec<String> {
+/// The tools `/ai` completes: the names of the `ai_tools` setting, in its order, each once.
+pub fn ai_tool_names(app: &App) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let tables = text.contains('{');
-    let mut rest = text;
-    while let Some(q) = rest.find('"') {
-        let before = &rest[..q];
-        let after = &rest[q + 1..];
-        let Some(end) = after.find('"') else {
-            break;
-        };
-        let value = &after[..end];
-        let key = before
-            .rsplit([',', '{', '['])
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_end_matches('=')
-            .trim();
-        let wanted = !tables || key == "name";
-        let plain = !value.is_empty()
-            && value
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
-            && !value.starts_with(['.', '-']);
-        if wanted && plain && !out.iter().any(|v| v == value) {
-            out.push(value.to_string());
+    for t in &app.settings.ai_tools {
+        if !t.name.chars().any(safe_text::is_unsafe_char) && !out.contains(&t.name) {
+            out.push(t.name.clone());
         }
-        rest = &after[end + 1..];
     }
     out
-}
-
-/// The tools `/ai` completes: the `ai_tools` setting when there is one, else the defaults.
-pub fn ai_tool_names(app: &App) -> Vec<String> {
-    let from_settings = app
-        .settings
-        .value_text("ai_tools")
-        .map(|t| tool_names_from_toml(&t))
-        .unwrap_or_default();
-    if from_settings.is_empty() {
-        DEFAULT_AI_TOOLS.iter().map(|s| s.to_string()).collect()
-    } else {
-        from_settings
-    }
 }
 
 fn find(app: &mut App, input: &str) -> Option<Found> {
@@ -566,7 +442,8 @@ fn find(app: &mut App, input: &str) -> Option<Found> {
     }
 }
 
-/// Recent targets first, then the ssh config's hosts, each once.
+/// Recent destinations first (the destination of each recent line), then the ssh config's
+/// hosts, each once.
 fn ssh_hosts(app: &App) -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = Vec::new();
     let mut add = |h: &str, source| {
@@ -574,8 +451,11 @@ fn ssh_hosts(app: &App) -> Vec<(String, &'static str)> {
             out.push((h.to_string(), source));
         }
     };
-    for t in &app.ssh.recent {
-        add(t.as_str(), "recent");
+    let home = app.ssh.home.as_deref();
+    for e in &app.ssh.recent {
+        if let Ok(line) = crate::ssh::args::Line::parse(&e.text, home) {
+            add(line.target().as_str(), "recent");
+        }
     }
     let config = app.palette.as_ref().and_then(|p| p.ssh_hosts.as_deref());
     for h in config.unwrap_or_default() {
@@ -584,14 +464,14 @@ fn ssh_hosts(app: &App) -> Vec<(String, &'static str)> {
     out
 }
 
-/// The folder `/ssh` resolves relative paths in (SEC-4): the canonical root of the active
-/// file; `None` when it is gone (nothing is completed, never another folder).
-fn ssh_base(app: &App) -> Option<PathBuf> {
-    app.active_root().path.canonicalize().ok()
+/// The folder `/ssh` resolves relative paths in (SEC-4): the one the window shows for this
+/// line, made canonical; `None` when it is gone (nothing is completed, never another folder).
+fn ssh_base(app: &App, arg: &str) -> Option<PathBuf> {
+    super::ssh::shown_base(app, arg).canonicalize().ok()
 }
 
 fn ssh_found(app: &mut App, head: &str, arg: &str) -> Option<Found> {
-    let base = ssh_base(app)?;
+    let base = ssh_base(app, arg)?;
     let found = |cands, back: &str, note| Found {
         cands,
         back: back.to_string(),
@@ -621,7 +501,7 @@ fn ssh_found(app: &mut App, head: &str, arg: &str) -> Option<Found> {
                     source,
                 })
                 .collect();
-            Some(found(cands, word, Note::SshRuns(base)))
+            Some(found(cands, word, Note::SshRuns))
         }
         SshSlot::Other => None,
     }
@@ -645,26 +525,24 @@ pub fn tab(app: &mut App, back: bool) {
     match p.completion.as_ref().map(|c| c.phase) {
         Some(Phase::List(_)) => return step(app, if back { -1 } else { 1 }),
         Some(Phase::Common) => return open_list(app, back),
-        Some(Phase::Done) | None => {}
+        None => {}
     }
     if back {
         return;
     }
     let text = p.input.text().to_string();
+    let kind = slash::in_argument(&text).map(|(c, _)| c.arg);
     // A row the user highlighted with the arrows is an explicit choice: Tab takes it.
-    if p.moved
-        && let Some(row) = slash::rows(app, &text).get(p.selected)
-        && !matches!(
-            slash::in_argument(&text).map(|(c, _)| c.arg),
-            // `/ssh` keeps its rules: a destination gets a space and the line that runs.
-            Some(ArgKind::Text | ArgKind::None | ArgKind::Ssh)
-        )
-    {
-        let fill = row.fill.clone();
-        slash::set_input(app, &fill);
+    if p.moved && !matches!(kind, Some(ArgKind::Text | ArgKind::None)) && take_row(app, &text) {
         return;
     }
-    let Some(found) = find(app, &text) else {
+    let found = find(app, &text).filter(|f| !f.cands.is_empty());
+    let Some(found) = found else {
+        // `/ssh` where no word completes (an option being typed): the highlighted listed
+        // line goes in the input, with the folder it brings.
+        if kind == Some(ArgKind::Ssh) {
+            take_row(app, &text);
+        }
         return;
     };
     let mut c = Completion {
@@ -679,18 +557,14 @@ pub fn tab(app: &mut App, back: bool) {
         0 => {}
         1 => {
             let fill = c.cands[0].fill.clone();
-            slash::set_input(app, &fill);
-            if matches!(c.note, Note::SshRuns(_)) {
-                c.phase = Phase::Done;
-                set(app, c);
-            }
+            set_input(app, &fill);
         }
         _ => {
             let fills: Vec<&str> = c.cands.iter().map(|x| x.fill.as_str()).collect();
             let common = common_prefix(&fills);
             if common.len() > text.len() && common.starts_with(&text) {
                 c.back.push_str(&common[text.len()..]);
-                slash::set_input(app, &common);
+                set_input(app, &common);
                 c.before = common;
                 show_common(app, c);
             } else {
@@ -699,6 +573,30 @@ pub fn tab(app: &mut App, back: bool) {
             }
         }
     }
+}
+
+/// The highlighted row of the slash list in the input; false when there is none or it is
+/// what is typed already.
+fn take_row(app: &mut App, text: &str) -> bool {
+    let Some(selected) = app.palette.as_ref().map(|p| p.selected) else {
+        return false;
+    };
+    match slash::rows(app, text).get(selected) {
+        Some(row) if row.fill != text => {
+            let fill = row.fill.clone();
+            set_input(app, &fill);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Puts `text` in the input; a listed `/ssh` line put there keeps the folder it brings until
+/// the input is edited (SEC-4, SEC-5).
+fn set_input(app: &mut App, text: &str) {
+    let picked = super::ssh::picked(app);
+    slash::set_input(app, text);
+    slash::remember_listed(app, text, picked);
 }
 
 fn set(app: &mut App, c: Completion) {
@@ -782,7 +680,7 @@ pub fn step(app: &mut App, delta: isize) {
         let c = p.completion.as_ref()?;
         match c.phase {
             Phase::List(i) => Some((i, c.cands.len())),
-            Phase::Common | Phase::Done => None,
+            Phase::Common => None,
         }
     }) else {
         return;
@@ -815,7 +713,7 @@ pub fn cancel(app: &mut App) {
         .and_then(|p| p.completion.take())
         .map(|c| c.before);
     if let Some(text) = before {
-        slash::set_input(app, &text);
+        set_input(app, &text);
     }
 }
 
