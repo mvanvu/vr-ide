@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use ratatui::text::Span;
 use vr_config::Context;
 use vr_core::Selection;
 use vr_core::ropey::Rope;
@@ -393,6 +394,9 @@ impl Preview {
 #[derive(Debug, Default)]
 pub struct SearchPanel {
     pub visible: bool,
+    /// FR-31: the search and its replace are limited to this folder (canonical path, inside
+    /// a workspace root); `None` is the whole workspace.
+    pub folder: Option<PathBuf>,
     pub replace_mode: bool,
     pub field: Field,
     pub input: LineInput,
@@ -515,6 +519,9 @@ pub fn start(app: &mut App) {
         app.info("Replace in Project: the replace is running; Esc cancels it");
         return;
     }
+    if !scope_ok(app) {
+        return;
+    }
     let q = app.search.query();
     if q.pattern.is_empty() {
         cancel_running(app);
@@ -547,7 +554,7 @@ pub fn start(app: &mut App) {
     // Detached: the walk ends when it is done, cancelled or its receiver is dropped.
     // Every root, one after the other: results come grouped by root, then by file.
     drop(vr_search::search_roots(
-        &app.workspace.paths(),
+        &scope_roots(app),
         &q,
         cancel.clone(),
         tx,
@@ -564,6 +571,8 @@ pub fn roots_changed(app: &mut App) {
     if app.search.preview.as_ref().is_some_and(Preview::applying) {
         return;
     }
+    // A folder scope whose root was removed ends with it.
+    scope_ok(app);
     let shown = app.search.query.clone();
     if shown.is_some() && shown == Some(app.search.query()) {
         start(app);
@@ -581,6 +590,11 @@ pub fn clear_stale(app: &mut App) {
     if shown.is_some() && shown == Some(app.search.query()) {
         return;
     }
+    clear_results(app);
+}
+
+/// Drops the results, the preview and a running search.
+fn clear_results(app: &mut App) {
     cancel_running(app);
     drop_preview(app);
     let s = &mut app.search;
@@ -593,6 +607,104 @@ pub fn clear_stale(app: &mut App) {
     s.status = Status::Idle;
     s.query = None;
     app.dirty = true;
+}
+
+/// True when `folder` resolves (links followed) inside a current workspace root; the only
+/// folders a scope may name, so a replace can never write outside the workspace.
+pub(crate) fn in_workspace(app: &App, folder: &Path) -> bool {
+    let Ok(canon) = folder.canonicalize() else {
+        return false;
+    };
+    app.workspace
+        .paths()
+        .iter()
+        .filter_map(|r| r.canonicalize().ok())
+        .any(|r| canon.starts_with(r))
+}
+
+/// Re-checks the folder scope each time it is used (search, preview, confirm): one that is
+/// no longer inside the workspace ends with a notice, and false says nothing may run on it.
+/// While a replace writes, its already confirmed files stay as they are.
+fn scope_ok(app: &mut App) -> bool {
+    let Some(f) = app.search.folder.clone() else {
+        return true;
+    };
+    if in_workspace(app, &f) {
+        return true;
+    }
+    if !replacing(app) {
+        app.search.folder = None;
+        clear_results(app);
+        app.warn("Search in Folder: the folder is outside the workspace now; the scope ended");
+    }
+    false
+}
+
+/// The folders a search / replace preview walks: the chosen folder, else every root. The
+/// replace planner confines each file to these, so a folder scope can never write outside it.
+fn scope_roots(app: &App) -> Vec<PathBuf> {
+    match &app.search.folder {
+        Some(f) => vec![f.clone()],
+        None => app.workspace.paths(),
+    }
+}
+
+/// Sets (or ends) the folder scope. A change drops results and preview, which were for the
+/// old scope, so the next search starts clean. Not while a replace writes files.
+pub(crate) fn set_folder(app: &mut App, folder: Option<PathBuf>) {
+    if app.search.folder == folder || replacing(app) {
+        return;
+    }
+    app.search.folder = folder;
+    clear_results(app);
+}
+
+/// FR-31 (D328): opens the find box in Project scope limited to `folder`, with the keys in
+/// the query field; `replace` shows the replace row.
+pub fn open_folder(app: &mut App, folder: &Path, replace: bool) {
+    if replacing(app) {
+        app.info("Replace in Project: the replace is running; Esc cancels it");
+        return;
+    }
+    set_folder(app, Some(folder.to_path_buf()));
+    super::find::open_project(app, replace);
+    // The keys go to the search field even when an earlier query is kept (AC-R1).
+    if !replacing(app) {
+        app.search.field = Field::Query;
+    }
+    if !app.search.query().pattern.is_empty() {
+        start(app);
+    }
+}
+
+/// The scope shown in the box: the folder as `root/relative`, shortened from the left to
+/// `max` cells; `None` for the whole workspace.
+pub fn folder_label(app: &App, max: usize) -> Option<String> {
+    let f = app.search.folder.as_ref()?;
+    let mut shown = app.display_path(f);
+    if shown.is_empty() {
+        // The only root itself: its folder name.
+        shown = f
+            .file_name()
+            .map_or_else(|| "/".into(), |n| n.to_string_lossy().into_owned());
+    }
+    let cells = |s: &str| Span::raw(s).width();
+    Some(if cells(&shown) <= max {
+        shown
+    } else {
+        // Keep the tail that fits next to the ellipsis, measured in cells.
+        let mut tail: Vec<char> = Vec::new();
+        let mut w = 1;
+        for c in shown.chars().rev() {
+            let cw = cells(c.encode_utf8(&mut [0; 4]));
+            if w + cw > max {
+                break;
+            }
+            w += cw;
+            tail.push(c);
+        }
+        format!("…{}", tail.iter().rev().collect::<String>())
+    })
 }
 
 /// Takes every message the running search and the preview / replace worker sent so far,
@@ -628,8 +740,7 @@ pub fn drain(app: &mut App) {
                     let gi = match s.index.get(&pm.path) {
                         Some(&gi) => gi,
                         None => {
-                            let root = ws
-                                .is_multi()
+                            let root = (ws.is_multi() && s.folder.is_none())
                                 .then(|| ws.root_of(&pm.path).map(|r| r.name.clone()))
                                 .flatten();
                             s.groups.push(FileGroup {
@@ -925,6 +1036,9 @@ fn proceed(cancel: &AtomicBool, hold: Option<&AtomicUsize>) -> bool {
 /// preview starts) to the UI thread, which previews their buffers, and runs
 /// `vr_search::plan_replace` on the others, batch by batch.
 fn build_preview(app: &mut App) {
+    if !scope_ok(app) {
+        return;
+    }
     let Some(q) = app.search.query.clone() else {
         return;
     };
@@ -952,7 +1066,7 @@ fn build_preview(app: &mut App) {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let job = Job::new(JobKind::Preview, paths.len(), cancel.clone(), rx);
-    let (roots, hold) = (app.workspace.paths(), app.search.hold.clone());
+    let (roots, hold) = (scope_roots(app), app.search.hold.clone());
     let (wq, wr) = (q.clone(), replacement.clone());
     // Never joined: it writes nothing, and stops at the next batch once cancelled or once
     // the receiver is gone; exit does not wait for it.
@@ -1176,6 +1290,9 @@ fn moved_path(p: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
 /// keeps its preview: its worker reports a moved file as not found.
 pub fn paths_moved(app: &mut App, from: &Path, to: &Path) {
     let s = &mut app.search;
+    if let Some(n) = s.folder.as_ref().and_then(|f| moved_path(f, from, to)) {
+        s.folder = Some(n);
+    }
     let mut changed = false;
     for g in &mut s.groups {
         if let Some(n) = moved_path(&g.path, from, to) {
@@ -1280,6 +1397,9 @@ fn ask_confirm(app: &mut App) {
 /// thread, never one that is open in a tab: at the confirm, or opened since ([`ReplaceGate`]).
 /// Each file's result shows in the preview.
 pub fn apply(app: &mut App) {
+    if !scope_ok(app) {
+        return;
+    }
     let Some(mut p) = app.search.preview.take() else {
         return;
     };

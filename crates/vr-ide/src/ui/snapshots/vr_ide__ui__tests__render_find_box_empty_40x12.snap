@@ -2,7 +2,7 @@
 source: crates/vr-ide/src/ui/mod.rs
 expression: t.backend()
 ---
-" a.txt                                  "
+" a.txt x                                "
 " File                                   "
 "ctrl+f: search the project · /re/ regex "
 "· …/i ignore case · \/ a slash          "

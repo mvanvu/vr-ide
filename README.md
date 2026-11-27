@@ -145,7 +145,7 @@ the list is in [docs/commands.md](docs/commands.md).
 | Save | `ctrl+s` |
 | Save As (a new file name, relative to the project root) | palette: Save As |
 | Reload the file from disk | palette: Reload File from Disk |
-| Close the tab | `ctrl+w` |
+| Close the tab | `ctrl+w`, or left click the `x` at the end of its label (any tab, without switching to it) |
 | Next / previous tab | `f9` / `shift+f9` |
 | Command palette | `F1` |
 
@@ -272,6 +272,7 @@ row targets the project folder (New, Paste); one on a row of a multi-selection k
 With several workspace folders, the menu of a folder's root row also has **Remove Folder from
 Workspace** (not on the last one); it takes the folder out of the workspace and leaves its files and
 open tabs as they are.
+On a folder or a workspace folder row (not a file) the menu also has **Search in Folder** and **Replace in Folder** (D328): the find box opens in Project scope limited to that folder, which is shown as the scope (`Project: src/ui`), with the cursor in the search field. Results, the replace preview and the replace itself only touch files under that folder (in a multi-folder workspace, only that folder of its root). `ctrl+f` switches to File scope and back to the whole project, and closing the box ends the folder scope.
 `up`/`down` (and `home`/`end`) move, `enter` or a left click runs an item; `esc` or a click outside closes the menu.
 Inside a terminal whose program asked for the mouse, the right click still goes to the program.
 

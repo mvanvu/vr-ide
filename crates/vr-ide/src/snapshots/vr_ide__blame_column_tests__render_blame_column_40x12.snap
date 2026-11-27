@@ -2,7 +2,7 @@
 source: crates/vr-ide/src/blame_column_tests.rs
 expression: t.backend()
 ---
-" a.txt ●                                "
+" a.txt ● x                              "
 "  1▎// new                              "
 "  2 one                                 "
 "  3 two                                 "

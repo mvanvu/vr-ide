@@ -2,7 +2,7 @@
 source: crates/vr-ide/src/find_tests.rs
 expression: t.backend()
 ---
-" a.txt                                                                          "
+" a.txt x                                                                        "
 " File  fn                                                                   1/2 "
 "Replace pub fn                                                     enter replace"
 "1  fn alpha() {}                                                                "

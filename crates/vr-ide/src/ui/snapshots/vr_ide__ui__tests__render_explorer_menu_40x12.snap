@@ -2,7 +2,7 @@
 source: crates/vr-ide/src/ui/mod.rs
 expression: t.backend()
 ---
-"▾ sh┌──────────────────┐ntroller.php    "
+"▾ sh┌──────────────────┐ntroller.php x  "
 "  ▾ │ New…      ctrl+n │p               "
 "    │ Rename…       f2 │                "
 "    │ Copy      ctrl+c │s OrderControlle"

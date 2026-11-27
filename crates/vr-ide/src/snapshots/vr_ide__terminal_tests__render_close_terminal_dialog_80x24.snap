@@ -2,7 +2,7 @@
 source: crates/vr-ide/src/terminal_tests.rs
 expression: t.backend()
 ---
-" a.txt                                                                          "
+" a.txt x                                                                        "
 "  1 fn main() {}                                                                "
 "  2                                                                             "
 "                                                                                "

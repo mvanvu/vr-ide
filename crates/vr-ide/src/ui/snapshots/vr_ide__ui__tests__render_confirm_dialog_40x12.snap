@@ -2,7 +2,7 @@
 source: crates/vr-ide/src/ui/mod.rs
 expression: t.backend()
 ---
-" a.txt ●  second.rs ●                   "
+" a.txt ● x  second.rs ● x               "
 "  1 yfn a() {}                          "
 "┌ Quit ────────────────────────────────┐"
 "│ 2 unsaved file(s): a.txt, second.rs. │"
