@@ -68,7 +68,7 @@ pub fn wait_for(
     let deadline = Instant::now() + timeout;
     loop {
         let seen = wake.count();
-        let grid = term.snapshot(0);
+        let grid = term.snapshot();
         if pred(&grid) {
             return grid;
         }

@@ -45,7 +45,7 @@ fn flood() -> Stats {
     let deadline = t0 + Duration::from_secs(300);
     loop {
         let s = Instant::now();
-        let grid = term.snapshot(0);
+        let grid = term.snapshot();
         times.push(s.elapsed());
         if has_text(&grid, "FLOOD-END") {
             break;
@@ -56,7 +56,7 @@ fn flood() -> Stats {
     }
     let elapsed = t0.elapsed();
     let rss_peak = rss_kb("VmHWM:");
-    assert_eq!(term.snapshot(0).scrollback_len, 10_000);
+    assert_eq!(term.snapshot().scrollback_len, 10_000);
 
     times.sort();
     let max = *times.last().unwrap();
