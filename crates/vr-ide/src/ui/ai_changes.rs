@@ -486,7 +486,7 @@ pub fn render_diff_head(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) 
     };
     let full = format!("{what} · {label}");
     let fits = |text: &str, with_keys: bool| {
-        let right = if with_keys { 2 + width_of(&keys) } else { 0 };
+        let right = if with_keys { 3 + width_of(&keys) } else { 0 };
         5 + width_of(&name) + width_of(text) + right <= w
     };
     let with_keys = area.width >= HEAD_KEYS_MIN;
@@ -526,7 +526,7 @@ pub fn render_diff_head(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) 
     }
     if show_keys {
         let kw = width_of(&keys);
-        let kx = area.x + (w - kw) as u16;
+        let kx = area.x + (w - kw - 1) as u16;
         buf.set_stringn(kx, area.y, &keys, kw, theme.popup.patch(theme.warning));
     }
 }

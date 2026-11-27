@@ -487,3 +487,34 @@ fn badge_reflows_the_status_text() {
         "{status}"
     );
 }
+
+/// The picker title is width-aware: the folder is left-shortened with an ellipsis so its
+/// name (the tail) stays; it is never cut at the right edge.
+#[test]
+fn ai_picker_title_keeps_the_folder_name() {
+    let mut app = panel_app(3);
+    let picker = Picker::build(&app, PathBuf::from(ROOT), Some(("claude", None)), Some(0));
+    app.ai.picker = Some(picker);
+    app.ai.active = 3;
+    let title = |w: u16, h: u16, app: &mut App| {
+        let t = draw(app, w, h);
+        let text = (0..h)
+            .map(|y| row(&t, y))
+            .find(|l| l.contains("New session in"))
+            .expect("title row");
+        text[text.find("New session in").unwrap()..]
+            .trim_end()
+            .to_string()
+    };
+    assert_eq!(
+        title(120, 40, &mut app),
+        "New session in /home/user/DEV/vr-ide"
+    );
+    assert_eq!(
+        title(40, 12, &mut app),
+        "New session in /home/user/DEV/vr-ide"
+    );
+    let narrow = title(80, 24, &mut app);
+    assert!(narrow.ends_with("DEV/vr-ide"), "{narrow:?}");
+    assert!(narrow.starts_with("New session in …"), "{narrow:?}");
+}

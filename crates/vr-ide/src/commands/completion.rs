@@ -606,7 +606,8 @@ fn take_row(app: &mut App, text: &str) -> bool {
         return false;
     };
     match slash::rows(app, text).get(selected) {
-        Some(row) if row.fill != text => {
+        // The command's own row (nothing listed for what is typed) must not erase the line.
+        Some(row) if row.fill != text && !text.starts_with(&row.fill) => {
             let fill = row.fill.clone();
             set_input(app, &fill);
             true

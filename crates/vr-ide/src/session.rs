@@ -19,11 +19,11 @@
 //!
 //! # The AI panel's section
 //! [`Session::ai`] belongs to the AI panel; nothing here acts on it. The section read at start
-//! is handed out once by [`take_restored_ai`] (strings with control characters and entries
-//! over the caps already dropped, but tool, account and folder still unchecked: the panel
-//! applies its own rules before it starts anything). Until the panel reports its state with
-//! [`set_ai`] (on every change of its tabs, accounts, visibility or width), the section read
-//! at start is written back unchanged.
+//! is handed out once, and only to the window that saves, by [`take_restored_ai`] (strings
+//! with control characters and entries over the caps already dropped, but tool, account and
+//! folder still unchecked: the panel applies its own rules before it starts anything). Until
+//! the panel reports its state with [`set_ai`] (on every change of its tabs, accounts,
+//! visibility or width), the section read at start is written back unchanged.
 
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Read, Write};
@@ -72,6 +72,10 @@ const DROP_WAIT: Duration = Duration::from_secs(1);
 
 const ANOTHER_WINDOW: &str =
     "Another vr-ide --session window keeps the session; this one is not saved";
+
+const AI_ELSEWHERE: &str =
+    "AI sessions not reopened: they run in the other vr-ide --session window";
+const AI_NOT_KEPT: &str = "AI sessions not reopened: this window does not keep the session";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -151,6 +155,8 @@ pub struct Restore {
     keeper: Keeper,
     session: Option<Session>,
     notices: Vec<(NoticeLevel, String)>,
+    /// Another window holds the lock (not a lock error).
+    other_window: bool,
 }
 
 /// Takes the lock and reads the session kept in `dir`; without one (or with a file that is
@@ -158,9 +164,11 @@ pub struct Restore {
 pub fn start(dir: &Path, home: &Path) -> Started {
     let file = dir.join(SESSION_FILE);
     let mut notices = Vec::new();
+    let mut other_window = false;
     let lock = match take_lock(dir) {
         Ok(Some(f)) => Some(f),
         Ok(None) => {
+            other_window = true;
             notices.push((NoticeLevel::Warning, ANOTHER_WINDOW.to_string()));
             None
         }
@@ -223,6 +231,7 @@ pub fn start(dir: &Path, home: &Path) -> Started {
             keeper: Keeper::new(file, lock),
             session,
             notices,
+            other_window,
         },
     }
 }
@@ -234,13 +243,26 @@ pub fn restore(app: &mut App, r: Restore) {
         mut keeper,
         session,
         notices,
+        other_window,
     } = r;
     for (level, text) in notices {
         app.notify(level, text);
     }
     if let Some(s) = &session {
         keeper.ai = s.ai.clone();
-        keeper.restored_ai = Some(s.ai.clone());
+        // Only the window that keeps the session resumes its agents: the holder of the lock
+        // already runs them in the same folders and accounts, and a second copy would resume
+        // the same conversations (D2, D7).
+        if keeper.saves() {
+            keeper.restored_ai = Some(s.ai.clone());
+        } else if !s.ai.sessions.is_empty() {
+            let why = if other_window {
+                AI_ELSEWHERE
+            } else {
+                AI_NOT_KEPT
+            };
+            app.warn(why);
+        }
     }
     app.session = Some(keeper);
     let Some(s) = session else {
@@ -254,7 +276,7 @@ pub fn restore(app: &mut App, r: Restore) {
     }
 }
 
-/// The AI section read at start, once (see the module docs).
+/// The AI section read at start, once, in the window that saves (see the module docs).
 pub fn take_restored_ai(app: &mut App) -> Option<AiSection> {
     app.session.as_mut()?.restored_ai.take()
 }

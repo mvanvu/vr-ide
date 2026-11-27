@@ -1854,3 +1854,42 @@ fn ui_s5_one_detail_row_still_names_the_other_folder() {
     );
     assert!(rows[0].ends_with("roota"), "{screen}");
 }
+
+/// D28: a line whose remote command holds a secret-looking word is kept as its options and
+/// destination only; a plain remote command is kept whole.
+#[test]
+fn d28_recent_keeps_no_secret_from_a_remote_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = test_app(dir.path());
+    let file = dir.path().join("ssh-recent");
+    app.ssh.recent_file = Some(file.clone());
+    let base = dir.path().canonicalize().unwrap();
+    for (line, kept) in [
+        ("db mysql -uroot -pS3cret -e 'select 1'", "db"),
+        ("-p 2222 db mysql --password hunter2", "-p 2222 db"),
+        ("db env TOKEN=abc ls", "db"),
+        ("db env PASS=abc ls", "db"),
+        ("db cat my-Secret.txt", "db"),
+        ("db tool API_KEY=abc", "db"),
+        ("web1 uptime -p", "web1"),
+        ("db -p 2222", "db -p 2222"),
+        ("db -p 2222 mysql -pX", "db -p 2222"),
+        ("db -i ~/.ssh/k -p 2222 mysql -pX", "db -i ~/.ssh/k -p 2222"),
+        ("db 'mysql -uroot -pabc -e \"select 1\"'", "db"),
+        ("db env MYSQL_PWD=abc ls", "db"),
+        ("db curl -u bob:abc https://x", "db"),
+        ("db curl https://bob:abc@x", "db"),
+        ("db curl -H 'Authorization: Basic abc' x", "db"),
+        ("db curl -H 'Bearer abc' x", "db"),
+        ("db curl auth=abc x", "db"),
+        ("web1 ls -la /var/log", "web1 ls -la /var/log"),
+    ] {
+        crate::commands::ssh::record(&mut app, line, base.clone());
+        let top = app.ssh.recent[0].text.clone();
+        assert_eq!(top, kept, "{line}");
+        let saved = std::fs::read_to_string(&file).unwrap();
+        for word in ["S3cret", "hunter2", "abc", "Secret"] {
+            assert!(!saved.contains(word), "{line}: {saved}");
+        }
+    }
+}
