@@ -120,5 +120,8 @@
 # back, ctrl+shift+v pastes.
 "ctrl+`" = "terminal.toggle"
 "f1" = "app.palette"
-# The panel position key works from a focused terminal too (it never reaches the program).
+# The panel position and size keys work from a focused terminal too (they never reach the
+# program); f8 / shift+f8 still go to it.
 "ctrl+f7" = "terminal.toggle_position"
+"ctrl+f8" = "terminal.grow"
+"ctrl+f9" = "terminal.shrink"

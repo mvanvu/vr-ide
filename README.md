@@ -307,13 +307,14 @@ with the panel shown. `shift+f12` from the editor hides the panel too. No termin
 open one.
 
 - A focused terminal receives every key, `ctrl+s`, `ctrl+w` and `ctrl+p` included, so `vim`, `htop`
-  or `lazygit` work as in any terminal; vr-ide keeps only ``ctrl+` ``, `F1` (the command window)
-  and `ctrl+f7` (panel position); the other panel keys work from the editor. The status bar shows
-  `TERM` while the terminal has the keys (read and edit mode do not apply there).
+  or `lazygit` work as in any terminal; vr-ide keeps only ``ctrl+` ``, `F1` (the command window),
+  `ctrl+f7` (panel position), `ctrl+f8` and `ctrl+f9` (panel size); the other panel keys work from
+  the editor. The status bar shows `TERM` while the terminal has the keys (read and edit mode do
+  not apply there).
 - The `+` after the tabs opens another terminal (in the active file's workspace folder); the `x`
   at the end of a tab closes that terminal (the last one hides the panel); while a program other than
   the shell runs in it, the `x` first asks "Close terminal?" (Close / Cancel, Cancel is the default). `f8` / `shift+f8` move
-  to the next / previous one and `ctrl+f8` / `ctrl+f9` grow / shrink the panel (from the editor).
+  to the next / previous one and `ctrl+f8` / `ctrl+f9` grow / shrink the panel (from the editor or a focused terminal; `f8` goes to the program there).
   The tab bar shows each terminal's title (set
   by the program, or the shell's name) and `[N]` once it exited. Long titles such as bash's
   `user@host: ~/dir` are cut from the left so the directory stays; when the tabs do not fit, the
