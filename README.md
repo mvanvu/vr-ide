@@ -83,6 +83,9 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
 
 - The explorer starts hidden: `ctrl+e` shows it with the keys in the tree (arrows move, `enter`
   opens) and hides it again.
+- The explorer colours names by kind from the theme: folders in one colour, files by group (source
+  code by language family, config/data, docs, images/media, archives/binaries, lock/generated;
+  dotfiles dimmed and italic).
 - A file opens in **read mode** (status bar `READ`): you can move, select, copy, find and save, but
   typing does nothing. Press `space` then `i` to edit (`EDIT`) and `esc` to go back to reading;
   `space` `space` opens the command palette and `tab` moves the focus to the next part. A new file
@@ -304,9 +307,9 @@ with the panel shown. `shift+f12` from the editor hides the panel too. No termin
 open one.
 
 - A focused terminal receives every key, `ctrl+s`, `ctrl+w` and `ctrl+p` included, so `vim`, `htop`
-  or `lazygit` work as in any terminal; vr-ide keeps only ``ctrl+` `` and `F1` (the command
-  window). The status bar shows `TERM` while the terminal has the keys (read and edit mode do not
-  apply there).
+  or `lazygit` work as in any terminal; vr-ide keeps only ``ctrl+` ``, `F1` (the command window)
+  and `ctrl+f7` (panel position); the other panel keys work from the editor. The status bar shows
+  `TERM` while the terminal has the keys (read and edit mode do not apply there).
 - The `+` after the tabs opens another terminal (in the active file's workspace folder); the `x`
   at the end of a tab closes that terminal (the last one hides the panel); while a program other than
   the shell runs in it, the `x` first asks "Close terminal?" (Close / Cancel, Cancel is the default). `f8` / `shift+f8` move
@@ -316,10 +319,11 @@ open one.
   `user@host: ~/dir` are cut from the left so the directory stays; when the tabs do not fit, the
   active one stays in view and `+N` counts the others. Click a tab to switch; drag the tab bar to
   resize the panel (`terminal_height_percent` in settings, 40 % by default, at least 5 rows).
-- `ctrl+f7` (or `/term right`, `/term bottom`) moves the panel to the right of the editor for the
-  session: the editor's full height, `terminal_width_percent` of the editor column (40 %, at least
-  20 columns); drag the separator or use `ctrl+f8` / `ctrl+f9` to change the width. Under 60
-  editor columns it shows at the bottom. `terminal_position = "right"` in settings keeps it.
+- `ctrl+f7` (from the editor or a focused terminal; or `/term right`, `/term bottom`) moves the
+  panel to the right of the editor for the session: the editor's full height,
+  `terminal_width_percent` of the editor column (40 %, at least 20 columns); drag the separator
+  or use `ctrl+f8` / `ctrl+f9` to change the width. Under 60 editor columns it shows at the
+  bottom. `terminal_position = "right"` in settings keeps it.
 - When the program exits the panel says "[process exited N] — Enter to restart, ctrl+w to close"
   (shorter on narrow screens: "exited N · Enter · ctrl+w").
 - Notices above the status bar: `Esc` goes to the program while a terminal has the keys, so click

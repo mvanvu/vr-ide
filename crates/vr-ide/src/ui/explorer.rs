@@ -9,7 +9,7 @@ use vr_fs::{NodeKind, SymlinkTarget};
 
 use crate::app::{App, Focus};
 use crate::commands::explorer::Row;
-use crate::theme::Theme;
+use crate::theme::{ExplorerKind, Theme};
 
 /// Cells of indentation per tree level.
 const INDENT: usize = 2;
@@ -57,6 +57,15 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
             theme.text
         };
         buf.set_style(Rect::new(area.x, y, inner, 1), style);
+        // The focused row keeps the selected-row foreground: the kind colours are only checked
+        // against the editor and selection backgrounds.
+        if !(ex.cursor == i && focused) {
+            let kind = kind_of(&row.name(), row.kind.is_expandable());
+            if let Some(fg) = theme.explorer(kind).fg {
+                style = style.fg(fg);
+            }
+            style = style.add_modifier(theme.explorer(kind).add_modifier);
+        }
         if row.ignored
             || row.missing
             || matches!(
@@ -125,4 +134,96 @@ fn fit(text: &str, width: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// The kind of an explorer row from its name (extension, case-insensitive) and whether it is
+/// a folder (AC-F5).
+pub fn kind_of(name: &str, is_dir: bool) -> ExplorerKind {
+    if is_dir {
+        return ExplorerKind::Folder;
+    }
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
+        "package-lock.json" | "go.sum" | "npm-shrinkwrap.json" => return ExplorerKind::Generated,
+        "makefile" | "dockerfile" | "justfile" | "cmakelists.txt" | "gemfile" | "rakefile"
+        | ".gitignore" | ".gitattributes" | ".gitmodules" | ".dockerignore" | ".editorconfig" => {
+            return ExplorerKind::Config;
+        }
+        "readme" | "license" | "licence" | "changelog" | "authors" | "notice" | "copying" => {
+            return ExplorerKind::Docs;
+        }
+        _ => {}
+    }
+    if lower.ends_with(".min.js") || lower.ends_with(".min.css") {
+        return ExplorerKind::Generated;
+    }
+    // A leading dot is not an extension separator: ".bashrc" has none.
+    let ext = match lower.rfind('.') {
+        Some(0) | None => "",
+        Some(i) => &lower[i + 1..],
+    };
+    match ext {
+        "rs" | "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" | "go" | "java" | "kt" | "kts"
+        | "swift" | "cs" | "zig" | "dart" | "scala" | "hs" | "ml" | "m" | "mm" | "nim" => {
+            ExplorerKind::CodeNative
+        }
+        "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" | "vue" | "svelte" | "php" | "py" | "rb"
+        | "pl" | "lua" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "html" | "htm" | "css"
+        | "scss" | "sass" | "less" | "twig" | "blade" | "sql" | "r" | "ex" | "exs" => {
+            ExplorerKind::CodeScript
+        }
+        "toml" | "json" | "jsonc" | "json5" | "yaml" | "yml" | "ini" | "cfg" | "conf" | "xml"
+        | "env" | "csv" | "tsv" | "properties" | "dtd" => ExplorerKind::Config,
+        "md" | "markdown" | "txt" | "rst" | "adoc" | "org" | "pdf" | "doc" | "docx" | "odt"
+        | "rtf" | "log" => ExplorerKind::Docs,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "bmp" | "tiff" | "avif"
+        | "mp3" | "wav" | "flac" | "ogg" | "mp4" | "mkv" | "webm" | "mov" | "avi" | "ttf"
+        | "otf" | "woff" | "woff2" => ExplorerKind::Media,
+        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" | "jar" | "war"
+        | "exe" | "dll" | "so" | "dylib" | "a" | "o" | "bin" | "wasm" | "deb" | "rpm" | "iso" => {
+            ExplorerKind::Archive
+        }
+        "lock" | "map" | "lockb" | "pyc" | "class" => ExplorerKind::Generated,
+        _ if lower.starts_with('.') => ExplorerKind::Hidden,
+        _ => ExplorerKind::Plain,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ExplorerKind::*;
+
+    #[test]
+    fn kinds_by_extension_name_and_case() {
+        for (name, dir, want) in [
+            ("src", true, Folder),
+            (".github", true, Folder),
+            ("main.rs", false, CodeNative),
+            ("MAIN.RS", false, CodeNative),
+            ("app.Tsx", false, CodeScript),
+            ("index.php", false, CodeScript),
+            ("Cargo.toml", false, Config),
+            ("composer.json", false, Config),
+            ("README.md", false, Docs),
+            ("LICENSE", false, Docs),
+            ("logo.PNG", false, Media),
+            ("release.tar.gz", false, Archive),
+            ("tool.exe", false, Archive),
+            ("Cargo.lock", false, Generated),
+            ("package-lock.json", false, Generated),
+            ("yarn.lock", false, Generated),
+            ("app.min.js", false, Generated),
+            ("Makefile", false, Config),
+            ("Dockerfile", false, Config),
+            (".gitignore", false, Config),
+            (".bashrc", false, Hidden),
+            (".env.local", false, Hidden),
+            ("notes", false, Plain),
+            ("weird.zzz", false, Plain),
+            ("trailing.", false, Plain),
+        ] {
+            assert_eq!(kind_of(name, dir), want, "{name}");
+        }
+    }
 }

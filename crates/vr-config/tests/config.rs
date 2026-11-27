@@ -269,15 +269,19 @@ fn defaults_load_without_user_file() {
         assert_eq!(km.keys_for(cmd), [chord(k)], "{cmd} has one key");
     }
     // Nothing is bound that the table does not list (the terminal table repeats ctrl+`, D8, and
-    // f1, D279).
+    // f1, D279, and ctrl+f7, FR-17).
     for (ctx, k, cmd) in km.bindings() {
         let listed = KEYSET_V2.iter().any(|&(c, key, command)| {
             Context::from_name(c) == Some(ctx) && chord(key) == *k && command == cmd
         });
         let terminal_repeat = ctx == Context::Terminal
-            && [("ctrl+`", "terminal.toggle"), ("f1", "app.palette")]
-                .iter()
-                .any(|&(key, command)| chord(key) == *k && command == cmd);
+            && [
+                ("ctrl+`", "terminal.toggle"),
+                ("f1", "app.palette"),
+                ("ctrl+f7", "terminal.toggle_position"),
+            ]
+            .iter()
+            .any(|&(key, command)| chord(key) == *k && command == cmd);
         assert!(
             listed || terminal_repeat,
             "{ctx} {k} = {cmd} is not in the T21 table"
