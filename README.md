@@ -147,6 +147,9 @@ names, is in
 Commands without a default key can be run from the palette (`F1`).
 Typing `/` in the palette runs slash commands (`/run`, `/ai`, `/ws add`, `/theme`, `/help`, ...);
 the list is in [docs/commands.md](docs/commands.md).
+`tab` completes there: command names, paths (`/ws add`, `/ws open`, `/run` file arguments, the
+files of `/ssh -i`), `/ssh` hosts and `/ai` tools; a second `tab` lists the candidates, `tab` /
+`shift+tab` step through them, `enter` takes one and `esc` closes only the list.
 
 ### Files and tabs
 

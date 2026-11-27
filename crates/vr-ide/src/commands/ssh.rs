@@ -337,6 +337,13 @@ pub fn palette_detail(app: &App) -> Option<Detail> {
     detail_for(app, &value, base)
 }
 
+/// The detail of what is typed, whatever row is highlighted: the window's Tab completion
+/// shows candidates in the list, so the line is the input itself.
+pub fn typed_detail(app: &App) -> Option<Detail> {
+    let (value, base) = line_of(app, None)?;
+    detail_for(app, &value, base)
+}
+
 /// The detail of every listed row (and of what is typed): the window keeps the rows the
 /// longest one needs, so arrowing never resizes it (D323).
 pub fn palette_details(app: &App) -> Vec<Detail> {

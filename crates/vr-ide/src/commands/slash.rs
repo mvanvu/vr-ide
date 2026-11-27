@@ -69,7 +69,7 @@ impl ArgKind {
 pub struct SlashCommand {
     /// Without the slash; may hold a space ("ws add").
     pub name: &'static str,
-    /// Argument hint shown after the name ("<dir>", "[path]"), "" for none.
+    /// Argument hint shown after the name ("<folder>", "[path]"), "" for none.
     pub args: &'static str,
     pub arg: ArgKind,
     pub description: &'static str,
@@ -245,7 +245,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     ),
     cmd(
         "ws add",
-        "<dir>",
+        "<folder>",
         ArgKind::Path {
             required: true,
             dirs: true,
@@ -399,7 +399,7 @@ pub struct Row {
 }
 
 /// The command whose argument is being typed: a known name followed by a space.
-fn in_argument(input: &str) -> Option<(&'static SlashCommand, &str)> {
+pub(crate) fn in_argument(input: &str) -> Option<(&'static SlashCommand, &str)> {
     let (c, _) = lookup(input)?;
     let rest = &input[1 + c.name.len()..];
     rest.starts_with(' ').then(|| (c, rest.trim_start()))
@@ -437,43 +437,6 @@ pub fn rows(app: &App, input: &str) -> Vec<Row> {
         .filter(|c| c.name.starts_with(typed))
         .map(command_row)
         .collect()
-}
-
-/// The input after Tab: the highlighted command's name, or for an argument the only value,
-/// else the longest prefix all values share, else the highlighted value.
-pub fn complete(input: &str, rows: &[Row], selected: usize) -> Option<String> {
-    let chosen = rows.get(selected).map(|r| r.fill.clone());
-    let Some((c, _)) = in_argument(input) else {
-        return chosen;
-    };
-    if c.arg == ArgKind::Text
-        || c.arg == ArgKind::None
-        || rows.len() == 1 && rows[0].fill == command_row(c).fill
-    {
-        return None;
-    }
-    if rows.len() == 1 {
-        return chosen;
-    }
-    let common = rows
-        .iter()
-        .map(|r| r.fill.as_str())
-        .reduce(common_prefix)
-        .unwrap_or("");
-    if common.len() > input.len() {
-        Some(common.to_string())
-    } else {
-        chosen
-    }
-}
-
-fn common_prefix<'a>(a: &'a str, b: &str) -> &'a str {
-    let end = a
-        .char_indices()
-        .zip(b.chars())
-        .find(|((_, x), y)| x != y)
-        .map_or_else(|| a.len().min(b.len()), |((i, _), _)| i);
-    &a[..end]
 }
 
 /// What Enter does with the input.
@@ -639,7 +602,9 @@ impl DirListing {
         LISTINGS.with(|c| c.set(c.get() + 1));
         let mut entries: Vec<(String, bool)> = std::fs::read_dir(base)
             .map(|rd| {
-                rd.filter_map(Result::ok)
+                // Bounded (SEC-4): a huge folder is read only up to the cap.
+                rd.take(READ_LIMIT)
+                    .filter_map(Result::ok)
                     .filter_map(|e| {
                         let name = e.file_name().into_string().ok()?;
                         let kind = e.file_type().ok()?;
@@ -660,6 +625,39 @@ impl DirListing {
             entries,
         }
     }
+}
+
+impl DirListing {
+    /// Entries held (at most [`READ_LIMIT`]).
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Entries read from one folder at most.
+pub const READ_LIMIT: usize = 1000;
+
+/// The entries of `dir` (name, is a folder), read once per window: the listing the window
+/// holds when it is for `dir`, else read now and held.
+pub(crate) fn cached_listing(app: &mut App, dir: &Path) -> Vec<(String, bool)> {
+    if let Some(l) = app
+        .palette
+        .as_ref()
+        .and_then(|p| p.dir_cache.as_ref())
+        .filter(|l| l.base == dir)
+    {
+        return l.entries.clone();
+    }
+    let listing = DirListing::read(dir);
+    let entries = listing.entries.clone();
+    if let Some(p) = &mut app.palette {
+        p.dir_cache = Some(listing);
+    }
+    entries
 }
 
 /// Folder reads done by path completion on this thread (tests).
@@ -774,6 +772,7 @@ fn path_candidates(app: &App, arg: &str, dirs_only: bool) -> Vec<(String, String
         .filter(|(name, is_dir)| {
             name.starts_with(prefix)
                 && (!name.starts_with('.') || prefix.starts_with('.'))
+                && !name.chars().any(crate::ui::safe_text::is_unsafe_char)
                 && (*is_dir || !dirs_only)
         })
         .take(PATH_LIMIT)
@@ -801,24 +800,9 @@ pub(crate) fn set_input(app: &mut App, text: &str) {
     palette::refilter(app);
 }
 
-/// Tab in slash mode.
-pub fn tab(app: &mut App) {
-    let Some((text, selected)) = window_state(app) else {
-        return;
-    };
-    prepare(app, &text);
-    let picked = super::ssh::picked(app);
-    if let Some(next) = complete(&text, &rows(app, &text), selected)
-        && next != text
-    {
-        set_input(app, &next);
-        remember_listed(app, &next, picked);
-    }
-}
-
 /// A listed ssh line put in the input keeps the folder it brings until the input is edited
 /// (SEC-4, SEC-5).
-fn remember_listed(app: &mut App, input: &str, picked: Option<(String, PathBuf)>) {
+pub(crate) fn remember_listed(app: &mut App, input: &str, picked: Option<(String, PathBuf)>) {
     if let (Some((line, base)), Some(p)) = (picked, &mut app.palette)
         && input.strip_prefix(super::ssh::SLASH) == Some(line.as_str())
     {
