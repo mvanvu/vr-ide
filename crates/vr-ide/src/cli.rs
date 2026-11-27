@@ -7,6 +7,7 @@
 //! listed in that file (alone: a workspace file is not mixed with other arguments);
 //! `vr-ide --session` (alone; the desktop launcher) opens the home folder, which the saved
 //! session then replaces (`crate::session`).
+//! `vr-ide --install-desktop` / `--uninstall-desktop` (alone) add or remove the app-menu entry.
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -39,7 +40,7 @@ impl fmt::Display for CliError {
             CliError::NotFound(p) => write!(f, "path does not exist: {}", p.display()),
             CliError::TooManyArgs => write!(
                 f,
-                "usage: vr-ide [<dir>|<file>]... | vr-ide <file>.{} | vr-ide {SESSION_FLAG}",
+                "usage: vr-ide [<dir>|<file>]... | vr-ide <file>.{} | vr-ide {SESSION_FLAG} | vr-ide {INSTALL_DESKTOP_FLAG} | vr-ide {UNINSTALL_DESKTOP_FLAG}",
                 vr_config::WORKSPACE_EXT
             ),
             CliError::Io(p, e) => write!(f, "cannot access {}: {e}", p.display()),
@@ -52,6 +53,28 @@ impl std::error::Error for CliError {}
 
 /// The launcher's flag: restore and keep the session.
 pub const SESSION_FLAG: &str = "--session";
+pub const INSTALL_DESKTOP_FLAG: &str = "--install-desktop";
+pub const UNINSTALL_DESKTOP_FLAG: &str = "--uninstall-desktop";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopAction {
+    Install,
+    Uninstall,
+}
+
+/// `--install-desktop` / `--uninstall-desktop`: each only as the single argument.
+pub fn desktop_action(args: &[OsString]) -> Result<Option<DesktopAction>, CliError> {
+    let action = |a: &OsString| match a.to_str() {
+        Some(INSTALL_DESKTOP_FLAG) => Some(DesktopAction::Install),
+        Some(UNINSTALL_DESKTOP_FLAG) => Some(DesktopAction::Uninstall),
+        _ => None,
+    };
+    match args.iter().find_map(action) {
+        None => Ok(None),
+        Some(_) if args.len() > 1 => Err(CliError::TooManyArgs),
+        found => Ok(found),
+    }
+}
 
 /// Resolves launch arguments (without argv[0]) against `cwd`.
 pub fn resolve(args: &[OsString], cwd: &Path) -> Result<Launch, CliError> {
@@ -287,6 +310,27 @@ mod tests {
             Err(CliError::TooManyArgs)
         ));
         assert!(!resolve(&[], &base).unwrap().session);
+    }
+
+    #[test]
+    fn cli_desktop_action_flags_are_alone() {
+        assert_eq!(desktop_action(&[]).unwrap(), None);
+        assert_eq!(desktop_action(&[os(".")]).unwrap(), None);
+        assert_eq!(
+            desktop_action(&[os("--install-desktop")]).unwrap(),
+            Some(DesktopAction::Install)
+        );
+        assert_eq!(
+            desktop_action(&[os("--uninstall-desktop")]).unwrap(),
+            Some(DesktopAction::Uninstall)
+        );
+        for args in [
+            vec![os("--install-desktop"), os(".")],
+            vec![os("--session"), os("--uninstall-desktop")],
+            vec![os("--install-desktop"), os("--uninstall-desktop")],
+        ] {
+            assert!(matches!(desktop_action(&args), Err(CliError::TooManyArgs)));
+        }
     }
 
     #[cfg(unix)]
