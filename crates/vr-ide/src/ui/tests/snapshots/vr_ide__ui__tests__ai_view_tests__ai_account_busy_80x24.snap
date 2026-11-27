@@ -23,6 +23,6 @@ expression: t.backend()
 "                                                │                               "
 "                                                │                               "
 "                                                │                               "
-"                                                │ enter start  del remove  esc b"
+"                                                │ enter start  del remove       "
 "Not removed: close the session on work first, tab 2  (click)                    "
 " AI  new session · /home/user/DEV/vr-ide                         3/3 · f12 hide "

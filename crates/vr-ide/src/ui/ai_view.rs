@@ -535,6 +535,8 @@ fn render_picker(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     }
     // The footer: keys in the warning colour, words dim.
     let fy = bottom - 1;
+    // A list longer than the grid reaches this row: the footer replaces what was drawn there.
+    buf.set_string(area.x, fy, " ".repeat(w), theme.text);
     let esc = if empty && pk.back.is_none() && pk.second.is_none() {
         "hide"
     } else {
@@ -551,13 +553,24 @@ fn render_picker(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
                 }
             )
         });
-    let keys: Vec<(&str, &str)> = if pk.adding.is_some() {
+    let mut keys: Vec<(&str, &str)> = if pk.adding.is_some() {
         vec![("enter", "create + start"), ("esc", "cancel")]
     } else if accounts {
         vec![("enter", "start"), ("del", "remove"), ("esc", esc)]
     } else {
         vec![("enter", "start"), ("esc", esc)]
     };
+    // Whole pairs only: the last ones give way when the row is too narrow (the first stays).
+    let room = w.saturating_sub(2);
+    let pairs_width = |keys: &[(&str, &str)]| -> usize {
+        keys.iter()
+            .map(|(k, word)| width_of(k) + 1 + width_of(word))
+            .sum::<usize>()
+            + 2 * keys.len().saturating_sub(1)
+    };
+    while keys.len() > 1 && pairs_width(&keys) > room {
+        keys.pop();
+    }
     let mut x = area.x + 1;
     for (k, word) in keys {
         put(buf, fy, x, k, theme.warning);

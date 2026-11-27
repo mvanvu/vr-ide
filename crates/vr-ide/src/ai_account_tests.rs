@@ -471,8 +471,8 @@ fn restart_checks_the_account_again() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(10));
     }
-    accounts::remove(&e.state, "work").unwrap();
-    assert!(!work.exists());
+    // Deleted behind vr-ide's back (the open tab still holds the account).
+    std::fs::remove_dir_all(&work).unwrap();
     press(&mut e.app, KeyCode::Enter);
     assert!(
         notices(&e.app)
@@ -483,4 +483,31 @@ fn restart_checks_the_account_again() {
         notices(&e.app)
     );
     assert!(!e.app.ai.sessions[0].running());
+}
+
+/// D17: an open session holds its account for every window: a removal from elsewhere is
+/// refused until the tab is closed.
+#[test]
+fn an_open_session_holds_its_account_for_other_windows() {
+    let mut e = setup();
+    let work = accounts::create(&e.state, "claude", "work").unwrap();
+    crate::ai::open_tool(&mut e.app, "claude @work").unwrap();
+    assert_eq!(
+        accounts::remove(&e.state, "work").unwrap_err(),
+        "in use in another window"
+    );
+    assert!(work.is_dir());
+    crate::ai::close(&mut e.app, 0);
+    accounts::remove(&e.state, "work").unwrap();
+    assert!(!work.exists());
+    // The answer path names it when another window holds it.
+    let alt = accounts::create(&e.state, "claude", "alt").unwrap();
+    let other = accounts::hold(&e.state, "alt").unwrap();
+    crate::ai::answer_remove_account(&mut e.app, "alt");
+    assert_eq!(
+        notices(&e.app).last().unwrap(),
+        "Not removed: alt, in use in another window"
+    );
+    assert!(alt.is_dir());
+    drop(other);
 }

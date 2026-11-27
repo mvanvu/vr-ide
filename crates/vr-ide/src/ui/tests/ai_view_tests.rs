@@ -60,6 +60,7 @@ fn session(tool: &str, account: Option<&str>, root: &str, status: TermStatus) ->
         tab: TermTab::fake(grid(CLAUDE, 120, 40), tool, status),
         tool: tool.into(),
         account: account.map(str::to_string),
+        account_lock: None,
         root: PathBuf::from(root),
         name: None,
         mode: StartMode::New,
@@ -316,11 +317,15 @@ fn ai_account_screens() {
     press(&mut app, KeyCode::Delete);
     assert!(app.dialog.is_none());
     snap("ai_account_busy", &mut app, &[(80, 24)]);
+    footer_has_whole_pairs(&draw(&mut app, 80, 24));
     let text = format!("{:?}", draw(&mut app, 80, 24).backend());
     assert!(
         text.contains("Not removed: close the session on work first, tab 2"),
         "{text}"
     );
+    // Narrow: the pairs that do not fit go whole (no notice over the footer row).
+    app.notices.clear();
+    footer_has_whole_pairs(&draw(&mut app, 40, 12));
 }
 
 #[test]
@@ -378,4 +383,24 @@ fn ai_tokens_in_every_theme() {
         assert!(t.attention.fg.is_some() && t.note.fg.is_some(), "{name}");
         assert_ne!(t.diff_added_bg, t.diff_removed_bg, "{name}");
     }
+}
+
+/// The picker's footer keeps whole key pairs: one that does not fit is left out, never cut.
+fn footer_has_whole_pairs(t: &Terminal<TestBackend>) {
+    let height = t.backend().buffer().area.height;
+    let line = (0..height)
+        .map(|y| row(t, y))
+        .find(|l| l.contains("enter start"))
+        .unwrap_or_else(|| panic!("footer row: {:?}", t.backend()));
+    let footer = &line[line.find("enter start").unwrap()..];
+    let footer = footer.trim_end();
+    assert!(
+        [
+            "enter start",
+            "enter start  del remove",
+            "enter start  del remove  esc back"
+        ]
+        .contains(&footer),
+        "cut footer: {footer:?}"
+    );
 }

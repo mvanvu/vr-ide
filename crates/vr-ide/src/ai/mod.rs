@@ -92,6 +92,8 @@ pub struct AiSession {
     pub tool: String,
     /// The account it runs on (D11, T8); `None`: the tool's own config (`default`).
     pub account: Option<String>,
+    /// The hold on that account (D17): no window removes it while this session is open.
+    pub account_lock: Option<accounts::AccountLock>,
     /// The canonical workspace folder it started in.
     pub root: PathBuf,
     /// Set by AI: Rename Session; replaces the tool name in the label.
@@ -599,11 +601,20 @@ pub(crate) fn spawn_session(
     root: &Path,
     name: Option<String>,
 ) -> Result<(), String> {
+    // The hold comes first: the folder checks in `start_program` then see what a removal left.
+    let account_lock = match (&account, app.ai.state_dir.as_deref()) {
+        (None, _) => None,
+        (Some(a), Some(state)) => {
+            Some(accounts::hold(state, a).map_err(|e| format!("account {a}: {e}"))?)
+        }
+        (Some(a), None) => return Err(format!("account {a}: account folder missing")),
+    };
     let (tab_term, program, output) = start_program(app, tool, account.as_deref(), mode, root)?;
     app.ai.sessions.push(AiSession {
         tab: TermTab::new(tab_term, program, output),
         tool: tool.name.clone(),
         account,
+        account_lock,
         root: root.to_path_buf(),
         name,
         mode,

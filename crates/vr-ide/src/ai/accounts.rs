@@ -8,14 +8,17 @@
 //! Q1) is kept beside the folders in `<state_dir>/ai-accounts`, one `name tool` line each.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{CStr, OsString};
 use std::io::Read;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 /// The folder of the account folders, under the state folder.
 pub const ACCOUNTS_DIR: &str = "accounts";
 /// The file recording which tool each account was added under.
 pub const INDEX_FILE: &str = "ai-accounts";
+/// Serialises changes to the index across windows.
+pub const INDEX_LOCK: &str = "ai-accounts.lock";
 /// The reserved name: the tool's own config, no variable.
 pub const DEFAULT: &str = "default";
 /// Longest account name, in characters.
@@ -120,27 +123,157 @@ fn is_real_dir(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_dir())
 }
 
-/// `name → tool` from the index; lines with an invalid name or tool are dropped.
+/// `name → tool` for display and checks; an unreadable index lists nothing.
 fn read_index(state: &Path) -> BTreeMap<String, String> {
-    let mut text = String::new();
-    let read = std::fs::File::open(state.join(INDEX_FILE))
-        .and_then(|f| f.take(INDEX_MAX).read_to_string(&mut text));
-    if read.is_err() {
-        return BTreeMap::new();
+    read_index_strict(state).unwrap_or_default()
+}
+
+/// `name → tool` from the index: a missing file is empty, an unreadable one (not UTF-8, too
+/// large, not a file) is an error so that nobody rewrites it from a partial view. Lines with an
+/// invalid name or tool are dropped.
+fn read_index_strict(state: &Path) -> std::io::Result<BTreeMap<String, String>> {
+    use rustix::fs::{Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+    let fd = match rustix::fs::open(state.join(INDEX_FILE), flags, Mode::empty()) {
+        Err(rustix::io::Errno::NOENT) => return Ok(BTreeMap::new()),
+        r => r?,
+    };
+    let file = std::fs::File::from(fd);
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a file"));
     }
-    text.lines()
+    let mut text = String::new();
+    file.take(INDEX_MAX + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > INDEX_MAX {
+        return Err(std::io::Error::other("too large"));
+    }
+    Ok(text
+        .lines()
         .filter_map(|line| {
             let (name, tool) = line.split_once(' ')?;
             validate(name).ok()?;
             var_for(tool)?;
             Some((name.to_string(), tool.to_string()))
         })
-        .collect()
+        .collect())
 }
 
-fn write_index(state: &Path, index: &BTreeMap<String, String>) -> std::io::Result<()> {
+/// Held while the index is read, changed and written: windows adding or removing accounts at
+/// the same time do not lose each other's records.
+struct IndexLock(#[allow(dead_code)] OwnedFd);
+
+fn lock_index(state: &Path) -> Result<IndexLock, String> {
+    use rustix::fs::{FlockOperation, Mode, OFlags};
+    std::fs::create_dir_all(state).map_err(|e| format!("cannot create folder ({e})"))?;
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let fd = rustix::fs::open(state.join(INDEX_LOCK), flags, Mode::RUSR | Mode::WUSR)
+        .map_err(|e| format!("cannot lock the account record ({e})"))?;
+    rustix::fs::flock(&fd, FlockOperation::LockExclusive)
+        .map_err(|e| format!("cannot lock the account record ({e})"))?;
+    Ok(IndexLock(fd))
+}
+
+/// Writes the index (0600) through a temp file renamed over it. Called under [`IndexLock`], so
+/// any `.ai-accounts.*.tmp` left in the state folder is from a write that was killed: those, and
+/// only those, are removed first.
+fn write_index(
+    state: &Path,
+    _lock: &IndexLock,
+    index: &BTreeMap<String, String>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let prefix = format!(".{INDEX_FILE}.");
+    if let Ok(entries) = std::fs::read_dir(state) {
+        for e in entries.filter_map(Result::ok) {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            let ours = name.starts_with(&prefix) && name.ends_with(".tmp");
+            if ours && e.file_type().is_ok_and(|t| !t.is_dir()) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
     let text: String = index.iter().map(|(n, t)| format!("{n} {t}\n")).collect();
-    vr_config::write_atomic(&state.join(INDEX_FILE), text.as_bytes())
+    let tmp = state.join(format!("{prefix}{}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(&tmp, state.join(INDEX_FILE)));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// Opens `accounts/` itself (never through a symlink) for work relative to it.
+fn open_accounts(state: &Path) -> Result<OwnedFd, String> {
+    use rustix::fs::{Mode, OFlags};
+    use rustix::io::Errno;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    rustix::fs::open(accounts_dir(state), flags, Mode::empty()).map_err(|e| match e {
+        Errno::NOENT => "account folder missing".to_string(),
+        Errno::LOOP | Errno::NOTDIR => "account folder is not a real folder".to_string(),
+        e => format!("account folder unusable ({e})"),
+    })
+}
+
+/// `accounts/.<name>.lock`, beside the account folder (never inside it).
+fn open_account_lock(dir: &OwnedFd, name: &str) -> Result<OwnedFd, String> {
+    use rustix::fs::{Mode, OFlags};
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    rustix::fs::openat(dir, format!(".{name}.lock"), flags, Mode::RUSR | Mode::WUSR)
+        .map_err(|e| format!("cannot lock the account ({e})"))
+}
+
+/// A session's hold on its account (D17): a shared lock on `accounts/.<name>.lock` for as long as
+/// the session lives, in any vr-ide window; [`remove`] needs it exclusively.
+#[derive(Debug)]
+pub struct AccountLock(#[allow(dead_code)] OwnedFd);
+
+/// Takes the hold on account `name` before its session starts. Refused while a removal has it.
+pub fn hold(state: &Path, name: &str) -> Result<AccountLock, String> {
+    use rustix::fs::FlockOperation;
+    let name = validate(name).map_err(|_| "account name invalid".to_string())?;
+    let dir = open_accounts(state)?;
+    let missing = rustix::fs::statat(&dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW).is_err();
+    if missing {
+        return Err("account folder missing".into());
+    }
+    let fd = open_account_lock(&dir, name)?;
+    rustix::fs::flock(&fd, FlockOperation::NonBlockingLockShared)
+        .map_err(|_| "account is being removed".to_string())?;
+    Ok(AccountLock(fd))
+}
+
+/// Deletes the folder `name` under `parent` without following any link: each level is opened
+/// with `O_NOFOLLOW` relative to the one above, links and files are unlinked, never entered.
+fn remove_tree_at(parent: BorrowedFd<'_>, name: &CStr) -> std::io::Result<()> {
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let fd = rustix::fs::openat(parent, name, flags, Mode::empty())?;
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::read_from(&fd)? {
+        let n = entry?.file_name().to_owned();
+        if n.as_bytes() != b"." && n.as_bytes() != b".." {
+            names.push(n);
+        }
+    }
+    for n in names {
+        let st = rustix::fs::statat(&fd, n.as_c_str(), AtFlags::SYMLINK_NOFOLLOW)?;
+        if FileType::from_raw_mode(st.st_mode) == FileType::Directory {
+            remove_tree_at(fd.as_fd(), &n)?;
+        } else {
+            rustix::fs::unlinkat(&fd, n.as_c_str(), AtFlags::empty())?;
+        }
+    }
+    rustix::fs::unlinkat(parent, name, AtFlags::REMOVEDIR)?;
+    Ok(())
 }
 
 /// SEC-16 before every use: `dir` must be a real folder (opened with `O_NOFOLLOW`, so a symlink
@@ -176,14 +309,15 @@ pub fn ready(state: Option<&Path>, tool: &str, name: &str) -> Result<PathBuf, St
     let path = validate(name).map_err(|_| "account name invalid".to_string())?;
     let state = state.ok_or("account folder missing")?;
     let path = accounts_dir(state).join(path);
-    if let Some(other) = read_index(state).get(name)
-        && other != tool
-    {
-        return Err(format!("account belongs to {other}"));
-    }
     secure(&accounts_dir(state))?;
     secure(&path)?;
-    Ok(path)
+    // Only the tool it was added under may use it (ui-spec Q1): one folder never serves as both
+    // `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
+    match read_index(state).get(name) {
+        Some(t) if t == tool => Ok(path),
+        Some(other) => Err(format!("account belongs to {other}")),
+        None => Err("account not recorded; add it again".into()),
+    }
 }
 
 /// The variable for a session of `tool` on `account`, for that child's environment only (never
@@ -209,7 +343,9 @@ pub fn create(state: &Path, tool: &str, name: &str) -> Result<PathBuf, String> {
     if var_for(tool).is_none() {
         return Err(format!("{tool} cannot use accounts"));
     }
-    let mut index = read_index(state);
+    let lock = lock_index(state)?;
+    let mut index =
+        read_index_strict(state).map_err(|e| format!("cannot read the account record ({e})"))?;
     match index.get(name) {
         Some(other) if other != tool => return Err(format!("{name} is taken ({other})")),
         Some(_) if is_real_dir(&accounts_dir(state).join(name)) => {
@@ -232,33 +368,48 @@ pub fn create(state: &Path, tool: &str, name: &str) -> Result<PathBuf, String> {
         .map_err(|e| format!("cannot create folder ({e})"))?;
     secure(&path)?;
     index.insert(name.to_string(), tool.to_string());
-    write_index(state, &index).map_err(|e| format!("cannot record the account ({e})"))?;
+    write_index(state, &lock, &index).map_err(|e| format!("cannot record the account ({e})"))?;
     Ok(path)
 }
 
-/// Deletes account `name` for good (SEC-17): the name is validated again, `accounts/` must be a
-/// real folder, and `accounts/<name>` is looked at without following links — a symlink is
-/// removed as a link (its target untouched), a folder with `remove_dir_all` (which does not
-/// follow links inside). No trash: the token files must not survive elsewhere. Nothing outside
-/// `accounts/<name>` is touched. The caller has asked and checked that no session uses it.
+/// Deletes account `name` for good (SEC-17): the name is validated again; `accounts/` is opened
+/// without following a link and everything happens relative to that descriptor, so a link
+/// swapped in cannot redirect the delete; a symlinked account is unlinked (its target
+/// untouched), a folder is removed level by level without entering links. No trash: the token
+/// files must not survive elsewhere. Nothing outside `accounts/<name>` (and its lock file) is
+/// touched. Refused while a session holds the account in any window (D17); the caller has asked
+/// and checked its own sessions.
 pub fn remove(state: &Path, name: &str) -> Result<(), String> {
+    use rustix::fs::{AtFlags, FileType, FlockOperation};
     let name = validate(name).map_err(|e| e.message().to_string())?;
-    let dir = accounts_dir(state);
-    if !is_real_dir(&dir) {
-        return Err("account folder missing".into());
-    }
-    let path = dir.join(name);
-    let removed = match std::fs::symlink_metadata(&path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
-        Ok(m) if m.file_type().is_symlink() => std::fs::remove_file(&path),
-        Ok(m) if m.file_type().is_dir() => std::fs::remove_dir_all(&path),
-        Ok(_) => return Err("not an account folder".into()),
-    };
+    let index_lock = lock_index(state)?;
+    let mut index =
+        read_index_strict(state).map_err(|e| format!("cannot read the account record ({e})"))?;
+    let dir = open_accounts(state)?;
+    let lock = open_account_lock(&dir, name)?;
+    rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| "in use in another window".to_string())?;
+    let removed: std::io::Result<()> =
+        match rustix::fs::statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Err(rustix::io::Errno::NOENT) => Ok(()),
+            Err(e) => Err(e.into()),
+            Ok(st) => match FileType::from_raw_mode(st.st_mode) {
+                FileType::Directory => {
+                    let c = std::ffi::CString::new(name).expect("validated: no NUL");
+                    remove_tree_at(dir.as_fd(), &c)
+                }
+                FileType::Symlink => {
+                    rustix::fs::unlinkat(&dir, name, AtFlags::empty()).map_err(Into::into)
+                }
+                _ => return Err("not an account folder".into()),
+            },
+        };
     removed.map_err(|e| format!("cannot remove the folder ({e})"))?;
-    let mut index = read_index(state);
+    let _ = rustix::fs::unlinkat(&dir, format!(".{name}.lock"), AtFlags::empty());
+    drop(lock);
     if index.remove(name).is_some() {
-        write_index(state, &index).map_err(|e| format!("cannot update the record ({e})"))?;
+        write_index(state, &index_lock, &index)
+            .map_err(|e| format!("cannot update the record ({e})"))?;
     }
     Ok(())
 }
@@ -468,5 +619,132 @@ mod tests {
             assert!(remove(state, bad).is_err(), "{bad:?}");
         }
         assert!(state.join("accounts/alt").is_dir());
+    }
+}
+
+#[cfg(test)]
+mod fix_tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    /// DS Q1 / SEC-18: a folder with no record for this tool is not used.
+    #[test]
+    fn ready_needs_the_record_of_this_tool() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path();
+        create(state, "claude", "work").unwrap();
+        std::fs::create_dir(state.join("accounts/orphan")).unwrap();
+        assert_eq!(
+            ready(Some(state), "codex", "orphan").unwrap_err(),
+            "account not recorded; add it again"
+        );
+        assert_eq!(
+            ready(Some(state), "codex", "work").unwrap_err(),
+            "account belongs to claude"
+        );
+        assert!(ready(Some(state), "claude", "work").is_ok());
+    }
+
+    /// An unreadable record is never rewritten (the other accounts would be lost); the record is
+    /// 0600; leftover temp files of a killed write are cleaned up; the lock file exists.
+    #[test]
+    fn record_is_private_locked_and_never_rewritten_from_a_failed_read() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path();
+        create(state, "claude", "work").unwrap();
+        let index = state.join(INDEX_FILE);
+        assert_eq!(std::fs::metadata(&index).unwrap().mode() & 0o777, 0o600);
+        assert!(state.join(INDEX_LOCK).exists());
+        // Unreadable: a folder in its place / bytes that are not UTF-8.
+        std::fs::write(&index, b"work claude\n\xff\xfe\n").unwrap();
+        assert!(
+            create(state, "claude", "alt")
+                .unwrap_err()
+                .contains("cannot read the account record")
+        );
+        assert_eq!(std::fs::read(&index).unwrap(), b"work claude\n\xff\xfe\n");
+        assert!(
+            remove(state, "work")
+                .unwrap_err()
+                .contains("cannot read the account record")
+        );
+        std::fs::write(&index, "work claude\n").unwrap();
+        // Leftovers of a killed write (only that pattern goes).
+        std::fs::write(state.join(".ai-accounts.123-0.tmp"), "x").unwrap();
+        std::fs::write(state.join(".recent.123-0.tmp"), "x").unwrap();
+        std::fs::set_permissions(&index, std::fs::Permissions::from_mode(0o644)).unwrap();
+        create(state, "claude", "alt").unwrap();
+        assert!(!state.join(".ai-accounts.123-0.tmp").exists());
+        assert!(state.join(".recent.123-0.tmp").exists());
+        assert_eq!(std::fs::metadata(&index).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(for_tool(state, "claude"), ["alt", "work"]);
+    }
+
+    /// Concurrent adds from several windows keep every record.
+    #[test]
+    fn concurrent_adds_keep_every_record() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path().to_path_buf();
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let state = state.clone();
+                std::thread::spawn(move || create(&state, "claude", &format!("a{i}")).unwrap())
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(for_tool(&state, "claude").len(), 8);
+    }
+
+    /// D17: a session in any window holds the account; remove is refused until it lets go.
+    #[test]
+    fn remove_is_refused_while_another_window_holds_the_account() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path();
+        let work = create(state, "claude", "work").unwrap();
+        let held = hold(state, "work").unwrap();
+        let second = hold(state, "work").unwrap();
+        assert_eq!(
+            remove(state, "work").unwrap_err(),
+            "in use in another window"
+        );
+        assert!(work.is_dir());
+        drop(held);
+        assert!(remove(state, "work").is_err(), "still one holder");
+        drop(second);
+        remove(state, "work").unwrap();
+        assert!(!work.exists());
+        assert!(!state.join("accounts/.work.lock").exists());
+        assert!(hold(state, "work").is_err(), "nothing to hold");
+    }
+
+    /// SEC-17: the delete walks from the `accounts/` descriptor; a symlink swapped in for
+    /// `accounts/` is never followed.
+    #[test]
+    fn remove_never_follows_a_swapped_accounts_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path();
+        create(state, "claude", "work").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(outside.path().join("work")).unwrap();
+        std::fs::write(outside.path().join("work/keep"), "x").unwrap();
+        std::fs::rename(state.join("accounts"), state.join("moved")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), state.join("accounts")).unwrap();
+        assert!(remove(state, "work").is_err());
+        assert!(outside.path().join("work/keep").exists());
+        // Deep trees with links, read-only files and dot names go entirely.
+        std::fs::remove_file(state.join("accounts")).unwrap();
+        std::fs::rename(state.join("moved"), state.join("accounts")).unwrap();
+        let work = state.join("accounts/work");
+        std::fs::create_dir_all(work.join("a/b/.c")).unwrap();
+        std::fs::write(work.join("a/b/.c/t"), "t").unwrap();
+        std::fs::write(work.join(".hidden"), "t").unwrap();
+        std::fs::set_permissions(work.join(".hidden"), std::fs::Permissions::from_mode(0o400))
+            .unwrap();
+        std::os::unix::fs::symlink(outside.path(), work.join("a/out")).unwrap();
+        remove(state, "work").unwrap();
+        assert!(!work.exists());
+        assert!(outside.path().join("work/keep").exists());
     }
 }
