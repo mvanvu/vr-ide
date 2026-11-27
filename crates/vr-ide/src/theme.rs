@@ -48,8 +48,7 @@ pub struct Theme {
     pub find_match: Style,
     /// Matched characters in palette rows.
     pub matched: Style,
-    /// Where the keys go: the explorer separator and the terminal panel edge while focused,
-    /// the focused pane and title of the Git popup.
+    /// Where the keys go: the explorer separator and the terminal panel edge while focused.
     pub focus: Style,
     /// Line number of the cursor line while the editor has the focus.
     pub gutter_active: Style,
