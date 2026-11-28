@@ -8,8 +8,8 @@
 | T5 | Desktop entry new form + migration | fe | T1 | crates/vr-ide/src/desktop.rs, desktop_tests.rs | security | BASE, COST, AC-W7 | cargo test -p vr-ide desktop | done | 1 |
 | T4a | Font settings + PTY pixel size | fe | — | crates/vr-config/**, crates/vr-term/src/terminal.rs + tests | ui | BASE, COST, AC-W6, AC-W8 | cargo test -p vr-config -p vr-term | done | 0 |
 | T3b | Chord parity TUI vs window (shifted symbols, shift+space) | fe | T3 | crates/vr-ide/src/event_loop.rs, crates/vr-window/src/input/key.rs + tests | ui | BASE, COST, AC-W4 | cargo test -p vr-ide event_loop; cargo test -p vr-window input; parity harness rerun | done | 1 |
-| T4 | Window app: runner, wiring, launch, quit path, font settings, PTY pixels | fe | T1, T2, T3, T4a, T5 (T3b relaxed: worktree, no edits to event_loop.rs 15-110 or vr-config keys.rs) | crates/vr-window/src/app*.rs, crates/vr-ide/src/{main.rs,cli.rs,window_frontend.rs,…}, crates/vr-ide/Cargo.toml, crates/vr-config/**, crates/vr-term/src/terminal.rs, defaults/settings.toml | ui | BASE, COST, AC-W1..AC-W8 | cargo test --workspace (related); guard both feature sets; release build | in progress | 0 |
-| T6 | Docs | fe | T4 | README.md, docs/*.md | docs | BASE | leader spot-check + sonnet reviewer | todo | 0 |
+| T4 | Window app: runner, wiring, launch, quit path, font settings, PTY pixels | fe | T1, T2, T3, T4a, T5 (T3b relaxed: worktree, no edits to event_loop.rs 15-110 or vr-config keys.rs) | crates/vr-window/src/app*.rs, crates/vr-ide/src/{main.rs,cli.rs,window_frontend.rs,…}, crates/vr-ide/Cargo.toml, crates/vr-config/**, crates/vr-term/src/terminal.rs, defaults/settings.toml | ui | BASE, COST, AC-W1..AC-W8 | cargo test --workspace (related); guard both feature sets; release build | done | 2 |
+| T6 | Docs | fe | T4 | README.md, docs/*.md | docs | BASE | leader spot-check + sonnet reviewer | done | 1 |
 
 ## Acceptance criteria (from the spec)
 - AC-W1: With a display, `vr-ide` opens a native window running the full IDE; `--tui` or no display runs the terminal UI unchanged.
@@ -30,7 +30,7 @@
 - commits: one local commit per task when done (reversible, confirm-on-return); push held for user
 - parallel: T1 ∥ T2 — files disjoint (vr-ide vs new crate vr-window; T2 owns Cargo.toml/lock), test_isolation per-crate
 - 06:10 T1 started (developer opus), T2 started (developer opus); task bases: committed per task, HEAD 6c53fdc
-- eta: ~12:15 (set 06:10, basis: critical path T2→T3→T4→T6→sign-off+Phase 5, ~6 h, no history for window work)
+- eta: ~11:00 (set 06:10, updated 07:01: T1–T3, T4a, T5, T3b done; remaining T4 (~2 h incl. review/QC) → T6 → sign-off + Phase 5)
 - 06:20 T1 DONE gate ✓ (34 rule rows, guard-line ok; workspace guard red only in in-progress vr-window). Review (sonnet) + QC (sonnet) started. T5 waits for T1 commit (same crate vr-ide).
 - 06:21 verdict gate T1 review ✓ APPROVED (1 minor: attention count, carried to T4 brief). Waiting for QC T1.
 - 06:22 verdict gate T1 QC ✓ QC_PASS (pty driver: title, cursor shapes, save, paste, terminal, resize, dirty quit, restore). T1 done, committed. T5 starts.
@@ -63,3 +63,15 @@
 - 06:58 T3b round 1 DONE (normalise in KeyChord::new; 1141 vr-ide lib tests, guard 0). Re-check sent to reviewer (incl. USER-5 oracle edit) and QC (parity + runtime ctrl+{ binding).
 - 06:59 verdict gate T3b review re-check ✓ APPROVED (USER-5 oracle same key, canonical). Waiting for QC re-check.
 - 07:01 verdict gate T3b QC round 1 ✓ QC_PASS (parity all equal; runtime ctrl+{ binding fires for 3 byte forms, control unchanged). T3b done, committed. T4 branch must merge master before merging back.
+- 07:30 T4 DONE gate ✓ (46 rows, guard + no-default-features clippy + release build green; leader viewed x11.png). Committed wip 518833c on the worktree branch, merged master (9fb8efa, clean). Review (opus: quit path guards unsaved work, signals) + QC (sonnet, real window X11/Wayland) started. T6 docs started (sonnet), relaxed over T4: docs files only.
+- 07:31 T6 DONE (README, keymap.md, commands.md). Its sonnet review waits for T4's verdicts (fix rounds may change documented behaviour).
+- 07:34 verdict gate T4 review ✓ CHANGES_REQUESTED (1 blocker: lost display → unsaved work lost; 1 major IME area; 2 minor). Fix round waits for QC T4. T4 developer at ~283k context → fix round goes to a fresh opus developer briefed from 04_dev_T4.md (COST-16).
+- 07:35 verdict gate T4 QC ✓ QC_PASS (X11+Wayland real runs; close/SIGTERM prompts, recovery written; PTY pixels; clipboard; migration notice; font warning. Unproven: IME, HiDPI, Wayland CSD, attention, cursor blink → manual list). Fix round 1 → fresh opus developer in the worktree.
+- 07:36 verdict gate T6 review ✓ CHANGES_REQUESTED (1 major, 3 minor). Fix round 1 sent to the T6 developer. T6 commits after T4 merges.
+- 07:37 verdict gate T6 re-check ✓ APPROVED (docs-only task; no qc per docs route). Commit right after T4 merges.
+- 07:44 T4 round 1 DONE (4 findings, red→green; guard + both clippy green; Wayland display-loss run: normal exit, session saved). Open: on X11 Xlib's IO error handler exit(1)s before run_app returns → recovery skipped on X server loss; asked the opus reviewer for a fix-or-limit opinion. Re-check sent to reviewer + QC.
+- 07:45 verdict gate T4 review re-check ✓ APPROVED. Fix task T4b added (from the reviewer: X11 IO-error emergency recovery write; SIGTERM default only after finish) — starts after T4 merges. Waiting for QC re-check of T4.
+- 07:49 verdict gate T4 QC re-check ✗ QC_FAIL (Wayland headless compositor killed → vr-ide keeps running, idle). Fix round 2 to the round-1 developer, with the planned T4b items folded in (same files: X11 IO-error recovery hook, SIGTERM default after finish); T4b row removed.
+- 07:58 T4 round 2 DONE: Wayland QC_FAIL attributed to qc's run.sh overriding WAYLAND_DISPLAY (dev replay shows exit within 1 s with the right display); X11 IO-error recovery hook added (Xephyr kill → recovery written); SIGTERM default after finish. Sent to QC to confirm/withdraw + X11 case, and to the opus reviewer.
+- 07:59 verdict gate T4 QC re-check 2 ✓ QC_PASS (qc withdrew the Wayland fail: own script bug; X11 Xephyr kill → recovery written). Waiting for the opus review re-check.
+- 07:59 verdict gate T4 review re-check 2 ✓ APPROVED. T4 done: squash-merged the worktree branch into master as one commit (deviation from --no-ff: the branch carries wip commits; squash keeps one reviewed commit per task). T6 committed after it.

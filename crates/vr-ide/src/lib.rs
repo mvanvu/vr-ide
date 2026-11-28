@@ -22,6 +22,8 @@ pub mod ssh;
 pub mod syntax;
 pub mod theme;
 pub mod ui;
+#[cfg(feature = "window")]
+pub mod window_frontend;
 pub mod workspace;
 
 #[cfg(test)]
@@ -74,6 +76,8 @@ mod terminal_right_tests;
 mod terminal_tab_drag_tests;
 #[cfg(test)]
 mod terminal_tests;
+#[cfg(all(test, feature = "window"))]
+mod window_frontend_tests;
 #[cfg(test)]
 mod workspace_tests;
 #[cfg(test)]

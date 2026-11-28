@@ -14,7 +14,12 @@ unicode-segmentation.workspace = true
 sys-locale.workspace = true
 crossterm.workspace = true
 winit.workspace = true
+softbuffer.workspace = true
 
 # fontconfig's `monospace` alias, read the way fontconfig orders it (Linux / BSD only).
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))'.dependencies]
 fontconfig-parser.workspace = true
+
+# The X11 IO error hook (app/x11.rs).
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
+x11-dl.workspace = true

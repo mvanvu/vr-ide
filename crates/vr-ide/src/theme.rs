@@ -362,11 +362,55 @@ pub enum ColorDepth {
     Indexed256,
 }
 
+/// Where the run's colour depth comes from: the native window (any colour) or the terminal
+/// (`COLORTERM`, read once: the terminal does not change under us).
+#[derive(Debug, Default)]
+pub struct DepthSource {
+    window: std::sync::atomic::AtomicBool,
+    terminal: std::sync::OnceLock<ColorDepth>,
+}
+
+impl DepthSource {
+    pub const fn new() -> Self {
+        Self {
+            window: std::sync::atomic::AtomicBool::new(false),
+            terminal: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// `colorterm` gives `COLORTERM` the first time the terminal's depth is needed.
+    pub fn get(&self, colorterm: impl FnOnce() -> Option<String>) -> ColorDepth {
+        if self.window.load(std::sync::atomic::Ordering::SeqCst) {
+            return ColorDepth::TrueColor;
+        }
+        *self
+            .terminal
+            .get_or_init(|| ColorDepth::from_colorterm(colorterm().as_deref()))
+    }
+
+    /// `true` while the native window draws; `false` when the app moves to the terminal.
+    pub fn use_window(&self, window: bool) {
+        self.window
+            .store(window, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+static DEPTH: DepthSource = DepthSource::new();
+
 impl ColorDepth {
-    /// Read once per run: the terminal does not change under us.
+    /// The window's true colour, or the terminal's depth.
     pub fn detect() -> ColorDepth {
-        static DEPTH: std::sync::OnceLock<ColorDepth> = std::sync::OnceLock::new();
-        *DEPTH.get_or_init(|| Self::from_colorterm(std::env::var("COLORTERM").ok().as_deref()))
+        DEPTH.get(|| std::env::var("COLORTERM").ok())
+    }
+
+    /// The native window draws any colour, whatever `COLORTERM` the launcher had.
+    pub fn use_true_color() {
+        DEPTH.use_window(true);
+    }
+
+    /// The window did not start: the terminal UI draws in the terminal's own depth.
+    pub fn use_terminal_depth() {
+        DEPTH.use_window(false);
     }
 
     pub fn from_colorterm(value: Option<&str>) -> ColorDepth {
@@ -669,6 +713,29 @@ mod tests {
     use super::*;
 
     const BOTH: [ColorDepth; 2] = [ColorDepth::TrueColor, ColorDepth::Indexed256];
+
+    /// Review minor 4 (D6): the window draws true colour; the terminal UI it falls back to
+    /// draws in the terminal's depth, read from `COLORTERM` once.
+    #[test]
+    fn a_window_draws_true_colour_and_its_terminal_fallback_the_terminal_depth() {
+        let s = DepthSource::new();
+        s.use_window(true);
+        assert_eq!(s.get(|| None), ColorDepth::TrueColor, "window");
+        s.use_window(false);
+        assert_eq!(
+            s.get(|| None),
+            ColorDepth::Indexed256,
+            "256-colour terminal"
+        );
+        assert_eq!(
+            s.get(|| Some("truecolor".into())),
+            ColorDepth::Indexed256,
+            "read once"
+        );
+
+        let s = DepthSource::new();
+        assert_eq!(s.get(|| Some("24bit".into())), ColorDepth::TrueColor);
+    }
 
     fn rgb(c: Color) -> (u8, u8, u8) {
         to_rgb(c).unwrap_or_else(|| panic!("no rgb for {c:?}"))

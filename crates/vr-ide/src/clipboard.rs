@@ -122,6 +122,49 @@ pub fn system() -> Box<dyn Clipboard> {
     Box::new(Osc52Clipboard::new(std::io::stdout()))
 }
 
+/// The system clipboard in the native window: no OSC 52 fallback (there is no terminal to
+/// read it). When the system clipboard cannot be reached, copies stay inside vr-ide.
+pub struct WindowClipboard {
+    inner: Option<arboard::Clipboard>,
+    last: Option<String>,
+}
+
+impl WindowClipboard {
+    pub fn new() -> Self {
+        Self {
+            inner: arboard::Clipboard::new().ok(),
+            last: None,
+        }
+    }
+}
+
+impl Default for WindowClipboard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clipboard for WindowClipboard {
+    fn set(&mut self, text: &str) -> Result<(), String> {
+        self.last = Some(text.to_owned());
+        match &mut self.inner {
+            Some(c) => c.set_text(text.to_owned()).map_err(|e| e.to_string()),
+            None => Err("the system clipboard is not available; copied inside vr-ide only".into()),
+        }
+    }
+
+    fn get(&mut self) -> Option<String> {
+        self.inner
+            .as_mut()
+            .and_then(|c| c.get_text().ok())
+            .or_else(|| self.last.clone())
+    }
+
+    fn kind(&self) -> &'static str {
+        "system"
+    }
+}
+
 /// `ESC ] 52 ; c ; <base64> BEL`.
 pub fn osc52_sequence(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", base64(text.as_bytes()))

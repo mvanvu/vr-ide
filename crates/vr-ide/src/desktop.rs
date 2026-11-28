@@ -72,10 +72,8 @@ pub enum EntryForm {
 ///
 /// The single switch for the entry form: only a build with the window can start from a
 /// `Terminal=false` entry, so a TUI-only build keeps writing a terminal form that works.
-/// T4 replaces the body with `cfg!(feature = "window")` when it declares that feature; naming
-/// the feature before it exists trips `unexpected_cfgs`.
 pub fn launches_in_window() -> bool {
-    false
+    cfg!(feature = "window")
 }
 
 /// The form `--install-desktop` writes: the window form when this build has the window,

@@ -1470,7 +1470,8 @@ pub fn fit(app: &mut App, grid: Rect) {
     }
     for s in &app.ai.sessions {
         let reserved = crate::ui::ai_view::reserved_rows(app, s, grid);
-        s.tab.resize(grid.width, grid.height - reserved);
+        s.tab
+            .resize(grid.width, grid.height - reserved, app.cell_px);
     }
 }
 

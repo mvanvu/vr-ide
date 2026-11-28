@@ -1,4 +1,5 @@
 use std::io::{self, Stdout};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use ratatui::Terminal;
@@ -10,7 +11,7 @@ use vr_ide::{cli, clipboard, event_loop, recovery, session, ui};
 fn main() -> Result<()> {
     let mut argv = std::env::args_os();
     let argv0 = argv.next().unwrap_or_default();
-    let args: Vec<_> = argv.collect();
+    let mut args: Vec<_> = argv.collect();
     // An account's login launcher (claude's `$BROWSER`, SEC-34): known by its own name, before
     // everything else; under that name the editor never starts.
     match cli::login_launcher(&argv0, &args) {
@@ -61,6 +62,14 @@ fn main() -> Result<()> {
             std::process::exit(2);
         }
     }
+    // Every editor form takes `--tui`; the helper forms above never open a window.
+    let tui_flag = cli::take_tui_flag(&mut args);
+    let ui = cli::choose_ui(
+        tui_flag,
+        cfg!(feature = "window"),
+        cli::display_available(|k| std::env::var_os(k)),
+    );
+    let window = ui == cli::Ui::Window;
     let launch = match cli::resolve(&args, &std::env::current_dir()?) {
         Ok(l) => l,
         Err(e) => {
@@ -69,7 +78,11 @@ fn main() -> Result<()> {
         }
     };
 
-    recovery::install_panic_hook(vr_config::state_dir().join("recovery"), restore_terminal);
+    if window {
+        // The window draws any colour, whatever COLORTERM the launcher had.
+        vr_ide::theme::ColorDepth::use_true_color();
+    }
+    recovery::install_panic_hook(vr_config::state_dir().join("recovery"), restore_if_entered);
 
     let cli::Launch {
         workspace,
@@ -84,9 +97,16 @@ fn main() -> Result<()> {
     } else {
         (workspace, None)
     };
-    let (mut app, warnings) = App::load_workspace(workspace, clipboard::system());
-    frontend::enter_terminal(&app.title())?;
-    recovery::GLOBAL.set_tui_active(true);
+    // The window has no OSC 52 fallback: there is no terminal to read it.
+    let clipboard: Box<dyn clipboard::Clipboard> = if window {
+        Box::new(clipboard::WindowClipboard::new())
+    } else {
+        clipboard::system()
+    };
+    let (mut app, warnings) = App::load_workspace(workspace, clipboard);
+    if !window {
+        enter_terminal(&app)?;
+    }
     app.report_config(warnings);
     for n in notices {
         app.warn(n);
@@ -103,6 +123,29 @@ fn main() -> Result<()> {
         }
     }
 
+    #[cfg(feature = "window")]
+    if window {
+        let recovery_dir = vr_config::state_dir().join("recovery");
+        match vr_ide::window_frontend::run(&mut app, &recovery_dir) {
+            Ok(run) => {
+                return event_loop::exit_with(
+                    run.result,
+                    &mut app,
+                    &recovery_dir,
+                    &mut restore_if_entered,
+                    &mut || run.sigterm.enable(),
+                    vr_ide::commands::search::EXIT_WAIT,
+                );
+            }
+            Err(e) => {
+                eprintln!("vr-ide: {e}; running in the terminal instead");
+                app.clipboard = clipboard::system();
+                vr_ide::theme::ColorDepth::use_terminal_depth();
+                enter_terminal(&app)?;
+            }
+        }
+    }
+
     let result = run(&mut app);
     // Terminal and recovery first, then the bounded wait for a project replace, then the
     // exit messages (readable now that the alternate screen is gone).
@@ -110,9 +153,26 @@ fn main() -> Result<()> {
         result,
         &mut app,
         &vr_config::state_dir().join("recovery"),
-        &mut restore_terminal,
+        &mut restore_if_entered,
         vr_ide::commands::search::EXIT_WAIT,
     )
+}
+
+/// Set once the terminal UI took the terminal: a window run never touches the terminal it was
+/// started from, on exit or in the panic hook.
+static IN_TERMINAL: AtomicBool = AtomicBool::new(false);
+
+fn enter_terminal(app: &App) -> io::Result<()> {
+    IN_TERMINAL.store(true, Ordering::SeqCst);
+    frontend::enter_terminal(&app.title())?;
+    recovery::GLOBAL.set_tui_active(true);
+    Ok(())
+}
+
+fn restore_if_entered() {
+    if IN_TERMINAL.load(Ordering::SeqCst) {
+        restore_terminal();
+    }
 }
 
 fn run(app: &mut App) -> Result<()> {

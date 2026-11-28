@@ -272,6 +272,12 @@ impl TermTab {
         self.write(bytes)
     }
 
+    /// The PTY's grid and cell size in pixels, as last given (`None` for a fake tab).
+    #[cfg(all(test, feature = "window"))]
+    pub(crate) fn pty_size(&self) -> Option<((u16, u16), (u16, u16))> {
+        self.term.as_ref().map(|t| (t.size(), t.cell_pixels()))
+    }
+
     /// A tab for a started program (the AI panel's sessions use the same machinery).
     pub(crate) fn new(term: Terminal, shell: PathBuf, output: Arc<AtomicBool>) -> TermTab {
         TermTab {
@@ -299,12 +305,11 @@ impl TermTab {
         self.output.swap(false, Ordering::AcqRel)
     }
 
-    /// Gives the PTY `cols` x `rows` (a no-op when equal; an exited one keeps its last size).
-    pub(crate) fn resize(&self, cols: u16, rows: u16) {
-        if let Some(t) = &self.term
-            && t.size() != (cols, rows)
-        {
-            let _ = t.resize(cols, rows);
+    /// Gives the PTY `cols` x `rows` and the cell size in pixels (a no-op when equal; an exited
+    /// one keeps its last size).
+    pub(crate) fn resize(&self, cols: u16, rows: u16, cell_px: (u16, u16)) {
+        if let Some(t) = &self.term {
+            fit_term(t, cols, rows, cell_px);
         }
     }
 
@@ -1122,12 +1127,18 @@ pub fn fit(app: &mut App, grid: Rect) {
         return;
     }
     for tab in &app.terminal.tabs {
-        if let Some(t) = &tab.term
-            && t.size() != (grid.width, grid.height)
-        {
-            // An exited terminal refuses (`Closed`); its last screen keeps the old size.
-            let _ = t.resize(grid.width, grid.height);
+        if let Some(t) = &tab.term {
+            fit_term(t, grid.width, grid.height, app.cell_px);
         }
+    }
+}
+
+/// Resizes `t` when its grid or the window's cell size in pixels (`cell_px`, 0 x 0 in a
+/// terminal) changed; the PTY reports both to the program. An exited terminal refuses
+/// (`Closed`); its last screen keeps the old size.
+pub(crate) fn fit_term(t: &Terminal, cols: u16, rows: u16, cell_px: (u16, u16)) {
+    if t.size() != (cols, rows) || t.cell_pixels() != cell_px {
+        let _ = t.resize_with_pixels(cols, rows, cell_px.0, cell_px.1);
     }
 }
 

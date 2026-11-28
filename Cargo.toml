@@ -82,6 +82,14 @@ fontconfig-parser = "=0.5.8"
 # Window input types (vr-window): key, mouse and IME events. Default features spelled out; none
 # pulls GTK (the Wayland title bar is sctk-adwaita, drawn in Rust).
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
+# Window surface (vr-window): presents the CPU-drawn canvas. No kms (DRM) backend: a window needs
+# X11 or Wayland. Pure Rust protocol crates, libxcb / libwayland loaded at run time.
+softbuffer = { version = "=0.4.8", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
+# The X11 IO error handler (vr-window): recovery before libX11 ends the process on a lost
+# server. Already in the lock through winit; loaded at run time like winit's.
+x11-dl = "=2.21.0"
+# SIGTERM in the window (vr-ide feature `window`): a flag the loop turns into the quit path.
+signal-hook = { version = "=0.3.18", default-features = false }
 
 [profile.release]
 lto = "thin"

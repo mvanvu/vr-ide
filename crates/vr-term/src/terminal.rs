@@ -216,6 +216,8 @@ pub struct Terminal {
     /// The child's pid, which is also its process group and session id (portable-pty `setsid`s).
     pid: Option<rustix::process::Pid>,
     size: Mutex<(u16, u16)>,
+    /// The cell size in pixels the PTY was last given (0 x 0: not known).
+    cell_px: Mutex<(u16, u16)>,
     threads: Vec<JoinHandle<()>>,
     /// Disconnects once every helper thread has ended.
     alive: Receiver<()>,
@@ -360,6 +362,7 @@ impl Terminal {
             pending: pending.clone(),
             pid,
             size: Mutex::new((opts.cols, opts.rows)),
+            cell_px: Mutex::new((0, 0)),
             threads: vec![waiter],
             alive,
             wake: wake.clone(),
@@ -402,6 +405,11 @@ impl Terminal {
     /// Current size as (cols, rows).
     pub fn size(&self) -> (u16, u16) {
         *lock(&self.size)
+    }
+
+    /// The cell size in pixels last given with [`Terminal::resize_with_pixels`] (0 x 0 at spawn).
+    pub fn cell_pixels(&self) -> (u16, u16) {
+        *lock(&self.cell_px)
     }
 
     /// Bytes queued for the program (typed input and emulator replies) and not yet written.
@@ -452,6 +460,7 @@ impl Terminal {
                 .map_err(|e| TermError::Pty(e.to_string()))?;
         }
         *size = (cols, rows);
+        *lock(&self.cell_px) = (cell_w, cell_h);
         Ok(())
     }
 

@@ -1,7 +1,8 @@
 //! Window frontend pieces that know nothing about the app: the pixel renderer (a ratatui
 //! backend drawing into a 0RGB buffer), the input translation
-//! (winit events → crossterm events) and later the window runner.
+//! (winit events → crossterm events) and the window runner ([`app`]).
 
+pub mod app;
 mod backend;
 mod canvas;
 mod font;

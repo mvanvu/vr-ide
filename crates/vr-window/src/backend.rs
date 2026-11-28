@@ -227,6 +227,13 @@ impl PixelBackend {
         self.cursor_visible
     }
 
+    /// Where ratatui last put the cursor (shown or not); `Backend::get_cursor_position` needs
+    /// `&mut self`.
+    #[must_use]
+    pub fn cursor_position(&self) -> Position {
+        self.cursor
+    }
+
     /// Shows IME composing text from a cell (`None` removes it). Takes effect on the next flush.
     pub fn set_preedit(&mut self, preedit: Option<Preedit>) {
         self.preedit = preedit.filter(|p| !p.text.is_empty());

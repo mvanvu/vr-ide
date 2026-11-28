@@ -8,6 +8,8 @@
 //! `vr-ide --session` (alone; the desktop launcher) opens the home folder, which the saved
 //! session then replaces (`crate::session`).
 //! `vr-ide --install-desktop` / `--uninstall-desktop` (alone) add or remove the app-menu entry.
+//! `--tui` (with any of the editor forms above) runs the editor in the terminal; without it the
+//! editor opens its own window when this build has one and a display is reachable.
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -40,7 +42,7 @@ impl fmt::Display for CliError {
             CliError::NotFound(p) => write!(f, "path does not exist: {}", p.display()),
             CliError::TooManyArgs => write!(
                 f,
-                "usage: vr-ide [<dir>|<file>]... | vr-ide <file>.{} | vr-ide {SESSION_FLAG} | vr-ide {INSTALL_DESKTOP_FLAG} | vr-ide {UNINSTALL_DESKTOP_FLAG}",
+                "usage: vr-ide [{TUI_FLAG}] [<dir>|<file>]... | vr-ide [{TUI_FLAG}] <file>.{} | vr-ide [{TUI_FLAG}] {SESSION_FLAG} | vr-ide {INSTALL_DESKTOP_FLAG} | vr-ide {UNINSTALL_DESKTOP_FLAG}",
                 vr_config::WORKSPACE_EXT
             ),
             CliError::Io(p, e) => write!(f, "cannot access {}: {e}", p.display()),
@@ -55,6 +57,45 @@ impl std::error::Error for CliError {}
 pub const SESSION_FLAG: &str = "--session";
 pub const INSTALL_DESKTOP_FLAG: &str = "--install-desktop";
 pub const UNINSTALL_DESKTOP_FLAG: &str = "--uninstall-desktop";
+/// Runs the editor in the terminal even where a window could open.
+pub const TUI_FLAG: &str = "--tui";
+
+/// Removes every `--tui` from the editor's arguments; true when there was one.
+pub fn take_tui_flag(args: &mut Vec<OsString>) -> bool {
+    let before = args.len();
+    args.retain(|a| a != TUI_FLAG);
+    args.len() != before
+}
+
+/// Where the editor runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ui {
+    /// Its own native window.
+    Window,
+    /// The terminal it was started in.
+    Terminal,
+}
+
+/// The window when this build has it (`window_built`), `--tui` was not given and a display is
+/// reachable; otherwise the terminal.
+pub fn choose_ui(tui_flag: bool, window_built: bool, display: bool) -> Ui {
+    if window_built && display && !tui_flag {
+        Ui::Window
+    } else {
+        Ui::Terminal
+    }
+}
+
+/// Whether a window can open: Linux and the BSDs need X11 or Wayland (`DISPLAY` or
+/// `WAYLAND_DISPLAY` set and not empty, as read by `env`); macOS and Windows always have one.
+pub fn display_available(env: impl Fn(&str) -> Option<OsString>) -> bool {
+    if cfg!(any(target_os = "macos", windows)) {
+        return true;
+    }
+    ["WAYLAND_DISPLAY", "DISPLAY"]
+        .iter()
+        .any(|v| env(v).is_some_and(|s| !s.is_empty()))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopAction {
@@ -408,6 +449,56 @@ mod tests {
             Err(CliError::TooManyArgs)
         ));
         assert!(!resolve(&[], &base).unwrap().session);
+    }
+
+    /// AC-W1: the window needs the feature, a display and no `--tui`; `--tui` goes with every
+    /// editor form and is removed before the paths are resolved.
+    #[test]
+    fn launch_choice_follows_the_tui_flag_the_build_and_the_display() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| OsString::from(v))
+            }
+        };
+        let unix_desktop = !cfg!(any(target_os = "macos", windows));
+        assert!(display_available(env(&[("WAYLAND_DISPLAY", "wayland-0")])));
+        assert!(display_available(env(&[("DISPLAY", ":0")])));
+        assert_eq!(display_available(env(&[])), !unix_desktop, "ssh: none");
+        assert_eq!(
+            display_available(env(&[("DISPLAY", ""), ("WAYLAND_DISPLAY", "")])),
+            !unix_desktop,
+            "empty values count as unset"
+        );
+
+        for (tui, built, display, want) in [
+            (false, true, true, Ui::Window),
+            (true, true, true, Ui::Terminal),
+            (false, false, true, Ui::Terminal),
+            (false, true, false, Ui::Terminal),
+            (true, false, false, Ui::Terminal),
+        ] {
+            assert_eq!(
+                choose_ui(tui, built, display),
+                want,
+                "{tui} {built} {display}"
+            );
+        }
+
+        let base = tempfile::tempdir().unwrap();
+        let mut args = vec![os("--tui"), os("--session")];
+        assert!(take_tui_flag(&mut args));
+        assert_eq!(args, [os("--session")]);
+        assert!(resolve(&args, base.path()).unwrap().session);
+        let mut args = vec![os(".")];
+        assert!(!take_tui_flag(&mut args));
+        assert_eq!(args, [os(".")]);
+        let mut args = vec![os("--tui")];
+        assert!(take_tui_flag(&mut args) && args.is_empty());
+        let usage = CliError::TooManyArgs.to_string();
+        assert!(usage.contains("[--tui]"), "{usage}");
     }
 
     #[test]

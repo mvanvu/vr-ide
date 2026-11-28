@@ -149,6 +149,9 @@ pub struct App {
     pub(crate) watcher: Option<Watcher>,
     /// The terminal reports keys with the kitty protocol (all chords reachable).
     pub keyboard_enhanced: bool,
+    /// A cell's size in device pixels in the window (0 x 0 in a terminal), which embedded
+    /// terminals report to their programs with the grid size.
+    pub cell_px: (u16, u16),
     /// Commands run, by name, in order (tests check which command a key ran).
     #[cfg(test)]
     pub ran: Vec<String>,
@@ -302,6 +305,7 @@ impl App {
             fs_rx: None,
             watcher: None,
             keyboard_enhanced: false,
+            cell_px: (0, 0),
             #[cfg(test)]
             ran: Vec::new(),
             quit: false,

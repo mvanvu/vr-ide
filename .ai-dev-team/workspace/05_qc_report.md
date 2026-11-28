@@ -187,3 +187,65 @@ Without the binding the same bytes do nothing, so the outdent comes from the use
 | AC-W4 / same keys | pass | all parity rows equal |
 | ctrl+{ user binding fires | pass | 3 of 3 forms |
 | BASE-50 | pass | only qa-artifacts/T3/qc/ and this file written |
+
+## QC T4 (Window app) — mode QC, side fe
+Engines: real run of the debug binary built in the worktree (merged tree, `run-heavy.sh cargo build -p vr-ide` green). Input driven on X11 (Xwayland) with a ctypes XTEST driver (`qa-artifacts/T4/qc/xin.py`; xdotool/xclip/wl-paste/grim not installed, nothing installed). Screenshots via `xwd -id <window>` (root capture is refused by Xwayland). Config/state/data/HOME/XDG all under `qa-artifacts/T4/qc/`.
+Tests rerun once after the merge: `cargo test -p vr-ide event_loop` 17 passed; `cargo test -p vr-window` 53 passed.
+
+| Check | Result | Evidence (in qa-artifacts/T4/qc/) |
+|---|---|---|
+| AC-W1 X11 window | PASS | xwininfo/xprop: WM_CLASS "vr-ide","vr-ide", _NET_WM_NAME "vr-ide — /home/rainy/DEV/vr-ide", 1080x648 (120x36 cells of 9x18); s2_typed.png |
+| AC-W1 Wayland window | PASS (no screenshot) | DISPLAY unset + WAYLAND_DISPLAY=wayland-0: no fallback line, process stays up, EXIT_AFTER_FIRST_FRAME exit 0, SIGTERM (clean) exits; no tool to capture GNOME Wayland |
+| AC-W1 `--tui` in pty | PASS | tui.typescript: alt screen 1049h, text drawn, runs until timeout |
+| AC-W1 no DISPLAY/WAYLAND_DISPLAY | PASS | nd.typescript: TUI (1049h), no fallback line (nod.sh) |
+| AC-W1 DISPLAY=:99 unreachable | PASS | bad.typescript: stderr "vr-ide: cannot connect to the display: ...; running in the terminal instead" then TUI |
+| AC-W4 observable: typing, mouse click, ctrl+s | PASS | click moved cursor (s3.png), "space i" then "ZZ" typed, ctrl+s wrote "lineZZ one" to proj/a.txt (s5_saved.png) |
+| AC-W4 chord the TUI cannot send | PASS | ctrl+/ toggled the comment (s8_slash.png). Note: ctrl+shift+p has no default binding (palette is f1), so ctrl+/ was used |
+| AC-W6 embedded terminal | PASS | ctrl+` opened bash (s9_term.png); TIOCGWINSZ = (13 rows, 120 cols, 1080 px, 234 px) = grid x 9x18 cell (s10_pix.png) |
+| AC-W6 wheel | PASS | seq 1 200 in terminal, wheel up scrolled the view from 190s to 160s (w01.png) |
+| AC-W6 clipboard | PASS | instance A: select line + ctrl+c; separate instance B: ctrl+v inserted "COPYME alpha" (cl_B.png) via arboard, two processes |
+| AC-W8 close with running terminal + dirty buffer | PASS | _NET_CLOSE_WINDOW: "Quit: 1 terminal still running" dialog, process alive, Cancel kept window (c1.png, c2_cancel.png); after the shell exited: "1 unsaved file(s) ... Discard keeps a copy in the recovery folder" (c3_unsaved.png) |
+| AC-W8 SIGTERM with dirty buffer | PASS | SIGTERM did not kill: Quit dialog shown (t1_sigterm.png), process alive; Discard then exited, stderr named the recovery copy, `state/recovery/...a.txt` holds the content, file on disk intact |
+| AC-W8 same for second window (dirty d.txt) | PASS | Discard: recovery count 2, d.txt unchanged |
+| AC-W7 `--install-desktop` | PASS | data2: Exec="<exe>" --session, Terminal=false, StartupWMClass=vr-ide, marker, icon |
+| AC-W7 migration | PASS | data3 old `gnome-terminal --title=vr-ide -- "<exe>" --session` entry rewritten to the window form on window start; notice "Updated the vr-ide menu entry to open its own window." shown (m1_notice.png); entry for another exe (data4) and one without the marker (data5): byte-identical (cmp) |
+| AC-W8 fonts | PASS | font_size=16 + font_family="NoSuchFont": window 1200x684 (larger cells), draws, warning line "font family "NoSuchFont" is not installed; using the default monospace font (Esc)" (f1_font.png) |
+| AC-W2 observable | PASS | theme colours, Vietnamese/ASCII text drawn in the grid, 16 pt scaling relays the grid |
+
+Not proven (no tool/hardware, left to the developer's manual list): IME composition (IBus/Fcitx), HiDPI move between scales, Wayland screenshot and CSD title bar, attention hint, cursor shape/blink, AltGr, drag-select. No defect found. The pre-existing `vr-ide` process (pid 1696342, 10 h old) is the user's and was not touched; all processes I started have exited. Repo files untouched (writes only under qa-artifacts/T4/qc and this report).
+
+## Rule check T4
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-W1 | pass | window X11/Wayland, `--tui`, no display, bad display (above) |
+| AC-W2 | pass (observable part) | screenshots |
+| AC-W4 | pass (observable part) | typing, click, ctrl+/, ctrl+s; IME not provable |
+| AC-W6 | pass | PTY pixel size, wheel, clipboard across processes; title seen in xprop |
+| AC-W7 | pass | install + migration + untouched foreign entries |
+| AC-W8 | pass | close and SIGTERM with dirty buffer and running terminal; font warning |
+| BASE-26 | pass | `--tui` real pty run draws on the alt screen as before; event_loop tests 17/17 after the merge |
+| BASE-50 | pass | wrote only under qa-artifacts/T4/qc and 05_qc_report.md; no edits in $WT or the main tree; real ~/.config, ~/.local untouched (env redirected) |
+
+## QC T4 re-check (fix round 1)
+Rebuilt in the worktree (`cargo build -p vr-ide`, up to date). Temp dirs only under qa-artifacts/T4/qc/.
+
+| Check | Result | Evidence |
+|---|---|---|
+| (a) X11: dirty buffer, window-manager close | PASS | Quit dialog "1 unsaved file(s)" shown, process alive (r1_close.png) |
+| (a) X11: SIGTERM with dirty buffer | PASS | process stays alive, Quit dialog (r2_term.png); Discard exits, stderr names the recovery file, recovery dir 2 -> 3 files, r.txt on disk unchanged |
+| (a) Wayland: SIGTERM, clean buffer | PASS | exits. Dirty buffer on native Wayland not provable: XTEST input does not reach a Wayland-native window and no virtual-keyboard tool is installed |
+| (b) `DISPLAY=:99`, pty 100x30, COLORTERM unset | PASS | ptyrun.py output: 0 truecolor sequences, 256-colour sequences present, stderr "…running in the terminal instead" present (pty_none.out). Control with COLORTERM=truecolor: truecolor sequences, no 256 (pty_truecolor.out) |
+| (c) display lost after start on Wayland, no tty | FAIL | `mutter --headless --wayland --no-x11 --wayland-display=vrqc-wl` (own instance, killed afterwards); vr-ide started on it with stdin /dev/null (up, no stderr, so it was connected); compositor SIGKILLed (mutter confirmed dead). vr-ide was still alive 6 s later and until the 30 s `timeout` killed it (lost.sh, lost.result: "alive 6s after compositor died: yes", exit 124). No exit through the normal path, no recovery path reached. The dirty-buffer variant could not be driven (no input into a headless compositor), but the process does not even exit with a clean buffer. |
+
+Note: an earlier attempt that killed only the `timeout` wrapper left a mutter running; I stopped it by its own pid; no mutter or vr-ide of mine remains.
+Verdict: QC_FAIL T4 for case (c).
+
+## QC T4 re-check 2 (fix round 2)
+Build current (`cargo build -p vr-ide` up to date).
+
+| Check | Result | Evidence |
+|---|---|---|
+| Withdraw of re-check case (c) FAIL | WITHDRAWN: harness bug of mine | `qc/run.sh wl` exported `WAYLAND_DISPLAY=wayland-0`, overriding the test display, so vr-ide had attached to the user's session. run.sh now honours `WLD`; lost.sh records `/proc/<vr-ide pid>/environ` |
+| Replay (c): headless mutter on `vrqc-wl`, vr-ide with no tty, mutter SIGKILLed | PASS | lost.result: comm=vr-ide, `WAYLAND_DISPLAY=vrqc-wl`; process gone within 6 s, exit code 1, stderr "Error: the connection to the display was lost" (normal error exit, no "running in the terminal instead"). Clean buffer only; no input path into headless mutter |
+| New X11 case: Xephyr :7, vr-ide no tty (`DISPLAY=:7` in environ), XTEST edit "EDIT", Xephyr SIGKILLed | PASS | xeph.result: vr-ide gone within 5 s, exit 1; stderr "vr-ide: the connection to the display was lost" + "unsaved buffer written to .../state/recovery/…e.txt"; recovery file content "EDITbase" (recovery dir 3 -> 4); disk file e.txt still "base" |
+Processes I started (mutter, Xephyr, vr-ide) all ended; nothing left (the only `ps` hits were the shell command lines themselves).

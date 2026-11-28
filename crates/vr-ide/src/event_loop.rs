@@ -131,11 +131,25 @@ pub fn exit(
     restore_terminal: &mut dyn FnMut(),
     wait: Duration,
 ) -> anyhow::Result<()> {
+    exit_with(result, app, dir, restore_terminal, &mut || {}, wait)
+}
+
+/// [`exit`] calling `after_recovery` once the unsaved buffers are written (the window gives
+/// SIGTERM its default action back there).
+pub fn exit_with(
+    result: anyhow::Result<()>,
+    app: &mut App,
+    dir: &std::path::Path,
+    restore_terminal: &mut dyn FnMut(),
+    after_recovery: &mut dyn FnMut(),
+    wait: Duration,
+) -> anyhow::Result<()> {
     // Nothing may wait before these two: a worker blocked in I/O would leave the terminal
     // in the alternate screen and the unsaved buffers unwritten.
     restore_terminal();
     crate::recovery::GLOBAL.set_tui_active(false);
     let result = finish(result, app, dir);
+    after_recovery();
     // A file opened just before quitting is still queued for the recent-files list.
     app.close_recent_files(Duration::from_millis(500));
     // Before the terminals go: their shells name the folders the session keeps.
@@ -303,13 +317,19 @@ fn handle_event(app: &mut App, event: Event) {
     }
 }
 
-/// AI sessions marked for a bell or notification (`ai::attention::mark`).
-fn attention_marks(app: &App) -> usize {
+/// The attention marks of AI sessions (`ai::attention::mark`), as (session serial, mark order).
+fn attention_marks(app: &App) -> Vec<(u64, u64)> {
     app.ai
         .sessions
         .iter()
-        .filter(|s| s.attention.is_some())
-        .count()
+        .filter_map(|s| s.attention.map(|order| (s.serial, order)))
+        .collect()
+}
+
+/// A mark in `after` that `before` did not have: a session asked for the user. Counting would
+/// miss a mark cleared and another one added in the same pass.
+fn new_mark(before: &[(u64, u64)], after: &[(u64, u64)]) -> bool {
+    after.iter().any(|m| !before.contains(m))
 }
 
 /// One turn of any frontend's loop: handles `events` in order (the ones after a quit are left
@@ -337,7 +357,7 @@ where
     }
     let marked = attention_marks(app);
     background_pass(app, now);
-    if attention_marks(app) > marked {
+    if new_mark(&marked, &attention_marks(app)) {
         frontend.request_attention();
     }
     if app.dirty {
@@ -709,5 +729,17 @@ mod tests {
         step(&mut t, &mut f, &mut s, &mut app, [], Instant::now()).unwrap();
         assert!(f.titles.is_empty());
         assert_eq!(f.attention, 0);
+    }
+
+    /// One mark cleared and another added in the same pass still asks for attention; marks
+    /// only cleared, or unchanged, do not.
+    #[test]
+    fn a_new_mark_is_seen_even_when_another_was_cleared() {
+        assert!(new_mark(&[(1, 0)], &[(2, 0)]), "cleared one, added one");
+        assert!(new_mark(&[], &[(1, 0)]));
+        assert!(new_mark(&[(1, 0)], &[(1, 0), (2, 1)]));
+        assert!(!new_mark(&[(1, 0), (2, 1)], &[(2, 1)]), "only cleared");
+        assert!(!new_mark(&[(1, 0)], &[(1, 0)]), "unchanged");
+        assert!(!new_mark(&[], &[]));
     }
 }
