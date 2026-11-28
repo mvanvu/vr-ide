@@ -140,3 +140,10 @@ Finding (ui minor): with SIGHUP ignored the window outlives its terminal; at exi
 - Related (qa-artifacts/FR-1/quick.log): `event_loop::` 17 passed, `recovery` 19 passed, `window_frontend_tests::` 16 passed.
 - `cargo clippy -p vr-ide --all-targets -- -D warnings` → Finished. Guard exactly (`cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings`) → exit 0 (qa-artifacts/FR-1/guard.log).
 - rustfmt on recovery.rs, event_loop.rs, window_frontend.rs only. `docs/keymap.md` (leader's line) untouched. Nothing left running.
+
+## Quick pass 2
+Flaky `terminal_tests::super_chords_are_not_forwarded_to_the_terminal` (sign-off run 1: screen `$ AZ`, the prompt printed after keys typed before the shell was ready).
+- Fix (test only, `crates/vr-ide/src/terminal_tests.rs`): wait for the prompt (`wait_text(&app, "$")`, as the neighbouring terminal tests do) before typing; the command is `echo "<$((1+1))A` + super b/c/v/enter + `Z>"; echo vr-$((6*7))`, so the output `<2AZ>` cannot be confused with the echoed command line `<$((1+1))AZ>` and no longer depends on where a line starts. Asserts: screen contains `<2AZ>`, and none of `Ab`, `Ac`, `Av` (neither the command line nor the output got a forwarded letter); same strength as before.
+- Still proves the fix: with SUPER removed from the guard in `crates/vr-ide/src/app.rs` (a copy in scratchpad, copied back, file identical to HEAD aed370a) the test fails at terminal_tests.rs:1997 (`<2AZ>` missing).
+- 5x `run-heavy.sh cargo test -p vr-ide --lib terminal_tests::` → 5 × `ok. 57 passed; 0 failed` (qa-artifacts/FR-1/quick2.log).
+- `cargo clippy -p vr-ide --all-targets -- -D warnings` → Finished. Guard exactly → exit 0 (qa-artifacts/FR-1/guard2.log). rustfmt on terminal_tests.rs only. Nothing left running.

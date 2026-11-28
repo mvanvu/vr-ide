@@ -86,3 +86,5 @@
 - 08:31 verdict gate FR-1 ui re-check ✓ APPROVED (U1–U8 fixed; 2 new minors: eprintln! on a hung-up tty can panic at exit since SIGHUP is ignored → quick pass after QC; keymap.md super line → one-line doc fix by the leader, done).
 - 08:33 verdict gate FR-1 QC ✓ QC_PASS (SIGINT dialog + recovery, SIGHUP ignored, 16 pt fallback measured, edge strips themed, hollow cursor unfocused). Quick pass 1 (stderr writes at exit) sent to the FR-1 developer.
 - 08:36 FR-1 quick pass re-checked ✓ APPROVED. FR-1 done, committed. Full suite rerun by qc (FR-1 touched app core route_key).
+- 08:40 sign-off after FR-1 ✓ SIGNOFF_PASS on --no-fail-fast run (1743 passed, 0 failed, 18 ignored); run 1 had 1 flake in FR-1's new test super_chords_are_not_forwarded_to_the_terminal (no prompt wait). known-red: terminal_tests.rs super_chords… — until FR-1 quick pass 2 (sent).
+- 08:41 FR-1 quick pass 2 (test sync only) spot-checked by the leader on the diff (prompt wait, unambiguous output marker, asserts unchanged in strength; mutation shown red by dev; 5/5 green). known-red cleared. Run 6 complete; push held for the user.

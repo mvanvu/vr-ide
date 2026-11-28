@@ -1984,14 +1984,19 @@ fn super_chords_are_not_forwarded_to_the_terminal() {
     draw(&mut app, 80, 24);
     ctrl_backtick(&mut app);
     assert_eq!(app.focus, Focus::Terminal);
-    typ(&mut app, "echo A");
+    // Typed only once the shell is ready, so its prompt cannot land inside the output.
+    wait_text(&app, "$");
+    // The arithmetic tells the output (`<2AZ>`) from the echoed command line (`<$((1+1))AZ>`).
+    typ(&mut app, "echo \"<$((1+1))A");
     for c in ['b', 'c', 'v'] {
         key(&mut app, KeyCode::Char(c), KeyModifiers::SUPER);
     }
     key(&mut app, KeyCode::Enter, KeyModifiers::SUPER);
-    typ(&mut app, "Z; echo vr-$((6*7))\n");
+    typ(&mut app, "Z>\"; echo vr-$((6*7))\n");
     let screen = wait_text(&app, "vr-42");
-    assert!(screen.contains("\nAZ"), "{screen}");
-    assert!(!screen.contains("Ab"), "{screen}");
+    assert!(screen.contains("<2AZ>"), "{screen}");
+    for forwarded in ["Ab", "Ac", "Av"] {
+        assert!(!screen.contains(forwarded), "{forwarded}: {screen}");
+    }
     crate::commands::terminal::shutdown(&mut app);
 }

@@ -322,3 +322,13 @@ No defect found. All processes I started have ended.
 | FR-1 leftover strip fill | pass | check 4 |
 | FR-1 hollow unfocused cursor | pass | check 5 |
 | BASE-50 | pass | wrote only under qa-artifacts/T4/qc and 05_qc_report.md; no repo edits |
+
+## Sign-off run 6 — after FR-1
+HEAD aed370a (FR-1 fixes). Logs in qa-artifacts/signoff/ (test2.log, test3.log, guard2.log).
+- Guard: `cargo fmt --all --check` OK; clippy workspace `-D warnings` clean; `clippy -p vr-ide --no-default-features` clean.
+- Full suite run 1 (`run-heavy.sh cargo test --workspace -j 4`): FAILED, exit 101: vr-ide lib 1163 passed, 1 failed (`terminal_tests::super_chords_are_not_forwarded_to_the_terminal`, terminal_tests.rs:1994; screen showed "$ AZ" / "vr-42" instead of a line starting "AZ"), cargo stopped there so later crates did not run.
+- That test alone: passes (rerun once). Cause is a race in the FR-1 test: it types `echo A` right after opening the terminal without `wait_text("$")` first (the other terminal tests wait for the prompt), so under suite load the keystrokes can reach the shell before it is ready.
+- Run 2 (`--no-fail-fast`, whole workspace): see numbers below.
+  Run 2: exit 0, 1743 passed, 0 failed, 18 ignored (vr-ide lib 1164 passed, 7 ignored; vr-window 57; other crates as run 1). The flaky test passed this time.
+- Flake recorded, not hidden: `super_chords_are_not_forwarded_to_the_terminal` failed once under load, passed alone and in run 2. Suggested fix (developer): add `wait_text(&app, "$")` after `ctrl_backtick` in that test.
+Verdict: SIGNOFF_PASS (with the flake above)
