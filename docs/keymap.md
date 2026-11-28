@@ -265,7 +265,8 @@ vr-ide opens its own window when a display is available (see the README, "Window
 reaches vr-ide, so the limits of legacy terminals described in this file (no `ctrl+shift` chords,
 `ctrl+i` as `tab`, `shift+enter` as `enter`, `ctrl+[` as `esc`, the NUL rule for ``ctrl+` ``) do
 not apply there, and vr-ide shows no "cannot send" notice for a key you bind. The default keys are
-the same in both.
+the same in both. `super` / `cmd` chords that reach the window are ignored: no binding can name
+them, and they never type the plain key.
 
 Keys the system or desktop keeps for itself never arrive, so do not bind them:
 

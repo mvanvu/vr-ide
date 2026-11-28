@@ -32,13 +32,18 @@ impl PreeditText {
         self.cursor.map(|(start, end)| (col(start), col(end)))
     }
 
-    /// The renderer's preedit placed at a cell (the app's cursor).
+    /// The renderer's preedit placed at a cell (the app's cursor), with the IME's caret at the
+    /// end of its cursor range.
     #[must_use]
     pub fn at(&self, col: u16, row: u16) -> Preedit {
+        let caret = self
+            .cursor_columns()
+            .map(|(_, end)| u16::try_from(end).unwrap_or(u16::MAX));
         Preedit {
             text: self.text.clone(),
             col,
             row,
+            caret,
         }
     }
 }
@@ -78,6 +83,13 @@ impl ImeInput {
     /// the IME (disallow and allow it again) so it does not commit the dropped text later.
     pub fn take_cancel_request(&mut self) -> bool {
         std::mem::take(&mut self.cancel_requested)
+    }
+
+    /// The window lost focus: a composition in progress is dropped (its underline would stay
+    /// while the IME no longer composes). `true` when there was one: the window resets the IME
+    /// as for Esc, so it does not commit the dropped text later.
+    pub fn focus_lost(&mut self) -> bool {
+        self.preedit.take().is_some()
     }
 
     /// A `WindowEvent::Ime`. Returns the key events to send: one press per committed

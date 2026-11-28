@@ -218,6 +218,13 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// What [`migrate_on_window_start`] tells the user, by notice level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuNotice {
+    Info(String),
+    Warning(String),
+}
+
 /// On a window start, rewrite an entry vr-ide wrote in a terminal form (GNOME Terminal, or
 /// `Terminal=true` with `Exec=<exe> --session`) into the window form.
 /// Returns a notice for the user when it rewrote the entry, a warning when the rewrite failed,
@@ -227,7 +234,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// in `TryExec` is rewritten: an entry for another install (say the packaged binary while a
 /// development build runs) is left alone, so the menu never starts to point at a build that may
 /// go away. The write keeps `install`'s guarantees (no symlink following, atomic rename).
-pub fn migrate_on_window_start(data_home: &Path, exe: &Path) -> Option<String> {
+pub fn migrate_on_window_start(data_home: &Path, exe: &Path) -> Option<MenuNotice> {
     let desktop = desktop_path(data_home);
     let content = read_regular_nofollow(&desktop)?;
     if !content.lines().any(|l| l.trim() == MARKER) {
@@ -254,11 +261,22 @@ pub fn migrate_on_window_start(data_home: &Path, exe: &Path) -> Option<String> {
     });
     match res {
         // No database refresh: the entry has no `MimeType`, so the MIME cache is unchanged.
-        Ok(()) => Some("Updated the vr-ide menu entry to open its own window.".into()),
-        Err(e) => Some(format!(
-            "warning: could not update the vr-ide menu entry: {e:#}"
+        Ok(()) => Some(MenuNotice::Info(
+            "updated the vr-ide menu entry to open its own window".into(),
         )),
+        Err(e) => Some(MenuNotice::Warning(format!(
+            "could not update the vr-ide menu entry: {e:#}"
+        ))),
     }
+}
+
+/// A note for the user when a window build writes its entry where no display is reachable
+/// (over ssh, on a console): the entry opens the window only in a desktop session.
+pub fn display_note(window: bool, display: bool) -> Option<&'static str> {
+    (window && !display).then_some(
+        "note: no display is reachable here; the entry opens vr-ide's window only in a desktop \
+         session (X11 or Wayland) with the window libraries installed",
+    )
 }
 
 /// A note for the user when the entry points at a binary other than the `vr-ide` on `PATH`.
@@ -357,6 +375,8 @@ pub fn run_install() -> Result<String> {
         .map(|p| format!("wrote {}", p.display()))
         .collect();
     lines.extend(path_note(&exe, find_in_path("vr-ide").as_deref()));
+    let display = crate::cli::display_available(|k| std::env::var_os(k));
+    lines.extend(display_note(launches_in_window(), display).map(String::from));
     Ok(lines.join("\n"))
 }
 

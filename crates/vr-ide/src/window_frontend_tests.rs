@@ -17,8 +17,8 @@ use crate::commands::CmdArgs;
 use crate::commands::dialog::DialogAction;
 use crate::frontend::{CursorShape, Frontend};
 use crate::window_frontend::{
-    WindowApp, WindowFrontend, apply_fonts, drawn_cursor, font_config, migrate_menu_entry,
-    palette_for, request_quit,
+    WindowApp, WindowFrontend, apply_fonts, drawn_cursor, font_config, font_notice,
+    migrate_menu_entry, palette_for, request_quit, window_dark,
 };
 
 /// Records what the app asks of the window.
@@ -28,6 +28,8 @@ struct FakeOps {
     cursors: Vec<(Drawn, bool)>,
     ime: Vec<Option<(u16, u16)>>,
     attention: usize,
+    /// `true`: dark title bar.
+    themes: Vec<bool>,
 }
 
 impl WindowOps for FakeOps {
@@ -45,6 +47,10 @@ impl WindowOps for FakeOps {
 
     fn request_attention(&mut self) {
         self.attention += 1;
+    }
+
+    fn set_theme(&mut self, dark: bool) {
+        self.themes.push(dark);
     }
 }
 
@@ -230,7 +236,11 @@ fn font_settings_feed_the_font_set_and_a_missing_family_warns() {
     settings.font_family = "No Such Font Family 42".into();
     settings.font_size = 14.0;
     let warning = apply_fonts(t.backend_mut(), &settings).expect("a warning");
-    assert!(warning.contains("not installed"), "{warning}");
+    assert_eq!(
+        warning,
+        "settings: font_family \"No Such Font Family 42\" is not installed; using the system \
+         monospace font at 14 pt"
+    );
     assert_eq!(t.backend().fonts().family(), default_family);
     assert_eq!(
         t.backend().fonts().config().size_pt,
@@ -264,10 +274,23 @@ fn a_settings_reload_relays_the_grid_and_warns_for_a_missing_family() {
     w.app_mut().settings.theme = "light".into();
     step(&mut w, &mut t, &mut ops);
     assert_eq!(t.backend().palette().background, rgb(0xff, 0xff, 0xff));
+    // FR-1 U3: and the title bar the matching light / dark variant.
+    assert_eq!(ops.themes, [false]);
+    w.app_mut().settings.theme = "dracula".into();
+    step(&mut w, &mut t, &mut ops);
+    assert_eq!(ops.themes, [false, true]);
 }
 
 #[test]
 fn the_palette_follows_the_theme() {
+    for (theme, dark) in [
+        ("light", false),
+        ("dark", true),
+        ("dracula", true),
+        ("synthwave", true),
+    ] {
+        assert_eq!(window_dark(theme), dark, "{theme}");
+    }
     assert_eq!(palette_for("dark"), Palette::default());
     assert_eq!(palette_for("light").background, rgb(0xff, 0xff, 0xff));
     let dracula = crate::theme::Theme::named("dracula").unwrap();
@@ -346,56 +369,122 @@ fn a_lost_display_ends_through_the_exit_path_with_unsaved_work_written() {
     );
 }
 
-/// Review minor 3 (rounds 1 and 2): after the window is gone SIGTERM still takes the quit path
-/// until recovery is written (the switch), then ends the process (default action), never left
-/// ignored. Runs in a child process: the signal ends it.
+/// What a signal does to a window with an unsaved buffer, in a child process (the signal may end
+/// it): while the window is up, then after the window is gone but before recovery is written,
+/// then after the switch (`SigtermDefault`). Returns the child's stdout and how it ended.
 #[cfg(unix)]
-#[test]
-fn sigterm_ends_the_process_once_recovery_is_written_after_the_window() {
+fn signal_child(test: &str, sig: i32) -> (String, std::process::ExitStatus) {
     use std::io::Write;
-    const CHILD: &str = "VR_IDE_TEST_SIGTERM_CHILD";
-    const SURVIVED: &str = "survived SIGTERM before recovery";
-    if std::env::var_os(CHILD).is_some() {
+    const CHILD: &str = "VR_IDE_TEST_SIGNAL_CHILD";
+    if std::env::var(CHILD).ok() == Some(sig.to_string()) {
         let (_d, _p, mut app, _) = crate::app_tests::app_with_file("a\n");
+        typed(&mut app, 'x');
         let mut t = window_terminal();
         let mut ops = FakeOps::default();
+        let mut out = std::io::stdout();
         let switch = {
             let mut w = WindowApp::new(&mut app);
+            w.catch_signals();
             step(&mut w, &mut t, &mut ops);
+            signal_hook::low_level::raise(sig).unwrap();
+            let quit = step(&mut w, &mut t, &mut ops);
+            let asked = matches!(
+                w.app_mut().dialog.as_ref().map(|d| &d.action),
+                Some(DialogAction::Quit)
+            );
+            let _ = writeln!(out, "window: quit={quit} asked={asked}");
             w.sigterm_default()
         };
         // The window is gone, recovery not written yet.
-        signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
-        let mut out = std::io::stdout();
-        let _ = writeln!(out, "{SURVIVED}");
+        signal_hook::low_level::raise(sig).unwrap();
+        let _ = writeln!(out, "survived before recovery");
         let _ = out.flush();
         switch.enable();
-        signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
-        return; // reached only when SIGTERM was ignored
+        signal_hook::low_level::raise(sig).unwrap();
+        let _ = writeln!(out, "survived after the switch");
+        let _ = out.flush();
+        return (String::new(), std::process::ExitStatus::default());
     }
-    use std::os::unix::process::ExitStatusExt;
     let out = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "window_frontend_tests::sigterm_ends_the_process_once_recovery_is_written_after_the_window",
+            &format!("window_frontend_tests::{test}"),
             "--test-threads=1",
             "--nocapture",
         ])
-        .env(CHILD, "1")
+        .env(CHILD, sig.to_string())
         .stderr(std::process::Stdio::null())
         .output()
         .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status,
+    )
+}
+
+#[cfg(unix)]
+fn in_child() -> bool {
+    std::env::var_os("VR_IDE_TEST_SIGNAL_CHILD").is_some()
+}
+
+/// Asserts the parent's view: the window asked before quitting (`asked`), the signal before the
+/// recovery write did not end the process, and after the switch the signal did.
+#[cfg(unix)]
+fn assert_signal_path(test: &str, sig: i32, asked: bool) {
+    use std::os::unix::process::ExitStatusExt;
+    let (stdout, status) = signal_child(test, sig);
+    if in_child() {
+        return;
+    }
     assert!(
-        stdout.contains(SURVIVED),
-        "SIGTERM before the recovery write must not end the process: {:?}",
-        out.status
+        stdout.contains(&format!("window: quit=false asked={asked}")),
+        "signal {sig} in the window: {stdout:?} {status:?}"
     );
+    assert!(
+        stdout.contains("survived before recovery"),
+        "signal {sig} before the recovery write must not end the process: {stdout:?} {status:?}"
+    );
+    assert!(!stdout.contains("survived after the switch"), "{stdout:?}");
     assert_eq!(
-        out.status.signal(),
-        Some(signal_hook::consts::SIGTERM),
-        "after the switch the child must end by SIGTERM, got {:?}",
-        out.status
+        status.signal(),
+        Some(sig),
+        "after the switch the child must end by signal {sig}, got {status:?}"
+    );
+}
+
+/// Review minor 3 (rounds 1 and 2): SIGTERM takes the quit path (the unsaved buffer asks), and
+/// after the window is gone still only sets the flag until recovery is written (the switch),
+/// then ends the process (default action), never left ignored.
+#[cfg(unix)]
+#[test]
+fn sigterm_ends_the_process_once_recovery_is_written_after_the_window() {
+    assert_signal_path(
+        "sigterm_ends_the_process_once_recovery_is_written_after_the_window",
+        signal_hook::consts::SIGTERM,
+        true,
+    );
+}
+
+/// FR-1 C1: ctrl+c in the launching shell (SIGINT) takes the same quit path as SIGTERM.
+#[cfg(unix)]
+#[test]
+fn sigint_takes_the_quit_path_and_ends_only_after_recovery() {
+    assert_signal_path(
+        "sigint_takes_the_quit_path_and_ends_only_after_recovery",
+        signal_hook::consts::SIGINT,
+        true,
+    );
+}
+
+/// FR-1 C1: closing the launching terminal (SIGHUP) leaves the window as it is (no question, no
+/// quit); after the window it ends the process only once recovery is written.
+#[cfg(unix)]
+#[test]
+fn sighup_is_ignored_by_the_window_and_ends_only_after_recovery() {
+    assert_signal_path(
+        "sighup_is_ignored_by_the_window_and_ends_only_after_recovery",
+        signal_hook::consts::SIGHUP,
+        false,
     );
 }
 
@@ -437,4 +526,28 @@ fn the_exit_switches_sigterm_back_only_after_recovery_is_written() {
         "recovery written before the switch"
     );
     assert!(format!("{:#}", r.unwrap_err()).contains("unsaved buffers written"));
+}
+
+/// FR-1 U7: the start's font notice reads like the reload's and the other settings notices,
+/// with the size the window really uses (the start keeps the asked size, U2).
+#[test]
+fn the_start_font_notice_names_the_setting_and_the_size_used() {
+    let settings = vr_config::Settings {
+        font_family: "No Such Font Family 42".into(),
+        font_size: 16.0,
+        ..Default::default()
+    };
+    let (set, err) = FontSet::new(&font_config(&settings, 1.0));
+    let err = err.expect("a missing family");
+    assert_eq!(
+        font_notice(&err, set.config()),
+        "settings: font_family \"No Such Font Family 42\" is not installed; using the system \
+         monospace font at 16 pt"
+    );
+    let invalid = vr_window::FontError::InvalidSize(0.0);
+    assert!(
+        font_notice(&invalid, &FontConfig::default()).starts_with("settings: font size 0 "),
+        "{}",
+        font_notice(&invalid, &FontConfig::default())
+    );
 }

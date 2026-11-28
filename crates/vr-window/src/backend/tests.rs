@@ -22,6 +22,14 @@ fn fonts(config: &FontConfig) -> FontSet {
     set
 }
 
+/// The metrics tests measure a 12 pt font (16 px at scale 1).
+const TWELVE_PT: FontConfig = FontConfig {
+    family: None,
+    size_pt: 12.0,
+    line_height: 1.2,
+    scale: 1.0,
+};
+
 const BG: Rgb = 0x10_2030;
 const RED: Rgb = 0xff_0000;
 
@@ -34,7 +42,7 @@ fn palette() -> Palette {
 }
 
 fn backend(width: u32, height: u32) -> PixelBackend {
-    PixelBackend::new(fonts(&FontConfig::default()), palette(), width, height)
+    PixelBackend::new(fonts(&TWELVE_PT), palette(), width, height)
 }
 
 fn cell(symbol: &str, fg: Color, bg: Color) -> Cell {
@@ -394,6 +402,7 @@ fn preedit_is_drawn_underlined_and_removed_cleanly() {
         text: "việt中".into(),
         col: 2,
         row: 1,
+        caret: None,
     }));
     b.flush().unwrap();
     // 4 narrow cells + one wide = 6 cells from col 2.
@@ -501,7 +510,7 @@ fn ratatui_terminal_draws_through_the_backend() {
 
 /// A backend whose canvas leaves `slack` spare pixels right and below a cols x rows grid.
 fn backend_with_slack(cols: u32, rows: u32, slack: u32) -> PixelBackend {
-    let m = fonts(&FontConfig::default()).metrics();
+    let m = fonts(&TWELVE_PT).metrics();
     backend(cols * m.width + slack, rows * m.height + slack)
 }
 
@@ -540,7 +549,7 @@ fn relayout_that_keeps_the_grid_size_keeps_the_cells() {
     let family = b.fonts().family().to_uppercase();
     b.set_font_config(&FontConfig {
         family: Some(family),
-        ..FontConfig::default()
+        ..TWELVE_PT
     })
     .unwrap();
     assert_eq!(b.size().unwrap(), grid);
@@ -606,6 +615,7 @@ fn preedit_ending_on_a_wide_cell_keeps_its_last_grapheme_and_no_stale_half() {
         text: "ab".into(),
         col: 3,
         row: 1,
+        caret: None,
     }));
     b.flush().unwrap();
     assert!(underlined(&b, 3, 1, fg), "first grapheme underlined");
@@ -629,6 +639,7 @@ fn preedit_starting_on_a_wide_cells_right_half_leaves_no_left_half() {
         text: "xy".into(),
         col: 5,
         row: 1,
+        caret: None,
     }));
     b.flush().unwrap();
     assert!(
@@ -650,6 +661,7 @@ fn preedit_across_a_wide_cell_mid_text_is_fully_drawn() {
         text: "abcd".into(),
         col: 3,
         row: 1,
+        caret: None,
     }));
     b.set_cursor_position((7, 1)).unwrap();
     b.flush().unwrap();
@@ -670,4 +682,151 @@ fn huge_padding_does_not_overflow() {
         .unwrap();
     b.resize(300, 200, 16.0).unwrap();
     assert_eq!(b.size().unwrap(), Size::new(1, 1));
+}
+
+/// FR-1 U2: at start, a family that is not installed keeps the asked size and line height (as
+/// a reload does); only an invalid size or line height gives the whole default, whose size is
+/// the settings' default (11 pt).
+#[test]
+fn a_missing_family_at_start_keeps_size_and_line_height() {
+    let config = FontConfig {
+        family: Some("No Such Font Family 1234".into()),
+        size_pt: 16.0,
+        line_height: 1.5,
+        scale: 1.0,
+    };
+    let (set, err) = FontSet::with_font_system(font_system(), &config);
+    assert!(matches!(err, Some(FontError::FamilyNotFound(_))), "{err:?}");
+    assert_eq!(set.config().family, None);
+    assert_eq!(
+        (set.config().size_pt, set.config().line_height),
+        (16.0, 1.5)
+    );
+    let asked = fonts(&FontConfig {
+        family: None,
+        ..config.clone()
+    });
+    assert_eq!(set.metrics(), asked.metrics());
+
+    let (set, err) = FontSet::with_font_system(
+        font_system(),
+        &FontConfig {
+            size_pt: 0.0,
+            ..config
+        },
+    );
+    assert_eq!(err, Some(FontError::InvalidSize(0.0)));
+    assert_eq!(set.config(), &FontConfig::default());
+    assert_eq!(FontConfig::default().size_pt, 11.0);
+}
+
+/// FR-1 U4: the pixels beyond the last whole cell take the colour of the last row's and last
+/// column's cells (a status bar reaches the window's bottom edge), and are presented with them.
+#[test]
+fn leftover_pixels_take_the_edge_cells_background() {
+    const GREEN: Rgb = 0x00_ff00;
+    let (w, h) = (301, 203);
+    let mut b = backend(w, h);
+    let l = b.layout();
+    assert!(u32::from(l.cols) * l.cell.width < w, "{l:?}");
+    assert!(u32::from(l.rows) * l.cell.height < h, "{l:?}");
+    let (last_col, last_row) = (l.cols - 1, l.rows - 1);
+    b.take_damage();
+    let status = cell(" ", Color::Reset, Color::Rgb(255, 0, 0));
+    let side = cell(" ", Color::Reset, Color::Rgb(0, 255, 0));
+    let mut cells: Vec<(u16, u16, &Cell)> = (0..l.cols).map(|c| (c, last_row, &status)).collect();
+    cells.push((last_col, 0, &side));
+    b.draw(cells.into_iter()).unwrap();
+    let c = b.canvas();
+    assert_eq!(c.pixel(w - 1, h - 1), RED, "bottom-right corner");
+    assert_eq!(c.pixel(0, h - 1), RED, "under the status bar");
+    assert_eq!(c.pixel(w - 1, 0), GREEN, "right of the last column");
+    assert_eq!(
+        c.pixel(w - 1, l.cell.height),
+        BG,
+        "a row not drawn keeps the background"
+    );
+    let damage = b.take_damage();
+    for (x, y) in [(w - 1, h - 1), (0, h - 1), (w - 1, 0)] {
+        assert!(
+            damage.iter().any(|r| r.contains(x, y)),
+            "({x}, {y}) in {damage:?}"
+        );
+    }
+
+    // A block cursor on the last cell does not paint the leftover in the cursor colour.
+    let mut p = palette();
+    p.cursor = Some(0x00_00ff);
+    b.set_palette(p);
+    b.set_cursor_shape(CursorShape::Block);
+    b.set_cursor_position((last_col, last_row)).unwrap();
+    b.flush().unwrap();
+    assert_eq!(b.canvas().pixel(w - 1, h - 1), RED);
+}
+
+/// FR-1 U5: while composing, the caret is drawn where the IME puts it inside the preedit, and
+/// not at all when the IME hides it.
+#[test]
+fn the_caret_follows_the_ime_cursor_inside_the_preedit() {
+    let mut b = backend(400, 200);
+    let mut p = palette();
+    p.cursor = Some(0x00_00ff);
+    b.set_palette(p);
+    b.set_cursor_shape(CursorShape::Block);
+    b.set_cursor_position((2, 1)).unwrap();
+    b.set_preedit(Some(Preedit {
+        text: "việt".into(),
+        col: 2,
+        row: 1,
+        caret: Some(3),
+    }));
+    b.flush().unwrap();
+    let at = |b: &PixelBackend, col: u16| {
+        let r = b.layout().cell_rect(col, 1, 1);
+        b.canvas().pixel(r.x, r.y)
+    };
+    assert_eq!(at(&b, 5), 0x00_00ff, "caret after the third column");
+    assert_ne!(at(&b, 2), 0x00_00ff, "not at the preedit start");
+
+    b.set_preedit(Some(Preedit {
+        text: "việt".into(),
+        col: 2,
+        row: 1,
+        caret: None,
+    }));
+    b.flush().unwrap();
+    assert_eq!(
+        not_color(b.canvas(), 0x00_00ff).len() as u32,
+        400 * 200,
+        "no caret"
+    );
+}
+
+/// FR-1 U6: an unfocused window shows the block cursor as an outline.
+#[test]
+fn a_hollow_block_cursor_is_an_outline() {
+    let mut b = backend(300, 200);
+    let mut p = palette();
+    p.cursor = Some(0x00_00ff);
+    b.set_palette(p);
+    let red = cell(" ", Color::Reset, Color::Rgb(255, 0, 0));
+    b.draw([(1, 1, &red)].into_iter()).unwrap();
+    b.set_cursor_position((1, 1)).unwrap();
+    b.set_cursor_shape(CursorShape::HollowBlock);
+    b.flush().unwrap();
+    let r = b.layout().cell_rect(1, 1, 1);
+    let px = |x, y| b.canvas().pixel(x, y);
+    for (x, y) in [
+        (r.x, r.y),
+        (r.right() - 1, r.y),
+        (r.x, r.bottom() - 1),
+        (r.right() - 1, r.bottom() - 1),
+    ] {
+        assert_eq!(px(x, y), 0x00_00ff, "outline at ({x}, {y})");
+    }
+    assert_eq!(
+        px(r.x + r.width / 2, r.y + r.height / 2),
+        RED,
+        "inside stays"
+    );
 }

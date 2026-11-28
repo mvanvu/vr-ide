@@ -176,7 +176,34 @@ fn preedit_cursor_is_in_display_columns() {
         Preedit {
             text: "việt".to_owned(),
             col: 3,
-            row: 7
+            row: 7,
+            caret: None
         }
     );
+}
+
+/// FR-1 C3: losing focus drops a composition (no stale underline after alt+tab) and asks for
+/// an IME reset once.
+#[test]
+fn focus_loss_drops_the_preedit_and_asks_for_a_reset() {
+    let mut ime = ImeInput::new();
+    ime.ime(&Ime::Enabled);
+    assert!(!ime.focus_lost(), "nothing composed: no reset");
+    ime.ime(&Ime::Preedit("vie".into(), Some((3, 3))));
+    assert!(ime.focus_lost());
+    assert!(ime.preedit().is_none());
+    assert!(!ime.focus_lost());
+}
+
+/// FR-1 U5: the renderer's preedit carries the IME's caret in columns (its end), `None` when
+/// the IME hides it.
+#[test]
+fn the_placed_preedit_carries_the_caret_column() {
+    let p = |cursor| PreeditText {
+        text: "việt".to_owned(),
+        cursor,
+    };
+    assert_eq!(p(Some((5, 5))).at(3, 7).caret, Some(3));
+    assert_eq!(p(Some((0, 6))).at(3, 7).caret, Some(4));
+    assert_eq!(p(None).at(3, 7).caret, None);
 }

@@ -52,7 +52,8 @@ impl Default for FontConfig {
     fn default() -> Self {
         Self {
             family: None,
-            size_pt: 12.0,
+            // The settings' default size.
+            size_pt: 11.0,
             line_height: 1.2,
             scale: 1.0,
         }
@@ -145,7 +146,9 @@ impl std::fmt::Debug for FontSet {
 
 impl FontSet {
     /// Loads the system fonts (slow: up to a second; do it once) and applies `config`. A config
-    /// that cannot be used gives the error back with the default config applied instead.
+    /// that cannot be used gives the error back with a working one applied instead: a missing
+    /// family keeps the asked size and line height (as [`FontSet::set_config`] callers do on a
+    /// reload), anything else gives the default config.
     #[must_use]
     pub fn new(config: &FontConfig) -> (Self, Option<FontError>) {
         Self::with_font_system(system_font_system(), config)
@@ -179,6 +182,17 @@ impl FontSet {
         };
         match set.set_config(config) {
             Ok(()) => (set, None),
+            Err(e @ FontError::FamilyNotFound(_)) => {
+                let platform = FontConfig {
+                    family: None,
+                    ..config.clone()
+                };
+                if set.set_config(&platform).is_err() {
+                    let family = set.resolve_family(None).unwrap_or_default();
+                    set.apply(fallback, family);
+                }
+                (set, Some(e))
+            }
             Err(e) => {
                 let family = set.resolve_family(None).unwrap_or_default();
                 set.apply(fallback, family);

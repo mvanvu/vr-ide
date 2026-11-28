@@ -786,14 +786,17 @@ vr-ide --tui <dir>  # --tui goes with any of the forms in Quick start
 ```
 
 - **Closing the window** is the same as `ctrl+q`, with the same guard (see
-  [Quit guard](#quit-guard)). A `SIGTERM` takes the same path.
+  [Quit guard](#quit-guard)). A `SIGTERM` takes the same path, and so does `ctrl+c` in the shell
+  that started the window (`SIGINT`): unsaved files ask first.
 - **Started from a shell**, the window keeps that shell's foreground until it closes; add `&` to
-  get the prompt back.
+  get the prompt back. Closing that terminal (`SIGHUP`) leaves the window open, so no work is lost
+  when the terminal goes away.
 - **Attention.** While the window is not focused, a bell or desktop notification from an embedded
   terminal or agent (see [Agent notifications](#agent-notifications)) asks the desktop for
   attention (a taskbar hint).
 - **Keys.** Every chord the operating system delivers reaches vr-ide, so the limits of legacy
-  terminals do not apply in the window; see [docs/keymap.md](docs/keymap.md).
+  terminals do not apply in the window; see [docs/keymap.md](docs/keymap.md). `super` (`cmd`)
+  chords cannot be bound and are ignored: `super+c` never types `c`.
 - **Vietnamese and other IME input** goes through the system input method (IBus, Fcitx, the
   compositor's own); the text being composed is shown at the cursor and the candidate list opens
   beside it. `esc` cancels a composition.
@@ -844,7 +847,7 @@ Used by the window only (the terminal frontend draws with the terminal's font):
 |---|---|---|
 | `font_family` | `""` | Font family name, one line of at most 100 characters. Empty is the system monospace font |
 | `font_size` | `11.0` | Size in points, 6 to 72 |
-| `line_height` | `1.2` | Line height as a multiple of the font height, 1.0 to 2.0 |
+| `line_height` | `1.2` | Row height as a multiple of the font size (1.2 at 11 pt gives rows of about 18 px at scale 1), 1.0 to 2.0 |
 
 ```toml
 # ~/.config/vr-ide/settings.toml

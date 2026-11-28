@@ -296,6 +296,18 @@ pub fn install_panic_hook(dir: PathBuf, restore_terminal: fn()) {
     install_hook_for(&GLOBAL, dir, restore_terminal, std::thread::current().id());
 }
 
+/// Prints `vr-ide: <line>` on stderr, dropping it when stderr is gone: a window that outlived
+/// its terminal (SIGHUP is ignored there) gets EIO from a hung-up tty, and `eprintln!` would
+/// panic in the middle of an exit sequence or a panic hook.
+pub fn note(line: std::fmt::Arguments<'_>) {
+    note_to(&mut std::io::stderr(), line);
+}
+
+/// [`note`] into any writer; a failing write is ignored.
+fn note_to(out: &mut dyn std::io::Write, line: std::fmt::Arguments<'_>) {
+    let _ = writeln!(out, "vr-ide: {line}");
+}
+
 /// Panic hook: a panic on `main` (the thread that owns the terminal and the buffers)
 /// restores the terminal first so messages are readable, saves the buffers, then hands over
 /// to the previous hook. Panics on other threads (file watcher, clipboard) only reach the
@@ -312,20 +324,21 @@ pub fn install_hook_for(
             // Worker panics while main unwinds are printed by the previous hook.
             state.set_tui_active(false);
             restore_terminal();
+            // `note`: a panic while printing would abort inside the hook.
             for p in write_recovery(state, &dir) {
-                eprintln!("vr-ide: unsaved buffer written to {}", p.display());
+                note(format_args!("unsaved buffer written to {}", p.display()));
             }
             // The worker is not joined here (it may be blocked in I/O, and the panic left
             // the app's state unknown), so only the fact is reported.
             if crate::commands::search::REPLACE_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
-                eprintln!(
-                    "vr-ide: a project replace was interrupted; files it had not reached were \
+                note(format_args!(
+                    "a project replace was interrupted; files it had not reached were \
                      not replaced, and the file it was writing may have a .vr-ide-save-*.tmp \
                      beside it (search again to see what is left)"
-                );
+                ));
             }
             for m in state.take_deferred() {
-                eprintln!("vr-ide: {m}");
+                note(format_args!("{m}"));
             }
         } else if state.tui_active.load(Ordering::SeqCst) {
             let name = std::thread::current().name().map(str::to_owned);

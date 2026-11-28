@@ -74,7 +74,8 @@ pub struct Settings {
     pub font_family: String,
     /// Font size in points, 6..=72.
     pub font_size: f32,
-    /// Line height as a multiple of the font height, 1.0..=2.0.
+    /// Line height as a multiple of the font size (1.2 at 11 pt: rows of about 18 px at scale
+    /// 1), 1.0..=2.0.
     pub line_height: f32,
     pub ai_tools: Vec<AiTool>,
 }

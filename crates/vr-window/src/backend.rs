@@ -24,6 +24,8 @@ pub enum CursorShape {
     Block,
     Bar,
     Underline,
+    /// The block as an outline: the cursor of a window that is not focused.
+    HollowBlock,
 }
 
 /// IME composing text, drawn underlined from a cell and not part of the grid.
@@ -32,6 +34,8 @@ pub struct Preedit {
     pub text: String,
     pub col: u16,
     pub row: u16,
+    /// The IME's caret, in columns from `col`; `None`: the IME hides it (no cursor drawn).
+    pub caret: Option<u16>,
 }
 
 /// Placement of the grid inside the canvas.
@@ -242,10 +246,18 @@ impl PixelBackend {
     /// Repaints the overlays now (ratatui's `flush` does the same).
     pub fn render_overlays(&mut self) {
         let preedit_cells = self.preedit_cells();
-        let cursor = (self.cursor_visible && self.cursor_blink_on).then(|| {
+        // While composing the caret is the IME's, inside the preedit.
+        let at = match &self.preedit {
+            Some(p) => p
+                .caret
+                .map(|c| Position::new(p.col.saturating_add(c), p.row)),
+            None => Some(self.cursor),
+        };
+        let shown = self.cursor_visible && self.cursor_blink_on;
+        let cursor = at.filter(|_| shown).map(|at| {
             let raw = (
-                self.cursor.x.min(self.layout.cols - 1),
-                self.cursor.y.min(self.layout.rows - 1),
+                at.x.min(self.layout.cols - 1),
+                at.y.min(self.layout.rows - 1),
             );
             // On a preedit cell the cursor follows the preedit's cells, not the grid's.
             let on_preedit = preedit_cells
@@ -339,7 +351,13 @@ impl PixelBackend {
             .filter_map(|(row, span)| {
                 let (from, to) = (*span)?;
                 let y = self.layout.origin_y + row as u32 * self.layout.cell.height;
-                Some(PixelRect::new(from, y, to - from, self.layout.cell.height))
+                // The last row also owns the leftover pixels below it (see `paint`).
+                let height = if row + 1 == self.layout.rows as usize {
+                    self.canvas.height().saturating_sub(y)
+                } else {
+                    self.layout.cell.height
+                };
+                Some(PixelRect::new(from, y, to - from, height))
                     .map(|r| r.intersect(&self.canvas.bounds()))
                     .filter(|r| !r.is_empty())
             })
@@ -468,6 +486,7 @@ impl PixelBackend {
         if modifier.contains(Modifier::DIM) {
             fg = blend(bg, fg, 140);
         }
+        self.fill_leftover(col + width, row, rect, bg);
         let cursor_color = self.palette.cursor.unwrap_or(fg);
         if cursor == Some(CursorShape::Block) {
             (fg, bg) = (bg, cursor_color);
@@ -510,9 +529,48 @@ impl PixelBackend {
                 let bar = PixelRect::new(rect.x, rect.bottom() - h, rect.width, h);
                 self.canvas.fill_rect(bar, cursor_color);
             }
+            Some(CursorShape::HollowBlock) => {
+                let t = m.line.max(1);
+                let (w, h) = (t.min(rect.width), t.min(rect.height));
+                for edge in [
+                    PixelRect::new(rect.x, rect.y, rect.width, h),
+                    PixelRect::new(rect.x, rect.bottom() - h, rect.width, h),
+                    PixelRect::new(rect.x, rect.y, w, rect.height),
+                    PixelRect::new(rect.right() - w, rect.y, w, rect.height),
+                ] {
+                    self.canvas.fill_rect(edge, cursor_color);
+                }
+            }
             Some(CursorShape::Block) | None => {}
         }
         self.damage(row, rect);
+    }
+
+    /// The pixels between the last whole cell and the padding (a window size that is not a
+    /// multiple of the cell) take the background of the last column's and last row's cells, so
+    /// a status bar or a panel reaches the window's edge instead of leaving a strip.
+    fn fill_leftover(&mut self, end_col: u16, row: u16, rect: PixelRect, bg: Rgb) {
+        let right_edge = self.canvas.width().saturating_sub(self.layout.origin_x);
+        let bottom_edge = self.canvas.height().saturating_sub(self.layout.origin_y);
+        let below = if row + 1 >= self.layout.rows {
+            bottom_edge.saturating_sub(rect.bottom())
+        } else {
+            0
+        };
+        if below > 0 {
+            let strip = PixelRect::new(rect.x, rect.bottom(), rect.width, below);
+            self.canvas.fill_rect(strip, bg);
+        }
+        if end_col >= self.layout.cols && right_edge > rect.right() {
+            let strip = PixelRect::new(
+                rect.right(),
+                rect.y,
+                right_edge - rect.right(),
+                rect.height + below,
+            );
+            self.canvas.fill_rect(strip, bg);
+            self.damage(row, strip);
+        }
     }
 
     fn damage(&mut self, row: u16, rect: PixelRect) {

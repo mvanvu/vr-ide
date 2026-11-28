@@ -1974,3 +1974,24 @@ fn a_shell_tab_does_not_inherit_an_account_variable() {
     });
     assert!(!screen.contains("/accounts/"), "{screen}");
 }
+
+/// FR-1 C2: a super chord typed into a focused terminal reaches neither the program nor the
+/// editor (no terminal encoding exists for it; forwarding the plain letter types it).
+#[test]
+fn super_chords_are_not_forwarded_to_the_terminal() {
+    let (_d, mut app, _) = term_app();
+    app.keyboard_enhanced = true;
+    draw(&mut app, 80, 24);
+    ctrl_backtick(&mut app);
+    assert_eq!(app.focus, Focus::Terminal);
+    typ(&mut app, "echo A");
+    for c in ['b', 'c', 'v'] {
+        key(&mut app, KeyCode::Char(c), KeyModifiers::SUPER);
+    }
+    key(&mut app, KeyCode::Enter, KeyModifiers::SUPER);
+    typ(&mut app, "Z; echo vr-$((6*7))\n");
+    let screen = wait_text(&app, "vr-42");
+    assert!(screen.contains("\nAZ"), "{screen}");
+    assert!(!screen.contains("Ab"), "{screen}");
+    crate::commands::terminal::shutdown(&mut app);
+}

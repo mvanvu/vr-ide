@@ -7,3 +7,4 @@
 - D5 (06:27, T5) Only the gnome-terminal form of a vr-ide-written menu entry is migrated; a Terminal=true entry (non-GNOME desktops) and an entry whose TryExec names another binary are left alone (AC-W7 names the gnome-terminal form; avoids a dev build hijacking the menu entry).
 - D5 revised (06:29): the Terminal=true form of a vr-ide-written entry with the same exe is migrated too (reviewer minor; avoids an empty terminal on non-GNOME desktops). TryExec of another binary still skipped. confirm-on-return.
 - D6 (07:34, T4) TUI fallback after a failed window start must use the terminal's real colour depth (reviewer minor 4, user-visible): fixed in the T4 fix round. confirm-on-return.
+- D7 (08:29, FR-1) In the window SIGHUP is ignored (the window does not need the launching terminal; closing it must not close the editor); SIGINT takes the quit path like SIGTERM. confirm-on-return.

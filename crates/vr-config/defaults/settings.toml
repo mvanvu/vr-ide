@@ -56,7 +56,7 @@ ai_auto_switch_prompt = "Continue where you left off."
 
 # Font of the window frontend (ignored by the terminal one). An empty family is the system
 # monospace font; a family that is not installed falls back to it with a warning. Size is in
-# points (6..=72), line_height a multiple of the font height (1.0..=2.0). An invalid value is
+# points (6..=72), line_height a multiple of the font size (1.0..=2.0). An invalid value is
 # reported and its default stays.
 font_family = ""
 font_size = 11.0

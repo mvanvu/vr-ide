@@ -1312,6 +1312,14 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // No binding syntax names super (cmd) or hyper, and no terminal encoding carries them:
+        // dropping the modifier would type the letter or run the plain key's binding.
+        if key
+            .modifiers
+            .intersects(KeyModifiers::SUPER | KeyModifiers::HYPER)
+        {
+            return;
+        }
         self.input_count += 1;
         self.dirty = true;
         // A pending read-mode space only pairs with the next key the reading editor gets.

@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::desktop::{
-    EntryForm, MARKER, build_entry, entry_form, find_in, install, migrate_on_window_start,
-    path_note, quote_exec_arg, refresh_database_with, uninstall, validate_exe,
+    EntryForm, MARKER, MenuNotice, build_entry, display_note, entry_form, find_in, install,
+    migrate_on_window_start, path_note, quote_exec_arg, refresh_database_with, uninstall,
+    validate_exe,
 };
 
 /// Undo value-level escaping, then split `Exec` per the Desktop Entry spec.
@@ -327,7 +328,10 @@ fn migration_rewrites_an_old_entry_of_ours_once() {
     let desktop = desktop_of(&data);
 
     let notice = migrate_on_window_start(&data, &exe).expect("a notice");
-    assert!(notice.contains("own window"), "{notice}");
+    assert_eq!(
+        notice,
+        MenuNotice::Info("updated the vr-ide menu entry to open its own window".into())
+    );
     assert_eq!(
         fs::read_to_string(&desktop).unwrap(),
         build_entry(exe.to_str().unwrap(), EntryForm::Window)
@@ -423,8 +427,13 @@ fn migration_write_failure_returns_a_warning_and_keeps_the_entry() {
     if bypassed {
         return;
     }
-    let warning = res.expect("a warning");
-    assert!(warning.starts_with("warning:"), "{warning}");
+    let Some(MenuNotice::Warning(warning)) = res else {
+        panic!("a warning: {res:?}");
+    };
+    assert!(
+        warning.starts_with("could not update the vr-ide menu entry: "),
+        "{warning}"
+    );
     assert_eq!(fs::read(desktop_of(&data)).unwrap(), before);
 }
 
@@ -457,7 +466,10 @@ fn migration_rewrites_our_terminal_form_entry_but_not_a_changed_exec() {
     let old = fs::read_to_string(desktop_of(&data)).unwrap();
 
     let notice = migrate_on_window_start(&data, &exe).expect("a notice");
-    assert!(notice.contains("own window"), "{notice}");
+    assert_eq!(
+        notice,
+        MenuNotice::Info("updated the vr-ide menu entry to open its own window".into())
+    );
     let new = build_entry(exe.to_str().unwrap(), EntryForm::Window);
     assert_eq!(fs::read_to_string(desktop_of(&data)).unwrap(), new);
     assert_eq!(migrate_on_window_start(&data, &exe), None);
@@ -468,4 +480,16 @@ fn migration_rewrites_our_terminal_form_entry_but_not_a_changed_exec() {
     fs::write(desktop_of(&data), &edited).unwrap();
     assert_eq!(migrate_on_window_start(&data, &exe), None);
     assert_eq!(fs::read_to_string(desktop_of(&data)).unwrap(), edited);
+}
+
+/// FR-1 C4: a window build installing its entry where no display is reachable (ssh, a console)
+/// says the entry needs a desktop session; a TUI build or a reachable display says nothing.
+#[test]
+fn install_without_a_display_notes_that_the_entry_needs_a_desktop_session() {
+    let note = display_note(true, false).expect("a note");
+    assert!(note.starts_with("note: "), "{note}");
+    assert!(note.contains("desktop session"), "{note}");
+    assert!(note.contains("window libraries"), "{note}");
+    assert_eq!(display_note(true, true), None);
+    assert_eq!(display_note(false, false), None);
 }

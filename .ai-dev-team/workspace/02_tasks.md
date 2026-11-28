@@ -10,7 +10,7 @@
 | T3b | Chord parity TUI vs window (shifted symbols, shift+space) | fe | T3 | crates/vr-ide/src/event_loop.rs, crates/vr-window/src/input/key.rs + tests | ui | BASE, COST, AC-W4 | cargo test -p vr-ide event_loop; cargo test -p vr-window input; parity harness rerun | done | 1 |
 | T4 | Window app: runner, wiring, launch, quit path, font settings, PTY pixels | fe | T1, T2, T3, T4a, T5 (T3b relaxed: worktree, no edits to event_loop.rs 15-110 or vr-config keys.rs) | crates/vr-window/src/app*.rs, crates/vr-ide/src/{main.rs,cli.rs,window_frontend.rs,…}, crates/vr-ide/Cargo.toml, crates/vr-config/**, crates/vr-term/src/terminal.rs, defaults/settings.toml | ui | BASE, COST, AC-W1..AC-W8 | cargo test --workspace (related); guard both feature sets; release build | done | 2 |
 | T6 | Docs | fe | T4 | README.md, docs/*.md | docs | BASE | leader spot-check + sonnet reviewer | done | 1 |
-| FR-1 | Phase 5 fixes: signals, font size fallback, super chords + minors | fe | Phase 5 | crates/vr-window/src/{app.rs,backend.rs,font.rs,input/key.rs,input/ime.rs}+tests, crates/vr-ide/src/{window_frontend.rs,commands/edit.rs,ui/dialog.rs,commands/terminal.rs,desktop.rs}+tests, README.md, crates/vr-config defaults+settings.rs (doc line) | ui | BASE, COST, AC-W4, AC-W5, AC-W8 | related tests; guard; window smoke | in progress | 0 |
+| FR-1 | Phase 5 fixes: signals, font size fallback, super chords + minors | fe | Phase 5 | crates/vr-window/src/{app.rs,backend.rs,font.rs,input/key.rs,input/ime.rs}+tests, crates/vr-ide/src/{window_frontend.rs,commands/edit.rs,ui/dialog.rs,commands/terminal.rs,desktop.rs}+tests, README.md, crates/vr-config defaults+settings.rs (doc line) | ui | BASE, COST, AC-W4, AC-W5, AC-W8 | related tests; guard; window smoke | done | 0 |
 
 ## Acceptance criteria (from the spec)
 - AC-W1: With a display, `vr-ide` opens a native window running the full IDE; `--tui` or no display runs the terminal UI unchanged.
@@ -81,3 +81,8 @@
 - 08:07 Phase 5 correctness returned 1 high (= U1) + 2 major + 1 minor. Verification: U1/C1 confirmed by two independent dimensions; remaining 6 majors verified by 3 opus verifiers, 2 findings each (cap: max_verifiers 4 with sign-off running; deviation from one-per-finding logged).
 - 08:08 Phase 5 verified: confirmed C1/U1 (high), U2, C2 (major); minors U3–U8, C3, C4. FR-1 (fix task) starts after sign-off reports. 06_final_review.json written.
 - 08:12 sign-off ✓ SIGNOFF_PASS (1728 passed, 0 failed, 18 ignored; guard both feature sets; release build; window + --tui walks). FR-1 started (developer opus: signal/data-safety).
+- 08:29 FR-1 DONE (all 3 confirmed + 8 minors; guard, both clippy, release build green; X11 smoke SIGHUP ignored / SIGINT quit path + recovery). Re-check: both Phase 5 dimension reviewers (opus) on the FR-1 diff + T4's qc (runtime).
+- 08:30 verdict gate FR-1 correctness re-check ✓ APPROVED (C1–C4 fixed, no new). Waiting for ui re-check and QC.
+- 08:31 verdict gate FR-1 ui re-check ✓ APPROVED (U1–U8 fixed; 2 new minors: eprintln! on a hung-up tty can panic at exit since SIGHUP is ignored → quick pass after QC; keymap.md super line → one-line doc fix by the leader, done).
+- 08:33 verdict gate FR-1 QC ✓ QC_PASS (SIGINT dialog + recovery, SIGHUP ignored, 16 pt fallback measured, edge strips themed, hollow cursor unfocused). Quick pass 1 (stderr writes at exit) sent to the FR-1 developer.
+- 08:36 FR-1 quick pass re-checked ✓ APPROVED. FR-1 done, committed. Full suite rerun by qc (FR-1 touched app core route_key).

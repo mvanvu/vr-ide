@@ -18,6 +18,7 @@ use vr_window::{CursorShape as Drawn, FontConfig, FontError, FontSet, Palette, P
 
 use crate::app::App;
 use crate::commands::CmdArgs;
+use crate::desktop::MenuNotice;
 use crate::event_loop::{self, StepState};
 use crate::frontend::{CursorShape, DrawnCursor, Frontend};
 use crate::ui::dialog::Outcome;
@@ -127,10 +128,29 @@ pub fn apply_fonts(backend: &mut PixelBackend, settings: &Settings) -> Option<St
                 ..config
             };
             let _ = backend.set_font_config(&default);
-            Some(e.to_string())
+            Some(font_notice(&e, backend.fonts().config()))
         }
-        Err(e) => Some(e.to_string()),
+        Err(e) => Some(font_notice(&e, backend.fonts().config())),
     }
+}
+
+/// The notice for a font setting the window could not use, worded as the other settings
+/// notices; `applied` is the font the window uses instead (its size is named).
+pub fn font_notice(error: &FontError, applied: &FontConfig) -> String {
+    match error {
+        FontError::FamilyNotFound(family) => format!(
+            "settings: font_family {family:?} is not installed; using the system monospace font \
+             at {} pt",
+            applied.size_pt
+        ),
+        other => format!("settings: {other}"),
+    }
+}
+
+/// Whether the window's title bar (client-side decorations, the GTK variant on X11) is dark:
+/// every theme but `light` paints a dark grid.
+pub fn window_dark(theme: &str) -> bool {
+    theme != "light"
 }
 
 /// The window's colours for what the theme leaves to the terminal (`Color::Reset`, named
@@ -170,8 +190,8 @@ pub fn migrate_menu_entry(app: &mut App, data_home: Option<&Path>, exe: Option<&
         return;
     };
     match crate::desktop::migrate_on_window_start(data_home, exe) {
-        Some(text) if text.starts_with("warning:") => app.warn(text),
-        Some(text) => app.info(text),
+        Some(MenuNotice::Warning(text)) => app.warn(text),
+        Some(MenuNotice::Info(text)) => app.info(text),
         None => {}
     }
 }
@@ -183,9 +203,9 @@ fn cell_px(backend: &PixelBackend) -> (u16, u16) {
     (px(cell.width), px(cell.height))
 }
 
-/// Gives SIGTERM its default action (ending the process) back. signal-hook cannot take its
-/// handler off a signal, and an unregistered SIGTERM would stay ignored; a conditional default
-/// registered with the window does it once this is switched on.
+/// Gives SIGTERM, SIGINT and SIGHUP their default action (ending the process) back. signal-hook
+/// cannot take its handler off a signal, and an unregistered signal would stay ignored; a
+/// conditional default registered with the window does it once this is switched on.
 #[derive(Debug, Clone, Default)]
 pub struct SigtermDefault(Arc<AtomicBool>);
 
@@ -206,9 +226,9 @@ pub fn write_recovery_on_display_loss(
     dir: &Path,
 ) -> Vec<std::path::PathBuf> {
     let written = crate::recovery::write_recovery(state, dir);
-    eprintln!("vr-ide: the connection to the display was lost");
+    crate::recovery::note(format_args!("the connection to the display was lost"));
     for p in &written {
-        eprintln!("vr-ide: unsaved buffer written to {}", p.display());
+        crate::recovery::note(format_args!("unsaved buffer written to {}", p.display()));
     }
     written
 }
@@ -226,14 +246,16 @@ pub struct WindowApp<'a> {
     /// The loop's result once it failed (drawing, a lost surface).
     result: anyhow::Result<()>,
     close: bool,
-    /// Set by SIGTERM (registered once the window is up).
+    /// Set by SIGTERM and SIGINT (registered once the window is up).
     sigterm: Arc<AtomicBool>,
-    /// Switched on once recovery is written after the window: SIGTERM then takes its default
-    /// action (ends the process).
+    /// Switched on once recovery is written after the window: SIGTERM, SIGINT and SIGHUP then
+    /// take their default action (end the process).
     sigterm_default: SigtermDefault,
     started: bool,
     /// `VR_IDE_EXIT_AFTER_FIRST_FRAME`: quit after the first frame (smoke runs).
     exit_after_first_frame: bool,
+    /// Whether the start registers the signal handlers (the real window; tests opt in).
+    signals: bool,
     fonts: FontSettings,
     theme: String,
     /// Where the first start looks for the menu entry to migrate (`None`: skip).
@@ -255,6 +277,7 @@ impl<'a> WindowApp<'a> {
             sigterm_default: SigtermDefault::default(),
             started: false,
             exit_after_first_frame: false,
+            signals: false,
             fonts,
             theme,
             menu: None,
@@ -267,9 +290,14 @@ impl<'a> WindowApp<'a> {
         self.app
     }
 
-    /// The flag SIGTERM sets (tests set it by hand).
+    /// The flag SIGTERM and SIGINT set (tests set it by hand).
     pub fn sigterm_flag(&self) -> Arc<AtomicBool> {
         self.sigterm.clone()
+    }
+
+    /// The start registers the process signal handlers (see [`WindowApp::start`]).
+    pub fn catch_signals(&mut self) {
+        self.signals = true;
     }
 
     /// The switch that gives SIGTERM its default action back (see [`SigtermDefault`]).
@@ -282,18 +310,31 @@ impl<'a> WindowApp<'a> {
         std::mem::replace(&mut self.result, Ok(()))
     }
 
-    /// Runs once the window shows: the window's keyboard, SIGTERM, the menu entry.
+    /// Runs once the window shows: the window's keyboard, the signals, the menu entry.
     fn start(&mut self) {
         // No "keys this terminal cannot send" notice: every chord arrives.
         self.app.report_keyboard(true);
         #[cfg(unix)]
-        {
-            use signal_hook::{consts::SIGTERM, flag};
-            // signal-hook cannot take its handler back off a signal: an unregistered SIGTERM
+        if self.signals {
+            use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+            use signal_hook::flag;
+            // signal-hook cannot take its handler back off a signal: an unregistered signal
             // would stay ignored. The conditional default ends the process once the exit wrote
-            // recovery (`SigtermDefault`); until then SIGTERM only sets the flag.
-            let _ = flag::register_conditional_default(SIGTERM, self.sigterm_default.0.clone());
-            let _ = flag::register(SIGTERM, self.sigterm.clone());
+            // recovery (`SigtermDefault`); until then a signal only sets its flag.
+            // SIGTERM and ctrl+c in the launching shell (SIGINT) ask the window to quit, with
+            // the quit guard. SIGHUP (the launching terminal closed, or the empty terminal an
+            // old menu entry left) is not about the window, which never needed that terminal:
+            // its flag is never read. A handler rather than SIG_IGN, so the shells of embedded
+            // terminals do not inherit an ignored SIGHUP and still end on the shutdown's hangup.
+            let hangup = Arc::new(AtomicBool::new(false));
+            for (sig, flag_of) in [
+                (SIGTERM, &self.sigterm),
+                (SIGINT, &self.sigterm),
+                (SIGHUP, &hangup),
+            ] {
+                let _ = flag::register_conditional_default(sig, self.sigterm_default.0.clone());
+                let _ = flag::register(sig, flag_of.clone());
+            }
         }
         for w in std::mem::take(&mut self.start_warnings) {
             self.app.warn(w);
@@ -304,7 +345,7 @@ impl<'a> WindowApp<'a> {
     }
 
     /// A settings reload changed the font or the theme: the grid is laid out again.
-    fn follow_settings(&mut self, backend: &mut PixelBackend) {
+    fn follow_settings(&mut self, backend: &mut PixelBackend, ops: &mut dyn WindowOps) {
         let fonts = FontSettings::of(&self.app.settings);
         if fonts != self.fonts {
             self.fonts = fonts;
@@ -317,6 +358,7 @@ impl<'a> WindowApp<'a> {
         if self.app.settings.theme != self.theme {
             self.theme = self.app.settings.theme.clone();
             backend.set_palette(palette_for(&self.theme));
+            ops.set_theme(window_dark(&self.theme));
             self.app.dirty = true;
         }
     }
@@ -344,7 +386,7 @@ impl WindowHandler for WindowApp<'_> {
         }
         // Nothing typed after a quit that needs no question reaches the app.
         let events = if self.app.quit { Vec::new() } else { events };
-        self.follow_settings(terminal.backend_mut());
+        self.follow_settings(terminal.backend_mut(), ops);
         self.app.cell_px = cell_px(terminal.backend());
         let mut frontend = WindowFrontend::new(ops);
         let out = event_loop::step(
@@ -418,10 +460,12 @@ pub fn run(app: &mut App, recovery_dir: &Path) -> Result<WindowRun, StartError> 
         app_id: APP_ID.to_string(),
         fonts,
         palette: palette_for(&app.settings.theme),
+        dark: window_dark(&app.settings.theme),
         cols: START_COLS,
         rows: START_ROWS,
     };
     let mut handler = WindowApp::new(app);
+    handler.catch_signals();
     handler.exit_after_first_frame = std::env::var_os("VR_IDE_EXIT_AFTER_FIRST_FRAME").is_some();
     // The title is set with the window.
     handler.state = StepState::with_title(options.title.clone());
@@ -430,7 +474,7 @@ pub fn run(app: &mut App, recovery_dir: &Path) -> Result<WindowRun, StartError> 
         .zip(std::env::current_exe().ok());
     handler
         .start_warnings
-        .extend(font_warning.map(|w| w.to_string()));
+        .extend(font_warning.map(|w| font_notice(&w, options.fonts.config())));
     vr_window::app::run(options, &mut handler)?;
     Ok(WindowRun {
         result: handler.take_result(),

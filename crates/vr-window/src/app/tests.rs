@@ -208,3 +208,20 @@ fn a_lost_x11_connection_runs_the_registered_hook_first() {
     assert_eq!(super::x11::io_error(std::ptr::null_mut()), 0);
     assert_eq!(CALLS.load(Ordering::SeqCst), 1, "the hook ran");
 }
+
+/// FR-1 U6: an unfocused window draws the block cursor hollow; bar and underline stay.
+#[test]
+fn an_unfocused_window_draws_the_block_cursor_hollow() {
+    use CursorShape as S;
+    assert_eq!(drawn_shape(S::Block, true), S::Block);
+    assert_eq!(drawn_shape(S::Block, false), S::HollowBlock);
+    assert_eq!(drawn_shape(S::Bar, false), S::Bar);
+    assert_eq!(drawn_shape(S::Underline, false), S::Underline);
+}
+
+/// FR-1 U3: the title bar follows the app's theme, not the system colour scheme.
+#[test]
+fn the_title_bar_theme_follows_the_app_theme() {
+    assert_eq!(window_theme(true), winit::window::Theme::Dark);
+    assert_eq!(window_theme(false), winit::window::Theme::Light);
+}

@@ -38,6 +38,8 @@ pub struct WindowOptions {
     /// Loaded before the window exists (slow); its scale is replaced by the window's.
     pub fonts: FontSet,
     pub palette: Palette,
+    /// Dark title bar (client-side decorations, the GTK variant on X11), from the app's theme.
+    pub dark: bool,
     /// The initial grid in cells.
     pub cols: u16,
     pub rows: u16,
@@ -73,6 +75,8 @@ pub trait WindowOps {
     fn set_ime_cell(&mut self, cell: Option<(u16, u16)>);
     /// Asks the desktop for attention (taskbar hint), only while the window is not focused.
     fn request_attention(&mut self);
+    /// The title bar's light or dark variant (the app's theme changed).
+    fn set_theme(&mut self, dark: bool);
 }
 
 /// The app side of the window: vr-ide's loop.
@@ -178,6 +182,10 @@ impl WindowOps for Control {
                 .request_user_attention(Some(UserAttentionType::Informational));
         }
     }
+
+    fn set_theme(&mut self, dark: bool) {
+        self.window.set_theme(Some(window_theme(dark)));
+    }
 }
 
 impl Control {
@@ -269,6 +277,7 @@ impl<H: WindowHandler> Runner<'_, H> {
         #[allow(unused_mut)]
         let mut attrs = Window::default_attributes()
             .with_title(options.title)
+            .with_theme(Some(window_theme(options.dark)))
             .with_inner_size(size);
         #[cfg(all(
             unix,
@@ -357,6 +366,12 @@ impl<H: WindowHandler> ApplicationHandler for Runner<'_, H> {
                 live.control.focused = focused;
                 if !focused {
                     live.mouse.focus_lost();
+                    if live.ime.focus_lost() {
+                        // As for Esc: the IME must forget the dropped composition too.
+                        live.window.set_ime_allowed(false);
+                        live.window.set_ime_allowed(true);
+                        live.control.ime.reset();
+                    }
                 }
                 live.blink.reset(Instant::now());
                 live.events.push(if focused {
@@ -462,7 +477,7 @@ impl Live {
             p.at(at.x, at.y)
         });
         let backend = self.terminal.backend_mut();
-        backend.set_cursor_shape(shape);
+        backend.set_cursor_shape(drawn_shape(shape, self.control.focused));
         backend.set_cursor_blink_on(self.blink.on);
         backend.set_preedit(preedit);
         backend.render_overlays();
@@ -542,6 +557,25 @@ pub fn initial_size(cell: CellMetrics, cols: u16, rows: u16) -> LogicalSize<u32>
         u32::from(cols) * cell.width.max(1),
         u32::from(rows) * cell.height.max(1),
     )
+}
+
+/// The cursor as drawn: an unfocused window shows the block as an outline (as terminals do).
+#[must_use]
+pub fn drawn_shape(shape: CursorShape, focused: bool) -> CursorShape {
+    match shape {
+        CursorShape::Block if !focused => CursorShape::HollowBlock,
+        other => other,
+    }
+}
+
+/// The title bar variant for a dark or light app theme.
+#[must_use]
+pub fn window_theme(dark: bool) -> winit::window::Theme {
+    if dark {
+        winit::window::Theme::Dark
+    } else {
+        winit::window::Theme::Light
+    }
 }
 
 /// The pixel area of a cell, where the IME puts its candidate window (below it).

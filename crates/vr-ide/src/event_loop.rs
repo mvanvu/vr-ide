@@ -144,6 +144,7 @@ pub fn exit_with(
     after_recovery: &mut dyn FnMut(),
     wait: Duration,
 ) -> anyhow::Result<()> {
+    use crate::recovery::note;
     // Nothing may wait before these two: a worker blocked in I/O would leave the terminal
     // in the alternate screen and the unsaved buffers unwritten.
     restore_terminal();
@@ -160,19 +161,20 @@ pub fn exit_with(
     crate::ai::shutdown(app);
     // A git read stuck on a slow disk must not outlive vr-ide (SEC-1).
     crate::git::shutdown(app);
-    // After the recovery write: printing can block on a full stderr.
+    // After the recovery write: printing can block on a full stderr. A closed or hung-up
+    // stderr drops the lines (`note`); it never cuts the sequence short.
     for m in crate::recovery::GLOBAL.take_deferred() {
-        eprintln!("vr-ide: {m}");
+        note(format_args!("{m}"));
     }
     if crate::commands::search::replacing(app) {
-        eprintln!(
-            "vr-ide: stopping the project replace (waiting up to {} s)…",
+        note(format_args!(
+            "stopping the project replace (waiting up to {} s)…",
             wait.as_secs_f32()
-        );
+        ));
     }
     crate::commands::search::shutdown_within(app, wait);
     for m in &app.exit_messages {
-        eprintln!("vr-ide: {m}");
+        note(format_args!("{m}"));
     }
     result
 }
@@ -512,6 +514,65 @@ mod tests {
         assert!(format!("{:#}", r.unwrap_err()).contains("unsaved buffers written"));
         let msgs = app.exit_messages.join(" | ");
         assert!(msgs.contains("still writing b"), "{msgs}");
+    }
+
+    /// FR-1 quick pass: a window that outlived its terminal (SIGHUP ignored) exits with a
+    /// stderr that fails every write; the exit messages are dropped and the sequence still
+    /// runs to the end (the replace wait included) instead of panicking. The child's stderr is
+    /// a pipe whose read end is closed before it writes (EPIPE, as EIO on a hung-up tty).
+    #[cfg(unix)]
+    #[test]
+    fn exit_finishes_when_stderr_is_gone() {
+        use std::io::Write;
+        const CHILD: &str = "VR_IDE_TEST_DEAD_STDERR_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            use crate::commands::search::{JobKind, tests::stuck_job};
+            let (_d, _p, mut app, _) = crate::app_tests::app_with_file("a\n");
+            app.handle_key(KeyEvent::new(K::Char('x'), KeyModifiers::NONE));
+            stuck_job(&mut app, JobKind::Apply);
+            app.exit_messages.push("a message nobody can read".into());
+            // Let the parent close the pipe first.
+            std::thread::sleep(Duration::from_millis(300));
+            let state = tempfile::tempdir().unwrap();
+            let dir = state.path().join("recovery");
+            let t0 = Instant::now();
+            let _ = exit(
+                Err(anyhow::anyhow!("the connection to the display was lost")),
+                &mut app,
+                &dir,
+                &mut || {},
+                Duration::from_millis(300),
+            );
+            let mut out = std::io::stdout();
+            let _ = writeln!(
+                out,
+                "exit finished, waited {}",
+                t0.elapsed().as_millis() >= 300
+            );
+            let _ = out.flush();
+            return;
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "event_loop::tests::exit_finishes_when_stderr_is_gone",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stderr.take());
+        let out = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("exit finished, waited true"),
+            "{stdout:?} {:?}",
+            out.status
+        );
+        assert!(out.status.success(), "{:?}", out.status);
     }
 
     /// The window title is written again only when the workspace label changed (after a

@@ -299,3 +299,26 @@ Open b.txt, `space i`, TUIOK typed, ctrl+s: file "TUIOKbase"; ctrl+q exited stat
 
 Manual-only items (no tool/hardware): IME composition in IBus/Fcitx, HiDPI scale change, Wayland screenshot/CSD title bar, cursor shape/blink, attention hint, AltGr, drag-select.
 Verdict: SIGNOFF_PASS
+
+## QC FR-1
+Main tree `/home/rainy/DEV/vr-ide`, `cargo build -p vr-ide` green; real runs on X11 (`DISPLAY=:0`, WAYLAND unset), temp dirs under qa-artifacts/T4/qc/ (run.sh with `BIN=`). Only my own pids signalled; pid 1696342 untouched.
+
+| # | Check | Result | Evidence |
+|---|---|---|---|
+| 1 | SIGINT with dirty buffer | PASS | window stays, Quit dialog "1 unsaved file(s)" (fr_int.png); Discard exits, recovery dir 4 -> 5, content "EDITbase", disk file s.txt unchanged "base", stderr names the recovery file |
+| 2 | SIGHUP | PASS | process alive, no dialog, buffer still "EDITbase" and dirty (fr_hup.png); ctrl+q then shows the Quit dialog (fr_cq.png) |
+| 3 | font_family=NoSuchFont + font_size=16 | PASS | window 1560x936 = 120x36 cells of 13x26 px; font_size=11 gives 1080x648 (9x18), font_size=12 gives 1200x684 (10x19): 16 pt scales as expected (fz11/fz12/fz16.png). Notice reads exactly `settings: font_family "NoSuchFont" is not installed; using the system monospace font at 16 pt  (Esc)` (fz16.png) |
+| 4 | resize to a non-multiple of the cell | PASS | XResizeWindow to 1003x607 with the terminal panel open: 111x33 cells + 4 px / 13 px leftover (rz1.png viewed). Bottom leftover rows are the status-bar colour (10,5,18), not the editor background (26,16,40); right leftover column is the panel colour (terminal black) |
+| 5 | unfocused window | PASS | _NET_ACTIVE_WINDOW = 0 (nothing focused): hollow outline block on the cursor cell; after XSetInputFocus (active = the window): solid caret (hc_cmp.png: left unfocused, right focused). A second-window variant failed only because Xwayland refuses `GetImage` of a window while another vr-ide window exists, not an app issue |
+
+Not provable here (unit-tested only, no driver): Super chords being ignored, IME composition, the title bar.
+No defect found. All processes I started have ended.
+
+## Rule check FR-1
+| Rule | Status | Evidence |
+|---|---|---|
+| FR-1 signals (SIGINT quit path, SIGHUP ignored) | pass | checks 1, 2 |
+| FR-1 font fallback at the asked size + notice text | pass | check 3 |
+| FR-1 leftover strip fill | pass | check 4 |
+| FR-1 hollow unfocused cursor | pass | check 5 |
+| BASE-50 | pass | wrote only under qa-artifacts/T4/qc and 05_qc_report.md; no repo edits |

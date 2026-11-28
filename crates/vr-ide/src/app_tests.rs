@@ -1066,3 +1066,44 @@ fn user_binding_with_a_shifted_symbol_fires_from_either_spelling_of_the_key() {
         assert_eq!(text(&app), "x\n", "bound {bound}, sent {sent:?}");
     }
 }
+
+/// FR-1 C2: a super (cmd) chord has no binding syntax, so it is ignored everywhere: it never
+/// types its letter or runs the plain key's binding in edit mode, read mode, a dialog's input or
+/// the palette (the window delivers super+c as `Char('c')` with SUPER; so can a kitty terminal).
+#[test]
+fn super_chords_never_type_or_run_the_plain_key() {
+    let sup = KeyModifiers::SUPER;
+    let (_d, _p, mut app, _) = app_with_file("ab\n");
+    for code in [KeyCode::Char('c'), KeyCode::Enter, KeyCode::Char('x')] {
+        app.handle_key(key(code, sup));
+    }
+    app.handle_key(key(KeyCode::Char('z'), sup | KeyModifiers::SHIFT));
+    assert_eq!(text(&app), "ab\n", "edit mode");
+    assert!(!app.active_doc().unwrap().is_modified());
+
+    // Read mode: super+space, super+i is not space i (no edit mode).
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("r.txt"), "r\n").unwrap();
+    let (mut app, _) = test_app(dir.path());
+    app.open_path(Path::new("r.txt")).unwrap();
+    assert!(!app.edit_mode());
+    app.handle_key(key(KeyCode::Char(' '), sup));
+    app.handle_key(key(KeyCode::Char('i'), sup));
+    assert!(!app.edit_mode(), "read mode");
+
+    // A dialog's input and the palette's.
+    let (_d, _p, mut app, _) = app_with_file("ab\n");
+    app.run_command("nav.goto_line", CmdArgs::None);
+    app.handle_key(key(KeyCode::Char('5'), sup));
+    let d = app.dialog.as_ref().expect("the dialog stays open");
+    match &d.widget {
+        crate::ui::dialog::DialogWidget::Prompt(p) => assert_eq!(p.input.text(), ""),
+        crate::ui::dialog::DialogWidget::Confirm(_) => panic!("a prompt"),
+    }
+    app.handle_key(key(KeyCode::Enter, sup));
+    assert!(app.dialog.is_some(), "super+enter does not submit");
+    app.dialog = None;
+    app.run_command("app.palette", CmdArgs::None);
+    app.handle_key(key(KeyCode::Char('q'), sup));
+    assert_eq!(app.palette.as_ref().unwrap().input.text(), "");
+}
