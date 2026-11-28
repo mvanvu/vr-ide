@@ -162,3 +162,28 @@ Enabled -> no events. Preedit v, vi, vie, viê, việ, việt -> no events out e
 | AC-W5 sequences | pass | Telex "việt": no output while composing, one Press per char on commit, preedit cleared (ime.txt) |
 | BASE-26 | pass | both sides of the contract compared with real crossterm parser output and the real `chord_from_key` |
 | BASE-50 | pass | only `qa-artifacts/T3/qc/` and this file written (git status below) |
+
+## QC T3b
+Rebuilt the parity harness on the current tree and replayed the same pty run (real crossterm parser vs window translation, both through chord_from_key): 53 rows, all equal, none differ (raw: qa-artifacts/T3/qc/table2.md). ctrl+shift+/ and ctrl+shift+1 equal on both; new rows shift+space (shift+space), alt+shift+1 (shift+alt+1), ctrl+alt+shift+` (ctrl+shift+alt+`) equal. Plain ? (Char('?'), no mods), space (Char(' '), no mods), a, shift+a (Char('A')+SHIFT) produce identical events on both sides as before.
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-W4 / same keys window vs --tui | pass | all rows equal |
+| BASE-50 | pass | only qa-artifacts/T3/qc/ and this file written |
+
+## QC T3b round 1
+Tree: keymap-parser normalisation (`KeyChord::new`), sources not newer than my harness/vr-ide binaries (checked with find -newer).
+1. Parity replay (same pty driver, real crossterm parser vs window): 54 rows (table3.md), all "yes", none differ. ctrl+shift+/ = ctrl+shift+/ and ctrl+shift+1 = ctrl+shift+1 on both sides; shift+space, alt+shift+1, ctrl+alt+shift+` equal; plain ? (no mods), space, a, shift+a (SHIFT) identical on both.
+2. Runtime in the real TUI (target/debug/vr-ide in a pty, VR_IDE_CONFIG_DIR, HOME and XDG dirs all under qa-artifacts/T3/qc/rt/<case>/, never ~/.config). File `    hello` (4 spaces), enter edit mode (space i), send the key, ctrl+s, read the file (rt/run.py, rt.txt):
+| case | bytes sent | keymap.toml | file after |
+|---|---|---|---|
+| control: no binding | ESC[91;6u | none | `    hello` (unchanged) |
+| sanity: default shift+tab | ESC[9;2u | none | `hello` |
+| SHIFT reported | ESC[91;6u (ctrl+shift+[) | `ctrl+{ = "edit.outdent"` | `hello` (fired) |
+| alternate-key form | ESC[91:123;6u | same | `hello` (fired) |
+| symbol, no shift flag | ESC[123;5u | same | `hello` (fired) |
+Without the binding the same bytes do nothing, so the outdent comes from the user binding.
+| Rule | Status | Evidence |
+|---|---|---|
+| AC-W4 / same keys | pass | all parity rows equal |
+| ctrl+{ user binding fires | pass | 3 of 3 forms |
+| BASE-50 | pass | only qa-artifacts/T3/qc/ and this file written |

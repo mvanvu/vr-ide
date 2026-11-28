@@ -42,11 +42,7 @@ pub fn chord_from_key(key: &KeyEvent, enhanced: bool) -> Option<KeyChord> {
                     other => other,
                 };
             }
-            // Keymaps name the unshifted key ("ctrl+shift+1"); terminals report the shifted
-            // symbol ('!'). US layout, the one VS Code's default keys assume.
-            if mods.shift && (mods.ctrl || mods.alt) {
-                c = unshift_us(c);
-            }
+            // `KeyChord::new` names a shifted symbol with ctrl/alt as shift + its base key.
             C::Char(c)
         }
         K::F(n) => C::F(n),
@@ -71,16 +67,6 @@ pub fn chord_from_key(key: &KeyEvent, enhanced: bool) -> Option<KeyChord> {
         _ => return None,
     };
     Some(KeyChord::new(code, mods))
-}
-
-fn unshift_us(c: char) -> char {
-    const SHIFTED: &str = "!@#$%^&*()_+{}|:\"<>?~";
-    const BASE: &str = "1234567890-=[]\\;',./`";
-    SHIFTED
-        .chars()
-        .position(|s| s == c)
-        .and_then(|i| BASE.chars().nth(i))
-        .unwrap_or(c)
 }
 
 /// Chords a terminal without keyboard enhancement cannot deliver as themselves.
@@ -543,6 +529,23 @@ mod tests {
         // With the kitty protocol ctrl+5 really is ctrl+5.
         assert_eq!(chord(K::Char('5'), KeyModifiers::CONTROL, true), "ctrl+5");
         assert_eq!(chord(K::Char('/'), KeyModifiers::CONTROL, true), "ctrl+/");
+    }
+
+    #[test]
+    fn shifted_symbols_with_ctrl_or_alt_name_the_shift_even_when_the_terminal_drops_it() {
+        let c = KeyModifiers::CONTROL;
+        let a = KeyModifiers::ALT;
+        assert_eq!(chord(K::Char('!'), c, true), "ctrl+shift+1");
+        assert_eq!(chord(K::Char('?'), c, true), "ctrl+shift+/");
+        assert_eq!(chord(K::Char('!'), a, true), "shift+alt+1");
+        assert_eq!(chord(K::Char('~'), c | a, true), "ctrl+shift+alt+`");
+        // The shapes the window sends (SHIFT kept) name the same chords.
+        let s = KeyModifiers::SHIFT;
+        assert_eq!(chord(K::Char('~'), c | a | s, true), "ctrl+shift+alt+`");
+        assert_eq!(chord(K::Char('!'), a | s, true), "shift+alt+1");
+        assert_eq!(chord(K::Char('?'), c | s, true), "ctrl+shift+/");
+        assert_eq!(chord(K::Char(' '), s, true), "shift+space");
+        assert_eq!(chord(K::Char('?'), KeyModifiers::NONE, true), "?");
     }
 
     #[test]

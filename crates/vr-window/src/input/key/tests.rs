@@ -129,7 +129,7 @@ fn key_table() {
             "shift+space",
             press(Key::Named(N::Space), Code::Space, Some(" ")),
             S,
-            Some((K::Char(' '), KN)),
+            Some((K::Char(' '), KS)),
         ),
         // ctrl chords: the ambiguous legacy ones stay distinct.
         row(
@@ -246,6 +246,18 @@ fn key_table() {
             press(ch("x"), Code::KeyX, Some("x")),
             A,
             Some((K::Char('x'), KA)),
+        ),
+        row(
+            "alt+shift+1",
+            press(ch("!"), Code::Digit1, Some("!")),
+            A | S,
+            Some((K::Char('!'), KA | KS)),
+        ),
+        row(
+            "ctrl+alt+shift+`",
+            press(ch("~"), Code::Backquote, Some("~")),
+            C | A | S,
+            Some((K::Char('~'), KC | KA | KS)),
         ),
         row(
             "alt+shift+x",

@@ -86,7 +86,15 @@ pub fn key_events(input: &KeyInput, mods: ModifiersState) -> Vec<KeyEvent> {
     let chord = mods.control_key() || mods.alt_key() || mods.super_key();
     let all = modifiers(mods);
     match &input.logical {
-        Key::Named(NamedKey::Space) if !chord => text_events(" ", kind, state),
+        // SHIFT stays, as the kitty protocol reports shift+space, so both frontends name it
+        // "shift+space"; typing a space ignores it.
+        Key::Named(NamedKey::Space) if !chord => text_events(" ", kind, state)
+            .into_iter()
+            .map(|mut e| {
+                e.modifiers = all;
+                e
+            })
+            .collect(),
         Key::Named(named) => named_code(*named, input.location, mods.shift_key())
             .map(|code| vec![event(code, all)])
             .unwrap_or_default(),

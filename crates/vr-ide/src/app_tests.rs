@@ -633,7 +633,7 @@ fn default_keymap_obeys_user_5() {
     const FORBIDDEN: [&str; 14] = [
         "ctrl+pageup",
         "ctrl+pagedown",
-        "ctrl+plus",
+        "ctrl+shift+=",
         "ctrl+-",
         "ctrl+0",
         "f10",
@@ -1039,4 +1039,30 @@ fn an_info_notice_is_shown_at_once_and_for_its_whole_ttl_behind_a_warning() {
     // A warning arriving later stays behind the timed one shown now.
     app.warn("later warning");
     assert!(shown(&app).starts_with("reply four"), "{}", shown(&app));
+}
+
+#[test]
+fn user_binding_with_a_shifted_symbol_fires_from_either_spelling_of_the_key() {
+    for (bound, sent) in [
+        ("ctrl+{", KeyModifiers::CONTROL),
+        ("ctrl+shift+[", KeyModifiers::CONTROL),
+        ("ctrl+{", KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let km = dir.path().join("keymap.toml");
+        std::fs::write(&km, format!("\"{bound}\" = \"edit.outdent\"\n")).unwrap();
+        let (keymap, warnings) = Keymap::load(Some(&km));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut app = App::new(
+            dir.path().to_path_buf(),
+            keymap,
+            Settings::default(),
+            Box::new(MemoryClipboard::new()),
+        );
+        std::fs::write(dir.path().join("f.txt"), "\tx\n").unwrap();
+        app.open_path(Path::new("f.txt")).unwrap();
+        space_i(&mut app);
+        app.handle_key(key(KeyCode::Char('{'), sent));
+        assert_eq!(text(&app), "x\n", "bound {bound}, sent {sent:?}");
+    }
 }

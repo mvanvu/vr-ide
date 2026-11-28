@@ -222,7 +222,14 @@ fn parse_chords() {
         ("escape", KeyCode::Esc, Mods::NONE),
         // Case and whitespace are not significant; letters are stored lowercase.
         (" Ctrl + S ", KeyCode::Char('s'), ctrl),
-        ("ctrl+plus", KeyCode::Char('+'), ctrl),
+        (
+            "ctrl+plus",
+            KeyCode::Char('='),
+            Mods {
+                shift: true,
+                ..ctrl
+            },
+        ),
     ];
     for (s, code, mods) in cases {
         let k: KeyChord = chord(s);
@@ -982,4 +989,16 @@ fn font_settings_defaults_valid_and_invalid() {
     let (s, w) = Settings::load(Some(&path));
     assert!(w.is_empty(), "{w:?}");
     assert_eq!(s.font_family, ok);
+}
+
+#[test]
+fn ctrl_or_alt_with_a_shifted_symbol_is_the_shift_chord_of_its_base_key() {
+    assert_eq!(chord("ctrl+{"), chord("ctrl+shift+["));
+    assert_eq!(chord("ctrl+\""), chord("ctrl+shift+'"));
+    assert_eq!(chord("alt+!"), chord("shift+alt+1"));
+    assert_eq!(chord("ctrl+shift+{"), chord("ctrl+shift+["));
+    assert_eq!(chord("ctrl+{").to_string(), "ctrl+shift+[");
+    // Typing is untouched: no ctrl or alt, no normalisation.
+    assert_eq!(chord("?").mods, Mods::NONE);
+    assert_eq!(chord("shift+?").code, KeyCode::Char('?'));
 }

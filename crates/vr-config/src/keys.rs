@@ -49,14 +49,32 @@ pub struct KeyChord {
 
 impl KeyChord {
     /// Builds a chord in canonical form (ASCII letters lowercased), so `Char('Z')`+shift from a
-    /// terminal equals the parsed `"shift+z"`.
-    pub fn new(code: KeyCode, mods: Mods) -> Self {
+    /// terminal equals the parsed `"shift+z"`. With ctrl or alt, a US shifted symbol becomes
+    /// shift plus its base key (`ctrl+{` is `ctrl+shift+[`), whichever way it was written or
+    /// reported (kitty terminals may drop SHIFT for it); US layout, the one VS Code's default
+    /// keys assume.
+    pub fn new(code: KeyCode, mut mods: Mods) -> Self {
         let code = match code {
+            KeyCode::Char(c) if mods.ctrl || mods.alt => {
+                let base = unshift_us(c);
+                mods.shift |= base != c;
+                KeyCode::Char(base.to_ascii_lowercase())
+            }
             KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
             other => other,
         };
         KeyChord { code, mods }
     }
+}
+
+fn unshift_us(c: char) -> char {
+    const SHIFTED: &str = "!@#$%^&*()_+{}|:\"<>?~";
+    const BASE: &str = "1234567890-=[]\\;',./`";
+    SHIFTED
+        .chars()
+        .position(|s| s == c)
+        .and_then(|i| BASE.chars().nth(i))
+        .unwrap_or(c)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

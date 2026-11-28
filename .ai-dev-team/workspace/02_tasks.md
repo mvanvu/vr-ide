@@ -7,8 +7,8 @@
 | T3 | vr-window input translation + IME state | fe | T2 | crates/vr-window/src/input*.rs, crates/vr-window/src/lib.rs | ui | BASE, COST, AC-W4, AC-W5 | cargo test -p vr-window | done | 0 |
 | T5 | Desktop entry new form + migration | fe | T1 | crates/vr-ide/src/desktop.rs, desktop_tests.rs | security | BASE, COST, AC-W7 | cargo test -p vr-ide desktop | done | 1 |
 | T4a | Font settings + PTY pixel size | fe | — | crates/vr-config/**, crates/vr-term/src/terminal.rs + tests | ui | BASE, COST, AC-W6, AC-W8 | cargo test -p vr-config -p vr-term | done | 0 |
-| T3b | Chord parity TUI vs window (shifted symbols, shift+space) | fe | T3 | crates/vr-ide/src/event_loop.rs, crates/vr-window/src/input/key.rs + tests | ui | BASE, COST, AC-W4 | cargo test -p vr-ide event_loop; cargo test -p vr-window input; parity harness rerun | in progress | 0 |
-| T4 | Window app: runner, wiring, launch, quit path, font settings, PTY pixels | fe | T1, T2, T3, T5 | crates/vr-window/src/app*.rs, crates/vr-ide/src/{main.rs,cli.rs,window_frontend.rs,…}, crates/vr-ide/Cargo.toml, crates/vr-config/**, crates/vr-term/src/terminal.rs, defaults/settings.toml | ui | BASE, COST, AC-W1..AC-W8 | cargo test --workspace (related); guard both feature sets; release build | todo | 0 |
+| T3b | Chord parity TUI vs window (shifted symbols, shift+space) | fe | T3 | crates/vr-ide/src/event_loop.rs, crates/vr-window/src/input/key.rs + tests | ui | BASE, COST, AC-W4 | cargo test -p vr-ide event_loop; cargo test -p vr-window input; parity harness rerun | done | 1 |
+| T4 | Window app: runner, wiring, launch, quit path, font settings, PTY pixels | fe | T1, T2, T3, T4a, T5 (T3b relaxed: worktree, no edits to event_loop.rs 15-110 or vr-config keys.rs) | crates/vr-window/src/app*.rs, crates/vr-ide/src/{main.rs,cli.rs,window_frontend.rs,…}, crates/vr-ide/Cargo.toml, crates/vr-config/**, crates/vr-term/src/terminal.rs, defaults/settings.toml | ui | BASE, COST, AC-W1..AC-W8 | cargo test --workspace (related); guard both feature sets; release build | in progress | 0 |
 | T6 | Docs | fe | T4 | README.md, docs/*.md | docs | BASE | leader spot-check + sonnet reviewer | todo | 0 |
 
 ## Acceptance criteria (from the spec)
@@ -55,3 +55,11 @@
 - 06:45 T3 DONE gate ✓ (49 tests, guard 0, winit =0.30.13 no GTK). Review (sonnet, focus TUI/window chord parity) + QC (sonnet, parity harness TUI kitty decode vs window translate) started.
 - 06:47 verdict gate T3 review ✓ APPROVED; finding 1 (chord parity, vr-ide event_loop.rs) moved into T4's scope; shift+space → quick pass after QC; AltGr → tracked for Windows port.
 - 06:49 verdict gate T3 QC: QC_FAIL on 2 chords — cause is vr-ide chord_from_key (TUI drops SHIFT), not T3's code; T3's own criteria pass (47/49 equal, IME pass). T3 done and committed; the parity defect becomes fix task T3b (sonnet, small) before T4 (shared compile units).
+- 06:50 T3b started (developer sonnet). monitor scan started (sonnet). monitor-last: 06:50 (0 findings, 4 notes)
+- 06:53 T3b DONE (54/54 parity rows equal per dev). Re-check sent to T3's reviewer and QC.
+- 06:53 verdict gate T3b QC ✓ QC_PASS (53/53 equal, typing unchanged). Waiting for review re-check.
+- 06:53 verdict gate T3b review re-check ✓ CHANGES_REQUESTED (user keymap ctrl+{ regression). Fix round 1 sent to the T3b developer (adds crates/vr-config/src/keys.rs to its files).
+- 06:54 T4 started (developer opus) in its own git worktree from f1279ad — relaxed over T3b (shared compile unit vr-ide; worktree isolates; brief forbids chord_from_key/keys.rs). Merge route: T3b commits on master first; T4 branch merges master before its merge back.
+- 06:58 T3b round 1 DONE (normalise in KeyChord::new; 1141 vr-ide lib tests, guard 0). Re-check sent to reviewer (incl. USER-5 oracle edit) and QC (parity + runtime ctrl+{ binding).
+- 06:59 verdict gate T3b review re-check ✓ APPROVED (USER-5 oracle same key, canonical). Waiting for QC re-check.
+- 07:01 verdict gate T3b QC round 1 ✓ QC_PASS (parity all equal; runtime ctrl+{ binding fires for 3 byte forms, control unchanged). T3b done, committed. T4 branch must merge master before merging back.
