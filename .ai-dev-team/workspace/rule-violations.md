@@ -1,0 +1,1 @@
+- 08:08 T4 QC (sonnet): AC-W8 font fallback marked pass while its own screenshot showed default 12 pt cells (Phase 5 U2 verified). BASE-26/evidence misread.

@@ -249,3 +249,53 @@ Build current (`cargo build -p vr-ide` up to date).
 | Replay (c): headless mutter on `vrqc-wl`, vr-ide with no tty, mutter SIGKILLed | PASS | lost.result: comm=vr-ide, `WAYLAND_DISPLAY=vrqc-wl`; process gone within 6 s, exit code 1, stderr "Error: the connection to the display was lost" (normal error exit, no "running in the terminal instead"). Clean buffer only; no input path into headless mutter |
 | New X11 case: Xephyr :7, vr-ide no tty (`DISPLAY=:7` in environ), XTEST edit "EDIT", Xephyr SIGKILLed | PASS | xeph.result: vr-ide gone within 5 s, exit 1; stderr "vr-ide: the connection to the display was lost" + "unsaved buffer written to .../state/recovery/…e.txt"; recovery file content "EDITbase" (recovery dir 3 -> 4); disk file e.txt still "base" |
 Processes I started (mutter, Xephyr, vr-ide) all ended; nothing left (the only `ps` hits were the shell command lines themselves).
+
+## Sign-off run 6
+Tree: HEAD c945a44 on master, main tree. Throwaway files only in qa-artifacts/signoff/ (test.log, guard.log, release.log, s1-s6.png, run.sh, tui.py, ac.py, xin.py).
+
+### Full suite (`run-heavy.sh cargo test --workspace -j 4`, once, exit 0)
+Total 1728 passed, 0 failed, 18 ignored (all ignored are pre-existing `#[ignore]` benches/heavy tests). vr-git `dropping_the_worker_kills_its_running_git` did not flake this run (no rerun needed).
+| Crate (summary lines) | passed | failed | ignored |
+|---|---|---|---|
+| vr-config (lib 17, config 29, languages 8) | 54 | 0 | 0 |
+| vr-core | 156 | 0 | 2 |
+| vr-fs (lib 44, racing_writer 2) | 46 | 0 | 1 |
+| vr-git (lib 11, read 14, security 27, worker 9, bench 0) | 61 | 0 | 1 |
+| vr-ide (lib 1157, desktop_cli 3, login_helper 6, statusline_helper 4) | 1170 | 0 | 7 |
+| vr-search (lib 43, racing_writer 2) | 45 | 0 | 1 |
+| vr-syntax (lib 24, grammars 25, highlight 27, registry 6) | 82 | 0 | 5 |
+| vr-term (lib 23, attention 3, env 1, flood 1, leak 1, marker 6, pty 22) | 57 | 0 | 1 |
+| vr-window | 57 | 0 | 0 |
+
+### Guard
+`cargo fmt --all --check` OK; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo clippy -p vr-ide --no-default-features --all-targets -- -D warnings` clean; `cargo tree -p vr-ide --no-default-features --features window -e normal | grep -ciE "gtk|glib|webkit"` = 0.
+
+### Release build
+`run-heavy.sh cargo build --release -p vr-ide`: OK (3m42s), binary 29.4 MB.
+
+### Walk 1: release binary, window on X11 (:0, WAYLAND_DISPLAY unset, temp HOME/XDG/VR_IDE_* dirs)
+- Started with `a.txt`: window "vr-ide" (WM_CLASS vr-ide) 1080x648, project root opened (git root), file open, no stderr (s1.png).
+- `space i`, typed ZZ, ctrl+s: file on disk "ZZline one" (s2/s3.png).
+- ctrl+` opened embedded bash; `echo signoffok` printed `signoffok` (s4.png).
+- ctrl+q with terminal running: "Quit - 1 terminal still running" dialog, process alive (s6.png); "Quit anyway": window gone, process exited, stderr empty, no leftover process. (Exit code not observable: the process was not a child of the driver shell.)
+- Driver limitation: text() cannot send `$`/parens, so a simple echo was used.
+
+### Walk 2: `--tui` release binary in a pty (30x100, no DISPLAY)
+Open b.txt, `space i`, TUIOK typed, ctrl+s: file "TUIOKbase"; ctrl+q exited status 0, alt screen entered and left (tui.out).
+
+### AC coverage
+| AC | Proven by | Status |
+|---|---|---|
+| AC-W1 window / --tui / no display / bad display | QC T1, T4, this sign-off walks | proven |
+| AC-W2 cell grid text, fonts, colours | QC T2 frames + re-check, T4 screenshots, s1-s4.png | proven (HiDPI move between scales manual only) |
+| AC-W3 redraw <= 16 ms | QC T2 bench 4.77 ms (release) | proven |
+| AC-W4 chord parity | QC T3, T3b (54 rows equal), T4 observable, sign-off typing | proven; real-keyboard AltGr manual only |
+| AC-W5 IME | QC T3 ImeInput sequences (Telex "viet") | proven at state-machine level; real IBus/Fcitx composition and candidate window position manual only |
+| AC-W6 mouse, wheel, clipboard, title, PTY pixels | QC T4 (click, wheel, 2-process clipboard, TIOCGWINSZ px, title); cursor shape/blink, attention hint on real compositor | proven except cursor shape/blink and attention hint (manual only) |
+| AC-W7 desktop entry + migration | QC T5, T5 re-check, T4 | proven |
+| AC-W8 close/SIGTERM via quit path, font warning | QC T4 + re-checks 1-2 (display lost incl.), T4a, sign-off quit dialog | proven; dirty buffer on native Wayland not provable (no input tool) |
+| BASE-26 | full suite + both walks on real release binary | pass |
+| BASE-50 | wrote only qa-artifacts/signoff/ and this file; real ~/.config, ~/.local untouched (env redirected) | pass |
+
+Manual-only items (no tool/hardware): IME composition in IBus/Fcitx, HiDPI scale change, Wayland screenshot/CSD title bar, cursor shape/blink, attention hint, AltGr, drag-select.
+Verdict: SIGNOFF_PASS

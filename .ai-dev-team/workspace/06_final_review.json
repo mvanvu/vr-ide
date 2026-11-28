@@ -1,0 +1,9 @@
+{"run": 6, "mode": "feature", "unattended": true, "scope": "6c53fdc..c945a44",
+ "dimensions": ["correctness", "ui"],
+ "confirmed": [
+  {"id": "C1/U1", "severity": "high", "file": "crates/vr-ide/src/window_frontend.rs", "title": "SIGINT/SIGHUP kill the window without quit path or recovery", "verified_by": "two independent dimensions"},
+  {"id": "U2", "severity": "major", "file": "crates/vr-window/src/font.rs:176", "title": "missing family at start drops font_size/line_height"},
+  {"id": "C2", "severity": "major", "file": "crates/vr-window/src/input/key.rs:101", "title": "super chords reach the app as the plain key"}
+ ],
+ "minor": ["U3 CSD title bar follows system light theme", "U4 edge padding in editor background (spec as written; polish)", "U5 IME caret at preedit start", "U6 unfocused cursor stays solid", "U7 start notice wording / 'warning:' prefix matching", "U8 line_height doc says font height", "C3 clear stale preedit on focus loss", "C4 --install-desktop window form without a reachable display"],
+ "uncertain": [], "missingDimensions": []}
