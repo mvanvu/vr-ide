@@ -1,11 +1,13 @@
 # vr-ide
 
-A lightweight, non-modal terminal IDE written in Rust: no modes, one key per command, and a
+A lightweight, non-modal IDE written in Rust: no modes, one key per command, and a
 small memory footprint. It edits files in a tabbed editor next to a file explorer, with find,
-replace, project search and a command palette.
+replace, project search and a command palette. It opens its own window when a display is
+available and runs in the terminal otherwise (see [Window and terminal](#window-and-terminal)).
 
 Contents: [Requirements](#requirements) · [Install](#install) · [Quick start](#quick-start) ·
-[Using vr-ide](#using-vr-ide) · [Configuration](#configuration) ·
+[Using vr-ide](#using-vr-ide) · [Window and terminal](#window-and-terminal) ·
+[Configuration](#configuration) ·
 [Troubleshooting](#troubleshooting) · [Recovery](#recovery) · [Safety model](#safety-model) ·
 [Terminal notes](#terminal-notes) · [Scope and roadmap](#scope-and-roadmap) ·
 [Benchmark](#benchmark)
@@ -40,10 +42,15 @@ Contents: [Requirements](#requirements) · [Install](#install) · [Quick start](
 
   Without them, build without the login window: add `--no-default-features` to the `cargo`
   commands below. claude then opens its sign-in page in your own browser, as it does outside
-  vr-ide.
-- **A terminal** with keyboard-enhancement support (the kitty keyboard protocol: kitty, WezTerm,
-  foot, Ghostty, recent Alacritty and others) is not required: every default key works without it.
-  See [Terminal notes](#terminal-notes).
+  vr-ide. (`--no-default-features` also turns the native window off, see the next item.)
+- **The native window** needs a display: X11 or Wayland on Linux. It does not need GNOME Terminal
+  or GTK; only the login window above uses WebKitGTK. The window is the cargo feature `window`,
+  on by default. `--no-default-features` gives a terminal-only build; to keep the window but drop
+  the login window, build with `--no-default-features --features window`.
+- **A terminal** is needed only for `--tui`, a session without a display (SSH, a console) or a
+  build without the window. Keyboard-enhancement support (the kitty keyboard protocol: kitty,
+  WezTerm, foot, Ghostty, recent Alacritty and others) is not required: every default key works
+  without it. See [Terminal notes](#terminal-notes).
 
 ## Install
 
@@ -67,8 +74,15 @@ cargo build --release
 ```
 
 Desktop launcher (GNOME and other freedesktop desktops): `vr-ide --install-desktop` adds an app-menu entry
-and icon under `~/.local/share` (honours `$XDG_DATA_HOME`) that opens vr-ide in a terminal window;
-`vr-ide --uninstall-desktop` removes exactly those two files. Run it again after moving the binary.
+and icon under `~/.local/share` (honours `$XDG_DATA_HOME`). With the window build the entry starts
+vr-ide directly (`Terminal=false`, `vr-ide --session`) and it opens its own window; a terminal-only
+build still writes an entry that opens a terminal (GNOME Terminal when installed, else the
+launcher's own terminal). `vr-ide --uninstall-desktop` removes exactly those two files. Run
+`--install-desktop` again after moving the binary.
+
+An entry that an older vr-ide wrote (GNOME Terminal, or the launcher's own terminal) is updated to
+the direct form the first time the window build starts as that same binary, with a notice. An entry
+you edited by hand, or one that starts another binary, is left alone.
 
 Update: pull the new source and install again; `cargo install` replaces the old binary.
 
@@ -114,8 +128,10 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
   is resolved, so `a/../a/b` works).
 - With a file it is the nearest parent folder that contains `.git`, walking up from the file's
   folder; if there is none, the file's own folder.
-- vr-ide has one option, `--session` (alone); anything else, `vr-ide --help` or `--version`
-  included, is read as a path and fails. A missing path prints a message and exits with status 2.
+- vr-ide has the options `--tui` (with any of the forms above, see
+  [Window and terminal](#window-and-terminal)) and `--session` (alone, or with `--tui`);
+  anything else, `vr-ide --help` or `--version` included, is read as a path and fails. A missing
+  path prints a message and exits with status 2.
 - `vr-ide --session` (what the desktop launcher runs) reopens the last session: the workspace
   folders, the open file tabs (cursor, scroll, read/edit mode), the active tab, the explorer's
   expanded folders and the terminal panel (shown, position, size); each terminal starts as a fresh
@@ -126,12 +142,13 @@ vr-ide <file>       # open <file>; the project root is its enclosing git root
   so. An unreadable file gives one notice, opens the home folder and is kept as
   `session.toml.bad`. Plain `vr-ide` and `vr-ide <folder|file|.vr-workspace>` never read or write
   the session.
-- It needs an interactive terminal; it cannot run with its input or output redirected.
+- In the terminal it needs an interactive terminal; it cannot run with its input or output
+  redirected. The window does not need one.
 
 Press `F1` to open the command palette, which lists every command with its
 key. A row whose description is cut shows it in full (up to 3 lines) under the list.
 Press `ctrl+q` to quit. If any file has unsaved changes, vr-ide asks first (see
-[Quit guard](#quit-guard)).
+[Quit guard](#quit-guard)). Closing the window is the same as `ctrl+q`.
 
 ### Workspace (several folders)
 
@@ -744,17 +761,56 @@ under `~/.local/state/vr-ide/git-recovery` are no longer listed and can be delet
 
 ### Clipboard
 
-Copy and paste use the system clipboard when a display is reachable (`DISPLAY` or
+In the window, copy and paste use the system clipboard. If the system clipboard is not available,
+the text is kept inside vr-ide only and a notice says so.
+
+In the terminal, copy and paste use the system clipboard when a display is reachable (`DISPLAY` or
 `WAYLAND_DISPLAY`). Without one (a plain console, SSH), vr-ide copies with OSC 52 instead: the
 terminal puts the text on its own computer's clipboard. Paste then returns the last text copied
 inside vr-ide, because terminals rarely let programs read the clipboard; paste from other programs
 with your terminal's own paste shortcut (bracketed paste is supported).
 
+## Window and terminal
+
+vr-ide opens its own window (drawn by vr-ide itself, on X11 or Wayland) when all of these hold:
+the build has the `window` feature (the default), `--tui` was not given, and a display is
+reachable (`WAYLAND_DISPLAY` or `DISPLAY` set and not empty on Linux). Otherwise it runs in the
+terminal it was started in: with `--tui`, over SSH or on a console without a display, or in a
+`--no-default-features` build. If the window cannot be opened (the display refuses the
+connection), vr-ide prints the reason on stderr and runs in the terminal instead.
+
+```
+vr-ide              # window when possible, terminal otherwise
+vr-ide --tui        # always the terminal
+vr-ide --tui <dir>  # --tui goes with any of the forms in Quick start
+```
+
+- **Closing the window** is the same as `ctrl+q`, with the same guard (see
+  [Quit guard](#quit-guard)). A `SIGTERM` takes the same path.
+- **Started from a shell**, the window keeps that shell's foreground until it closes; add `&` to
+  get the prompt back.
+- **Attention.** While the window is not focused, a bell or desktop notification from an embedded
+  terminal or agent (see [Agent notifications](#agent-notifications)) asks the desktop for
+  attention (a taskbar hint).
+- **Keys.** Every chord the operating system delivers reaches vr-ide, so the limits of legacy
+  terminals do not apply in the window; see [docs/keymap.md](docs/keymap.md).
+- **Vietnamese and other IME input** goes through the system input method (IBus, Fcitx, the
+  compositor's own); the text being composed is shown at the cursor and the candidate list opens
+  beside it. `esc` cancels a composition.
+- **Font.** `font_family`, `font_size` and `line_height` in `settings.toml` (below) set the font
+  of the window; the terminal frontend ignores them (the terminal's own font is used). Saving
+  `settings.toml` applies them to a running window.
+- **Clipboard.** Copy and paste use the system clipboard (there is no OSC 52 in the window); see
+  [Clipboard](#clipboard).
+- **Menu entry.** `vr-ide --install-desktop` writes a launcher that starts the window directly and
+  carries `StartupWMClass=vr-ide`, so the desktop groups the window with it; see
+  [Install](#install).
+
 ## Configuration
 
 | File | Purpose |
 |---|---|
-| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` share a neutral terminal palette; the terminal panel is black with green text in every theme), hidden/ignored files in the explorer, highlight size limit, terminal scrollback (`scrollback`), panel height, position and width (`terminal_height_percent`, `terminal_position`, `terminal_width_percent`) and whether NUL reaches terminal programs in a terminal without the kitty protocol (`terminal_pass_nul`, off), whether a logged-in SSH session takes the whole window (`ssh_fullscreen`, on), and the inline git blame of the cursor line (`git_inline_blame`, off). Built-in values: `crates/vr-config/defaults/settings.toml` |
+| `~/.config/vr-ide/settings.toml` | Tab width, spaces vs tabs, theme (`synthwave` by default, `dracula` also paints its own colours; `dark` and `light` share a neutral terminal palette; the terminal panel is black with green text in every theme), hidden/ignored files in the explorer, highlight size limit, terminal scrollback (`scrollback`), panel height, position and width (`terminal_height_percent`, `terminal_position`, `terminal_width_percent`) and whether NUL reaches terminal programs in a terminal without the kitty protocol (`terminal_pass_nul`, off), whether a logged-in SSH session takes the whole window (`ssh_fullscreen`, on), and the inline git blame of the cursor line (`git_inline_blame`, off), and, for the window only, the font (`font_family`, `font_size`, `line_height`, see below). Built-in values: `crates/vr-config/defaults/settings.toml` |
 | `~/.config/vr-ide/keymap.toml` | Key overrides on top of the defaults; see [docs/keymap.md](docs/keymap.md) |
 | `~/.config/vr-ide/languages.toml` | File patterns → language for syntax highlighting; see [Syntax highlighting](#syntax-highlighting). Built-in table: `crates/vr-config/defaults/languages.toml` |
 
@@ -779,6 +835,27 @@ show_ignored = true
 
 The key spelling, context tables (`[editor]`, `[explorer]`) and every command name are in
 [docs/keymap.md](docs/keymap.md).
+
+### Window font
+
+Used by the window only (the terminal frontend draws with the terminal's font):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `font_family` | `""` | Font family name, one line of at most 100 characters. Empty is the system monospace font |
+| `font_size` | `11.0` | Size in points, 6 to 72 |
+| `line_height` | `1.2` | Line height as a multiple of the font height, 1.0 to 2.0 |
+
+```toml
+# ~/.config/vr-ide/settings.toml
+font_family = "JetBrains Mono"
+font_size = 12.0
+line_height = 1.3
+```
+
+A family that is not installed gives a warning and the system monospace font at the size you set.
+A value outside its range is reported and the default stays. Changes apply to a running window
+when the file is saved.
 
 ### Syntax highlighting
 
@@ -863,6 +940,9 @@ are never written into your project.
 - Explorer copy, move and rename never overwrite an existing item.
 
 ## Terminal notes
+
+These apply when vr-ide runs in a terminal (`--tui`, no display, terminal-only build); the window
+has no such limits.
 
 - A terminal with the kitty keyboard protocol (kitty, WezTerm, foot, Ghostty, recent Alacritty and
   others) is not required: the default keys are all `ctrl` keys and `F` keys (alone, with `ctrl` or

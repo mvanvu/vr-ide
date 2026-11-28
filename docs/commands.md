@@ -1,5 +1,7 @@
 # Slash commands
 
+(These run inside vr-ide, in the window or in the terminal. The launch flags are below.)
+
 Open the command window with `F1` (anywhere) or `space` `space` (read mode), then type `/`.
 The list shows the matching slash commands with their arguments and a short description.
 
@@ -164,3 +166,21 @@ protocol does not send are marked).
 | `/q` | Quit (asks about unsaved files) |
 | `/q!` | Quit, discarding unsaved changes (copy kept in recovery) |
 <!-- slash-commands:end -->
+
+## Launch flags
+
+```
+vr-ide [--tui] [<dir>|<file>]...      open folders and files
+vr-ide [--tui] <file>.vr-workspace    open a workspace file (alone)
+vr-ide [--tui] --session              reopen the last session (what the menu entry runs)
+vr-ide --install-desktop              add the app-menu entry (alone)
+vr-ide --uninstall-desktop            remove it (alone)
+```
+
+- `--tui` runs the editor in the terminal. It can stand anywhere among the arguments of the editor
+  forms above; it is not accepted with the two desktop flags.
+- Without `--tui`, vr-ide opens its own window when the build has the `window` feature (the
+  default) and a display is reachable: `WAYLAND_DISPLAY` or `DISPLAY` set and not empty on Linux.
+  Otherwise (SSH, a console, a terminal-only build) it runs in the terminal. If the window cannot
+  be opened, it prints the reason on stderr and runs in the terminal instead.
+- The window does not need a terminal; the terminal mode needs an interactive one.

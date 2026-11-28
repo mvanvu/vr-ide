@@ -258,6 +258,26 @@ Typing and cursor movement are built in and not listed in `keymap.toml`.
 
 A user binding for a plain key in a context wins over that context's built-in key.
 
+## Keys in the window
+
+vr-ide opens its own window when a display is available (see the README, "Window and terminal");
+`--tui` runs it in a terminal instead. In the window every chord the operating system delivers
+reaches vr-ide, so the limits of legacy terminals described in this file (no `ctrl+shift` chords,
+`ctrl+i` as `tab`, `shift+enter` as `enter`, `ctrl+[` as `esc`, the NUL rule for ``ctrl+` ``) do
+not apply there, and vr-ide shows no "cannot send" notice for a key you bind. The default keys are
+the same in both.
+
+Keys the system or desktop keeps for itself never arrive, so do not bind them:
+
+| System | Examples |
+|---|---|
+| GNOME / Linux desktops | `super` and `super+` chords, `alt+tab`, `ctrl+alt+arrows` (workspaces), `alt+f4` |
+| macOS | `cmd+q`, `cmd+tab`, `cmd+space` |
+| Windows | the `win` key, `alt+tab`, `ctrl+alt+del` |
+
+Which chords a desktop takes depends on its settings; one that does not reach vr-ide can be freed
+there or bound to another key here.
+
 ## Overriding keys
 
 Create `~/.config/vr-ide/keymap.toml` (or `$VR_IDE_CONFIG_DIR/keymap.toml`). Only the keys you list
@@ -293,11 +313,16 @@ Key spelling:
   `escape`, `tab`, `backspace`, `delete`, `insert`, `home`, `end`, `pageup`, `pagedown`, `up`,
   `down`, `left`, `right`, `space`, or `plus`.
 - The plus key is spelled `plus`, because `+` separates the parts: `"ctrl+plus" = "..."`.
+- With `ctrl` or `alt`, a symbol that needs `shift` on a US keyboard is named `shift` plus its base
+  key: `ctrl+{` and `ctrl+shift+[` are the same binding, and it is shown as `ctrl+shift+[`
+  (likewise `ctrl+?` is `ctrl+shift+/`, `alt+!` is `alt+shift+1`). The same name is used by the
+  terminal and the window. Without `ctrl` or `alt` the typed character is unchanged.
 - A binding is one key; a key with a space in it (`"ctrl+x s"`) is reported as an invalid key and
   skipped (read mode's `space i` / `space space` are built in, not bindings).
 - Quotes around a key are optional when it is a plain word (`f2 = "explorer.rename"`).
 
 An unknown command name or an invalid key is reported in a startup notice; the rest of the file
-still applies. The default keys all work in a terminal without the kitty protocol. If your own
+still applies. The default keys all work in a terminal without the kitty protocol (the window has
+no such limit). If your own
 keymap binds a key such a terminal cannot send (for example `ctrl+shift+p`), vr-ide lists it in a
 startup notice (unless the command has another key that works), and `f1` opens the palette.
